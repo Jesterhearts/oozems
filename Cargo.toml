@@ -1,0 +1,13 @@
+[workspace]
+resolver = "3"
+members  = [
+  "crates/oozems-client",
+  "crates/oozems-proto",
+  "crates/oozems-server",
+]
+
+[workspace.package]
+version = "0.1.0"
+license = "Unlicense"
+
+[dependencies]
