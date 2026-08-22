@@ -1,21 +1,22 @@
-use std::cell::Cell;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use oozems_proto::v1::CharacterSpriteSet;
 use oozems_proto::v1::Map;
 use oozems_proto::v1::PlayerState;
 use oozems_proto::v1::Vec2;
 use wasm_bindgen::JsCast;
-use wasm_bindgen::JsValue;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::CanvasRenderingContext2d;
 use web_sys::HtmlCanvasElement;
-use web_sys::HtmlImageElement;
 use web_sys::KeyboardEvent;
 
 use crate::api;
+use crate::assets;
+use crate::assets::BrowserAsset;
+use crate::js_error;
 use crate::movement;
 use crate::movement::MapTransition;
 use crate::movement::MotionState;
@@ -23,31 +24,26 @@ use crate::movement::PlayerInput;
 use crate::render;
 use crate::show_status;
 
-const PLAYER_ID: &str = "local-player";
 const SAVE_INTERVAL_MS: f64 = 2_000.0;
 
 pub struct Game {
     pub canvas: HtmlCanvasElement,
     pub context: CanvasRenderingContext2d,
-    pub images: HashMap<String, MapImage>,
+    pub character_sprites: CharacterSpriteSet,
+    pub facing_left: bool,
+    pub images: HashMap<String, BrowserAsset>,
     pub map: Map,
     pub player: PlayerState,
     pub frame_time_ms: f64,
     input: Rc<RefCell<InputState>>,
-    save_in_flight: Rc<Cell<bool>>,
-    transition_in_flight: Rc<Cell<bool>>,
+    save_in_flight: Rc<std::cell::Cell<bool>>,
+    transition_in_flight: Rc<std::cell::Cell<bool>>,
     dirty: bool,
     jump_consumed: bool,
     portal_consumed: bool,
     last_frame_ms: f64,
     next_save_ms: f64,
     motion: MotionState,
-}
-
-pub struct MapImage {
-    pub element: HtmlImageElement,
-    pub requested: Cell<bool>,
-    pub url: String,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -59,20 +55,19 @@ struct InputState {
     jump: bool,
 }
 
-pub async fn run() -> Result<(), String> {
-    show_status("Loading saved player...", false);
-    let player = api::bootstrap(PLAYER_ID)
-        .await
-        .map_err(|error| error.to_string())?;
+pub async fn run(
+    player: PlayerState,
+    character_sprites: CharacterSpriteSet,
+) -> Result<(), String> {
     show_status("Loading map...", false);
     let map = api::get_map(player.map_id)
         .await
         .map_err(|error| error.to_string())?;
-    let game = build_game(player, map)?;
+    let game = build_game(player, map, character_sprites)?;
     let asset_count = game.borrow().images.len();
 
     show_status(
-        &format!("Ready. Streaming {asset_count} map assets as needed."),
+        &format!("Ready. Streaming {asset_count} assets as needed."),
         false,
     );
     schedule_frame(game)?;
@@ -82,6 +77,7 @@ pub async fn run() -> Result<(), String> {
 fn build_game(
     player: PlayerState,
     map: Map,
+    character_sprites: CharacterSpriteSet,
 ) -> Result<Rc<RefCell<Game>>, String> {
     let window = web_sys::window().ok_or("browser window is unavailable")?;
     let document = window.document().ok_or("browser document is unavailable")?;
@@ -100,18 +96,20 @@ fn build_game(
 
     let input = Rc::new(RefCell::new(InputState::default()));
     install_keyboard_input(&window, input.clone())?;
-    let images = begin_asset_downloads(&map)?;
+    let images = prepare_game_assets(&map, &character_sprites)?;
 
     Ok(Rc::new(RefCell::new(Game {
         canvas,
         context,
+        character_sprites,
+        facing_left: false,
         images,
         map,
         player,
         frame_time_ms: 0.0,
         input,
-        save_in_flight: Rc::new(Cell::new(false)),
-        transition_in_flight: Rc::new(Cell::new(false)),
+        save_in_flight: Rc::new(std::cell::Cell::new(false)),
+        transition_in_flight: Rc::new(std::cell::Cell::new(false)),
         dirty: false,
         jump_consumed: false,
         portal_consumed: false,
@@ -121,22 +119,11 @@ fn build_game(
     })))
 }
 
-fn begin_asset_downloads(map: &Map) -> Result<HashMap<String, MapImage>, String> {
-    map.assets
-        .iter()
-        .map(|asset| {
-            let image = HtmlImageElement::new().map_err(js_error)?;
-            image.set_decoding("async");
-            Ok((
-                asset.id.clone(),
-                MapImage {
-                    element: image,
-                    requested: Cell::new(false),
-                    url: asset.url.clone(),
-                },
-            ))
-        })
-        .collect()
+fn prepare_game_assets(
+    map: &Map,
+    character_sprites: &CharacterSpriteSet,
+) -> Result<HashMap<String, BrowserAsset>, String> {
+    assets::prepare_assets(map.assets.iter().chain(character_sprites.assets.iter()))
 }
 
 fn install_keyboard_input(
@@ -237,6 +224,9 @@ fn update_player(
         &mut game.jump_consumed,
         &mut game.portal_consumed,
     );
+    if input.horizontal != 0.0 {
+        game.facing_left = input.horizontal < 0.0;
+    }
     let output = movement::update_player(&game.map, position, game.motion, input, elapsed_seconds);
     game.dirty |= position != output.position;
     game.player.position = Some(output.position);
@@ -288,7 +278,7 @@ fn install_map(
     map: Map,
     transition: &MapTransition,
 ) -> Result<(), String> {
-    let images = begin_asset_downloads(&map)?;
+    let images = prepare_game_assets(&map, &game.character_sprites)?;
     let position = movement::destination_position(&map, &transition.target_portal_name)
         .unwrap_or_else(|| fallback_position(&map));
 
@@ -327,12 +317,6 @@ fn save_if_due(
         }
         save_in_flight.set(false);
     });
-}
-
-fn js_error(error: JsValue) -> String {
-    error
-        .as_string()
-        .unwrap_or_else(|| "browser operation failed".to_owned())
 }
 
 #[cfg(test)]

@@ -3,7 +3,13 @@ use js_sys::Uint8Array;
 use oozems_proto::PROTOBUF_CONTENT_TYPE;
 use oozems_proto::v1::BootstrapRequest;
 use oozems_proto::v1::BootstrapResponse;
+use oozems_proto::v1::CharacterAppearance;
+use oozems_proto::v1::CharacterSpriteSet;
+use oozems_proto::v1::CreateCharacterRequest;
+use oozems_proto::v1::CreateCharacterResponse;
 use oozems_proto::v1::ErrorResponse;
+use oozems_proto::v1::GetCharacterSpritesRequest;
+use oozems_proto::v1::GetCharacterSpritesResponse;
 use oozems_proto::v1::GetMapRequest;
 use oozems_proto::v1::GetMapResponse;
 use oozems_proto::v1::Map;
@@ -29,16 +35,48 @@ pub enum ClientError {
     MissingData(&'static str),
 }
 
-pub async fn bootstrap(player_id: &str) -> Result<PlayerState, ClientError> {
-    let response: BootstrapResponse = post_protobuf(
+pub async fn bootstrap(player_id: &str) -> Result<BootstrapResponse, ClientError> {
+    post_protobuf(
         "/api/v1/bootstrap",
         BootstrapRequest {
             player_id: player_id.to_owned(),
         },
     )
+    .await
+}
+
+pub async fn create_character(
+    player_id: &str,
+    name: &str,
+    appearance: CharacterAppearance,
+) -> Result<PlayerState, ClientError> {
+    let response: CreateCharacterResponse = post_protobuf(
+        "/api/v1/characters/create",
+        CreateCharacterRequest {
+            player_id: player_id.to_owned(),
+            name: name.to_owned(),
+            appearance: Some(appearance),
+        },
+    )
     .await?;
 
     response.player.ok_or(ClientError::MissingData("player"))
+}
+
+pub async fn get_character_sprites(
+    appearance: CharacterAppearance
+) -> Result<CharacterSpriteSet, ClientError> {
+    let response: GetCharacterSpritesResponse = post_protobuf(
+        "/api/v1/characters/sprites",
+        GetCharacterSpritesRequest {
+            appearance: Some(appearance),
+        },
+    )
+    .await?;
+
+    response
+        .sprites
+        .ok_or(ClientError::MissingData("character sprites"))
 }
 
 pub async fn get_map(map_id: u32) -> Result<Map, ClientError> {

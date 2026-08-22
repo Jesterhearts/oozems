@@ -230,11 +230,7 @@ impl WzContent {
             format!("{}\0{source_path}", self.fingerprint).as_bytes(),
         ));
         let id = format!("wz-{version}");
-        let asset = Arc::new(WzAsset {
-            id: id.clone(),
-            node: Arc::clone(node),
-            png: OnceLock::new(),
-        });
+        let asset = Arc::new(WzAsset::new(id.clone(), Arc::clone(node)));
         self.assets
             .write()
             .map_err(|_| lock_error("WZ asset registry"))?
@@ -250,6 +246,17 @@ impl WzContent {
 }
 
 impl WzAsset {
+    pub(super) fn new(
+        id: String,
+        node: WzNodeArc,
+    ) -> Self {
+        Self {
+            id,
+            node,
+            png: OnceLock::new(),
+        }
+    }
+
     pub fn png_bytes(&self) -> Result<Arc<[u8]>, WzContentError> {
         if let Some(bytes) = self.png.get() {
             return Ok(Arc::clone(bytes));
@@ -272,7 +279,7 @@ impl WzAsset {
     }
 }
 
-fn open_archive(path: &Path) -> Result<WzNodeArc, WzContentError> {
+pub(super) fn open_archive(path: &Path) -> Result<WzNodeArc, WzContentError> {
     WzNode::from_wz_file(path, None)
         .map(Into::into)
         .map_err(|source| WzContentError::Open {
@@ -281,7 +288,7 @@ fn open_archive(path: &Path) -> Result<WzNodeArc, WzContentError> {
         })
 }
 
-fn wrap_archive_root(root: &WzNodeArc) -> Result<WzNodeArc, WzContentError> {
+pub(super) fn wrap_archive_root(root: &WzNodeArc) -> Result<WzNodeArc, WzContentError> {
     let base = WzNode::from_str("Base", WzFile::default(), None).into_lock();
     root.write()
         .map_err(|_| lock_error("WZ archive parent"))?
@@ -292,14 +299,14 @@ fn wrap_archive_root(root: &WzNodeArc) -> Result<WzNodeArc, WzContentError> {
     Ok(base)
 }
 
-fn parse(
+pub(super) fn parse(
     node: &WzNodeArc,
     context: String,
 ) -> Result<(), WzContentError> {
     parse_node(node).map_err(|source| WzContentError::Parse { context, source })
 }
 
-fn archive_fingerprint(path: &Path) -> Result<String, WzContentError> {
+pub(super) fn archive_fingerprint(path: &Path) -> Result<String, WzContentError> {
     let metadata = fs::metadata(path).map_err(|source| WzContentError::Metadata {
         path: path.to_owned(),
         source,
@@ -869,7 +876,7 @@ fn build_decoration(
     }
 }
 
-fn child(
+pub(super) fn child(
     node: &WzNodeArc,
     name: &str,
 ) -> Result<Option<WzNodeArc>, WzContentError> {
@@ -879,7 +886,7 @@ fn child(
         .at(name))
 }
 
-fn children(node: &WzNodeArc) -> Result<Vec<WzNodeArc>, WzContentError> {
+pub(super) fn children(node: &WzNodeArc) -> Result<Vec<WzNodeArc>, WzContentError> {
     Ok(node
         .read()
         .map_err(|_| lock_error("WZ child nodes"))?
@@ -889,7 +896,7 @@ fn children(node: &WzNodeArc) -> Result<Vec<WzNodeArc>, WzContentError> {
         .collect())
 }
 
-fn sorted_children(node: &WzNodeArc) -> Result<Vec<WzNodeArc>, WzContentError> {
+pub(super) fn sorted_children(node: &WzNodeArc) -> Result<Vec<WzNodeArc>, WzContentError> {
     let mut children = children(node)?;
     children.sort_by_key(|child| {
         let name = child
@@ -901,7 +908,7 @@ fn sorted_children(node: &WzNodeArc) -> Result<Vec<WzNodeArc>, WzContentError> {
     Ok(children)
 }
 
-fn node_name(node: &WzNodeArc) -> Result<String, WzContentError> {
+pub(super) fn node_name(node: &WzNodeArc) -> Result<String, WzContentError> {
     Ok(node
         .read()
         .map_err(|_| lock_error("WZ node name"))?
@@ -909,14 +916,14 @@ fn node_name(node: &WzNodeArc) -> Result<String, WzContentError> {
         .to_string())
 }
 
-fn node_path(node: &WzNodeArc) -> Result<String, WzContentError> {
+pub(super) fn node_path(node: &WzNodeArc) -> Result<String, WzContentError> {
     Ok(node
         .read()
         .map_err(|_| lock_error("WZ node path"))?
         .get_full_path())
 }
 
-fn int_value(
+pub(super) fn int_value(
     node: &WzNodeArc,
     name: &str,
 ) -> Result<Option<i32>, WzContentError> {
@@ -930,7 +937,7 @@ fn int_value(
         .or_else(|| read.try_as_short().map(|value| i32::from(*value))))
 }
 
-fn string_value(
+pub(super) fn string_value(
     node: &WzNodeArc,
     name: &str,
 ) -> Result<Option<String>, WzContentError> {
@@ -943,7 +950,7 @@ fn string_value(
         .and_then(|value| value.get_string().ok()))
 }
 
-fn vector_value(node: &WzNodeArc) -> Result<Option<Vector2D>, WzContentError> {
+pub(super) fn vector_value(node: &WzNodeArc) -> Result<Option<Vector2D>, WzContentError> {
     Ok(node
         .read()
         .map_err(|_| lock_error("WZ vector value"))?

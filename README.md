@@ -11,7 +11,8 @@ The current vertical slice includes:
 - protobuf request and response bodies over HTTP;
 - server-owned map files fetched only when entered;
 - optional classic PKG1 WZ map archives parsed lazily by the server;
-- server-owned assets fetched only when referenced by the current map; and
+- a character creation screen backed by sprites composed from `Character.wz`;
+- server-owned assets fetched only when referenced by the current view; and
 - player movement, platforms, jumping, ladder and rope climbing, direct portal
   transitions, and periodic position saves.
 
@@ -43,14 +44,17 @@ variables override the defaults:
 ```text
 browser
   -> GET /                         WASM shell
-  -> POST /api/v1/bootstrap       saved player protobuf
+  -> POST /api/v1/bootstrap       saved player or creation options
+  -> POST /api/v1/characters/...  create a character or get sprite metadata
   -> POST /api/v1/maps/get        current map protobuf
-  -> GET /assets/...              only assets named by that map
+  -> GET /assets/...              only bundled assets named by that map
+  -> GET /wz-assets/...           requested map and character PNG layers
   -> POST /api/v1/players/save    player position protobuf
 
 server
   -> content/maps/*.json          immutable map source
   -> data/Map.wz                  optional, lazy WZ map source
+  -> data/Character.wz            optional character sprite source
   -> data/String.wz               optional WZ map names
   -> assets/**                    immutable source assets
   -> SurrealDB -> SurrealKV       mutable player state
@@ -77,6 +81,13 @@ compressed in `Map.wz` until the browser requests its opaque
 `/wz-assets/...` URL. The server then decodes that sprite, returns a normal PNG,
 and caches it for later requests. WZ files and extracted assets are not added to
 the client bundle.
+
+Place `Character.wz` beside the map archives to enable character creation. The
+server indexes the available skin, face, and hair styles, then composes idle
+frames from each sprite's WZ anchor points and z layer. The browser receives
+only frame metadata at first. It requests the individual PNG layers while the
+preview or game renderer needs them. The chosen name and appearance are stored
+with the player in SurrealKV.
 
 Use the left and right arrow keys, or A and D, to walk. Use Space to jump. Use
 the up and down arrow keys, or W and S, to climb. Press Up or W while standing

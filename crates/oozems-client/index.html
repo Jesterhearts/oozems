@@ -15,9 +15,56 @@
           <p class="eyebrow">OOZEMS</p>
           <h1>Mossy Clearing</h1>
         </div>
-        <p class="controls">Move: A/D or arrows <span>Jump: W, up, or space</span></p>
+        <p id="controls" class="controls" hidden>
+          Move: A/D or arrows
+          <span>Climb or enter: W/S or arrows</span>
+          <span>Jump: Space</span>
+        </p>
       </header>
-      <section class="frame" aria-label="Game">
+      <section id="character-create" class="creator" aria-labelledby="creator-title" hidden>
+        <div class="preview-frame">
+          <canvas id="character-preview" width="180" height="220" aria-label="Character preview">
+            Your browser does not support canvas.
+          </canvas>
+        </div>
+        <form id="character-form" class="creator-form">
+          <div>
+            <p class="eyebrow">NEW ADVENTURER</p>
+            <h2 id="creator-title">Create your character</h2>
+            <p class="creator-copy">Pick a name and a starting look. You can see each WZ sprite as it streams from the server.</p>
+          </div>
+          <label>
+            Name
+            <input id="character-name" type="text" minlength="3" maxlength="12" pattern="[A-Za-z0-9_]+" autocomplete="off" required>
+          </label>
+          <div class="field-pair">
+            <label>
+              Gender
+              <select id="character-gender">
+                <option value="1">Male</option>
+                <option value="2">Female</option>
+              </select>
+            </label>
+            <label>
+              Skin
+              <select id="character-skin"></select>
+            </label>
+          </div>
+          <div class="field-pair">
+            <label>
+              Face
+              <select id="character-face"></select>
+            </label>
+            <label>
+              Hair
+              <select id="character-hair"></select>
+            </label>
+          </div>
+          <p id="create-error" class="form-error" role="alert"></p>
+          <button id="create-button" type="submit">Begin adventure</button>
+        </form>
+      </section>
+      <section id="game-frame" class="frame" aria-label="Game" hidden>
         <canvas id="game" width="960" height="600" tabindex="0">
           Your browser does not support canvas.
         </canvas>

@@ -9,16 +9,23 @@ use axum::response::Response;
 use oozems_proto::PROTOBUF_CONTENT_TYPE;
 use oozems_proto::v1::BootstrapRequest;
 use oozems_proto::v1::BootstrapResponse;
+use oozems_proto::v1::CreateCharacterRequest;
+use oozems_proto::v1::CreateCharacterResponse;
 use oozems_proto::v1::ErrorResponse;
+use oozems_proto::v1::GetCharacterSpritesRequest;
+use oozems_proto::v1::GetCharacterSpritesResponse;
 use oozems_proto::v1::GetMapRequest;
 use oozems_proto::v1::GetMapResponse;
 use oozems_proto::v1::SavePlayerRequest;
 use oozems_proto::v1::SavePlayerResponse;
+use oozems_proto::v1::Vec2;
 use prost::Message;
 use thiserror::Error;
 
 use crate::app::AppState;
+use crate::database::CharacterName;
 use crate::database::PlayerId;
+use crate::database::STARTER_MAP_ID;
 
 pub async fn bootstrap(
     State(state): State<AppState>,
@@ -28,10 +35,88 @@ pub async fn bootstrap(
     let request: BootstrapRequest = decode_request(&headers, body)?;
     let player_id = PlayerId::parse(&request.player_id)
         .map_err(|error| ApiError::bad_request("invalid_player_id", error.to_string()))?;
-    let player = crate::database::load_or_create_player(&state.database, &player_id).await?;
+    let player = crate::database::load_player(&state.database, &player_id)
+        .await?
+        .filter(|player| player.appearance.is_some());
 
     Ok(Protobuf(BootstrapResponse {
+        player,
+        creation_options: Some(state.catalog.character_creation_options()),
+    }))
+}
+
+pub async fn create_character(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Protobuf<CreateCharacterResponse>, ApiError> {
+    let request: CreateCharacterRequest = decode_request(&headers, body)?;
+    let player_id = PlayerId::parse(&request.player_id)
+        .map_err(|error| ApiError::bad_request("invalid_player_id", error.to_string()))?;
+    let name = CharacterName::parse(&request.name)
+        .map_err(|error| ApiError::bad_request("invalid_character_name", error.to_string()))?;
+    let appearance = request.appearance.ok_or_else(|| {
+        ApiError::bad_request(
+            "missing_appearance",
+            "request does not contain an appearance",
+        )
+    })?;
+    if !state.catalog.supports_character(&appearance) {
+        return Err(ApiError::bad_request(
+            "unsupported_appearance",
+            "the selected character appearance is not available",
+        ));
+    }
+    if crate::database::load_player(&state.database, &player_id)
+        .await?
+        .is_some_and(|player| player.appearance.is_some())
+    {
+        return Err(ApiError::conflict(
+            "character_exists",
+            "this player already has a character",
+        ));
+    }
+
+    let map = load_map(&state, STARTER_MAP_ID).await?.ok_or_else(|| {
+        ApiError::not_found(
+            "starter_map_not_found",
+            format!("starter map {STARTER_MAP_ID} does not exist"),
+        )
+    })?;
+    let position = starter_position(&map);
+    let player =
+        crate::database::create_player(&state.database, &player_id, &name, appearance, position)
+            .await?;
+
+    Ok(Protobuf(CreateCharacterResponse {
         player: Some(player),
+    }))
+}
+
+pub async fn get_character_sprites(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Protobuf<GetCharacterSpritesResponse>, ApiError> {
+    let request: GetCharacterSpritesRequest = decode_request(&headers, body)?;
+    let appearance = request.appearance.ok_or_else(|| {
+        ApiError::bad_request(
+            "missing_appearance",
+            "request does not contain an appearance",
+        )
+    })?;
+    let catalog = state.catalog.clone();
+    let sprites = tokio::task::spawn_blocking(move || catalog.get_character_sprites(&appearance))
+        .await??
+        .ok_or_else(|| {
+            ApiError::bad_request(
+                "unsupported_appearance",
+                "the selected character appearance is not available",
+            )
+        })?;
+
+    Ok(Protobuf(GetCharacterSpritesResponse {
+        sprites: Some(sprites),
     }))
 }
 
@@ -70,7 +155,10 @@ pub async fn save_player(
             format!("map {} does not exist", requested.map_id),
         )
     })?;
-    let current = crate::database::load_or_create_player(&state.database, &player_id).await?;
+    let current = crate::database::load_player(&state.database, &player_id)
+        .await?
+        .filter(|player| player.appearance.is_some())
+        .ok_or_else(|| ApiError::not_found("player_not_found", "player does not exist"))?;
     let updated =
         crate::database::apply_player_movement(current, &requested, map.width, map.height);
     let player = crate::database::save_player(&state.database, &updated).await?;
@@ -113,6 +201,20 @@ async fn load_map(
 ) -> Result<Option<oozems_proto::v1::Map>, ApiError> {
     let catalog = state.catalog.clone();
     Ok(tokio::task::spawn_blocking(move || catalog.get_map(map_id)).await??)
+}
+
+fn starter_position(map: &oozems_proto::v1::Map) -> Vec2 {
+    map.portals
+        .iter()
+        .find(|portal| portal.kind == 0)
+        .map(|portal| Vec2 {
+            x: portal.x,
+            y: portal.y,
+        })
+        .unwrap_or(Vec2 {
+            x: 160.0_f32.min(map.width as f32),
+            y: 420.0_f32.min(map.height as f32),
+        })
 }
 
 fn decode_request<T>(
@@ -204,6 +306,17 @@ impl ApiError {
             message: message.into(),
         }
     }
+
+    fn conflict(
+        code: &'static str,
+        message: impl Into<String>,
+    ) -> Self {
+        Self::Client {
+            status: StatusCode::CONFLICT,
+            code,
+            message: message.into(),
+        }
+    }
 }
 
 impl IntoResponse for ApiError {
@@ -227,7 +340,7 @@ impl IntoResponse for ApiError {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "content_error",
-                    "the server could not load map content".to_owned(),
+                    "the server could not load game content".to_owned(),
                 )
             }
             Self::Worker(error) => {
@@ -235,7 +348,7 @@ impl IntoResponse for ApiError {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "content_worker_error",
-                    "the server could not load map content".to_owned(),
+                    "the server could not load game content".to_owned(),
                 )
             }
         };

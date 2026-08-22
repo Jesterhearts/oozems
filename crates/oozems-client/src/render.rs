@@ -2,10 +2,10 @@ use oozems_proto::v1::Decoration;
 use oozems_proto::v1::PlatformKind;
 use oozems_proto::v1::PortalFrame;
 
+use crate::assets::ready_image;
+use crate::character_render;
+use crate::character_render::CharacterPlacement;
 use crate::game::Game;
-
-const PLAYER_WIDTH: f64 = 38.0;
-const PLAYER_HEIGHT: f64 = 62.0;
 
 pub fn draw(game: &Game) {
     let viewport_width = f64::from(game.canvas.width());
@@ -139,16 +139,9 @@ fn draw_sprite(
         return;
     }
 
-    let Some(asset) = game.images.get(asset_id) else {
+    let Some(image) = ready_image(&game.images, asset_id) else {
         return;
     };
-    if !asset.requested.replace(true) {
-        asset.element.set_src(&asset.url);
-    }
-    let image = &asset.element;
-    if !image.complete() || image.natural_width() == 0 {
-        return;
-    }
 
     if flip_x {
         game.context.save();
@@ -261,36 +254,19 @@ fn draw_player(
     let y = f64::from(position.y) - camera_y;
 
     game.context.set_fill_style_str("rgba(29, 45, 43, 0.25)");
-    game.context
-        .fill_rect(x - PLAYER_WIDTH * 0.6, y - 3.0, PLAYER_WIDTH * 1.2, 6.0);
-    game.context.set_fill_style_str("#36445c");
-    game.context.fill_rect(
-        x - PLAYER_WIDTH / 2.0,
-        y - PLAYER_HEIGHT * 0.56,
-        PLAYER_WIDTH,
-        PLAYER_HEIGHT * 0.56,
+    game.context.fill_rect(x - 23.0, y - 3.0, 46.0, 6.0);
+    character_render::draw_character(
+        &game.context,
+        &game.images,
+        &game.character_sprites,
+        game.frame_time_ms,
+        CharacterPlacement {
+            anchor_x: x,
+            anchor_y: y,
+            scale: 1.0,
+            facing_left: game.facing_left,
+        },
     );
-    game.context.set_fill_style_str("#f0bd8d");
-    game.context.fill_rect(
-        x - PLAYER_WIDTH * 0.42,
-        y - PLAYER_HEIGHT,
-        PLAYER_WIDTH * 0.84,
-        PLAYER_HEIGHT * 0.48,
-    );
-    game.context.set_fill_style_str("#3a2931");
-    game.context.fill_rect(
-        x - PLAYER_WIDTH * 0.52,
-        y - PLAYER_HEIGHT - 4.0,
-        PLAYER_WIDTH * 1.04,
-        13.0,
-    );
-    game.context
-        .fill_rect(x - PLAYER_WIDTH * 0.52, y - PLAYER_HEIGHT + 3.0, 8.0, 19.0);
-    game.context.set_fill_style_str("#24252d");
-    game.context
-        .fill_rect(x - 9.0, y - PLAYER_HEIGHT + 22.0, 4.0, 5.0);
-    game.context
-        .fill_rect(x + 6.0, y - PLAYER_HEIGHT + 22.0, 4.0, 5.0);
 }
 
 fn draw_hud(game: &Game) {

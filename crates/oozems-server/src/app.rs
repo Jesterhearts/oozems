@@ -35,6 +35,11 @@ pub fn router(
     };
     let api = Router::new()
         .route("/bootstrap", post(crate::api::bootstrap))
+        .route("/characters/create", post(crate::api::create_character))
+        .route(
+            "/characters/sprites",
+            post(crate::api::get_character_sprites),
+        )
         .route("/maps/get", post(crate::api::get_map))
         .route("/players/save", post(crate::api::save_player))
         .layer(DefaultBodyLimit::max(64 * 1024));
