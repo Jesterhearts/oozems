@@ -103,6 +103,20 @@ struct RawPlatform {
     y2: i32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum DecorationKind {
+    Object,
+    Tile,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct DecorationOrder {
+    layer: i32,
+    kind: DecorationKind,
+    primary_z: i32,
+    secondary_z: i32,
+}
+
 struct RawDecoration {
     source: WzNodeArc,
     source_path: String,
@@ -110,8 +124,7 @@ struct RawDecoration {
     y: i32,
     width: u32,
     height: u32,
-    layer: i32,
-    z_order: i32,
+    order: DecorationOrder,
     flip_x: bool,
 }
 
@@ -389,8 +402,10 @@ fn build_map(
     node: &WzNodeArc,
 ) -> Result<Map, WzContentError> {
     let raw_platforms = read_platforms(node)?;
-    let mut raw_decorations = read_decorations(&source.root, node)?;
-    raw_decorations.sort_by_key(|decoration| (decoration.layer, decoration.z_order));
+    let mut raw_decorations = read_decorations(&source.root, node, map_id)?;
+    // zM associates an item with a foothold group. It does not control drawing.
+    // The order key keeps the separate WZ draw-order fields comparable.
+    raw_decorations.sort_by_key(|decoration| decoration.order);
     let bounds = read_bounds(node)?.unwrap_or_else(|| {
         derive_bounds(raw_platforms.iter(), raw_decorations.iter()).unwrap_or(Bounds {
             left: 0,
@@ -468,13 +483,14 @@ fn collect_platforms(
 fn read_decorations(
     root: &WzNodeArc,
     map: &WzNodeArc,
+    map_id: u32,
 ) -> Result<Vec<RawDecoration>, WzContentError> {
     let mut output = Vec::new();
     for layer_index in 0..=7 {
         let Some(layer) = child(map, &layer_index.to_string())? else {
             continue;
         };
-        read_tiles(root, &layer, layer_index, &mut output)?;
+        read_tiles(root, &layer, map_id, layer_index, &mut output)?;
         read_objects(root, &layer, layer_index, &mut output)?;
     }
     Ok(output)
@@ -483,6 +499,7 @@ fn read_decorations(
 fn read_tiles(
     root: &WzNodeArc,
     layer: &WzNodeArc,
+    map_id: u32,
     layer_index: i32,
     output: &mut Vec<RawDecoration>,
 ) -> Result<(), WzContentError> {
@@ -508,12 +525,19 @@ fn read_tiles(
             tracing::debug!(%path, "skipping WZ tile without a PNG source");
             continue;
         };
+        let source_z = int_value(&source, "z")?.unwrap_or_default();
+        let instance_z =
+            node_name(&tile)?
+                .parse::<i32>()
+                .map_err(|error| WzContentError::InvalidMap {
+                    map_id,
+                    message: format!("tile instance has a non-numeric name: {error}"),
+                })?;
         output.push(raw_decoration(
             source,
             x,
             y,
-            layer_index,
-            int_value(&tile, "zM")?.unwrap_or_default(),
+            tile_order(layer_index, source_z, instance_z),
             int_value(&tile, "f")?.unwrap_or_default() != 0,
         )?);
     }
@@ -556,8 +580,7 @@ fn read_objects(
             source,
             x,
             y,
-            layer_index,
-            int_value(&object, "z")?.unwrap_or_default(),
+            object_order(layer_index, int_value(&object, "z")?.unwrap_or_default()),
             int_value(&object, "f")?.unwrap_or_default() != 0,
         )?);
     }
@@ -612,8 +635,7 @@ fn raw_decoration(
     source: WzNodeArc,
     anchor_x: i32,
     anchor_y: i32,
-    layer_index: i32,
-    z_order: i32,
+    order: DecorationOrder,
     flip_x: bool,
 ) -> Result<RawDecoration, WzContentError> {
     let (width, height) = {
@@ -645,10 +667,34 @@ fn raw_decoration(
         y: anchor_y.saturating_sub(origin_y),
         width,
         height,
-        layer: layer_index - PLAYER_LAYER,
-        z_order,
+        order,
         flip_x,
     })
+}
+
+fn object_order(
+    layer: i32,
+    instance_z: i32,
+) -> DecorationOrder {
+    DecorationOrder {
+        layer,
+        kind: DecorationKind::Object,
+        primary_z: instance_z,
+        secondary_z: 0,
+    }
+}
+
+fn tile_order(
+    layer: i32,
+    source_z: i32,
+    instance_z: i32,
+) -> DecorationOrder {
+    DecorationOrder {
+        layer,
+        kind: DecorationKind::Tile,
+        primary_z: source_z,
+        secondary_z: instance_z,
+    }
 }
 
 fn read_bounds(node: &WzNodeArc) -> Result<Option<Bounds>, WzContentError> {
@@ -759,7 +805,7 @@ fn build_decoration(
         y: (source.y - bounds.top) as f32,
         width: source.width as f32,
         height: source.height as f32,
-        layer: source.layer,
+        layer: source.order.layer - PLAYER_LAYER,
         flip_x: source.flip_x,
     }
 }
@@ -856,7 +902,9 @@ mod tests {
     use super::RawDecoration;
     use super::RawPlatform;
     use super::derive_bounds;
+    use super::object_order;
     use super::read_bounds;
+    use super::tile_order;
 
     #[test]
     fn derived_bounds_include_geometry_and_padding() {
@@ -876,6 +924,32 @@ mod tests {
                 right: 180,
                 bottom: 130,
             })
+        );
+    }
+
+    #[test]
+    fn decoration_order_matches_wz_layer_semantics() {
+        let mut orders = vec![
+            tile_order(1, 4, 3),
+            object_order(1, 20),
+            tile_order(0, 10, 0),
+            object_order(1, 2),
+            tile_order(1, 3, 9),
+            tile_order(1, 3, 1),
+        ];
+
+        orders.sort();
+
+        assert_eq!(
+            orders,
+            vec![
+                tile_order(0, 10, 0),
+                object_order(1, 2),
+                object_order(1, 20),
+                tile_order(1, 3, 1),
+                tile_order(1, 3, 9),
+                tile_order(1, 4, 3),
+            ]
         );
     }
 
