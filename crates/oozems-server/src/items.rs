@@ -21,6 +21,7 @@ pub const STARTER_SHOES_ID: u32 = 1_072_000;
 pub const SPARE_TOP_ID: u32 = 1_040_003;
 pub const SPARE_BOTTOM_ID: u32 = 1_060_001;
 pub const SPARE_SHOES_ID: u32 = 1_072_001;
+pub const PICK_UP_RADIUS: f32 = 80.0;
 
 pub struct DropStore {
     drops: Mutex<Vec<MapDrop>>,
@@ -42,6 +43,12 @@ pub struct RemovedItem {
     pub player: PlayerState,
 }
 
+#[derive(Clone, Debug)]
+pub struct PickedUpItem {
+    pub drop: DroppedItem,
+    pub player: PlayerState,
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ItemRuleError {
     #[error("the player does not have inventory data")]
@@ -60,6 +67,8 @@ pub enum ItemRuleError {
     InventoryFull,
     #[error("the player does not have a valid map position")]
     MissingPosition,
+    #[error("there is no dropped item close enough to pick up")]
+    NoNearbyDrop,
 }
 
 #[derive(Debug, Error)]
@@ -70,6 +79,14 @@ pub enum DropStoreError {
     ExpiryOverflow,
     #[error("the dropped-item store lock was poisoned")]
     Lock,
+}
+
+#[derive(Debug, Error)]
+pub enum PickUpError {
+    #[error(transparent)]
+    Rule(#[from] ItemRuleError),
+    #[error(transparent)]
+    Store(#[from] DropStoreError),
 }
 
 impl DropStore {
@@ -233,6 +250,57 @@ pub fn map_drops(
     map_drops_at(store, map_id, now_ms)
 }
 
+pub fn pick_up_nearest(
+    store: &DropStore,
+    mut player: PlayerState,
+    position: Vec2,
+) -> Result<PickedUpItem, PickUpError> {
+    if !position.x.is_finite() || !position.y.is_finite() {
+        return Err(ItemRuleError::MissingPosition.into());
+    }
+    let inventory = player
+        .inventory
+        .as_mut()
+        .ok_or(ItemRuleError::MissingInventory)?;
+    if inventory.item_ids.len() >= inventory.capacity as usize {
+        return Err(ItemRuleError::InventoryFull.into());
+    }
+    let now_ms = unix_time_ms()?;
+    let mut drops = store.drops.lock().map_err(|_| DropStoreError::Lock)?;
+    retain_active_drops(&mut drops, now_ms);
+    let radius_squared = PICK_UP_RADIUS * PICK_UP_RADIUS;
+    let index = drops
+        .iter()
+        .enumerate()
+        .filter(|(_, drop)| drop.map_id == player.map_id)
+        .filter_map(|(index, drop)| {
+            let drop_position = drop.item.position.as_ref()?;
+            let dx = drop_position.x - position.x;
+            let dy = drop_position.y - position.y;
+            let distance_squared = dx * dx + dy * dy;
+            (distance_squared <= radius_squared).then_some((index, distance_squared))
+        })
+        .min_by(|(_, left), (_, right)| left.total_cmp(right))
+        .map(|(index, _)| index)
+        .ok_or(ItemRuleError::NoNearbyDrop)?;
+    let drop = drops.remove(index).item;
+    inventory.item_ids.push(drop.item_id);
+    player.position = Some(position);
+    Ok(PickedUpItem { drop, player })
+}
+
+pub fn restore_drop(
+    store: &DropStore,
+    map_id: u32,
+    item: DroppedItem,
+) -> Result<(), DropStoreError> {
+    let mut drops = store.drops.lock().map_err(|_| DropStoreError::Lock)?;
+    if !drops.iter().any(|drop| drop.item.id == item.id) {
+        drops.push(MapDrop { map_id, item });
+    }
+    Ok(())
+}
+
 fn map_drops_at(
     store: &DropStore,
     map_id: u32,
@@ -300,6 +368,7 @@ mod tests {
     use super::equip_inventory_item;
     use super::map_drops;
     use super::map_drops_at;
+    use super::pick_up_nearest;
     use super::remove_inventory_item;
     use super::starter_inventory;
     use super::unequip_item;
@@ -337,6 +406,24 @@ mod tests {
 
         assert_eq!(map_drops(&store, 100).expect("map drops"), vec![drop]);
         assert!(map_drops(&store, 101).expect("other map drops").is_empty());
+    }
+
+    #[test]
+    fn nearest_dropped_item_moves_back_into_inventory() {
+        let definitions = vec![definition(SPARE_TOP_ID, EquipmentSlot::Top)];
+        let removed = remove_inventory_item(player(), 0, &definitions).expect("remove item");
+        let store = DropStore::new(Duration::from_secs(600));
+        let drop = create_drop(&store, &removed).expect("create drop");
+        let position = drop.position.expect("drop position");
+
+        let picked = pick_up_nearest(&store, removed.player, position).expect("pick up drop");
+
+        assert_eq!(picked.drop.id, drop.id);
+        assert_eq!(
+            picked.player.inventory.expect("inventory").item_ids.last(),
+            Some(&SPARE_TOP_ID)
+        );
+        assert!(map_drops(&store, 100).expect("map drops").is_empty());
     }
 
     #[test]

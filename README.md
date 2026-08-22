@@ -13,10 +13,11 @@ The current vertical slice includes:
 - optional classic PKG1 WZ map archives parsed lazily by the server;
 - a character creation screen with idle, walk, jump, ladder, and rope
   animations composed from `Character.wz`;
-- optional in-game status, character-stat, equipment, and inventory windows
-  composed from `UI.wz` sprites;
+- optional in-game status, character-stat, equipment, inventory, and keyboard
+  settings windows composed from `UI.wz` sprites;
 - persisted equipment and inventory state with WZ item icons and transient
-  map drops;
+  map drops that characters can pick up;
+- persisted, drag-and-drop keyboard bindings for every supported action;
 - validated TOML game rules with named, formula-based XP curves;
 - server-owned assets fetched only when referenced by the current view; and
 - player movement, platforms, jumping, ladder and rope climbing, direct portal
@@ -55,10 +56,10 @@ browser
   -> POST /api/v1/characters/...  create a character or get sprite metadata
   -> POST /api/v1/gui/get         current GUI layout and asset metadata
   -> POST /api/v1/maps/get        current map protobuf
-  -> POST /api/v1/items/...       equip, unequip, or drop an item
+  -> POST /api/v1/items/...       equip, unequip, drop, or pick up an item
   -> GET /assets/...              only bundled assets named by that map
   -> GET /wz-assets/...           requested map, character, and GUI PNG layers
-  -> POST /api/v1/players/save    player position protobuf
+  -> POST /api/v1/players/save    player position and key bindings protobuf
 
 server
   -> config/xp-curves.toml        validated game progression rules
@@ -107,6 +108,14 @@ through protobuf. The browser then requests backgrounds, gauges, quick-slot
 panels, buttons, and open windows as normal versioned PNG assets. If `UI.wz`
 is absent, the client keeps using its built-in fallback HUD.
 
+Click the KeySet status-bar button, or press K with the default bindings, to
+open the original `UIWindow.img/KeyConfig` keyboard settings window. Drag an
+action icon from the lower palette, or from an assigned key, onto another key.
+Each action has one assignment, so moving an action removes its previous
+assignment and replaces any action already on the target key. The supported
+palette contains Jump, Pick Up, Character, Equipment, Inventory, and Key
+Settings. Changes are stored with the player in SurrealKV.
+
 The HP, MP, and EXP gauges use the persisted character values for their fill
 levels and display bracketed current and maximum values over the WZ artwork.
 
@@ -128,7 +137,10 @@ unclothed.
 
 Dropped items are transient and scoped to their map. Their item ID, position,
 and server-issued expiry time are sent in the map protobuf. Expired drops are
-removed from the server drop store and stop rendering in the client.
+removed from the server drop store and stop rendering in the client. The Pick
+Up action moves the nearest drop within pickup range into the character's
+inventory. The server removes the drop and saves the inventory as one item
+action, restoring the drop if the player save fails.
 
 ## Configure gameplay rules
 
@@ -210,10 +222,12 @@ Changing the selected curve does not recalculate character levels or discard
 accumulated XP. It replaces only the requirement for advancing from the
 character's current level.
 
-Use the left and right arrow keys, or A and D, to walk. Use Space to jump. Use
-the up and down arrow keys, or W and S, to climb. Press Up or W while standing
-at a direct portal to enter it. Script portals remain inactive because their
-behavior belongs to a future server-side scripting system.
+Use the left and right arrow keys to walk. Use the up and down arrow keys to
+climb. Press Up while standing at a direct portal to enter it. Arrow keys stay
+reserved for movement and interaction. The default action bindings are Space
+for Jump, Z for Pick Up, C for Character, E for Equipment, I for Inventory,
+and K for Key Settings. Script portals remain inactive because their behavior
+belongs to a future server-side scripting system.
 
 ## Add a map
 
@@ -242,5 +256,5 @@ its database engine in the server binary.
 2. Add a protobuf WebSocket stream for authoritative movement and other
    players while retaining HTTP for bootstrap and content.
 3. Split maps into spatial chunks if maps become much wider than the viewport.
-4. Add server-side portal scripts, NPCs, consumable items, and item pickup as
+4. Add server-side portal scripts, NPCs, consumable items, and combat as
    separate typed pipelines.

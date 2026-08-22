@@ -8,6 +8,7 @@ mod database;
 mod experience;
 mod gameplay;
 mod items;
+mod keymap;
 
 use anyhow::Context;
 use config::Config;

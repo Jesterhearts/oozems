@@ -9,6 +9,8 @@ use oozems_proto::v1::GameGui;
 use oozems_proto::v1::GuiLayout;
 use oozems_proto::v1::GuiSprite;
 use oozems_proto::v1::GuiWindow;
+use oozems_proto::v1::KeyActionDefinition;
+use oozems_proto::v1::KeySlot;
 use sha2::Digest;
 use sha2::Sha256;
 use thiserror::Error;
@@ -45,6 +47,14 @@ const EQUIPMENT_WINDOW_X: f32 = 20.0;
 const EQUIPMENT_WINDOW_Y: f32 = 80.0;
 const INVENTORY_WINDOW_X: f32 = 205.0;
 const INVENTORY_WINDOW_Y: f32 = 80.0;
+const KEY_CONFIG_WINDOW_X: f32 = 165.0;
+const KEY_CONFIG_WINDOW_Y: f32 = 60.0;
+const KEY_CONFIG_CLOSE_RIGHT: f32 = 5.0;
+const KEY_CONFIG_CLOSE_TOP: f32 = 6.0;
+const KEY_PALETTE_LEFT: f32 = 7.0;
+const KEY_PALETTE_TOP: f32 = 267.0;
+const KEY_PALETTE_STEP: f32 = 34.0;
+const KEY_PALETTE_COLUMNS: usize = 18;
 
 pub struct GuiContent {
     _base: WzNodeArc,
@@ -85,6 +95,7 @@ struct StatusBarSources {
     stats_pressed: SourceSprite,
     skills: SourceSprite,
     key_settings: SourceSprite,
+    key_settings_pressed: SourceSprite,
     quick_slot_toggle: SourceSprite,
     key_references: Vec<SourceSprite>,
 }
@@ -98,6 +109,12 @@ struct StatWindowSources {
 struct ItemWindowSources {
     background: SourceSprite,
     close: SourceSprite,
+}
+
+struct KeyConfigSources {
+    background: SourceSprite,
+    close: SourceSprite,
+    actions: Vec<(crate::keymap::KeyActionSpec, SourceSprite)>,
 }
 
 impl GuiContent {
@@ -196,6 +213,9 @@ fn build_game_gui(
     let inventory_window =
         compose_item_window(&inventory_sources, INVENTORY_WINDOW_X, INVENTORY_WINDOW_Y)?;
     assets.extend(inventory_assets);
+    let (key_config_sources, key_config_assets) = load_key_config_sources(content, ui_window)?;
+    let (key_config_window, key_actions) = compose_key_config(&key_config_sources)?;
+    assets.extend(key_config_assets);
     let mut asset_ids = HashSet::new();
     assets.retain(|asset| asset_ids.insert(asset.id.clone()));
     Ok(GameGui {
@@ -205,6 +225,18 @@ fn build_game_gui(
         equipment_window: Some(equipment_window),
         inventory_window: Some(inventory_window),
         items: Vec::new(),
+        key_config_window: Some(key_config_window),
+        key_actions,
+        key_slots: crate::keymap::SLOTS
+            .iter()
+            .map(|slot| KeySlot {
+                code: slot.code.to_owned(),
+                x: slot.x,
+                y: slot.y,
+                width: slot.width,
+                height: slot.height,
+            })
+            .collect(),
     })
 }
 
@@ -272,6 +304,14 @@ fn load_status_bar_sources(
     let skills = load_normal_button(content, status_bar, "skills", "SkillKey", &mut assets)?;
     let key_settings =
         load_normal_button(content, status_bar, "key-settings", "KeySet", &mut assets)?;
+    let key_settings_pressed = load_button_state(
+        content,
+        status_bar,
+        "key-settings-pressed",
+        "KeySet",
+        "pressed",
+        &mut assets,
+    )?;
     let quick_slot_toggle = load_normal_button(
         content,
         status_bar,
@@ -306,8 +346,52 @@ fn load_status_bar_sources(
             stats_pressed,
             skills,
             key_settings,
+            key_settings_pressed,
             quick_slot_toggle,
             key_references,
+        },
+        assets,
+    ))
+}
+
+fn load_key_config_sources(
+    content: &GuiContent,
+    ui_window: &WzNodeArc,
+) -> Result<(KeyConfigSources, Vec<AssetDescriptor>), GuiContentError> {
+    let mut assets = Vec::new();
+    let background = load_source(
+        content,
+        ui_window,
+        UI_WINDOW_IMAGE,
+        "key-config-background",
+        &["KeyConfig", "backgrnd"],
+        &mut assets,
+    )?;
+    let close = load_source(
+        content,
+        ui_window,
+        UI_WINDOW_IMAGE,
+        "key-config-close",
+        &["KeyConfig", "BtClose", "normal", "0"],
+        &mut assets,
+    )?;
+    let mut actions = Vec::with_capacity(crate::keymap::ACTIONS.len());
+    for spec in crate::keymap::ACTIONS {
+        let source = load_source(
+            content,
+            ui_window,
+            UI_WINDOW_IMAGE,
+            &format!("key-action-{}", spec.icon_id),
+            &["KeyConfig", "icon", spec.icon_id],
+            &mut assets,
+        )?;
+        actions.push((*spec, source));
+    }
+    Ok((
+        KeyConfigSources {
+            background,
+            close,
+            actions,
         },
         assets,
     ))
@@ -468,7 +552,7 @@ fn compose_status_bar(sources: &StatusBarSources) -> Result<GuiLayout, GuiConten
         (&sources.inventory, Some(&sources.inventory_pressed)),
         (&sources.stats, Some(&sources.stats_pressed)),
         (&sources.skills, None),
-        (&sources.key_settings, None),
+        (&sources.key_settings, Some(&sources.key_settings_pressed)),
         (&sources.quick_slot_toggle, None),
     ];
     let mut button_x = MENU_BUTTON_LEFT;
@@ -488,6 +572,51 @@ fn compose_status_bar(sources: &StatusBarSources) -> Result<GuiLayout, GuiConten
     };
     validate_layout(&layout)?;
     Ok(layout)
+}
+
+fn compose_key_config(
+    sources: &KeyConfigSources
+) -> Result<(GuiWindow, Vec<KeyActionDefinition>), GuiContentError> {
+    let width = sources.background.width;
+    let height = sources.background.height;
+    let mut sprites = vec![place_sprite(
+        &sources.close,
+        width - sources.close.width - KEY_CONFIG_CLOSE_RIGHT,
+        KEY_CONFIG_CLOSE_TOP,
+        false,
+    )];
+    let mut actions = Vec::with_capacity(sources.actions.len());
+    for (spec, source) in &sources.actions {
+        let column = spec.palette_index % KEY_PALETTE_COLUMNS;
+        let row = spec.palette_index / KEY_PALETTE_COLUMNS;
+        let icon = place_sprite(
+            source,
+            KEY_PALETTE_LEFT + column as f32 * KEY_PALETTE_STEP,
+            KEY_PALETTE_TOP + row as f32 * KEY_PALETTE_STEP,
+            false,
+        );
+        sprites.push(icon.clone());
+        actions.push(KeyActionDefinition {
+            action: spec.action as i32,
+            label: spec.label.to_owned(),
+            icon: Some(icon),
+        });
+    }
+    let layout = GuiLayout {
+        width,
+        height,
+        background: Some(place_sprite(&sources.background, 0.0, 0.0, false)),
+        sprites,
+    };
+    validate_layout(&layout)?;
+    Ok((
+        GuiWindow {
+            x: KEY_CONFIG_WINDOW_X,
+            y: KEY_CONFIG_WINDOW_Y,
+            layout: Some(layout),
+        },
+        actions,
+    ))
 }
 
 fn compose_item_window(
@@ -680,6 +809,7 @@ mod tests {
             stats_pressed: source("stats-pressed", 28.0, 20.0),
             skills: source("skills", 28.0, 20.0),
             key_settings: source("key-settings", 28.0, 20.0),
+            key_settings_pressed: source("key-settings-pressed", 28.0, 20.0),
             quick_slot_toggle: source("quick-slot-toggle", 28.0, 20.0),
             key_references: [
                 (28.0, 11.0),
@@ -771,7 +901,16 @@ mod tests {
             stat_window.layout.as_ref().map(|layout| layout.height),
             Some(347.0)
         );
-        assert_eq!(gui.assets.len(), 27);
+        assert_eq!(gui.assets.len(), 36);
+        assert_eq!(gui.key_actions.len(), crate::keymap::ACTIONS.len());
+        assert_eq!(gui.key_slots.len(), crate::keymap::SLOTS.len());
+        assert_eq!(
+            gui.key_config_window
+                .as_ref()
+                .and_then(|window| window.layout.as_ref())
+                .map(|layout| (layout.width, layout.height)),
+            Some((629.0, 373.0))
+        );
         assert_eq!(
             gui.equipment_window
                 .as_ref()

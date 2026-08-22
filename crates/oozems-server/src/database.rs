@@ -5,6 +5,7 @@ use oozems_proto::v1::CharacterStats;
 use oozems_proto::v1::EquipmentSlot;
 use oozems_proto::v1::EquippedItem;
 use oozems_proto::v1::InventoryState;
+use oozems_proto::v1::KeyBinding;
 use oozems_proto::v1::PlayerState;
 use oozems_proto::v1::Vec2;
 use surrealdb::Surreal;
@@ -66,6 +67,8 @@ struct PlayerData {
     equipped_top: Option<u32>,
     equipped_bottom: Option<u32>,
     equipped_shoes: Option<u32>,
+    key_binding_codes: Vec<String>,
+    key_binding_actions: Vec<i32>,
 }
 
 #[derive(Clone, Debug, SurrealValue)]
@@ -99,6 +102,8 @@ struct PlayerRecord {
     equipped_top: Option<u32>,
     equipped_bottom: Option<u32>,
     equipped_shoes: Option<u32>,
+    key_binding_codes: Option<Vec<String>>,
+    key_binding_actions: Option<Vec<i32>>,
 }
 
 impl PlayerId {
@@ -175,6 +180,8 @@ async fn initialize_schema(database: &Database) -> surrealdb::Result<()> {
             DEFINE FIELD IF NOT EXISTS equipped_top ON TABLE player TYPE option<int>;
             DEFINE FIELD IF NOT EXISTS equipped_bottom ON TABLE player TYPE option<int>;
             DEFINE FIELD IF NOT EXISTS equipped_shoes ON TABLE player TYPE option<int>;
+            DEFINE FIELD IF NOT EXISTS key_binding_codes ON TABLE player TYPE option<array<string>>;
+            DEFINE FIELD IF NOT EXISTS key_binding_actions ON TABLE player TYPE option<array<int>>;
             "#,
         )
         .await?
@@ -209,6 +216,7 @@ pub async fn create_player(
         appearance: Some(appearance),
         stats: Some(stats),
         inventory: Some(crate::items::starter_inventory()),
+        key_bindings: crate::keymap::default_bindings(),
     };
     save_player(database, &player).await
 }
@@ -249,6 +257,7 @@ pub fn apply_player_movement(
         appearance: current.appearance,
         stats: current.stats,
         inventory: current.inventory,
+        key_bindings: requested.key_bindings.clone(),
     }
 }
 
@@ -256,6 +265,7 @@ fn player_from_record(record: PlayerRecord) -> PlayerState {
     let appearance = appearance_from_record(&record);
     let stats = stats_from_record(&record);
     let inventory = inventory_from_record(&record);
+    let key_bindings = key_bindings_from_record(&record);
     let _record_id = record.id;
     PlayerState {
         id: record.player_id,
@@ -269,6 +279,7 @@ fn player_from_record(record: PlayerRecord) -> PlayerState {
         appearance,
         stats: Some(stats),
         inventory: Some(inventory),
+        key_bindings,
     }
 }
 
@@ -353,6 +364,31 @@ fn inventory_from_record(record: &PlayerRecord) -> InventoryState {
     }
 }
 
+fn key_bindings_from_record(record: &PlayerRecord) -> Vec<KeyBinding> {
+    let (Some(codes), Some(actions)) = (
+        record.key_binding_codes.as_ref(),
+        record.key_binding_actions.as_ref(),
+    ) else {
+        return crate::keymap::default_bindings();
+    };
+    if codes.len() != actions.len() {
+        return crate::keymap::default_bindings();
+    }
+    let bindings = codes
+        .iter()
+        .zip(actions)
+        .map(|(code, action)| KeyBinding {
+            code: code.clone(),
+            action: *action,
+        })
+        .collect::<Vec<_>>();
+    if crate::keymap::validate_bindings(&bindings).is_ok() {
+        bindings
+    } else {
+        crate::keymap::default_bindings()
+    }
+}
+
 impl From<&PlayerState> for PlayerData {
     fn from(player: &PlayerState) -> Self {
         let position = player.position.as_ref().cloned().unwrap_or_default();
@@ -365,6 +401,16 @@ impl From<&PlayerState> for PlayerData {
         let equipped_top = equipped_item(&inventory, EquipmentSlot::Top);
         let equipped_bottom = equipped_item(&inventory, EquipmentSlot::Bottom);
         let equipped_shoes = equipped_item(&inventory, EquipmentSlot::Shoes);
+        let key_binding_codes = player
+            .key_bindings
+            .iter()
+            .map(|binding| binding.code.clone())
+            .collect();
+        let key_binding_actions = player
+            .key_bindings
+            .iter()
+            .map(|binding| binding.action)
+            .collect();
         Self {
             player_id: player.id.clone(),
             name: player.name.clone(),
@@ -394,6 +440,8 @@ impl From<&PlayerState> for PlayerData {
             equipped_top,
             equipped_bottom,
             equipped_shoes,
+            key_binding_codes,
+            key_binding_actions,
         }
     }
 }
@@ -451,6 +499,7 @@ mod tests {
             appearance: Some(appearance()),
             stats: Some(starter_character_stats()),
             inventory: Some(crate::items::starter_inventory()),
+            key_bindings: crate::keymap::default_bindings(),
         };
         let requested = PlayerState {
             id: "local".to_owned(),
@@ -461,6 +510,7 @@ mod tests {
             appearance: None,
             stats: None,
             inventory: None,
+            key_bindings: crate::keymap::default_bindings(),
         };
 
         let result = apply_player_movement(current, &requested, 800, 600);
@@ -545,6 +595,7 @@ mod tests {
 
         assert_eq!(loaded.stats, Some(starter_character_stats()));
         assert_eq!(loaded.inventory, Some(crate::items::starter_inventory()));
+        assert_eq!(loaded.key_bindings, crate::keymap::default_bindings());
     }
 
     fn appearance() -> CharacterAppearance {

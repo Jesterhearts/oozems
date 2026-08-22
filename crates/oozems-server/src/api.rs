@@ -21,6 +21,7 @@ use oozems_proto::v1::GetGuiResponse;
 use oozems_proto::v1::GetMapRequest;
 use oozems_proto::v1::GetMapResponse;
 use oozems_proto::v1::ItemActionResponse;
+use oozems_proto::v1::PickUpItemRequest;
 use oozems_proto::v1::PlayerState;
 use oozems_proto::v1::SavePlayerRequest;
 use oozems_proto::v1::SavePlayerResponse;
@@ -177,6 +178,7 @@ pub async fn equip_item(
     Ok(Protobuf(ItemActionResponse {
         player: Some(player),
         dropped_item: None,
+        picked_up_drop_id: String::new(),
     }))
 }
 
@@ -194,6 +196,7 @@ pub async fn unequip_item(
     Ok(Protobuf(ItemActionResponse {
         player: Some(player),
         dropped_item: None,
+        picked_up_drop_id: String::new(),
     }))
 }
 
@@ -228,6 +231,67 @@ pub async fn drop_item(
     Ok(Protobuf(ItemActionResponse {
         player: Some(player),
         dropped_item: Some(dropped_item),
+        picked_up_drop_id: String::new(),
+    }))
+}
+
+pub async fn pick_up_item(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Protobuf<ItemActionResponse>, ApiError> {
+    let request: PickUpItemRequest = decode_request(&headers, body)?;
+    let player_id = parse_player_id(&request.player_id)?;
+    let current = require_player(&state, &player_id).await?;
+    if current.map_id != request.map_id {
+        return Err(ApiError::bad_request(
+            "invalid_item_action",
+            "the pickup map does not match the player's map",
+        ));
+    }
+    let position = request.position.ok_or_else(|| {
+        ApiError::bad_request(
+            "missing_position",
+            "pickup request does not contain a position",
+        )
+    })?;
+    let map = load_map(&state, current.map_id).await?.ok_or_else(|| {
+        ApiError::not_found(
+            "map_not_found",
+            format!("map {} does not exist", current.map_id),
+        )
+    })?;
+    if !position.x.is_finite()
+        || !position.y.is_finite()
+        || position.x < 0.0
+        || position.x > map.width as f32
+        || position.y < 0.0
+        || position.y > map.height as f32
+    {
+        return Err(ApiError::bad_request(
+            "invalid_position",
+            "pickup position must be finite and inside the current map",
+        ));
+    }
+    let picked =
+        crate::items::pick_up_nearest(&state.drops, current, position).map_err(pick_up_error)?;
+    let map_id = picked.player.map_id;
+    let player = match crate::database::save_player(&state.database, &picked.player).await {
+        Ok(player) => player,
+        Err(error) => {
+            if let Err(restore_error) =
+                crate::items::restore_drop(&state.drops, map_id, picked.drop.clone())
+            {
+                tracing::error!(%restore_error, "failed to restore an item after a player save error");
+            }
+            return Err(error.into());
+        }
+    };
+
+    Ok(Protobuf(ItemActionResponse {
+        player: Some(player),
+        dropped_item: None,
+        picked_up_drop_id: picked.drop.id,
     }))
 }
 
@@ -252,6 +316,8 @@ pub async fn save_player(
         ApiError::bad_request("missing_player", "request does not contain a player")
     })?;
     validate_position(&requested)?;
+    crate::keymap::validate_bindings(&requested.key_bindings)
+        .map_err(|error| ApiError::bad_request("invalid_key_bindings", error.to_string()))?;
 
     let player_id = PlayerId::parse(&requested.id)
         .map_err(|error| ApiError::bad_request("invalid_player_id", error.to_string()))?;
@@ -339,6 +405,13 @@ async fn require_player(
 
 fn item_rule_error(error: crate::items::ItemRuleError) -> ApiError {
     ApiError::bad_request("invalid_item_action", error.to_string())
+}
+
+fn pick_up_error(error: crate::items::PickUpError) -> ApiError {
+    match error {
+        crate::items::PickUpError::Rule(error) => item_rule_error(error),
+        crate::items::PickUpError::Store(error) => error.into(),
+    }
 }
 
 fn starter_position(map: &oozems_proto::v1::Map) -> Vec2 {

@@ -6,6 +6,7 @@ mod character_create;
 mod character_render;
 mod game;
 mod game_gui;
+mod keymap;
 mod movement;
 mod render;
 

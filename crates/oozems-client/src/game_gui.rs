@@ -4,12 +4,15 @@ use oozems_proto::v1::GameGui;
 use oozems_proto::v1::GuiLayout;
 use oozems_proto::v1::GuiSprite;
 use oozems_proto::v1::InventoryState;
+use oozems_proto::v1::KeyAction;
+use oozems_proto::v1::KeyBinding;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GuiState {
     pub stats_open: bool,
     pub equipment_open: bool,
     pub inventory_open: bool,
+    pub key_config_open: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -25,6 +28,22 @@ pub struct GaugeFill {
     pub filled_width: f64,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct KeyDrag {
+    pub action: KeyAction,
+    pub point: CanvasPoint,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct KeyIconPlacement {
+    pub action: KeyAction,
+    pub asset_id: String,
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct CanvasRect {
     x: f32,
@@ -38,9 +57,11 @@ pub enum GuiAction {
     ToggleStats,
     ToggleEquipment,
     ToggleInventory,
+    ToggleKeyConfig,
     CloseStats,
     CloseEquipment,
     CloseInventory,
+    CloseKeyConfig,
     Equip { inventory_index: u32 },
     Unequip { slot: i32 },
     Drop { inventory_index: u32 },
@@ -67,6 +88,9 @@ pub fn click_action(
     point: CanvasPoint,
     button: PointerButton,
 ) -> Option<GuiAction> {
+    if state.key_config_open {
+        return window_action(state, gui, inventory, point, button);
+    }
     window_action(state, gui, inventory, point, button)
         .or_else(|| status_action(gui, viewport_width, viewport_height, point, button))
 }
@@ -85,9 +109,18 @@ pub fn apply_local_action(
             state.stats_open = false;
         }
         GuiAction::ToggleInventory => state.inventory_open = !state.inventory_open,
+        GuiAction::ToggleKeyConfig => {
+            state.key_config_open = !state.key_config_open;
+            if state.key_config_open {
+                state.stats_open = false;
+                state.equipment_open = false;
+                state.inventory_open = false;
+            }
+        }
         GuiAction::CloseStats => state.stats_open = false,
         GuiAction::CloseEquipment => state.equipment_open = false,
         GuiAction::CloseInventory => state.inventory_open = false,
+        GuiAction::CloseKeyConfig => state.key_config_open = false,
         GuiAction::Equip { .. } | GuiAction::Unequip { .. } | GuiAction::Drop { .. } => {
             return false;
         }
@@ -145,8 +178,81 @@ pub fn status_sprite_visible(
         "stats-pressed" => state.stats_open,
         "equip-pressed" => state.equipment_open,
         "inventory-pressed" => state.inventory_open,
+        "key-settings-pressed" => state.key_config_open,
         _ => true,
     }
+}
+
+pub fn begin_key_drag(
+    gui: &GameGui,
+    bindings: &[KeyBinding],
+    point: CanvasPoint,
+) -> Option<KeyDrag> {
+    let action = palette_action_at(gui, point).or_else(|| bound_action_at(gui, bindings, point))?;
+    Some(KeyDrag { action, point })
+}
+
+pub fn move_key_drag(
+    drag: &mut KeyDrag,
+    point: CanvasPoint,
+) {
+    drag.point = point;
+}
+
+pub fn finish_key_drag(
+    gui: &GameGui,
+    bindings: &[KeyBinding],
+    drag: &KeyDrag,
+    point: CanvasPoint,
+) -> Option<Vec<KeyBinding>> {
+    let code = key_code_at(gui, point)?;
+    Some(crate::keymap::assign_action(bindings, code, drag.action))
+}
+
+pub fn bound_key_icons(
+    gui: &GameGui,
+    bindings: &[KeyBinding],
+) -> Vec<KeyIconPlacement> {
+    let Some(window) = valid_key_config_window(gui) else {
+        return Vec::new();
+    };
+    let Some(layout) = window.layout.as_ref() else {
+        return Vec::new();
+    };
+    bindings
+        .iter()
+        .filter_map(|binding| {
+            let action = KeyAction::try_from(binding.action).ok()?;
+            let definition = action_definition(gui, action)?;
+            let icon = definition.icon.as_ref()?;
+            let slot = gui.key_slots.iter().find(|slot| {
+                slot.code == binding.code && valid_key_slot(slot, layout.width, layout.height)
+            })?;
+            Some(KeyIconPlacement {
+                action,
+                asset_id: icon.asset_id.clone(),
+                x: window.x + slot.x + (slot.width - icon.width) / 2.0,
+                y: window.y + slot.y + (slot.height - icon.height) / 2.0,
+                width: icon.width,
+                height: icon.height,
+            })
+        })
+        .collect()
+}
+
+pub fn dragged_key_icon(
+    gui: &GameGui,
+    drag: &KeyDrag,
+) -> Option<KeyIconPlacement> {
+    let icon = action_definition(gui, drag.action)?.icon.as_ref()?;
+    Some(KeyIconPlacement {
+        action: drag.action,
+        asset_id: icon.asset_id.clone(),
+        x: drag.point.x - icon.width / 2.0,
+        y: drag.point.y - icon.height / 2.0,
+        width: icon.width,
+        height: icon.height,
+    })
 }
 
 pub fn inventory_slot_position(index: usize) -> (f32, f32) {
@@ -205,6 +311,12 @@ fn window_action(
     point: CanvasPoint,
     button: PointerButton,
 ) -> Option<GuiAction> {
+    if state.key_config_open {
+        return (button == PointerButton::Left
+            && window_close_rect(gui.key_config_window.as_ref(), "key-config-close")
+                .is_some_and(|rect| rect_contains(rect, point)))
+        .then_some(GuiAction::CloseKeyConfig);
+    }
     if state.inventory_open {
         if window_close_rect(gui.inventory_window.as_ref(), "inventory-close")
             .is_some_and(|rect| rect_contains(rect, point))
@@ -256,6 +368,7 @@ fn status_action(
         ("equip", GuiAction::ToggleEquipment),
         ("inventory", GuiAction::ToggleInventory),
         ("stats", GuiAction::ToggleStats),
+        ("key-settings", GuiAction::ToggleKeyConfig),
     ]
     .into_iter()
     .find_map(|(name, action)| {
@@ -263,6 +376,102 @@ fn status_action(
             .filter(|rect| rect_contains(*rect, point))
             .map(|_| action)
     })
+}
+
+fn palette_action_at(
+    gui: &GameGui,
+    point: CanvasPoint,
+) -> Option<KeyAction> {
+    let window = valid_key_config_window(gui)?;
+    let layout = window.layout.as_ref()?;
+    gui.key_actions.iter().find_map(|definition| {
+        let icon = definition.icon.as_ref()?;
+        if !valid_sprite(icon, layout.width, layout.height) {
+            return None;
+        }
+        rect_contains(
+            CanvasRect {
+                x: window.x + icon.x,
+                y: window.y + icon.y,
+                width: icon.width,
+                height: icon.height,
+            },
+            point,
+        )
+        .then(|| KeyAction::try_from(definition.action).ok())
+        .flatten()
+    })
+}
+
+fn bound_action_at(
+    gui: &GameGui,
+    bindings: &[KeyBinding],
+    point: CanvasPoint,
+) -> Option<KeyAction> {
+    let code = key_code_at(gui, point)?;
+    crate::keymap::action_for_code(bindings, code)
+}
+
+fn key_code_at(
+    gui: &GameGui,
+    point: CanvasPoint,
+) -> Option<&str> {
+    let window = valid_key_config_window(gui)?;
+    let layout = window.layout.as_ref()?;
+    gui.key_slots.iter().find_map(|slot| {
+        if !valid_key_slot(slot, layout.width, layout.height) {
+            return None;
+        }
+        rect_contains(
+            CanvasRect {
+                x: window.x + slot.x,
+                y: window.y + slot.y,
+                width: slot.width,
+                height: slot.height,
+            },
+            point,
+        )
+        .then_some(slot.code.as_str())
+    })
+}
+
+fn action_definition(
+    gui: &GameGui,
+    action: KeyAction,
+) -> Option<&oozems_proto::v1::KeyActionDefinition> {
+    let layout = valid_key_config_window(gui)?.layout.as_ref()?;
+    gui.key_actions.iter().find(|definition| {
+        definition.action == action as i32
+            && definition
+                .icon
+                .as_ref()
+                .is_some_and(|icon| valid_sprite(icon, layout.width, layout.height))
+    })
+}
+
+fn valid_key_config_window(gui: &GameGui) -> Option<&oozems_proto::v1::GuiWindow> {
+    let window = gui.key_config_window.as_ref()?;
+    window
+        .layout
+        .as_ref()
+        .filter(|layout| valid_layout(layout))?;
+    Some(window)
+}
+
+fn valid_key_slot(
+    slot: &oozems_proto::v1::KeySlot,
+    layout_width: f32,
+    layout_height: f32,
+) -> bool {
+    let values = [slot.x, slot.y, slot.width, slot.height];
+    !slot.code.is_empty()
+        && values.iter().all(|value| value.is_finite())
+        && slot.x >= 0.0
+        && slot.y >= 0.0
+        && slot.width > 0.0
+        && slot.height > 0.0
+        && slot.x + slot.width <= layout_width
+        && slot.y + slot.height <= layout_height
 }
 
 fn gauge_fill(
@@ -409,14 +618,20 @@ mod tests {
     use oozems_proto::v1::GuiSprite;
     use oozems_proto::v1::GuiWindow;
     use oozems_proto::v1::InventoryState;
+    use oozems_proto::v1::KeyAction;
+    use oozems_proto::v1::KeyActionDefinition;
+    use oozems_proto::v1::KeySlot;
 
     use super::CanvasPoint;
     use super::GuiAction;
     use super::GuiState;
     use super::PointerButton;
     use super::apply_local_action;
+    use super::begin_key_drag;
+    use super::bound_key_icons;
     use super::canvas_point;
     use super::click_action;
+    use super::finish_key_drag;
     use super::gauge_fills;
     use super::gauge_labels;
     use super::sprite_screen_x;
@@ -573,6 +788,58 @@ mod tests {
     }
 
     #[test]
+    fn key_actions_drag_from_the_wz_palette_onto_a_keyboard_slot() {
+        let gui = gui_fixture();
+        let point = CanvasPoint { x: 175.0, y: 330.0 };
+        let drag = begin_key_drag(&gui, &[], point).expect("pickup palette icon");
+
+        assert_eq!(drag.action, KeyAction::PickUp);
+        let bindings = finish_key_drag(&gui, &[], &drag, CanvasPoint { x: 250.0, y: 197.0 })
+            .expect("KeyA target");
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings[0].code, "KeyA");
+        assert_eq!(bindings[0].action, KeyAction::PickUp as i32);
+
+        let icons = bound_key_icons(&gui, &bindings);
+        assert_eq!(icons.len(), 1);
+        assert_eq!((icons[0].x, icons[0].y), (246.0, 193.0));
+    }
+
+    #[test]
+    fn key_settings_button_opens_and_closes_the_native_editor() {
+        let gui = gui_fixture();
+        let mut state = GuiState::default();
+
+        let open = click_action(
+            state,
+            &gui,
+            None,
+            960.0,
+            600.0,
+            CanvasPoint { x: 700.0, y: 540.0 },
+            PointerButton::Left,
+        )
+        .expect("key settings action");
+        assert_eq!(open, GuiAction::ToggleKeyConfig);
+        assert!(apply_local_action(&mut state, open));
+        assert!(state.key_config_open);
+
+        let close = click_action(
+            state,
+            &gui,
+            None,
+            960.0,
+            600.0,
+            CanvasPoint { x: 780.0, y: 70.0 },
+            PointerButton::Left,
+        )
+        .expect("key settings close action");
+        assert_eq!(close, GuiAction::CloseKeyConfig);
+        assert!(apply_local_action(&mut state, close));
+        assert!(!state.key_config_open);
+    }
+
+    #[test]
     fn invalid_layouts_are_rejected_at_the_client_boundary() {
         let gui = gui_fixture();
         let valid = gui.status_bar.expect("status bar");
@@ -593,6 +860,7 @@ mod tests {
                     sprite("equip", 574.0, 17.0, 28.0, 20.0),
                     sprite("inventory", 604.0, 17.0, 28.0, 20.0),
                     sprite("stats", 634.0, 17.0, 28.0, 20.0),
+                    sprite("key-settings", 694.0, 17.0, 28.0, 20.0),
                 ],
             }),
             equipment_window: Some(GuiWindow {
@@ -625,6 +893,31 @@ mod tests {
                     sprites: vec![sprite("stat-close", 160.0, 5.0, 10.0, 10.0)],
                 }),
             }),
+            key_config_window: Some(GuiWindow {
+                x: 165.0,
+                y: 60.0,
+                layout: Some(GuiLayout {
+                    width: 629.0,
+                    height: 373.0,
+                    background: Some(sprite("key-config-background", 0.0, 0.0, 629.0, 373.0)),
+                    sprites: vec![
+                        sprite("key-config-close", 612.0, 6.0, 12.0, 12.0),
+                        sprite("key-action-50", 7.0, 267.0, 32.0, 32.0),
+                    ],
+                }),
+            }),
+            key_actions: vec![KeyActionDefinition {
+                action: KeyAction::PickUp as i32,
+                label: "Pick up".to_owned(),
+                icon: Some(sprite("key-action-50", 7.0, 267.0, 32.0, 32.0)),
+            }],
+            key_slots: vec![KeySlot {
+                code: "KeyA".to_owned(),
+                x: 81.0,
+                y: 133.0,
+                width: 32.0,
+                height: 32.0,
+            }],
             ..GameGui::default()
         }
     }

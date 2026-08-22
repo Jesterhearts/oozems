@@ -408,6 +408,44 @@ fn draw_hud(game: &Game) {
     if game.gui_state.borrow().inventory_open {
         draw_inventory_window(game);
     }
+    if game.gui_state.borrow().key_config_open {
+        draw_key_config_window(game);
+    }
+}
+
+fn draw_key_config_window(game: &Game) {
+    let Some(window) = game.gui.key_config_window.as_ref() else {
+        return;
+    };
+    if !draw_window(game, window) {
+        return;
+    }
+    for placement in game_gui::bound_key_icons(&game.gui, &game.key_bindings.borrow()) {
+        draw_key_icon(game, &placement);
+    }
+    if let Some(drag) = game.key_drag.as_ref()
+        && let Some(placement) = game_gui::dragged_key_icon(&game.gui, drag)
+    {
+        draw_key_icon(game, &placement);
+    }
+}
+
+fn draw_key_icon(
+    game: &Game,
+    placement: &game_gui::KeyIconPlacement,
+) {
+    let Some(image) = ready_image(&game.images, &placement.asset_id) else {
+        return;
+    };
+    let _ = game
+        .context
+        .draw_image_with_html_image_element_and_dw_and_dh(
+            image,
+            f64::from(placement.x),
+            f64::from(placement.y),
+            f64::from(placement.width),
+            f64::from(placement.height),
+        );
 }
 
 fn draw_equipment_window(game: &Game) {

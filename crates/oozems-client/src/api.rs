@@ -20,10 +20,12 @@ use oozems_proto::v1::GetMapRequest;
 use oozems_proto::v1::GetMapResponse;
 use oozems_proto::v1::ItemActionResponse;
 use oozems_proto::v1::Map;
+use oozems_proto::v1::PickUpItemRequest;
 use oozems_proto::v1::PlayerState;
 use oozems_proto::v1::SavePlayerRequest;
 use oozems_proto::v1::SavePlayerResponse;
 use oozems_proto::v1::UnequipItemRequest;
+use oozems_proto::v1::Vec2;
 use prost::Message;
 use thiserror::Error;
 
@@ -128,6 +130,22 @@ pub async fn drop_item(
         DropItemRequest {
             player_id: player_id.to_owned(),
             inventory_index,
+        },
+    )
+    .await
+}
+
+pub async fn pick_up_item(
+    player_id: &str,
+    map_id: u32,
+    position: Vec2,
+) -> Result<ItemActionResponse, ClientError> {
+    post_protobuf(
+        "/api/v1/items/pick-up",
+        PickUpItemRequest {
+            player_id: player_id.to_owned(),
+            map_id,
+            position: Some(position),
         },
     )
     .await

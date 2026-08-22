@@ -19,6 +19,22 @@ message PlayerState {
   CharacterAppearance appearance = 6;
   CharacterStats stats = 7;
   InventoryState inventory = 8;
+  repeated KeyBinding key_bindings = 9;
+}
+
+message KeyBinding {
+  string code = 1;
+  KeyAction action = 2;
+}
+
+enum KeyAction {
+  KEY_ACTION_UNSPECIFIED = 0;
+  KEY_ACTION_JUMP = 1;
+  KEY_ACTION_PICK_UP = 2;
+  KEY_ACTION_OPEN_CHARACTER = 3;
+  KEY_ACTION_OPEN_EQUIPMENT = 4;
+  KEY_ACTION_OPEN_INVENTORY = 5;
+  KEY_ACTION_OPEN_KEY_CONFIG = 6;
 }
 
 message InventoryState {
@@ -122,6 +138,23 @@ message GameGui {
   GuiWindow equipment_window = 4;
   GuiWindow inventory_window = 5;
   repeated ItemDefinition items = 6;
+  GuiWindow key_config_window = 7;
+  repeated KeyActionDefinition key_actions = 8;
+  repeated KeySlot key_slots = 9;
+}
+
+message KeyActionDefinition {
+  KeyAction action = 1;
+  string label = 2;
+  GuiSprite icon = 3;
+}
+
+message KeySlot {
+  string code = 1;
+  float x = 2;
+  float y = 3;
+  float width = 4;
+  float height = 5;
 }
 
 message ItemDefinition {
@@ -209,9 +242,16 @@ message DropItemRequest {
   uint32 inventory_index = 2;
 }
 
+message PickUpItemRequest {
+  string player_id = 1;
+  uint32 map_id = 2;
+  Vec2 position = 3;
+}
+
 message ItemActionResponse {
   PlayerState player = 1;
   DroppedItem dropped_item = 2;
+  string picked_up_drop_id = 3;
 }
 
 message Map {

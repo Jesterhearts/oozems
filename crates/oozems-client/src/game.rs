@@ -6,6 +6,8 @@ use std::rc::Rc;
 use oozems_proto::v1::CharacterSpriteSet;
 use oozems_proto::v1::GameGui;
 use oozems_proto::v1::ItemActionResponse;
+use oozems_proto::v1::KeyAction;
+use oozems_proto::v1::KeyBinding;
 use oozems_proto::v1::Map;
 use oozems_proto::v1::PlayerState;
 use oozems_proto::v1::Vec2;
@@ -24,8 +26,11 @@ use crate::character_render::CharacterAnimation;
 use crate::game_gui;
 use crate::game_gui::GuiAction;
 use crate::game_gui::GuiState;
+use crate::game_gui::KeyDrag;
 use crate::game_gui::PointerButton;
 use crate::js_error;
+use crate::keymap;
+use crate::keymap::KeyboardState;
 use crate::movement;
 use crate::movement::MapTransition;
 use crate::movement::MotionState;
@@ -45,29 +50,22 @@ pub struct Game {
     pub gui: GameGui,
     pub gui_state: Rc<RefCell<GuiState>>,
     pub images: HashMap<String, BrowserAsset>,
+    pub key_bindings: Rc<RefCell<Vec<KeyBinding>>>,
+    pub key_drag: Option<KeyDrag>,
     pub map: Map,
     pub motion: MotionState,
     pub player: PlayerState,
     pub frame_time_ms: f64,
     pub world_layers: Vec<i32>,
-    input: Rc<RefCell<InputState>>,
+    input: Rc<RefCell<KeyboardState>>,
+    save_failed: Rc<Cell<bool>>,
     save_in_flight: Rc<std::cell::Cell<bool>>,
     item_action_in_flight: Rc<Cell<bool>>,
     transition_in_flight: Rc<std::cell::Cell<bool>>,
     dirty: bool,
-    jump_consumed: bool,
-    portal_consumed: bool,
+    suppress_click: Rc<Cell<bool>>,
     last_frame_ms: f64,
     next_save_ms: f64,
-}
-
-#[derive(Clone, Copy, Default)]
-struct InputState {
-    left: bool,
-    right: bool,
-    up: bool,
-    down: bool,
-    jump: bool,
 }
 
 pub async fn run(
@@ -121,8 +119,9 @@ fn build_game(
         .map_err(|_| "could not create a 2D canvas context")?;
     context.set_image_smoothing_enabled(false);
 
-    let input = Rc::new(RefCell::new(InputState::default()));
-    install_keyboard_input(&window, input.clone())?;
+    let input = Rc::new(RefCell::new(KeyboardState::default()));
+    let key_bindings = Rc::new(RefCell::new(player.key_bindings.clone()));
+    install_keyboard_input(&window, input.clone(), key_bindings.clone())?;
     let gui_state = Rc::new(RefCell::new(GuiState::default()));
     let images = prepare_game_assets(&map, &character_sprites, &gui)?;
     let motion = player
@@ -143,18 +142,20 @@ fn build_game(
         gui,
         gui_state,
         images,
+        key_bindings,
+        key_drag: None,
         map,
         motion,
         player,
         frame_time_ms: 0.0,
         world_layers,
         input,
+        save_failed: Rc::new(Cell::new(false)),
         save_in_flight: Rc::new(std::cell::Cell::new(false)),
         item_action_in_flight: Rc::new(Cell::new(false)),
         transition_in_flight: Rc::new(std::cell::Cell::new(false)),
         dirty: false,
-        jump_consumed: false,
-        portal_consumed: false,
+        suppress_click: Rc::new(Cell::new(false)),
         last_frame_ms: 0.0,
         next_save_ms: SAVE_INTERVAL_MS,
     }));
@@ -177,11 +178,18 @@ fn prepare_game_assets(
 
 fn install_keyboard_input(
     window: &web_sys::Window,
-    input: Rc<RefCell<InputState>>,
+    input: Rc<RefCell<KeyboardState>>,
+    bindings: Rc<RefCell<Vec<KeyBinding>>>,
 ) -> Result<(), String> {
     let pressed_input = input.clone();
+    let pressed_bindings = bindings.clone();
     let keydown = Closure::<dyn FnMut(KeyboardEvent)>::new(move |event: KeyboardEvent| {
-        if set_key(&mut pressed_input.borrow_mut(), &event.code(), true) {
+        if keymap::set_key(
+            &mut pressed_input.borrow_mut(),
+            &pressed_bindings.borrow(),
+            &event.code(),
+            true,
+        ) {
             event.prevent_default();
         }
     });
@@ -191,7 +199,12 @@ fn install_keyboard_input(
     keydown.forget();
 
     let keyup = Closure::<dyn FnMut(KeyboardEvent)>::new(move |event: KeyboardEvent| {
-        if set_key(&mut input.borrow_mut(), &event.code(), false) {
+        if keymap::set_key(
+            &mut input.borrow_mut(),
+            &bindings.borrow(),
+            &event.code(),
+            false,
+        ) {
             event.prevent_default();
         }
     });
@@ -206,6 +219,95 @@ fn install_canvas_input(
     canvas: &HtmlCanvasElement,
     game: Rc<RefCell<Game>>,
 ) -> Result<(), String> {
+    let down_canvas = canvas.clone();
+    let down_game = game.clone();
+    let mouse_down = Closure::<dyn FnMut(MouseEvent)>::new(move |event: MouseEvent| {
+        if event.button() != 0 {
+            return;
+        }
+        let Some(point) = canvas_event_point(&down_canvas, &event) else {
+            return;
+        };
+        let drag = {
+            let game = down_game.borrow();
+            if !game.gui_state.borrow().key_config_open {
+                None
+            } else {
+                game_gui::begin_key_drag(&game.gui, &game.key_bindings.borrow(), point)
+            }
+        };
+        if let Some(drag) = drag {
+            down_game.borrow_mut().key_drag = Some(drag);
+            event.prevent_default();
+            let _ = down_canvas.focus();
+        }
+    });
+    canvas
+        .add_event_listener_with_callback("mousedown", mouse_down.as_ref().unchecked_ref())
+        .map_err(js_error)?;
+    mouse_down.forget();
+
+    let move_canvas = canvas.clone();
+    let move_game = game.clone();
+    let mouse_move = Closure::<dyn FnMut(MouseEvent)>::new(move |event: MouseEvent| {
+        let Some(point) = canvas_event_point(&move_canvas, &event) else {
+            return;
+        };
+        let mut game = move_game.borrow_mut();
+        let Some(drag) = game.key_drag.as_mut() else {
+            return;
+        };
+        game_gui::move_key_drag(drag, point);
+        event.prevent_default();
+    });
+    canvas
+        .add_event_listener_with_callback("mousemove", mouse_move.as_ref().unchecked_ref())
+        .map_err(js_error)?;
+    mouse_move.forget();
+
+    let leave_game = game.clone();
+    let mouse_leave = Closure::<dyn FnMut(MouseEvent)>::new(move |_event: MouseEvent| {
+        leave_game.borrow_mut().key_drag = None;
+    });
+    canvas
+        .add_event_listener_with_callback("mouseleave", mouse_leave.as_ref().unchecked_ref())
+        .map_err(js_error)?;
+    mouse_leave.forget();
+
+    let up_canvas = canvas.clone();
+    let up_game = game.clone();
+    let mouse_up = Closure::<dyn FnMut(MouseEvent)>::new(move |event: MouseEvent| {
+        if event.button() != 0 {
+            return;
+        }
+        let Some(point) = canvas_event_point(&up_canvas, &event) else {
+            return;
+        };
+        let mut game = up_game.borrow_mut();
+        let Some(drag) = game.key_drag.take() else {
+            return;
+        };
+        let updated = {
+            let bindings = game.key_bindings.borrow();
+            game_gui::finish_key_drag(&game.gui, &bindings, &drag, point)
+        };
+        let changed = updated
+            .as_ref()
+            .is_some_and(|updated| *updated != *game.key_bindings.borrow());
+        if let Some(updated) = updated.filter(|_| changed) {
+            *game.key_bindings.borrow_mut() = updated.clone();
+            game.player.key_bindings = updated;
+            game.dirty = true;
+        }
+        game.suppress_click.set(true);
+        event.prevent_default();
+        let _ = up_canvas.focus();
+    });
+    canvas
+        .add_event_listener_with_callback("mouseup", mouse_up.as_ref().unchecked_ref())
+        .map_err(js_error)?;
+    mouse_up.forget();
+
     let event_canvas = canvas.clone();
     let click_game = game.clone();
     let click = Closure::<dyn FnMut(MouseEvent)>::new(move |event: MouseEvent| {
@@ -239,14 +341,10 @@ fn handle_canvas_pointer(
     event: &MouseEvent,
     button: PointerButton,
 ) -> bool {
-    let Some(point) = game_gui::canvas_point(
-        event.offset_x(),
-        event.offset_y(),
-        canvas.width(),
-        canvas.height(),
-        canvas.client_width(),
-        canvas.client_height(),
-    ) else {
+    if button == PointerButton::Left && game.borrow().suppress_click.replace(false) {
+        return true;
+    }
+    let Some(point) = canvas_event_point(canvas, event) else {
         return false;
     };
     let action = {
@@ -270,6 +368,20 @@ fn handle_canvas_pointer(
     }
     begin_item_action(game.clone(), action);
     true
+}
+
+fn canvas_event_point(
+    canvas: &HtmlCanvasElement,
+    event: &MouseEvent,
+) -> Option<game_gui::CanvasPoint> {
+    game_gui::canvas_point(
+        event.offset_x(),
+        event.offset_y(),
+        canvas.width(),
+        canvas.height(),
+        canvas.client_width(),
+        canvas.client_height(),
+    )
 }
 
 fn begin_item_action(
@@ -302,6 +414,49 @@ fn begin_item_action(
     });
 }
 
+fn begin_pick_up(game: Rc<RefCell<Game>>) {
+    let in_flight = game.borrow().item_action_in_flight.clone();
+    if in_flight.replace(true) {
+        return;
+    }
+    let request = {
+        let game = game.borrow();
+        game.player
+            .position
+            .map(|position| (game.player.id.clone(), game.map.id, position))
+    };
+    let Some((player_id, map_id, position)) = request else {
+        in_flight.set(false);
+        show_status("The character does not have a valid pickup position.", true);
+        return;
+    };
+    spawn_local(async move {
+        match api::pick_up_item(&player_id, map_id, position).await {
+            Ok(response) => {
+                let result = response
+                    .player
+                    .ok_or("server pickup response did not contain a player")
+                    .and_then(|player| {
+                        (!response.picked_up_drop_id.is_empty())
+                            .then_some((player, response.picked_up_drop_id))
+                            .ok_or("server pickup response did not identify the dropped item")
+                    });
+                match result {
+                    Ok((player, drop_id)) => {
+                        let mut game = game.borrow_mut();
+                        game.player.inventory = player.inventory;
+                        game.map.dropped_items.retain(|drop| drop.id != drop_id);
+                        show_status("Item picked up.", false);
+                    }
+                    Err(error) => show_status(&format!("Pickup could not finish: {error}"), true),
+                }
+            }
+            Err(error) => show_status(&format!("Pickup failed: {error}"), true),
+        }
+        in_flight.set(false);
+    });
+}
+
 async fn request_item_action(
     player_id: &str,
     action: GuiAction,
@@ -313,9 +468,11 @@ async fn request_item_action(
         GuiAction::ToggleStats
         | GuiAction::ToggleEquipment
         | GuiAction::ToggleInventory
+        | GuiAction::ToggleKeyConfig
         | GuiAction::CloseStats
         | GuiAction::CloseEquipment
-        | GuiAction::CloseInventory => unreachable!("local GUI action reached the server"),
+        | GuiAction::CloseInventory
+        | GuiAction::CloseKeyConfig => unreachable!("local GUI action reached the server"),
     }
 }
 
@@ -408,37 +565,26 @@ fn item_action_message(action: GuiAction) -> &'static str {
         GuiAction::ToggleStats
         | GuiAction::ToggleEquipment
         | GuiAction::ToggleInventory
+        | GuiAction::ToggleKeyConfig
         | GuiAction::CloseStats
         | GuiAction::CloseEquipment
-        | GuiAction::CloseInventory => "GUI updated.",
+        | GuiAction::CloseInventory
+        | GuiAction::CloseKeyConfig => "GUI updated.",
     }
-}
-
-fn set_key(
-    input: &mut InputState,
-    code: &str,
-    pressed: bool,
-) -> bool {
-    match code {
-        "ArrowLeft" | "KeyA" => input.left = pressed,
-        "ArrowRight" | "KeyD" => input.right = pressed,
-        "ArrowUp" | "KeyW" => input.up = pressed,
-        "ArrowDown" | "KeyS" => input.down = pressed,
-        "Space" => input.jump = pressed,
-        _ => return false,
-    }
-    true
 }
 
 fn schedule_frame(game: Rc<RefCell<Game>>) -> Result<(), String> {
     let window = web_sys::window().ok_or("browser window is unavailable")?;
     let callback = Closure::once_into_js(move |timestamp_ms: f64| {
-        let transition = update(&mut game.borrow_mut(), timestamp_ms);
+        let update = update(&mut game.borrow_mut(), timestamp_ms);
         {
             let game = game.borrow();
             render::draw(&game);
         }
-        if let Some(transition) = transition {
+        if update.pick_up {
+            begin_pick_up(game.clone());
+        }
+        if let Some(transition) = update.transition {
             begin_map_transition(game.clone(), transition);
         }
         if let Err(error) = schedule_frame(game) {
@@ -451,10 +597,15 @@ fn schedule_frame(game: Rc<RefCell<Game>>) -> Result<(), String> {
     Ok(())
 }
 
+struct FrameUpdate {
+    transition: Option<MapTransition>,
+    pick_up: bool,
+}
+
 fn update(
     game: &mut Game,
     timestamp_ms: f64,
-) -> Option<MapTransition> {
+) -> FrameUpdate {
     let elapsed_seconds = if game.last_frame_ms == 0.0 {
         0.0
     } else {
@@ -462,33 +613,75 @@ fn update(
     };
     game.last_frame_ms = timestamp_ms;
     game.frame_time_ms = timestamp_ms;
+    if game.save_failed.replace(false) {
+        game.dirty = true;
+    }
     let now_ms = js_sys::Date::now().max(0.0) as u64;
     game.map
         .dropped_items
         .retain(|drop| drop.despawn_at_unix_ms > now_ms);
 
+    let mut input = {
+        let bindings = game.key_bindings.borrow();
+        keymap::drain_frame_input(&mut game.input.borrow_mut(), &bindings)
+    };
+    let key_config_open = game.gui_state.borrow().key_config_open;
+    if key_config_open {
+        input.player = PlayerInput::default();
+        input
+            .actions
+            .retain(|action| *action == KeyAction::OpenKeyConfig);
+    }
+    let pick_up = apply_key_actions(&mut game.gui_state.borrow_mut(), &game.gui, &input.actions);
+
     let transition = if game.transition_in_flight.get() {
         None
     } else {
-        update_player(game, elapsed_seconds)
+        update_player(game, elapsed_seconds, input.player)
     };
     if transition.is_some() {
         game.transition_in_flight.set(true);
     }
     save_if_due(game, timestamp_ms);
-    transition
+    FrameUpdate {
+        transition,
+        pick_up,
+    }
+}
+
+fn apply_key_actions(
+    state: &mut GuiState,
+    gui: &GameGui,
+    actions: &[KeyAction],
+) -> bool {
+    let mut pick_up = false;
+    for action in actions {
+        let gui_action = match action {
+            KeyAction::Jump => continue,
+            KeyAction::PickUp => {
+                pick_up = true;
+                continue;
+            }
+            KeyAction::OpenCharacter => GuiAction::ToggleStats,
+            KeyAction::OpenEquipment => GuiAction::ToggleEquipment,
+            KeyAction::OpenInventory => GuiAction::ToggleInventory,
+            KeyAction::OpenKeyConfig if gui.key_config_window.is_some() => {
+                GuiAction::ToggleKeyConfig
+            }
+            KeyAction::OpenKeyConfig => continue,
+            KeyAction::Unspecified => continue,
+        };
+        let _ = game_gui::apply_local_action(state, gui_action);
+    }
+    pick_up
 }
 
 fn update_player(
     game: &mut Game,
     elapsed_seconds: f32,
+    input: PlayerInput,
 ) -> Option<MapTransition> {
     let position = game.player.position?;
-    let input = read_player_input(
-        *game.input.borrow(),
-        &mut game.jump_consumed,
-        &mut game.portal_consumed,
-    );
     if input.horizontal != 0.0 {
         game.facing_left = input.horizontal < 0.0;
     }
@@ -537,24 +730,6 @@ fn update_character_animation(
     }
     *current = next;
     *started_ms = timestamp_ms;
-}
-
-fn read_player_input(
-    input: InputState,
-    jump_consumed: &mut bool,
-    portal_consumed: &mut bool,
-) -> PlayerInput {
-    let jump_pressed = input.jump && !*jump_consumed;
-    let portal_pressed = input.up && !*portal_consumed;
-    *jump_consumed = input.jump;
-    *portal_consumed = input.up;
-
-    PlayerInput {
-        horizontal: f32::from(input.right as u8) - f32::from(input.left as u8),
-        vertical: f32::from(input.down as u8) - f32::from(input.up as u8),
-        jump_pressed,
-        portal_pressed,
-    }
 }
 
 fn begin_map_transition(
@@ -619,10 +794,12 @@ fn save_if_due(
     game.dirty = false;
     game.next_save_ms = timestamp_ms + SAVE_INTERVAL_MS;
     game.save_in_flight.set(true);
+    let save_failed = game.save_failed.clone();
     let save_in_flight = game.save_in_flight.clone();
     let player = game.player.clone();
     spawn_local(async move {
         if let Err(error) = api::save_player(player).await {
+            save_failed.set(true);
             show_status(&format!("Save failed: {error}"), true);
         }
         save_in_flight.set(false);
@@ -634,25 +811,11 @@ mod tests {
     use oozems_proto::v1::Ladder;
     use oozems_proto::v1::Map;
 
-    use super::InputState;
     use super::character_animation;
-    use super::set_key;
     use super::update_character_animation;
     use crate::character_render::CharacterAnimation;
     use crate::movement::MotionState;
     use crate::movement::PlayerInput;
-
-    #[test]
-    fn up_interacts_and_space_jumps() {
-        let mut input = InputState::default();
-
-        assert!(set_key(&mut input, "ArrowUp", true));
-        assert!(input.up);
-        assert!(!input.jump);
-
-        assert!(set_key(&mut input, "Space", true));
-        assert!(input.jump);
-    }
 
     #[test]
     fn movement_state_selects_the_character_animation() {

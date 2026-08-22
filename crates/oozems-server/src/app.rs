@@ -54,6 +54,7 @@ pub fn router(
         .route("/items/equip", post(crate::api::equip_item))
         .route("/items/unequip", post(crate::api::unequip_item))
         .route("/items/drop", post(crate::api::drop_item))
+        .route("/items/pick-up", post(crate::api::pick_up_item))
         .route("/players/save", post(crate::api::save_player))
         .layer(DefaultBodyLimit::max(64 * 1024));
     let public = ServeDir::new(public_dir)
