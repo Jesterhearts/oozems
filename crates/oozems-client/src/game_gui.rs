@@ -13,6 +13,8 @@ pub struct GuiState {
     pub equipment_open: bool,
     pub inventory_open: bool,
     pub key_config_open: bool,
+    pub skill_page: usize,
+    pub skills_open: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -58,10 +60,14 @@ pub enum GuiAction {
     ToggleEquipment,
     ToggleInventory,
     ToggleKeyConfig,
+    ToggleSkills,
+    PreviousSkillPage,
+    NextSkillPage,
     CloseStats,
     CloseEquipment,
     CloseInventory,
     CloseKeyConfig,
+    CloseSkills,
     Equip { inventory_index: u32 },
     Unequip { slot: i32 },
     Drop { inventory_index: u32 },
@@ -103,24 +109,43 @@ pub fn apply_local_action(
         GuiAction::ToggleStats => {
             state.stats_open = !state.stats_open;
             state.equipment_open = false;
+            state.skills_open = false;
         }
         GuiAction::ToggleEquipment => {
             state.equipment_open = !state.equipment_open;
             state.stats_open = false;
+            state.skills_open = false;
         }
         GuiAction::ToggleInventory => state.inventory_open = !state.inventory_open,
+        GuiAction::ToggleSkills => {
+            let opening = !state.skills_open;
+            state.skills_open = opening;
+            if opening {
+                state.skill_page = 0;
+            }
+            state.stats_open = false;
+            state.equipment_open = false;
+        }
+        GuiAction::PreviousSkillPage => {
+            state.skill_page = state.skill_page.saturating_sub(1);
+        }
+        GuiAction::NextSkillPage => {
+            state.skill_page = state.skill_page.saturating_add(1);
+        }
         GuiAction::ToggleKeyConfig => {
             state.key_config_open = !state.key_config_open;
             if state.key_config_open {
                 state.stats_open = false;
                 state.equipment_open = false;
                 state.inventory_open = false;
+                state.skills_open = false;
             }
         }
         GuiAction::CloseStats => state.stats_open = false,
         GuiAction::CloseEquipment => state.equipment_open = false,
         GuiAction::CloseInventory => state.inventory_open = false,
         GuiAction::CloseKeyConfig => state.key_config_open = false,
+        GuiAction::CloseSkills => state.skills_open = false,
         GuiAction::Equip { .. } | GuiAction::Unequip { .. } | GuiAction::Drop { .. } => {
             return false;
         }
@@ -179,6 +204,7 @@ pub fn status_sprite_visible(
         "equip-pressed" => state.equipment_open,
         "inventory-pressed" => state.inventory_open,
         "key-settings-pressed" => state.key_config_open,
+        "skills-pressed" => state.skills_open,
         _ => true,
     }
 }
@@ -345,6 +371,30 @@ fn window_action(
         }
     }
     if button == PointerButton::Left
+        && state.skills_open
+        && window_close_rect(gui.skill_window.as_ref(), "skill-close")
+            .is_some_and(|rect| rect_contains(rect, point))
+    {
+        return Some(GuiAction::CloseSkills);
+    }
+    if button == PointerButton::Left && state.skills_open {
+        let window = gui.skill_window.as_ref()?;
+        for (x, action) in [
+            (80.0, GuiAction::PreviousSkillPage),
+            (139.0, GuiAction::NextSkillPage),
+        ] {
+            let rect = CanvasRect {
+                x: window.x + x,
+                y: window.y + 64.0,
+                width: 18.0,
+                height: 20.0,
+            };
+            if rect_contains(rect, point) {
+                return Some(action);
+            }
+        }
+    }
+    if button == PointerButton::Left
         && state.stats_open
         && window_close_rect(gui.stat_window.as_ref(), "stat-close")
             .is_some_and(|rect| rect_contains(rect, point))
@@ -368,6 +418,7 @@ fn status_action(
         ("equip", GuiAction::ToggleEquipment),
         ("inventory", GuiAction::ToggleInventory),
         ("stats", GuiAction::ToggleStats),
+        ("skills", GuiAction::ToggleSkills),
         ("key-settings", GuiAction::ToggleKeyConfig),
     ]
     .into_iter()
@@ -840,6 +891,54 @@ mod tests {
     }
 
     #[test]
+    fn skill_button_opens_and_closes_the_native_skill_book() {
+        let gui = gui_fixture();
+        let mut state = GuiState::default();
+
+        let open = click_action(
+            state,
+            &gui,
+            None,
+            960.0,
+            600.0,
+            CanvasPoint { x: 670.0, y: 540.0 },
+            PointerButton::Left,
+        )
+        .expect("skill action");
+        assert_eq!(open, GuiAction::ToggleSkills);
+        assert!(apply_local_action(&mut state, open));
+        assert!(state.skills_open);
+
+        let next = click_action(
+            state,
+            &gui,
+            None,
+            960.0,
+            600.0,
+            CanvasPoint { x: 165.0, y: 150.0 },
+            PointerButton::Left,
+        )
+        .expect("next skill page action");
+        assert_eq!(next, GuiAction::NextSkillPage);
+        assert!(apply_local_action(&mut state, next));
+        assert_eq!(state.skill_page, 1);
+
+        let close = click_action(
+            state,
+            &gui,
+            None,
+            960.0,
+            600.0,
+            CanvasPoint { x: 181.0, y: 86.0 },
+            PointerButton::Left,
+        )
+        .expect("skill close action");
+        assert_eq!(close, GuiAction::CloseSkills);
+        assert!(apply_local_action(&mut state, close));
+        assert!(!state.skills_open);
+    }
+
+    #[test]
     fn invalid_layouts_are_rejected_at_the_client_boundary() {
         let gui = gui_fixture();
         let valid = gui.status_bar.expect("status bar");
@@ -860,6 +959,7 @@ mod tests {
                     sprite("equip", 574.0, 17.0, 28.0, 20.0),
                     sprite("inventory", 604.0, 17.0, 28.0, 20.0),
                     sprite("stats", 634.0, 17.0, 28.0, 20.0),
+                    sprite("skills", 664.0, 17.0, 28.0, 20.0),
                     sprite("key-settings", 694.0, 17.0, 28.0, 20.0),
                 ],
             }),
@@ -891,6 +991,16 @@ mod tests {
                     height: 347.0,
                     background: Some(sprite("stat-background", 0.0, 0.0, 175.0, 347.0)),
                     sprites: vec![sprite("stat-close", 160.0, 5.0, 10.0, 10.0)],
+                }),
+            }),
+            skill_window: Some(GuiWindow {
+                x: 20.0,
+                y: 80.0,
+                layout: Some(GuiLayout {
+                    width: 175.0,
+                    height: 289.0,
+                    background: Some(sprite("skill-background", 0.0, 0.0, 175.0, 289.0)),
+                    sprites: vec![sprite("skill-close", 160.0, 5.0, 10.0, 10.0)],
                 }),
             }),
             key_config_window: Some(GuiWindow {

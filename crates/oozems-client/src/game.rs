@@ -10,6 +10,7 @@ use oozems_proto::v1::KeyAction;
 use oozems_proto::v1::KeyBinding;
 use oozems_proto::v1::Map;
 use oozems_proto::v1::PlayerState;
+use oozems_proto::v1::SkillBook;
 use oozems_proto::v1::Vec2;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
@@ -55,6 +56,7 @@ pub struct Game {
     pub map: Map,
     pub motion: MotionState,
     pub player: PlayerState,
+    pub skill_book: SkillBook,
     pub frame_time_ms: f64,
     pub world_layers: Vec<i32>,
     input: Rc<RefCell<KeyboardState>>,
@@ -72,27 +74,43 @@ pub async fn run(
     player: PlayerState,
     character_sprites: CharacterSpriteSet,
 ) -> Result<(), String> {
-    show_status("Loading map and GUI...", false);
+    show_status("Loading map, GUI, and skills...", false);
     let map = api::get_map(player.map_id)
         .await
         .map_err(|error| error.to_string())?;
     let gui_result = api::get_gui().await;
     let gui_warning = gui_result.as_ref().err().map(ToString::to_string);
     let gui = gui_result.unwrap_or_default();
-    let game = build_game(player, map, character_sprites, gui)?;
+    let skill_result = api::get_skill_book(&player.id).await;
+    let skill_warning = skill_result.as_ref().err().map(ToString::to_string);
+    let skill_book = skill_result.unwrap_or_else(|_| SkillBook {
+        job_id: player.stats.as_ref().map_or(0, |stats| stats.job_id),
+        name: "Skills".to_owned(),
+        ..SkillBook::default()
+    });
+    let game = build_game(player, map, character_sprites, gui, skill_book)?;
     let asset_count = game.borrow().images.len();
 
-    match gui_warning {
-        Some(error) => show_status(
-            &format!(
-                "Ready. Streaming {asset_count} assets as needed. Using fallback HUD: {error}"
-            ),
-            true,
-        ),
-        None => show_status(
+    let warnings = [
+        gui_warning.map(|error| format!("GUI unavailable: {error}")),
+        skill_warning.map(|error| format!("skill book unavailable: {error}")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
+    if warnings.is_empty() {
+        show_status(
             &format!("Ready. Streaming {asset_count} assets as needed."),
             false,
-        ),
+        );
+    } else {
+        show_status(
+            &format!(
+                "Ready. Streaming {asset_count} assets as needed. {}",
+                warnings.join("; ")
+            ),
+            true,
+        );
     }
     schedule_frame(game)?;
     Ok(())
@@ -103,6 +121,7 @@ fn build_game(
     map: Map,
     character_sprites: CharacterSpriteSet,
     gui: GameGui,
+    skill_book: SkillBook,
 ) -> Result<Rc<RefCell<Game>>, String> {
     let window = web_sys::window().ok_or("browser window is unavailable")?;
     let document = window.document().ok_or("browser document is unavailable")?;
@@ -123,7 +142,7 @@ fn build_game(
     let key_bindings = Rc::new(RefCell::new(player.key_bindings.clone()));
     install_keyboard_input(&window, input.clone(), key_bindings.clone())?;
     let gui_state = Rc::new(RefCell::new(GuiState::default()));
-    let images = prepare_game_assets(&map, &character_sprites, &gui)?;
+    let images = prepare_game_assets(&map, &character_sprites, &gui, &skill_book)?;
     let motion = player
         .position
         .as_ref()
@@ -147,6 +166,7 @@ fn build_game(
         map,
         motion,
         player,
+        skill_book,
         frame_time_ms: 0.0,
         world_layers,
         input,
@@ -167,12 +187,14 @@ fn prepare_game_assets(
     map: &Map,
     character_sprites: &CharacterSpriteSet,
     gui: &GameGui,
+    skill_book: &SkillBook,
 ) -> Result<HashMap<String, BrowserAsset>, String> {
     assets::prepare_assets(
         map.assets
             .iter()
             .chain(character_sprites.assets.iter())
-            .chain(gui.assets.iter()),
+            .chain(gui.assets.iter())
+            .chain(skill_book.assets.iter()),
     )
 }
 
@@ -469,10 +491,14 @@ async fn request_item_action(
         | GuiAction::ToggleEquipment
         | GuiAction::ToggleInventory
         | GuiAction::ToggleKeyConfig
+        | GuiAction::ToggleSkills
+        | GuiAction::PreviousSkillPage
+        | GuiAction::NextSkillPage
         | GuiAction::CloseStats
         | GuiAction::CloseEquipment
         | GuiAction::CloseInventory
-        | GuiAction::CloseKeyConfig => unreachable!("local GUI action reached the server"),
+        | GuiAction::CloseKeyConfig
+        | GuiAction::CloseSkills => unreachable!("local GUI action reached the server"),
     }
 }
 
@@ -508,7 +534,7 @@ async fn prepare_item_action_update(
             Ok(next_sprites) => {
                 let prepared = {
                     let game = game.borrow();
-                    prepare_game_assets(&game.map, &next_sprites, &game.gui)
+                    prepare_game_assets(&game.map, &next_sprites, &game.gui, &game.skill_book)
                 };
                 match prepared {
                     Ok(next_images) => {
@@ -566,10 +592,14 @@ fn item_action_message(action: GuiAction) -> &'static str {
         | GuiAction::ToggleEquipment
         | GuiAction::ToggleInventory
         | GuiAction::ToggleKeyConfig
+        | GuiAction::ToggleSkills
+        | GuiAction::PreviousSkillPage
+        | GuiAction::NextSkillPage
         | GuiAction::CloseStats
         | GuiAction::CloseEquipment
         | GuiAction::CloseInventory
-        | GuiAction::CloseKeyConfig => "GUI updated.",
+        | GuiAction::CloseKeyConfig
+        | GuiAction::CloseSkills => "GUI updated.",
     }
 }
 
@@ -665,6 +695,8 @@ fn apply_key_actions(
             KeyAction::OpenCharacter => GuiAction::ToggleStats,
             KeyAction::OpenEquipment => GuiAction::ToggleEquipment,
             KeyAction::OpenInventory => GuiAction::ToggleInventory,
+            KeyAction::OpenSkills if gui.skill_window.is_some() => GuiAction::ToggleSkills,
+            KeyAction::OpenSkills => continue,
             KeyAction::OpenKeyConfig if gui.key_config_window.is_some() => {
                 GuiAction::ToggleKeyConfig
             }
@@ -758,7 +790,7 @@ fn install_map(
     map: Map,
     transition: &MapTransition,
 ) -> Result<(), String> {
-    let images = prepare_game_assets(&map, &game.character_sprites, &game.gui)?;
+    let images = prepare_game_assets(&map, &game.character_sprites, &game.gui, &game.skill_book)?;
     let position = movement::destination_position(&map, &transition.target_portal_name)
         .unwrap_or_else(|| fallback_position(&map));
     let motion = movement::initial_motion_state(&map, &position);

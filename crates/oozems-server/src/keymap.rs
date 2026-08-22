@@ -70,6 +70,12 @@ pub const ACTIONS: &[KeyActionSpec] = &[
         icon_id: "9",
         palette_index: 5,
     },
+    KeyActionSpec {
+        action: KeyAction::OpenSkills,
+        label: "Skills",
+        icon_id: "3",
+        palette_index: 6,
+    },
 ];
 
 pub const SLOTS: &[KeySlotSpec] = &[
@@ -181,6 +187,7 @@ pub fn default_bindings() -> Vec<KeyBinding> {
         ("KeyE", KeyAction::OpenEquipment),
         ("KeyI", KeyAction::OpenInventory),
         ("KeyK", KeyAction::OpenKeyConfig),
+        ("KeyS", KeyAction::OpenSkills),
     ]
     .into_iter()
     .map(|(code, action)| KeyBinding {

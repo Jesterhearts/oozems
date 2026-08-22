@@ -35,6 +35,7 @@ enum KeyAction {
   KEY_ACTION_OPEN_EQUIPMENT = 4;
   KEY_ACTION_OPEN_INVENTORY = 5;
   KEY_ACTION_OPEN_KEY_CONFIG = 6;
+  KEY_ACTION_OPEN_SKILLS = 7;
 }
 
 message InventoryState {
@@ -131,6 +132,14 @@ message GetGuiResponse {
   GameGui gui = 1;
 }
 
+message GetSkillBookRequest {
+  string player_id = 1;
+}
+
+message GetSkillBookResponse {
+  SkillBook skill_book = 1;
+}
+
 message GameGui {
   GuiLayout status_bar = 1;
   repeated AssetDescriptor assets = 2;
@@ -141,6 +150,91 @@ message GameGui {
   GuiWindow key_config_window = 7;
   repeated KeyActionDefinition key_actions = 8;
   repeated KeySlot key_slots = 9;
+  GuiWindow skill_window = 10;
+}
+
+message SkillBook {
+  uint32 job_id = 1;
+  string name = 2;
+  uint32 available_points = 3;
+  repeated PlayerSkill skills = 4;
+  repeated AssetDescriptor assets = 5;
+}
+
+message PlayerSkill {
+  SkillDefinition definition = 1;
+  uint32 level = 2;
+}
+
+message SkillDefinition {
+  uint32 skill_id = 1;
+  uint32 job_id = 2;
+  string name = 3;
+  string description = 4;
+  uint32 max_level = 5;
+  string icon_asset_id = 6;
+  float icon_width = 7;
+  float icon_height = 8;
+  repeated SkillLevelDefinition levels = 9;
+  SkillStats common_stats = 10;
+  repeated SkillProperty common_properties = 11;
+  repeated SkillProperty metadata = 12;
+  repeated SkillRequirement requirements = 13;
+}
+
+message SkillLevelDefinition {
+  uint32 level = 1;
+  string description = 2;
+  SkillStats stats = 3;
+  repeated SkillProperty properties = 4;
+}
+
+message SkillRequirement {
+  uint32 skill_id = 1;
+  uint32 level = 2;
+}
+
+message SkillProperty {
+  string name = 1;
+  SkillValue value = 2;
+}
+
+message SkillValue {
+  oneof value {
+    sint64 integer = 1;
+    double decimal = 2;
+    string text = 3;
+    Vec2 vector = 4;
+  }
+}
+
+message SkillStats {
+  SkillValue hp_cost = 1;
+  SkillValue mp_cost = 2;
+  SkillValue hp = 3;
+  SkillValue mp = 4;
+  SkillValue weapon_attack = 5;
+  SkillValue magic_attack = 6;
+  SkillValue accuracy = 7;
+  SkillValue avoidability = 8;
+  SkillValue weapon_defense = 9;
+  SkillValue magic_defense = 10;
+  SkillValue speed = 11;
+  SkillValue jump = 12;
+  SkillValue strength = 13;
+  SkillValue damage = 14;
+  SkillValue fixed_damage = 15;
+  SkillValue critical_damage = 16;
+  SkillValue mastery = 17;
+  SkillValue attack_count = 18;
+  SkillValue mob_count = 19;
+  SkillValue duration = 20;
+  SkillValue cooldown = 21;
+  SkillValue range = 22;
+  SkillValue success_probability = 23;
+  SkillValue x = 24;
+  SkillValue y = 25;
+  SkillValue z = 26;
 }
 
 message KeyActionDefinition {

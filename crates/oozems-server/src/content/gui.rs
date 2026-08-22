@@ -47,6 +47,8 @@ const EQUIPMENT_WINDOW_X: f32 = 20.0;
 const EQUIPMENT_WINDOW_Y: f32 = 80.0;
 const INVENTORY_WINDOW_X: f32 = 205.0;
 const INVENTORY_WINDOW_Y: f32 = 80.0;
+const SKILL_WINDOW_X: f32 = 20.0;
+const SKILL_WINDOW_Y: f32 = 80.0;
 const KEY_CONFIG_WINDOW_X: f32 = 165.0;
 const KEY_CONFIG_WINDOW_Y: f32 = 60.0;
 const KEY_CONFIG_CLOSE_RIGHT: f32 = 5.0;
@@ -94,6 +96,7 @@ struct StatusBarSources {
     stats: SourceSprite,
     stats_pressed: SourceSprite,
     skills: SourceSprite,
+    skills_pressed: SourceSprite,
     key_settings: SourceSprite,
     key_settings_pressed: SourceSprite,
     quick_slot_toggle: SourceSprite,
@@ -213,6 +216,10 @@ fn build_game_gui(
     let inventory_window =
         compose_item_window(&inventory_sources, INVENTORY_WINDOW_X, INVENTORY_WINDOW_Y)?;
     assets.extend(inventory_assets);
+    let (skill_sources, skill_assets) =
+        load_item_window_sources(content, ui_window, "skill", "Skill")?;
+    let skill_window = compose_item_window(&skill_sources, SKILL_WINDOW_X, SKILL_WINDOW_Y)?;
+    assets.extend(skill_assets);
     let (key_config_sources, key_config_assets) = load_key_config_sources(content, ui_window)?;
     let (key_config_window, key_actions) = compose_key_config(&key_config_sources)?;
     assets.extend(key_config_assets);
@@ -237,6 +244,7 @@ fn build_game_gui(
                 height: slot.height,
             })
             .collect(),
+        skill_window: Some(skill_window),
     })
 }
 
@@ -302,6 +310,14 @@ fn load_status_bar_sources(
         &mut assets,
     )?;
     let skills = load_normal_button(content, status_bar, "skills", "SkillKey", &mut assets)?;
+    let skills_pressed = load_button_state(
+        content,
+        status_bar,
+        "skills-pressed",
+        "SkillKey",
+        "pressed",
+        &mut assets,
+    )?;
     let key_settings =
         load_normal_button(content, status_bar, "key-settings", "KeySet", &mut assets)?;
     let key_settings_pressed = load_button_state(
@@ -345,6 +361,7 @@ fn load_status_bar_sources(
             stats,
             stats_pressed,
             skills,
+            skills_pressed,
             key_settings,
             key_settings_pressed,
             quick_slot_toggle,
@@ -551,7 +568,7 @@ fn compose_status_bar(sources: &StatusBarSources) -> Result<GuiLayout, GuiConten
         (&sources.equip, Some(&sources.equip_pressed)),
         (&sources.inventory, Some(&sources.inventory_pressed)),
         (&sources.stats, Some(&sources.stats_pressed)),
-        (&sources.skills, None),
+        (&sources.skills, Some(&sources.skills_pressed)),
         (&sources.key_settings, Some(&sources.key_settings_pressed)),
         (&sources.quick_slot_toggle, None),
     ];
@@ -808,6 +825,7 @@ mod tests {
             stats: source("stats", 28.0, 20.0),
             stats_pressed: source("stats-pressed", 28.0, 20.0),
             skills: source("skills", 28.0, 20.0),
+            skills_pressed: source("skills-pressed", 28.0, 20.0),
             key_settings: source("key-settings", 28.0, 20.0),
             key_settings_pressed: source("key-settings-pressed", 28.0, 20.0),
             quick_slot_toggle: source("quick-slot-toggle", 28.0, 20.0),
@@ -847,6 +865,10 @@ mod tests {
             Some((634.0, 17.0))
         );
         assert_eq!(sprite_position(&layout, "skills"), Some((664.0, 17.0)));
+        assert_eq!(
+            sprite_position(&layout, "skills-pressed"),
+            Some((664.0, 17.0))
+        );
         assert_eq!(
             sprite_position(&layout, "quick-slot-toggle"),
             Some((724.0, 17.0))
@@ -901,7 +923,7 @@ mod tests {
             stat_window.layout.as_ref().map(|layout| layout.height),
             Some(347.0)
         );
-        assert_eq!(gui.assets.len(), 36);
+        assert_eq!(gui.assets.len(), 39);
         assert_eq!(gui.key_actions.len(), crate::keymap::ACTIONS.len());
         assert_eq!(gui.key_slots.len(), crate::keymap::SLOTS.len());
         assert_eq!(
@@ -920,6 +942,13 @@ mod tests {
         );
         assert_eq!(
             gui.inventory_window
+                .as_ref()
+                .and_then(|window| window.layout.as_ref())
+                .map(|layout| (layout.width, layout.height)),
+            Some((175.0, 289.0))
+        );
+        assert_eq!(
+            gui.skill_window
                 .as_ref()
                 .and_then(|window| window.layout.as_ref())
                 .map(|layout| (layout.width, layout.height)),

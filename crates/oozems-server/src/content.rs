@@ -15,6 +15,7 @@ use oozems_proto::v1::ItemDefinition;
 use oozems_proto::v1::Map;
 use oozems_proto::v1::Platform;
 use oozems_proto::v1::PlatformKind;
+use oozems_proto::v1::SkillBook;
 use serde::Deserialize;
 use sha2::Digest;
 use sha2::Sha256;
@@ -22,12 +23,15 @@ use thiserror::Error;
 
 mod character;
 mod gui;
+mod skill;
 mod wz;
 
 use character::CharacterContent;
 use character::CharacterContentError;
 use gui::GuiContent;
 use gui::GuiContentError;
+use skill::SkillContent;
+use skill::SkillContentError;
 pub(crate) use wz::WzAsset;
 use wz::WzContent;
 use wz::WzContentError;
@@ -36,6 +40,7 @@ pub struct ContentCatalog {
     characters: Option<CharacterContent>,
     gui: Option<GuiContent>,
     maps: HashMap<u32, Map>,
+    skills: Option<SkillContent>,
     wz: Option<WzContent>,
 }
 
@@ -71,6 +76,8 @@ pub enum ContentError {
     Character(#[from] CharacterContentError),
     #[error(transparent)]
     Gui(#[from] GuiContentError),
+    #[error(transparent)]
+    Skill(#[from] SkillContentError),
 }
 
 #[derive(Debug, Deserialize)]
@@ -145,6 +152,7 @@ impl ContentCatalog {
             characters: None,
             gui: None,
             maps,
+            skills: None,
             wz: None,
         })
     }
@@ -158,6 +166,7 @@ impl ContentCatalog {
         catalog.wz = WzContent::open_optional(wz_dir)?;
         catalog.characters = CharacterContent::open_optional(wz_dir)?;
         catalog.gui = GuiContent::open_optional(wz_dir)?;
+        catalog.skills = SkillContent::open_optional(wz_dir)?;
         Ok(catalog)
     }
 
@@ -193,6 +202,11 @@ impl ContentCatalog {
                     .as_ref()
                     .and_then(|source| source.get_asset(asset_id))
             })
+            .or_else(|| {
+                self.skills
+                    .as_ref()
+                    .and_then(|source| source.get_asset(asset_id))
+            })
     }
 
     pub fn game_gui(&self) -> GameGui {
@@ -213,6 +227,24 @@ impl ContentCatalog {
             .as_ref()
             .map(CharacterContent::creation_options)
             .unwrap_or_default()
+    }
+
+    pub fn skill_book(
+        &self,
+        job_id: u32,
+    ) -> Result<SkillBook, ContentError> {
+        self.skills
+            .as_ref()
+            .map(|source| source.skill_book(job_id))
+            .transpose()
+            .map(|book| {
+                book.unwrap_or_else(|| SkillBook {
+                    job_id,
+                    name: "Skills".to_owned(),
+                    ..SkillBook::default()
+                })
+            })
+            .map_err(Into::into)
     }
 
     pub fn item_definitions(&self) -> Vec<ItemDefinition> {

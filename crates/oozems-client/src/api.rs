@@ -18,12 +18,15 @@ use oozems_proto::v1::GetGuiRequest;
 use oozems_proto::v1::GetGuiResponse;
 use oozems_proto::v1::GetMapRequest;
 use oozems_proto::v1::GetMapResponse;
+use oozems_proto::v1::GetSkillBookRequest;
+use oozems_proto::v1::GetSkillBookResponse;
 use oozems_proto::v1::ItemActionResponse;
 use oozems_proto::v1::Map;
 use oozems_proto::v1::PickUpItemRequest;
 use oozems_proto::v1::PlayerState;
 use oozems_proto::v1::SavePlayerRequest;
 use oozems_proto::v1::SavePlayerResponse;
+use oozems_proto::v1::SkillBook;
 use oozems_proto::v1::UnequipItemRequest;
 use oozems_proto::v1::Vec2;
 use prost::Message;
@@ -162,6 +165,20 @@ pub async fn get_gui() -> Result<GameGui, ClientError> {
     let response: GetGuiResponse = post_protobuf("/api/v1/gui/get", GetGuiRequest {}).await?;
 
     response.gui.ok_or(ClientError::MissingData("game GUI"))
+}
+
+pub async fn get_skill_book(player_id: &str) -> Result<SkillBook, ClientError> {
+    let response: GetSkillBookResponse = post_protobuf(
+        "/api/v1/skills/book",
+        GetSkillBookRequest {
+            player_id: player_id.to_owned(),
+        },
+    )
+    .await?;
+
+    response
+        .skill_book
+        .ok_or(ClientError::MissingData("skill book"))
 }
 
 pub async fn save_player(player: PlayerState) -> Result<PlayerState, ClientError> {

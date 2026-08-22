@@ -20,6 +20,8 @@ use oozems_proto::v1::GetGuiRequest;
 use oozems_proto::v1::GetGuiResponse;
 use oozems_proto::v1::GetMapRequest;
 use oozems_proto::v1::GetMapResponse;
+use oozems_proto::v1::GetSkillBookRequest;
+use oozems_proto::v1::GetSkillBookResponse;
 use oozems_proto::v1::ItemActionResponse;
 use oozems_proto::v1::PickUpItemRequest;
 use oozems_proto::v1::PlayerState;
@@ -303,6 +305,23 @@ pub async fn get_gui(
     let _: GetGuiRequest = decode_request(&headers, body)?;
     Ok(Protobuf(GetGuiResponse {
         gui: Some(state.catalog.game_gui()),
+    }))
+}
+
+pub async fn get_skill_book(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Protobuf<GetSkillBookResponse>, ApiError> {
+    let request: GetSkillBookRequest = decode_request(&headers, body)?;
+    let player_id = parse_player_id(&request.player_id)?;
+    let player = require_player(&state, &player_id).await?;
+    let job_id = player.stats.as_ref().map_or(0, |stats| stats.job_id);
+    let catalog = state.catalog.clone();
+    let skill_book = tokio::task::spawn_blocking(move || catalog.skill_book(job_id)).await??;
+
+    Ok(Protobuf(GetSkillBookResponse {
+        skill_book: Some(skill_book),
     }))
 }
 

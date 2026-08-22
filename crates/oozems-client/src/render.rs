@@ -15,6 +15,8 @@ use crate::character_render::CharacterPlacement;
 use crate::game::Game;
 use crate::game_gui;
 
+mod skillbook;
+
 const GAUGE_HEADER_HEIGHT: f64 = 15.0;
 const GAUGE_FILL_TOP: f64 = 15.0;
 const GAUGE_FILL_HEIGHT: f64 = 14.0;
@@ -407,6 +409,9 @@ fn draw_hud(game: &Game) {
     }
     if game.gui_state.borrow().inventory_open {
         draw_inventory_window(game);
+    }
+    if game.gui_state.borrow().skills_open {
+        skillbook::draw(game);
     }
     if game.gui_state.borrow().key_config_open {
         draw_key_config_window(game);

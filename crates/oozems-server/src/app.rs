@@ -50,6 +50,7 @@ pub fn router(
             post(crate::api::get_character_sprites),
         )
         .route("/gui/get", post(crate::api::get_gui))
+        .route("/skills/book", post(crate::api::get_skill_book))
         .route("/maps/get", post(crate::api::get_map))
         .route("/items/equip", post(crate::api::equip_item))
         .route("/items/unequip", post(crate::api::unequip_item))
