@@ -19,7 +19,7 @@ The current vertical slice includes:
   map drops that characters can pick up;
 - persisted, drag-and-drop keyboard bindings for every supported action;
 - WZ skill books with persisted skill levels, resource costs, cooldowns, and
-  draggable skill bindings;
+  draggable skill bindings, plus streamed skill animations and sounds;
 - validated TOML game rules with named, formula-based XP curves;
 - validated TOML combat formulas based on the classic Ayumilove compilation;
 - server-owned assets fetched only when referenced by the current view; and
@@ -62,7 +62,7 @@ browser
   -> POST /api/v1/items/...       equip, unequip, drop, or pick up an item
   -> POST /api/v1/skills/...      allocate a skill point or use a skill
   -> GET /assets/...              only bundled assets named by that map
-  -> GET /wz-assets/...           requested map, character, GUI, and skill PNG layers
+  -> GET /wz-assets/...           requested WZ PNG and skill audio assets
   -> POST /api/v1/players/save    player position and key bindings protobuf
 
 server
@@ -73,7 +73,8 @@ server
   -> data/Map.wz                  optional, lazy WZ map source
   -> data/Character.wz            optional character sprite source
   -> data/UI.wz                   optional GUI sprite source
-  -> data/Skill.wz                optional skill data and icons
+  -> data/Skill.wz                optional skill data, icons, and effects
+  -> data/Sound.wz                optional skill sounds
   -> data/String.wz               optional WZ map names and skill text
   -> assets/**                    immutable source assets
   -> SurrealDB -> SurrealKV       mutable player state
@@ -142,6 +143,14 @@ applies immediate HP recovery, and returns temporary speed and jump effects to
 the client. Fixed-damage skills return their exact damage range. No monsters
 exist yet, so calculated damage is displayed as status information rather than
 being applied to a target.
+
+When `Sound.wz` is present, a successful use also returns the matching
+`Skill.img/<skill ID>/Use` sound. The server reads caster `effect`, projectile
+`ball`, and target `hit` animation frames from the active skill level in
+`Skill.wz`. Only their versioned descriptors are included in the use response.
+The browser requests the PNG and MP3 or WAV data on first use, then relies on
+its normal cache for later uses. Projectile effects travel in the character's
+facing direction, followed by their target effect.
 
 The HP, MP, and EXP gauges use the persisted character values for their fill
 levels and display bracketed current and maximum values over the WZ artwork.

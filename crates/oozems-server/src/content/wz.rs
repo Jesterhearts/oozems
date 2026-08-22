@@ -25,6 +25,7 @@ use wz_reader::WzNodeCast;
 use wz_reader::WzObjectType;
 use wz_reader::property::Vector2D;
 use wz_reader::property::WzPngParseError;
+use wz_reader::property::WzSoundType;
 use wz_reader::property::png::get_image;
 use wz_reader::util::node_util::parse_node;
 
@@ -50,7 +51,15 @@ pub struct WzContent {
 pub(crate) struct WzAsset {
     id: String,
     node: WzNodeArc,
-    png: OnceLock<Arc<[u8]>>,
+    kind: WzAssetKind,
+    bytes: OnceLock<Arc<[u8]>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WzAssetKind {
+    Png,
+    Mp3,
+    Wav,
 }
 
 #[derive(Debug, Error)]
@@ -91,6 +100,8 @@ pub enum WzContentError {
         #[source]
         source: image::ImageError,
     },
+    #[error("WZ asset {asset_id} is invalid: {message}")]
+    InvalidAsset { asset_id: String, message: String },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -267,29 +278,103 @@ impl WzAsset {
         Self {
             id,
             node,
-            png: OnceLock::new(),
+            kind: WzAssetKind::Png,
+            bytes: OnceLock::new(),
         }
     }
 
+    pub(super) fn new_sound(
+        id: String,
+        node: WzNodeArc,
+    ) -> Result<Self, WzContentError> {
+        let kind = {
+            let read = node.read().map_err(|_| lock_error("WZ sound asset"))?;
+            let sound = read
+                .try_as_sound()
+                .ok_or_else(|| WzContentError::InvalidAsset {
+                    asset_id: id.clone(),
+                    message: "source is not a sound property".to_owned(),
+                })?;
+            match sound.sound_type {
+                WzSoundType::Mp3 => WzAssetKind::Mp3,
+                WzSoundType::Wav => WzAssetKind::Wav,
+                WzSoundType::Binary => {
+                    return Err(WzContentError::InvalidAsset {
+                        asset_id: id,
+                        message: "binary sound data has no browser media type".to_owned(),
+                    });
+                }
+            }
+        };
+        Ok(Self {
+            id,
+            node,
+            kind,
+            bytes: OnceLock::new(),
+        })
+    }
+
+    #[cfg(test)]
     pub fn png_bytes(&self) -> Result<Arc<[u8]>, WzContentError> {
-        if let Some(bytes) = self.png.get() {
+        if self.kind != WzAssetKind::Png {
+            return Err(WzContentError::InvalidAsset {
+                asset_id: self.id.clone(),
+                message: "sound was requested as a PNG".to_owned(),
+            });
+        }
+        self.asset_bytes()
+    }
+
+    pub fn asset_bytes(&self) -> Result<Arc<[u8]>, WzContentError> {
+        if let Some(bytes) = self.bytes.get() {
             return Ok(Arc::clone(bytes));
         }
 
-        let image = get_image(&self.node).map_err(|source| WzContentError::DecodeAsset {
-            asset_id: self.id.clone(),
-            source,
-        })?;
-        let mut output = Cursor::new(Vec::new());
-        image
-            .write_to(&mut output, ImageFormat::Png)
-            .map_err(|source| WzContentError::EncodeAsset {
-                asset_id: self.id.clone(),
-                source,
-            })?;
-        let bytes: Arc<[u8]> = output.into_inner().into();
-        let _ = self.png.set(Arc::clone(&bytes));
-        Ok(self.png.get().cloned().unwrap_or(bytes))
+        let bytes: Arc<[u8]> = match self.kind {
+            WzAssetKind::Png => {
+                let image =
+                    get_image(&self.node).map_err(|source| WzContentError::DecodeAsset {
+                        asset_id: self.id.clone(),
+                        source,
+                    })?;
+                let mut output = Cursor::new(Vec::new());
+                image
+                    .write_to(&mut output, ImageFormat::Png)
+                    .map_err(|source| WzContentError::EncodeAsset {
+                        asset_id: self.id.clone(),
+                        source,
+                    })?;
+                output.into_inner().into()
+            }
+            WzAssetKind::Mp3 | WzAssetKind::Wav => {
+                let read = self.node.read().map_err(|_| lock_error("WZ sound bytes"))?;
+                read.try_as_sound()
+                    .ok_or_else(|| WzContentError::InvalidAsset {
+                        asset_id: self.id.clone(),
+                        message: "source is no longer a sound property".to_owned(),
+                    })?
+                    .get_buffer()
+                    .into()
+            }
+        };
+        let _ = self.bytes.set(Arc::clone(&bytes));
+        Ok(self.bytes.get().cloned().unwrap_or(bytes))
+    }
+
+    pub fn extension(&self) -> &'static str {
+        match self.kind {
+            WzAssetKind::Png => "png",
+            WzAssetKind::Mp3 => "mp3",
+            WzAssetKind::Wav => "wav",
+        }
+    }
+
+    pub fn content_type(&self) -> &'static str {
+        match self.kind {
+            WzAssetKind::Png => "image/png",
+            WzAssetKind::Mp3 => "audio/mpeg",
+            WzAssetKind::Wav => "audio/wav",
+        }
     }
 }
 

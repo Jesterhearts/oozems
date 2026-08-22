@@ -38,6 +38,8 @@ use crate::movement::MotionState;
 use crate::movement::PlayerInput;
 use crate::render;
 use crate::show_status;
+use crate::skill_effects;
+use crate::skill_effects::SkillEffectState;
 
 mod skill_actions;
 
@@ -59,6 +61,7 @@ pub struct Game {
     pub motion: MotionState,
     pub player: PlayerState,
     pub skill_book: SkillBook,
+    pub(crate) skill_effect_state: SkillEffectState,
     pub frame_time_ms: f64,
     pub world_layers: Vec<i32>,
     input: Rc<RefCell<KeyboardState>>,
@@ -179,6 +182,7 @@ fn build_game(
         motion,
         player,
         skill_book,
+        skill_effect_state: SkillEffectState::default(),
         frame_time_ms: 0.0,
         world_layers,
         input,
@@ -677,6 +681,7 @@ fn update(
     };
     game.last_frame_ms = timestamp_ms;
     game.frame_time_ms = timestamp_ms;
+    skill_effects::update(&mut game.skill_effect_state, &game.images, timestamp_ms);
     if game.save_failed.replace(false) {
         game.dirty = true;
     }
@@ -851,6 +856,7 @@ fn install_map(
         .unwrap_or_else(|| fallback_position(&map));
     let motion = movement::initial_motion_state(&map, &position);
     let world_layers = render::world_layers(&map);
+    skill_effects::clear(&mut game.skill_effect_state);
 
     game.player.map_id = map.id;
     game.player.position = Some(position);

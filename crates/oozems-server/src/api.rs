@@ -366,6 +366,13 @@ pub async fn use_skill(
     let prepared =
         crate::skills::prepare_skill_use(current, &book, request.skill_id, &state.formulas)
             .map_err(skill_rule_error)?;
+    let effect = load_skill_effect(
+        &state,
+        job_id,
+        request.skill_id,
+        prepared.result.skill_level,
+    )
+    .await?;
     let now_ms = unix_time_ms()?;
     crate::skills::reserve_skill_cooldown(
         &state.skill_cooldowns,
@@ -392,6 +399,7 @@ pub async fn use_skill(
     Ok(Protobuf(UseSkillResponse {
         player: Some(player),
         result: Some(prepared.result),
+        effect: Some(effect),
     }))
 }
 
@@ -435,22 +443,31 @@ pub async fn get_wz_asset(
     State(state): State<AppState>,
     AxumPath(requested_id): AxumPath<String>,
 ) -> Result<Response, ApiError> {
-    let version = requested_id
-        .strip_suffix(".png")
-        .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+    let (version, requested_extension) = requested_id
+        .rsplit_once('.')
+        .filter(|(value, _)| {
+            value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
         .ok_or_else(|| ApiError::not_found("asset_not_found", "asset does not exist"))?;
     let asset_id = format!("wz-{version}");
     let asset = state
         .catalog
         .get_wz_asset(&asset_id)
         .ok_or_else(|| ApiError::not_found("asset_not_found", "asset does not exist"))?;
-    let bytes = tokio::task::spawn_blocking(move || asset.png_bytes())
+    if asset.extension() != requested_extension {
+        return Err(ApiError::not_found(
+            "asset_not_found",
+            "asset does not exist",
+        ));
+    }
+    let content_type = asset.content_type();
+    let bytes = tokio::task::spawn_blocking(move || asset.asset_bytes())
         .await?
         .map_err(crate::content::ContentError::from)?;
 
     Ok((
         [
-            (header::CONTENT_TYPE, "image/png"),
+            (header::CONTENT_TYPE, content_type),
             (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
         ],
         Bytes::from_owner(bytes),
@@ -489,6 +506,19 @@ async fn load_skill_book(
 ) -> Result<oozems_proto::v1::SkillBook, ApiError> {
     let catalog = state.catalog.clone();
     Ok(tokio::task::spawn_blocking(move || catalog.skill_book(job_id)).await??)
+}
+
+async fn load_skill_effect(
+    state: &AppState,
+    job_id: u32,
+    skill_id: u32,
+    level: u32,
+) -> Result<oozems_proto::v1::SkillEffect, ApiError> {
+    let catalog = state.catalog.clone();
+    Ok(
+        tokio::task::spawn_blocking(move || catalog.skill_effect(job_id, skill_id, level))
+            .await??,
+    )
 }
 
 fn parse_player_id(value: &str) -> Result<PlayerId, ApiError> {

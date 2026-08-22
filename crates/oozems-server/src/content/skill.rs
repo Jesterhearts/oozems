@@ -8,6 +8,7 @@ use oozems_proto::v1::AssetDescriptor;
 use oozems_proto::v1::PlayerSkill;
 use oozems_proto::v1::SkillBook;
 use oozems_proto::v1::SkillDefinition;
+use oozems_proto::v1::SkillEffect;
 use oozems_proto::v1::SkillLevelDefinition;
 use oozems_proto::v1::SkillProperty;
 use oozems_proto::v1::SkillRequirement;
@@ -26,16 +27,28 @@ use super::wz;
 use super::wz::WzContentError;
 
 const SKILL_ARCHIVE: &str = "Skill.wz";
+const SOUND_ARCHIVE: &str = "Sound.wz";
 const STRING_ARCHIVE: &str = "String.wz";
-const SKILL_STRING_IMAGE: &str = "Skill.img";
+const SKILL_IMAGE: &str = "Skill.img";
+
+mod effect;
 
 pub struct SkillContent {
     _bases: Vec<WzNodeArc>,
     jobs: HashMap<u32, WzNodeArc>,
     strings: WzNodeArc,
     fingerprint: String,
+    sounds: Option<WzNodeArc>,
+    sound_fingerprint: Option<String>,
     books: RwLock<HashMap<u32, SkillBook>>,
+    effects: RwLock<HashMap<(u32, u32, u32), SkillEffect>>,
     assets: RwLock<HashMap<String, Arc<WzAsset>>>,
+}
+
+struct SoundArchive {
+    base: WzNodeArc,
+    skills: WzNodeArc,
+    fingerprint: String,
 }
 
 #[derive(Debug, Error)]
@@ -85,24 +98,33 @@ impl SkillContent {
         let string_root = wz::open_archive(&string_path)?;
         let string_base = wz::wrap_archive_root(&string_root)?;
         wz::parse(&string_root, format!("{} root", string_path.display()))?;
-        let strings = required_child(&string_root, SKILL_STRING_IMAGE)?;
-        wz::parse(
-            &strings,
-            format!("{} {SKILL_STRING_IMAGE}", string_path.display()),
-        )?;
+        let strings = required_child(&string_root, SKILL_IMAGE)?;
+        wz::parse(&strings, format!("{} {SKILL_IMAGE}", string_path.display()))?;
 
         let fingerprint = wz::archive_fingerprint(&skill_path)?;
+        let sound_archive = open_sound_archive(directory)?;
+        let mut bases = vec![skill_base, string_base];
+        let (sounds, sound_fingerprint) = match sound_archive {
+            Some(sound) => {
+                bases.push(sound.base);
+                (Some(sound.skills), Some(sound.fingerprint))
+            }
+            None => (None, None),
+        };
         tracing::info!(
             path = %skill_path.display(),
             jobs = jobs.len(),
             "WZ skill source ready"
         );
         Ok(Some(Self {
-            _bases: vec![skill_base, string_base],
+            _bases: bases,
             jobs,
             strings,
             fingerprint,
+            sounds,
+            sound_fingerprint,
             books: RwLock::new(HashMap::new()),
+            effects: RwLock::new(HashMap::new()),
             assets: RwLock::new(HashMap::new()),
         }))
     }
@@ -136,6 +158,31 @@ impl SkillContent {
         self.assets.read().ok()?.get(asset_id).cloned()
     }
 
+    pub fn skill_effect(
+        &self,
+        job_id: u32,
+        skill_id: u32,
+        level: u32,
+    ) -> Result<SkillEffect, SkillContentError> {
+        let key = (job_id, skill_id, level);
+        if let Some(effect) = self
+            .effects
+            .read()
+            .map_err(|_| lock_error("skill effect cache"))?
+            .get(&key)
+            .cloned()
+        {
+            return Ok(effect);
+        }
+
+        let effect = effect::build(self, job_id, skill_id, level)?;
+        self.effects
+            .write()
+            .map_err(|_| lock_error("skill effect cache"))?
+            .insert(key, effect.clone());
+        Ok(effect)
+    }
+
     fn register_asset(
         &self,
         source_path: &str,
@@ -158,6 +205,62 @@ impl SkillContent {
             content_hash: version,
         })
     }
+
+    fn register_sound(
+        &self,
+        source_path: &str,
+        node: &WzNodeArc,
+    ) -> Result<AssetDescriptor, SkillContentError> {
+        let fingerprint =
+            self.sound_fingerprint
+                .as_deref()
+                .ok_or_else(|| SkillContentError::Invalid {
+                    message: "cannot register a sound without Sound.wz".to_owned(),
+                })?;
+        let version = hex::encode(Sha256::digest(
+            format!("skill-sound\0{fingerprint}\0{source_path}").as_bytes(),
+        ));
+        let id = format!("wz-{version}");
+        let asset = Arc::new(WzAsset::new_sound(id.clone(), Arc::clone(node))?);
+        let extension = asset.extension();
+        self.assets
+            .write()
+            .map_err(|_| lock_error("skill asset registry"))?
+            .entry(id.clone())
+            .or_insert(asset);
+
+        Ok(AssetDescriptor {
+            id,
+            url: format!("/wz-assets/{version}.{extension}"),
+            content_hash: version,
+        })
+    }
+}
+
+fn open_sound_archive(directory: &Path) -> Result<Option<SoundArchive>, SkillContentError> {
+    let path = directory.join(SOUND_ARCHIVE);
+    if !path
+        .try_exists()
+        .map_err(|source| WzContentError::Metadata {
+            path: path.clone(),
+            source,
+        })?
+    {
+        tracing::warn!(path = %path.display(), "Sound.wz is absent; skills will be silent");
+        return Ok(None);
+    }
+
+    let root = wz::open_archive(&path)?;
+    let base = wz::wrap_archive_root(&root)?;
+    wz::parse(&root, format!("{} root", path.display()))?;
+    let sounds = required_child(&root, SKILL_IMAGE)?;
+    wz::parse(&sounds, format!("{} {SKILL_IMAGE}", path.display()))?;
+    let fingerprint = wz::archive_fingerprint(&path)?;
+    Ok(Some(SoundArchive {
+        base,
+        skills: sounds,
+        fingerprint,
+    }))
 }
 
 fn index_jobs(root: &WzNodeArc) -> Result<HashMap<u32, WzNodeArc>, SkillContentError> {
@@ -545,6 +648,7 @@ fn invalid<T>(message: impl Into<String>) -> Result<T, SkillContentError> {
 mod tests {
     use std::path::Path;
 
+    use oozems_proto::v1::SkillAnimationPlacement;
     use oozems_proto::v1::skill_value;
 
     use super::SkillContent;
@@ -638,6 +742,47 @@ mod tests {
         assert!(book_has_stats(&content, 210, |stats| {
             stats.magic_attack.is_some()
         }));
+    }
+
+    #[test]
+    fn local_archives_build_three_snails_animation_and_sound() {
+        let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data");
+        if !directory.join("Skill.wz").exists() || !directory.join("Sound.wz").exists() {
+            return;
+        }
+        let content = SkillContent::open_optional(&directory)
+            .expect("sample skill archives should be valid")
+            .expect("sample Skill.wz should be present");
+        let effect = content
+            .skill_effect(0, 1_000, 1)
+            .expect("Three Snails effect");
+        assert_eq!(effect.animations.len(), 2);
+        assert_eq!(
+            effect.animations[0].placement,
+            SkillAnimationPlacement::Projectile as i32
+        );
+        assert_eq!(effect.animations[0].frames.len(), 3);
+        assert_eq!(
+            effect.animations[1].placement,
+            SkillAnimationPlacement::Target as i32
+        );
+        assert_eq!(effect.animations[1].start_delay_ms, 270);
+        assert_eq!(effect.animations[1].frames.len(), 6);
+        assert_eq!(effect.assets.len(), 9);
+        for descriptor in &effect.assets {
+            let asset = content
+                .get_asset(&descriptor.id)
+                .expect("registered animation asset");
+            assert!(!asset.png_bytes().expect("animation PNG bytes").is_empty());
+        }
+        let sound = effect.sound.expect("Three Snails use sound");
+        assert!(sound.url.ends_with(".mp3"));
+        let sound_asset = content
+            .get_asset(&sound.id)
+            .expect("registered sound asset");
+        assert_eq!(sound_asset.extension(), "mp3");
+        assert_eq!(sound_asset.content_type(), "audio/mpeg");
+        assert!(!sound_asset.asset_bytes().expect("MP3 bytes").is_empty());
     }
 
     fn book_has_stats(

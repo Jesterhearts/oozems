@@ -16,6 +16,7 @@ use oozems_proto::v1::Map;
 use oozems_proto::v1::Platform;
 use oozems_proto::v1::PlatformKind;
 use oozems_proto::v1::SkillBook;
+use oozems_proto::v1::SkillEffect;
 use serde::Deserialize;
 use sha2::Digest;
 use sha2::Sha256;
@@ -244,6 +245,20 @@ impl ContentCatalog {
                     ..SkillBook::default()
                 })
             })
+            .map_err(Into::into)
+    }
+
+    pub fn skill_effect(
+        &self,
+        job_id: u32,
+        skill_id: u32,
+        level: u32,
+    ) -> Result<SkillEffect, ContentError> {
+        self.skills
+            .as_ref()
+            .map(|source| source.skill_effect(job_id, skill_id, level))
+            .transpose()
+            .map(|effect| effect.unwrap_or_default())
             .map_err(Into::into)
     }
 

@@ -28,6 +28,7 @@ enum LayerPass {
     Portals,
     DroppedItems,
     Player,
+    SkillEffects,
 }
 
 const ORDINARY_LAYER_PASSES: &[LayerPass] = &[
@@ -41,6 +42,7 @@ const PLAYER_LAYER_PASSES: &[LayerPass] = &[
     LayerPass::Portals,
     LayerPass::DroppedItems,
     LayerPass::Player,
+    LayerPass::SkillEffects,
 ];
 
 pub fn draw(game: &Game) {
@@ -68,6 +70,9 @@ pub fn draw(game: &Game) {
                 LayerPass::Portals => draw_portals(game, camera_x, camera_y, *layer),
                 LayerPass::DroppedItems => draw_dropped_items(game, camera_x, camera_y),
                 LayerPass::Player => draw_player(game, camera_x, camera_y),
+                LayerPass::SkillEffects => {
+                    crate::skill_effects::draw(game, camera_x, camera_y);
+                }
             }
         }
     }
@@ -193,7 +198,7 @@ fn draw_decoration(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn draw_sprite(
+pub(crate) fn draw_sprite(
     game: &Game,
     asset_id: &str,
     map_x: f32,
@@ -950,6 +955,7 @@ mod tests {
                 LayerPass::Portals,
                 LayerPass::DroppedItems,
                 LayerPass::Player,
+                LayerPass::SkillEffects,
             ]
         );
     }

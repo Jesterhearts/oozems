@@ -9,6 +9,7 @@ use super::Game;
 use crate::api;
 use crate::game_gui::GuiAction;
 use crate::show_status;
+use crate::skill_effects;
 
 pub(super) fn begin(
     game: Rc<RefCell<Game>>,
@@ -70,6 +71,7 @@ fn install_use(
         .ok_or("skill use response did not contain a result")?;
     game.player.stats = player.stats;
     install_active_effect(game, &result);
+    skill_effects::install(game, response.effect.unwrap_or_default());
     Ok(use_message(game, &result))
 }
 

@@ -9,6 +9,7 @@ mod game_gui;
 mod keymap;
 mod movement;
 mod render;
+mod skill_effects;
 
 use wasm_bindgen::JsValue;
 use wasm_bindgen::prelude::wasm_bindgen;
