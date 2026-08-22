@@ -11,6 +11,7 @@ use std::sync::RwLock;
 use image::ImageFormat;
 use oozems_proto::v1::AssetDescriptor;
 use oozems_proto::v1::Decoration;
+use oozems_proto::v1::DecorationFrame;
 use oozems_proto::v1::Map;
 use oozems_proto::v1::Platform;
 use oozems_proto::v1::PlatformKind;
@@ -34,6 +35,7 @@ use features::RawPortal;
 
 const MAP_ARCHIVE: &str = "Map.wz";
 const STRING_ARCHIVE: &str = "String.wz";
+const DEFAULT_DECORATION_FRAME_DELAY_MS: u32 = 100;
 
 pub struct WzContent {
     _base: WzNodeArc,
@@ -133,9 +135,21 @@ struct RawSprite {
     flip_x: bool,
 }
 
-struct RawDecoration {
+struct RawDecorationFrame {
     sprite: RawSprite,
+    delay_ms: u32,
+}
+
+struct RawDecoration {
+    first_frame: RawDecorationFrame,
+    remaining_frames: Vec<RawDecorationFrame>,
     order: DecorationOrder,
+}
+
+impl RawDecoration {
+    fn frames(&self) -> impl Iterator<Item = &RawDecorationFrame> {
+        std::iter::once(&self.first_frame).chain(&self.remaining_frames)
+    }
 }
 
 impl WzContent {
@@ -450,12 +464,13 @@ fn build_map(
     let mut asset_ids = HashSet::new();
     let mut decorations = Vec::with_capacity(raw_decorations.len());
     for decoration in raw_decorations {
-        let asset =
-            source.register_asset(&decoration.sprite.source_path, &decoration.sprite.source)?;
-        if asset_ids.insert(asset.id.clone()) {
-            assets.push(asset.clone());
-        }
-        decorations.push(build_decoration(decoration, &asset.id, bounds));
+        decorations.push(build_decoration(
+            source,
+            decoration,
+            bounds,
+            &mut assets,
+            &mut asset_ids,
+        )?);
     }
     let ladders = features::build_ladders(raw_ladders, bounds);
     let portals = features::build_portals(
@@ -613,16 +628,13 @@ fn read_objects(
             continue;
         };
         let base_path = format!("Obj/{object_set}.img/{level0}/{level1}/{level2}");
-        let source = match resolve_png_source(root, &format!("{base_path}/0"))? {
-            Some(source) => Some(source),
-            None => resolve_png_source(root, &base_path)?,
-        };
-        let Some(source) = source else {
+        let sources = resolve_png_frames(root, &base_path)?;
+        if sources.is_empty() {
             tracing::debug!(path = %base_path, "skipping WZ object without a PNG source");
             continue;
-        };
-        output.push(raw_decoration(
-            source,
+        }
+        output.push(raw_animated_decoration(
+            sources,
             x,
             y,
             object_order(layer_index, int_value(&object, "z")?.unwrap_or_default()),
@@ -636,21 +648,52 @@ fn resolve_png_source(
     root: &WzNodeArc,
     path: &str,
 ) -> Result<Option<WzNodeArc>, WzContentError> {
-    let node = match root
+    let Some(node) = node_at_path(root, path)? else {
+        return Ok(None);
+    };
+    find_png_descendant(&node, 0)
+}
+
+fn resolve_png_frames(
+    root: &WzNodeArc,
+    path: &str,
+) -> Result<Vec<WzNodeArc>, WzContentError> {
+    let Some(node) = node_at_path(root, path)? else {
+        return Ok(Vec::new());
+    };
+    let mut frames = Vec::new();
+    for (name, child) in sorted_named_children(&node)? {
+        if name.parse::<u32>().is_err() {
+            continue;
+        }
+        if let Some(source) = find_png_descendant(&child, 0)? {
+            frames.push(source);
+        }
+    }
+    if frames.is_empty()
+        && let Some(source) = find_png_descendant(&node, 0)?
+    {
+        frames.push(source);
+    }
+    Ok(frames)
+}
+
+fn node_at_path(
+    root: &WzNodeArc,
+    path: &str,
+) -> Result<Option<WzNodeArc>, WzContentError> {
+    match root
         .read()
         .map_err(|_| lock_error("WZ archive root"))?
         .at_path_parsed(path)
     {
-        Ok(node) => node,
-        Err(wz_reader::node::Error::NodeNotFound) => return Ok(None),
-        Err(source) => {
-            return Err(WzContentError::Parse {
-                context: path.to_owned(),
-                source,
-            });
-        }
-    };
-    find_png_descendant(&node, 0)
+        Ok(node) => Ok(Some(node)),
+        Err(wz_reader::node::Error::NodeNotFound) => Ok(None),
+        Err(source) => Err(WzContentError::Parse {
+            context: path.to_owned(),
+            source,
+        }),
+    }
 }
 
 fn find_png_descendant(
@@ -683,9 +726,45 @@ fn raw_decoration(
     order: DecorationOrder,
     flip_x: bool,
 ) -> Result<RawDecoration, WzContentError> {
+    raw_animated_decoration(vec![source], anchor_x, anchor_y, order, flip_x)
+}
+
+fn raw_animated_decoration(
+    sources: Vec<WzNodeArc>,
+    anchor_x: i32,
+    anchor_y: i32,
+    order: DecorationOrder,
+    flip_x: bool,
+) -> Result<RawDecoration, WzContentError> {
+    let mut frames = sources
+        .into_iter()
+        .map(|source| raw_decoration_frame(source, anchor_x, anchor_y, flip_x))
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter();
+    let first_frame = frames.next().ok_or_else(|| WzContentError::InvalidMap {
+        map_id: 0,
+        message: "map decoration has no image frames".to_owned(),
+    })?;
     Ok(RawDecoration {
-        sprite: raw_sprite(source, anchor_x, anchor_y, flip_x)?,
+        first_frame,
+        remaining_frames: frames.collect(),
         order,
+    })
+}
+
+fn raw_decoration_frame(
+    source: WzNodeArc,
+    anchor_x: i32,
+    anchor_y: i32,
+    flip_x: bool,
+) -> Result<RawDecorationFrame, WzContentError> {
+    let delay_ms = int_value(&source, "delay")?
+        .and_then(|delay| u32::try_from(delay).ok())
+        .filter(|delay| *delay > 0)
+        .unwrap_or(DEFAULT_DECORATION_FRAME_DELAY_MS);
+    Ok(RawDecorationFrame {
+        sprite: raw_sprite(source, anchor_x, anchor_y, flip_x)?,
+        delay_ms,
     })
 }
 
@@ -796,19 +875,15 @@ fn derive_bounds<'a>(
     let mut points = platforms
         .flat_map(|platform| [(platform.x1, platform.y1), (platform.x2, platform.y2)])
         .chain(decorations.flat_map(|decoration| {
-            [
-                (decoration.sprite.x, decoration.sprite.y),
-                (
-                    decoration
-                        .sprite
-                        .x
-                        .saturating_add(decoration.sprite.width as i32),
-                    decoration
-                        .sprite
-                        .y
-                        .saturating_add(decoration.sprite.height as i32),
-                ),
-            ]
+            decoration.frames().flat_map(|frame| {
+                [
+                    (frame.sprite.x, frame.sprite.y),
+                    (
+                        frame.sprite.x.saturating_add(frame.sprite.width as i32),
+                        frame.sprite.y.saturating_add(frame.sprite.height as i32),
+                    ),
+                ]
+            })
         }))
         .chain(
             ladders
@@ -876,19 +951,41 @@ fn build_platform(
 }
 
 fn build_decoration(
+    content: &WzContent,
     source: RawDecoration,
-    asset_id: &str,
     bounds: Bounds,
-) -> Decoration {
-    Decoration {
-        asset_id: asset_id.to_owned(),
-        x: (source.sprite.x - bounds.left) as f32,
-        y: (source.sprite.y - bounds.top) as f32,
-        width: source.sprite.width as f32,
-        height: source.sprite.height as f32,
-        layer: source.order.layer,
-        flip_x: source.sprite.flip_x,
+    assets: &mut Vec<AssetDescriptor>,
+    asset_ids: &mut HashSet<String>,
+) -> Result<Decoration, WzContentError> {
+    let is_animated = !source.remaining_frames.is_empty();
+    let layer = source.order.layer;
+    let flip_x = source.first_frame.sprite.flip_x;
+    let mut frames = Vec::with_capacity(source.remaining_frames.len() + 1);
+    for frame in source.frames() {
+        let asset = content.register_asset(&frame.sprite.source_path, &frame.sprite.source)?;
+        if asset_ids.insert(asset.id.clone()) {
+            assets.push(asset.clone());
+        }
+        frames.push(DecorationFrame {
+            asset_id: asset.id,
+            x: (frame.sprite.x - bounds.left) as f32,
+            y: (frame.sprite.y - bounds.top) as f32,
+            width: frame.sprite.width as f32,
+            height: frame.sprite.height as f32,
+            delay_ms: frame.delay_ms,
+        });
     }
+    let first = frames[0].clone();
+    Ok(Decoration {
+        asset_id: first.asset_id,
+        x: first.x,
+        y: first.y,
+        width: first.width,
+        height: first.height,
+        layer,
+        flip_x,
+        frames: if is_animated { frames } else { Vec::new() },
+    })
 }
 
 pub(super) fn child(
@@ -912,14 +1009,21 @@ pub(super) fn children(node: &WzNodeArc) -> Result<Vec<WzNodeArc>, WzContentErro
 }
 
 pub(super) fn sorted_children(node: &WzNodeArc) -> Result<Vec<WzNodeArc>, WzContentError> {
-    let mut children = children(node)?;
-    children.sort_by_key(|child| {
-        let name = child
-            .read()
-            .map(|read| read.name.to_string())
-            .unwrap_or_default();
-        (name.parse::<u32>().unwrap_or(u32::MAX), name)
-    });
+    Ok(sorted_named_children(node)?
+        .into_iter()
+        .map(|(_, child)| child)
+        .collect())
+}
+
+fn sorted_named_children(node: &WzNodeArc) -> Result<Vec<(String, WzNodeArc)>, WzContentError> {
+    let mut children = node
+        .read()
+        .map_err(|_| lock_error("WZ child nodes"))?
+        .children
+        .iter()
+        .map(|(name, child)| (name.to_string(), Arc::clone(child)))
+        .collect::<Vec<_>>();
+    children.sort_by_key(|(name, _)| (name.parse::<u32>().unwrap_or(u32::MAX), name.clone()));
     Ok(children)
 }
 
@@ -986,6 +1090,7 @@ mod tests {
     use super::derive_bounds;
     use super::object_order;
     use super::read_bounds;
+    use super::sorted_named_children;
     use super::tile_order;
 
     #[test]
@@ -1055,6 +1160,31 @@ mod tests {
                 tile_order(1, 4, 3),
             ]
         );
+    }
+
+    #[test]
+    fn child_sorting_preserves_frame_keys_when_nodes_reference_other_frames() {
+        let parent = wz_reader::WzNode::from_str("animation", 0, None).into_lock();
+        let first = wz_reader::WzNode::from_str("target-2", 0, Some(&parent)).into_lock();
+        let second = wz_reader::WzNode::from_str("target-0", 0, Some(&parent)).into_lock();
+        let _ = parent
+            .write()
+            .expect("animation lock")
+            .children
+            .insert("2".into(), first);
+        let _ = parent
+            .write()
+            .expect("animation lock")
+            .children
+            .insert("0".into(), second);
+
+        let keys = sorted_named_children(&parent)
+            .expect("sorted children")
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect::<Vec<_>>();
+
+        assert_eq!(keys, vec!["0", "2"]);
     }
 
     #[test]

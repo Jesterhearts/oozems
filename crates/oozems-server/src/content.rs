@@ -327,6 +327,7 @@ fn build_map(
                 height: decoration.height,
                 layer: decoration.layer,
                 flip_x: false,
+                frames: Vec::new(),
             })
             .collect(),
         assets,
@@ -515,6 +516,16 @@ mod tests {
                 .iter()
                 .any(|decoration| decoration.layer > 1)
         );
+        assert!(map.decorations.iter().any(|decoration| {
+            decoration.frames.len() == 9
+                && decoration.frames.iter().all(|frame| frame.delay_ms == 130)
+        }));
+        assert!(map.decorations.iter().all(|decoration| {
+            decoration
+                .frames
+                .iter()
+                .all(|frame| map.assets.iter().any(|asset| asset.id == frame.asset_id))
+        }));
         assert!(!map.ladders.is_empty());
         assert!(map.portals.iter().any(|portal| {
             portal.name == "east00"

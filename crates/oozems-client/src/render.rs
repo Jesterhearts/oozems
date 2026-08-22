@@ -1,5 +1,6 @@
 use oozems_proto::v1::CharacterStats;
 use oozems_proto::v1::Decoration;
+use oozems_proto::v1::DecorationFrame;
 use oozems_proto::v1::GuiSprite;
 use oozems_proto::v1::GuiWindow;
 use oozems_proto::v1::ItemDefinition;
@@ -161,6 +162,21 @@ fn draw_decoration(
     camera_x: f64,
     camera_y: f64,
 ) {
+    if let Some(index) = decoration_frame_index(&decoration.frames, game.frame_time_ms) {
+        let frame = &decoration.frames[index];
+        draw_sprite(
+            game,
+            &frame.asset_id,
+            frame.x,
+            frame.y,
+            frame.width,
+            frame.height,
+            decoration.flip_x,
+            camera_x,
+            camera_y,
+        );
+        return;
+    }
     draw_sprite(
         game,
         &decoration.asset_id,
@@ -284,23 +300,37 @@ fn portal_frame_index(
     frames: &[PortalFrame],
     timestamp_ms: f64,
 ) -> Option<usize> {
-    let total_duration = frames
-        .iter()
-        .map(|frame| u64::from(frame.delay_ms.max(1)))
+    timed_frame_index(frames.iter().map(|frame| frame.delay_ms), timestamp_ms)
+}
+
+fn decoration_frame_index(
+    frames: &[DecorationFrame],
+    timestamp_ms: f64,
+) -> Option<usize> {
+    timed_frame_index(frames.iter().map(|frame| frame.delay_ms), timestamp_ms)
+}
+
+fn timed_frame_index(
+    delays: impl Iterator<Item = u32> + Clone,
+    timestamp_ms: f64,
+) -> Option<usize> {
+    let total_duration = delays
+        .clone()
+        .map(|delay| u64::from(delay.max(1)))
         .sum::<u64>();
     if total_duration == 0 {
         return None;
     }
 
     let mut animation_time = timestamp_ms.max(0.0) as u64 % total_duration;
-    for (index, frame) in frames.iter().enumerate() {
-        let delay = u64::from(frame.delay_ms.max(1));
+    for (index, delay) in delays.enumerate() {
+        let delay = u64::from(delay.max(1));
         if animation_time < delay {
             return Some(index);
         }
         animation_time -= delay;
     }
-    Some(frames.len() - 1)
+    None
 }
 
 fn draw_platforms(
@@ -819,6 +849,7 @@ fn draw_fallback_hud(game: &Game) {
 #[cfg(test)]
 mod tests {
     use oozems_proto::v1::Decoration;
+    use oozems_proto::v1::DecorationFrame;
     use oozems_proto::v1::Ladder;
     use oozems_proto::v1::Map;
     use oozems_proto::v1::Platform;
@@ -826,6 +857,7 @@ mod tests {
     use oozems_proto::v1::PortalFrame;
 
     use super::LayerPass;
+    use super::decoration_frame_index;
     use super::layer_passes;
     use super::portal_frame_index;
     use super::world_layers;
@@ -894,5 +926,24 @@ mod tests {
         assert_eq!(portal_frame_index(&frames, 100.0), Some(1));
         assert_eq!(portal_frame_index(&frames, 299.0), Some(1));
         assert_eq!(portal_frame_index(&frames, 300.0), Some(0));
+    }
+
+    #[test]
+    fn decoration_animation_uses_each_frame_delay() {
+        let frames = vec![
+            DecorationFrame {
+                delay_ms: 130,
+                ..DecorationFrame::default()
+            },
+            DecorationFrame {
+                delay_ms: 260,
+                ..DecorationFrame::default()
+            },
+        ];
+
+        assert_eq!(decoration_frame_index(&frames, 129.0), Some(0));
+        assert_eq!(decoration_frame_index(&frames, 130.0), Some(1));
+        assert_eq!(decoration_frame_index(&frames, 389.0), Some(1));
+        assert_eq!(decoration_frame_index(&frames, 390.0), Some(0));
     }
 }
