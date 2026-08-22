@@ -15,6 +15,11 @@ pub(super) fn begin(
     game: Rc<RefCell<Game>>,
     action: GuiAction,
 ) {
+    if super::recovery_actions::is_in_flight(&game.borrow().recovery_state) {
+        show_status("Recovery is still being saved.", true);
+        return;
+    }
+    super::recovery_actions::reset(&mut game.borrow_mut().recovery_state);
     let in_flight = game.borrow().skill_action_in_flight.clone();
     if in_flight.replace(true) {
         show_status("A skill action is already in progress.", true);

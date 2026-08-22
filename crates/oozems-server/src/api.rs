@@ -27,6 +27,8 @@ use oozems_proto::v1::GetSkillBookResponse;
 use oozems_proto::v1::ItemActionResponse;
 use oozems_proto::v1::PickUpItemRequest;
 use oozems_proto::v1::PlayerState;
+use oozems_proto::v1::RecoverPlayerRequest;
+use oozems_proto::v1::RecoverPlayerResponse;
 use oozems_proto::v1::SavePlayerRequest;
 use oozems_proto::v1::SavePlayerResponse;
 use oozems_proto::v1::UnequipItemRequest;
@@ -52,6 +54,9 @@ pub async fn bootstrap(
     let player = load_player(&state, &player_id)
         .await?
         .filter(|player| player.appearance.is_some());
+    if player.is_some() {
+        record_recovery_activity(&state, player_id.as_str(), unix_time_ms()?);
+    }
 
     Ok(Protobuf(BootstrapResponse {
         player,
@@ -100,6 +105,7 @@ pub async fn create_character(
     let position = starter_position(&map);
     let experience_required =
         crate::experience::required_for_level(state.experience.default_curve(), 1)?;
+    let activity_time_ms = unix_time_ms()?;
     let player = crate::database::create_player(
         &state.database,
         &player_id,
@@ -110,6 +116,7 @@ pub async fn create_character(
         state.gameplay.initial_skill_points,
     )
     .await?;
+    record_recovery_activity(&state, player_id.as_str(), activity_time_ms);
 
     Ok(Protobuf(CreateCharacterResponse {
         player: Some(player),
@@ -180,7 +187,9 @@ pub async fn equip_item(
         &state.catalog.item_definitions(),
     )
     .map_err(item_rule_error)?;
+    let activity_time_ms = unix_time_ms()?;
     let player = crate::database::save_player(&state.database, &updated).await?;
+    record_recovery_activity(&state, player_id.as_str(), activity_time_ms);
 
     Ok(Protobuf(ItemActionResponse {
         player: Some(player),
@@ -198,7 +207,9 @@ pub async fn unequip_item(
     let player_id = parse_player_id(&request.player_id)?;
     let current = require_player(&state, &player_id).await?;
     let updated = crate::items::unequip_item(current, request.slot).map_err(item_rule_error)?;
+    let activity_time_ms = unix_time_ms()?;
     let player = crate::database::save_player(&state.database, &updated).await?;
+    record_recovery_activity(&state, player_id.as_str(), activity_time_ms);
 
     Ok(Protobuf(ItemActionResponse {
         player: Some(player),
@@ -222,6 +233,7 @@ pub async fn drop_item(
         &state.catalog.item_definitions(),
     )
     .map_err(item_rule_error)?;
+    let activity_time_ms = unix_time_ms()?;
     let player = crate::database::save_player(&state.database, &removed.player).await?;
     let dropped_item = match crate::items::create_drop(&state.drops, &removed) {
         Ok(drop) => drop,
@@ -234,6 +246,7 @@ pub async fn drop_item(
             return Err(error.into());
         }
     };
+    record_recovery_activity(&state, player_id.as_str(), activity_time_ms);
 
     Ok(Protobuf(ItemActionResponse {
         player: Some(player),
@@ -283,6 +296,7 @@ pub async fn pick_up_item(
     let picked =
         crate::items::pick_up_nearest(&state.drops, current, position).map_err(pick_up_error)?;
     let map_id = picked.player.map_id;
+    let activity_time_ms = unix_time_ms()?;
     let player = match crate::database::save_player(&state.database, &picked.player).await {
         Ok(player) => player,
         Err(error) => {
@@ -294,6 +308,7 @@ pub async fn pick_up_item(
             return Err(error.into());
         }
     };
+    record_recovery_activity(&state, player_id.as_str(), activity_time_ms);
 
     Ok(Protobuf(ItemActionResponse {
         player: Some(player),
@@ -343,7 +358,9 @@ pub async fn allocate_skill_point(
     let base_book = load_skill_book(&state, job_id).await?;
     let updated = crate::skills::allocate_skill_point(current, &base_book, request.skill_id)
         .map_err(skill_rule_error)?;
+    let activity_time_ms = unix_time_ms()?;
     let player = crate::database::save_player(&state.database, &updated).await?;
+    record_recovery_activity(&state, player_id.as_str(), activity_time_ms);
     let skill_book =
         crate::skills::personalize_skill_book(base_book, &player).map_err(skill_rule_error)?;
 
@@ -395,11 +412,62 @@ pub async fn use_skill(
             return Err(error.into());
         }
     };
+    record_recovery_activity(&state, player_id.as_str(), now_ms);
 
     Ok(Protobuf(UseSkillResponse {
         player: Some(player),
         result: Some(prepared.result),
         effect: Some(effect),
+    }))
+}
+
+pub async fn recover_player(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Protobuf<RecoverPlayerResponse>, ApiError> {
+    let request: RecoverPlayerRequest = decode_request(&headers, body)?;
+    let player_id = parse_player_id(&request.player_id)?;
+    let current = require_player(&state, &player_id).await?;
+    let now_ms = unix_time_ms()?;
+    let deadline_ms = match crate::recovery::reserve_recovery(
+        &state.recovery_timers,
+        player_id.as_str(),
+        now_ms,
+    )? {
+        crate::recovery::RecoveryReservation::Waiting { remaining_ms } => {
+            return Ok(Protobuf(RecoverPlayerResponse {
+                player: Some(current),
+                retry_after_ms: remaining_ms,
+                ..RecoverPlayerResponse::default()
+            }));
+        }
+        crate::recovery::RecoveryReservation::Ready { deadline_ms } => deadline_ms,
+    };
+    let prepared = match crate::recovery::prepare_recovery(current, &state.formulas) {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            release_recovery(&state, player_id.as_str(), deadline_ms);
+            return Err(error.into());
+        }
+    };
+    let player = if prepared.hp_restored == 0 && prepared.mp_restored == 0 {
+        prepared.player
+    } else {
+        match crate::database::save_player(&state.database, &prepared.player).await {
+            Ok(player) => player,
+            Err(error) => {
+                release_recovery(&state, player_id.as_str(), deadline_ms);
+                return Err(error.into());
+            }
+        }
+    };
+
+    Ok(Protobuf(RecoverPlayerResponse {
+        player: Some(player),
+        hp_restored: prepared.hp_restored,
+        mp_restored: prepared.mp_restored,
+        retry_after_ms: crate::recovery::RECOVERY_INTERVAL_MS,
     }))
 }
 
@@ -428,11 +496,16 @@ pub async fn save_player(
         .await?
         .filter(|player| player.appearance.is_some())
         .ok_or_else(|| ApiError::not_found("player_not_found", "player does not exist"))?;
+    let moved = current.map_id != requested.map_id || current.position != requested.position;
+    let activity_time_ms = moved.then(unix_time_ms).transpose()?;
     crate::skills::validate_bound_skills(&requested.key_bindings, &current.learned_skills)
         .map_err(skill_rule_error)?;
     let updated =
         crate::database::apply_player_movement(current, &requested, map.width, map.height);
     let player = crate::database::save_player(&state.database, &updated).await?;
+    if let Some(now_ms) = activity_time_ms {
+        record_recovery_activity(&state, player_id.as_str(), now_ms);
+    }
 
     Ok(Protobuf(SavePlayerResponse {
         player: Some(player),
@@ -562,6 +635,30 @@ fn unix_time_ms() -> Result<u64, ApiError> {
         .map_err(|_| ApiError::Clock)
 }
 
+fn record_recovery_activity(
+    state: &AppState,
+    player_id: &str,
+    now_ms: u64,
+) {
+    if let Err(error) =
+        crate::recovery::delay_recovery_after_activity(&state.recovery_timers, player_id, now_ms)
+    {
+        tracing::error!(%error, "failed to delay recovery after player activity");
+    }
+}
+
+fn release_recovery(
+    state: &AppState,
+    player_id: &str,
+    deadline_ms: u64,
+) {
+    if let Err(error) =
+        crate::recovery::release_recovery(&state.recovery_timers, player_id, deadline_ms)
+    {
+        tracing::error!(%error, "failed to release recovery reservation");
+    }
+}
+
 fn starter_position(map: &oozems_proto::v1::Map) -> Vec2 {
     map.portals
         .iter()
@@ -647,6 +744,8 @@ pub enum ApiError {
     Drops(#[from] crate::items::DropStoreError),
     #[error("skill rules could not be applied")]
     SkillRules(#[from] crate::skills::SkillRuleError),
+    #[error("recovery rules could not be applied")]
+    Recovery(#[from] crate::recovery::RecoveryError),
     #[error("system time is earlier than the Unix epoch")]
     Clock,
 }
@@ -740,6 +839,14 @@ impl IntoResponse for ApiError {
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "skill_rules_error",
                     "the server could not apply its skill rules".to_owned(),
+                )
+            }
+            Self::Recovery(error) => {
+                tracing::error!(%error, "recovery rules could not be applied");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "recovery_rules_error",
+                    "the server could not apply its recovery rules".to_owned(),
                 )
             }
             Self::Clock => {

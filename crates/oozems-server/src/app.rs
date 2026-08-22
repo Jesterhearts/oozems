@@ -19,6 +19,7 @@ use crate::database::Database;
 use crate::experience::ExperienceCurves;
 use crate::gameplay::GameplayConfig;
 use crate::items::DropStore;
+use crate::recovery::RecoveryTimers;
 use crate::skill_formula::FormulaCatalog;
 use crate::skills::SkillCooldowns;
 
@@ -29,6 +30,7 @@ pub struct AppState {
     pub experience: Arc<ExperienceCurves>,
     pub drops: Arc<DropStore>,
     pub gameplay: GameplayConfig,
+    pub recovery_timers: Arc<RecoveryTimers>,
     pub skill_cooldowns: Arc<SkillCooldowns>,
     pub formulas: Arc<FormulaCatalog>,
 }
@@ -48,6 +50,7 @@ pub fn router(
         experience: Arc::new(experience),
         drops: Arc::new(DropStore::new(gameplay.item_drop_despawn)),
         gameplay,
+        recovery_timers: Arc::new(RecoveryTimers::default()),
         skill_cooldowns: Arc::new(SkillCooldowns::default()),
         formulas: Arc::new(formulas),
     };
@@ -62,6 +65,7 @@ pub fn router(
         .route("/skills/book", post(crate::api::get_skill_book))
         .route("/skills/allocate", post(crate::api::allocate_skill_point))
         .route("/skills/use", post(crate::api::use_skill))
+        .route("/players/recover", post(crate::api::recover_player))
         .route("/maps/get", post(crate::api::get_map))
         .route("/items/equip", post(crate::api::equip_item))
         .route("/items/unequip", post(crate::api::unequip_item))

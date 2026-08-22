@@ -278,6 +278,13 @@ impl FormulaCatalog {
         selected_profile(&self.weapons, identifier)
     }
 
+    pub fn recovery_profile(
+        &self,
+        identifier: &str,
+    ) -> Option<&FormulaProfile> {
+        selected_profile(&self.recovery, identifier)
+    }
+
     // Summon effects are not applied yet, but the validated route is part of
     // this configuration boundary so the later effect pipeline cannot bypass it.
     #[allow(dead_code)]
@@ -338,6 +345,7 @@ fn compile_file(file: FormulaFile) -> Result<FormulaCatalog, String> {
             .ok_or_else(|| "weapons.bare_hands must select a profile".to_owned())?,
         &["attack", "minimum", "maximum"],
     )?;
+    validate_selected_properties(&recovery, &["hp", "mp"])?;
     Ok(FormulaCatalog {
         source_url: file.source_url,
         weapons,
@@ -349,6 +357,20 @@ fn compile_file(file: FormulaFile) -> Result<FormulaCatalog, String> {
         stats,
         recovery,
     })
+}
+
+fn validate_selected_properties<Key: Ord>(
+    category: &FormulaCategory<Key>,
+    properties: &[&str],
+) -> Result<(), String> {
+    for profile_name in category.selections.values() {
+        let profile = category
+            .profiles
+            .get(profile_name)
+            .expect("profile selections are validated during compilation");
+        validate_required_properties(profile, properties)?;
+    }
+    Ok(())
 }
 
 fn compile_identifier_category(
@@ -1019,6 +1041,13 @@ durability = "CharacterLevel * 200"
 
 [summon."5221006"]
 profile = "ship"
+
+[recovery_profiles.natural]
+hp = 10
+mp = 3
+
+[recovery.base]
+profile = "natural"
 "#,
         );
 
@@ -1026,6 +1055,7 @@ profile = "ship"
         let range = evaluate_damage_profile(skill, &[("Luck", 20.0), ("WeaponAttack", 10.0)])
             .expect("profile damage");
         let summon = formulas.summon_profile(5_221_006).expect("summon profile");
+        let recovery = formulas.recovery_profile("base").expect("recovery profile");
 
         assert_eq!(skill.name(), "lucky");
         assert_eq!(range.minimum, 5.0);
@@ -1035,7 +1065,45 @@ profile = "ship"
                 .expect("summon durability"),
             24_000.0,
         );
+        assert_eq!(
+            evaluate_profile_property(recovery, "mp", &[]).expect("MP recovery"),
+            3.0,
+        );
         assert!(formulas.skill_profile(4_001_335).is_none());
+    }
+
+    #[test]
+    fn rejects_selected_recovery_profiles_without_both_amounts() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("formulas.toml");
+        fs::write(
+            &path,
+            r#"
+source_url = "https://example.test"
+
+[weapon_profiles.unarmed]
+attack = 1
+minimum = 1
+maximum = 1
+
+[weapons.bare_hands]
+profile = "unarmed"
+
+[recovery_profiles.incomplete]
+hp = 10
+
+[recovery.base]
+profile = "incomplete"
+"#,
+        )
+        .expect("write formulas");
+
+        let error = FormulaCatalog::load(&path)
+            .err()
+            .expect("incomplete recovery must fail")
+            .to_string();
+
+        assert!(error.contains("recovery_profiles.incomplete.mp"));
     }
 
     #[test]

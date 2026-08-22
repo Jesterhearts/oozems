@@ -26,6 +26,8 @@ use oozems_proto::v1::ItemActionResponse;
 use oozems_proto::v1::Map;
 use oozems_proto::v1::PickUpItemRequest;
 use oozems_proto::v1::PlayerState;
+use oozems_proto::v1::RecoverPlayerRequest;
+use oozems_proto::v1::RecoverPlayerResponse;
 use oozems_proto::v1::SavePlayerRequest;
 use oozems_proto::v1::SavePlayerResponse;
 use oozems_proto::v1::SkillBook;
@@ -208,6 +210,16 @@ pub async fn use_skill(
         UseSkillRequest {
             player_id: player_id.to_owned(),
             skill_id,
+        },
+    )
+    .await
+}
+
+pub async fn recover_player(player_id: &str) -> Result<RecoverPlayerResponse, ClientError> {
+    post_protobuf(
+        "/api/v1/players/recover",
+        RecoverPlayerRequest {
+            player_id: player_id.to_owned(),
         },
     )
     .await

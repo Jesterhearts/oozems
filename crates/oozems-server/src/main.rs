@@ -9,6 +9,7 @@ mod experience;
 mod gameplay;
 mod items;
 mod keymap;
+mod recovery;
 mod skill_formula;
 mod skills;
 

@@ -41,6 +41,7 @@ use crate::show_status;
 use crate::skill_effects;
 use crate::skill_effects::SkillEffectState;
 
+mod recovery_actions;
 mod skill_actions;
 
 const SAVE_INTERVAL_MS: f64 = 2_000.0;
@@ -74,6 +75,7 @@ pub struct Game {
     suppress_click: Rc<Cell<bool>>,
     last_frame_ms: f64,
     next_save_ms: f64,
+    recovery_state: recovery_actions::RecoveryState,
     active_skill_effects: Vec<ActiveSkillEffect>,
 }
 
@@ -195,6 +197,7 @@ fn build_game(
         suppress_click: Rc::new(Cell::new(false)),
         last_frame_ms: 0.0,
         next_save_ms: SAVE_INTERVAL_MS,
+        recovery_state: recovery_actions::RecoveryState::default(),
         active_skill_effects: Vec::new(),
     }));
     install_canvas_input(&canvas, game.clone())?;
@@ -440,6 +443,11 @@ fn begin_item_action(
     game: Rc<RefCell<Game>>,
     action: GuiAction,
 ) {
+    if recovery_actions::is_in_flight(&game.borrow().recovery_state) {
+        show_status("Recovery is still being saved.", true);
+        return;
+    }
+    recovery_actions::reset(&mut game.borrow_mut().recovery_state);
     let in_flight = game.borrow().item_action_in_flight.clone();
     if in_flight.replace(true) {
         show_status("An item action is already in progress.", true);
@@ -467,6 +475,10 @@ fn begin_item_action(
 }
 
 fn begin_pick_up(game: Rc<RefCell<Game>>) {
+    if recovery_actions::is_in_flight(&game.borrow().recovery_state) {
+        return;
+    }
+    recovery_actions::reset(&mut game.borrow_mut().recovery_state);
     let in_flight = game.borrow().item_action_in_flight.clone();
     if in_flight.replace(true) {
         return;
@@ -651,6 +663,9 @@ fn schedule_frame(game: Rc<RefCell<Game>>) -> Result<(), String> {
         if let Some(skill_id) = update.skill_id {
             skill_actions::begin(game.clone(), GuiAction::UseSkill { skill_id });
         }
+        if update.recover {
+            recovery_actions::begin(game.clone());
+        }
         if let Some(transition) = update.transition {
             begin_map_transition(game.clone(), transition);
         }
@@ -667,6 +682,7 @@ fn schedule_frame(game: Rc<RefCell<Game>>) -> Result<(), String> {
 struct FrameUpdate {
     transition: Option<MapTransition>,
     pick_up: bool,
+    recover: bool,
     skill_id: Option<u32>,
 }
 
@@ -713,11 +729,32 @@ fn update(
     if transition.is_some() {
         game.transition_in_flight.set(true);
     }
+    let skill_id = input.skills.into_iter().next();
+    let needs_recovery = game
+        .player
+        .stats
+        .as_ref()
+        .is_some_and(|stats| stats.hp < stats.max_hp || stats.mp < stats.max_mp);
+    let can_poll_recovery = game.character_animation == CharacterAnimation::Idle
+        && !pick_up
+        && skill_id.is_none()
+        && transition.is_none()
+        && !game.item_action_in_flight.get()
+        && !game.save_in_flight.get()
+        && !game.skill_action_in_flight.get()
+        && !game.transition_in_flight.get();
+    let recover = recovery_actions::update(
+        &mut game.recovery_state,
+        needs_recovery,
+        can_poll_recovery,
+        timestamp_ms,
+    );
     save_if_due(game, timestamp_ms);
     FrameUpdate {
         transition,
         pick_up,
-        skill_id: input.skills.into_iter().next(),
+        recover,
+        skill_id,
     }
 }
 
@@ -857,6 +894,7 @@ fn install_map(
     let motion = movement::initial_motion_state(&map, &position);
     let world_layers = render::world_layers(&map);
     skill_effects::clear(&mut game.skill_effect_state);
+    recovery_actions::reset(&mut game.recovery_state);
 
     game.player.map_id = map.id;
     game.player.position = Some(position);
@@ -881,7 +919,11 @@ fn save_if_due(
     game: &mut Game,
     timestamp_ms: f64,
 ) {
-    if !game.dirty || timestamp_ms < game.next_save_ms || game.save_in_flight.get() {
+    if !game.dirty
+        || timestamp_ms < game.next_save_ms
+        || game.save_in_flight.get()
+        || recovery_actions::is_in_flight(&game.recovery_state)
+    {
         return;
     }
 

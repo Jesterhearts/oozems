@@ -20,6 +20,7 @@ The current vertical slice includes:
 - persisted, drag-and-drop keyboard bindings for every supported action;
 - WZ skill books with persisted skill levels, resource costs, cooldowns, and
   draggable skill bindings, plus streamed skill animations and sounds;
+- server-owned natural HP and MP recovery after ten seconds of inactivity;
 - validated TOML game rules with named, formula-based XP curves;
 - validated TOML combat formulas based on the classic Ayumilove compilation;
 - server-owned assets fetched only when referenced by the current view; and
@@ -61,6 +62,7 @@ browser
   -> POST /api/v1/maps/get        current map protobuf
   -> POST /api/v1/items/...       equip, unequip, drop, or pick up an item
   -> POST /api/v1/skills/...      allocate a skill point or use a skill
+  -> POST /api/v1/players/recover apply one rate-limited natural recovery tick
   -> GET /assets/...              only bundled assets named by that map
   -> GET /wz-assets/...           requested WZ PNG and skill audio assets
   -> POST /api/v1/players/save    player position and key bindings protobuf
@@ -298,6 +300,36 @@ weapon stats when weapon equipment is added later. Other profile categories
 are parsed, validated, and routed now so their combat pipelines can consume the
 same configuration model later.
 
+Natural recovery uses the same profile pipeline:
+
+```toml
+[recovery_profiles.base]
+hp = 10
+mp = 3
+
+[recovery_profiles.mage]
+hp = 10
+mp = "CharacterLevel * SkillLevel / 10"
+
+[recovery.base]
+profile = "base"
+
+[recovery.mage]
+profile = "mage"
+```
+
+The client polls for recovery only while the character appears idle. The poll
+does not claim that the idle interval has elapsed. The server owns the recovery
+deadline, initializes it when the character is loaded, and restarts it after
+accepted movement, jumping, climbing, portal entry, item actions, or skill use.
+An early poll restores nothing and tells the client how long to wait. An
+eligible poll restores and persists one tick, then starts the next ten-second
+interval. Jobs from 200 through 299 select `recovery.mage`; other jobs select
+`recovery.base`. A missing mage selection falls back to base. `CharacterLevel`
+is the current character level, and `SkillLevel` is learned skill `2000000`.
+Recovery results are truncated to whole points and capped by maximum HP and MP.
+Every selected recovery profile must define both `hp` and `mp`.
+
 Profile formulas use decimal arithmetic and support these elements:
 
 | Syntax | Meaning |
@@ -324,12 +356,13 @@ variable that is not supplied produces an explicit formula evaluation error.
 | Accuracy and recovery | `AccuracyRatio`, `HealLevel`, `BattleshipLevel` |
 | Economy and parties | `Mesos`, `DamageDealt`, `TotalPartyLevel`, `PartyExperiencePortion`, `PartyBonus` |
 
-The current skill profile pipeline supplies `CharacterLevel`, `PlayerLevel`,
-`Strength`, `Dexterity`, `Intelligence`, `Luck`, `SkillDamage`, `SkillLevel`,
-and `WeaponAttack`. It also supplies `JobMultiplier` for Pirate jobs. The other
-accepted variables belong to formula pipelines that will be connected as their
-combat inputs are implemented. Selecting a profile that needs an unavailable
-variable returns an explicit skill-use error instead of substituting a value.
+The current skill and recovery profile pipelines supply `CharacterLevel`,
+`PlayerLevel`, `Strength`, `Dexterity`, `Intelligence`, `Luck`, `SkillDamage`,
+`SkillLevel`, and `WeaponAttack`. It also supplies `JobMultiplier` for Pirate
+jobs. The other accepted variables belong to formula pipelines that will be
+connected as their combat inputs are implemented. Selecting a profile that
+needs an unavailable variable returns an explicit skill-use error instead of
+substituting a value.
 
 The server parses every configured formula and rejects unknown identifiers,
 unknown functions, invalid syntax, non-ASCII text, invalid numeric IDs, invalid
