@@ -250,8 +250,8 @@ mod tests {
 
     #[test]
     fn pressed_stat_sprite_is_visible_only_while_the_window_is_open() {
-        let normal = sprite("stats", 634.0, 88.0, 28.0, 20.0);
-        let pressed = sprite("stats-pressed", 634.0, 88.0, 28.0, 20.0);
+        let normal = sprite("stats", 634.0, 17.0, 28.0, 20.0);
+        let pressed = sprite("stats-pressed", 634.0, 17.0, 28.0, 20.0);
 
         assert!(status_sprite_visible(GuiState::default(), &normal));
         assert!(!status_sprite_visible(GuiState::default(), &pressed));
@@ -276,9 +276,9 @@ mod tests {
         GameGui {
             status_bar: Some(GuiLayout {
                 width: 800.0,
-                height: 151.0,
-                background: Some(sprite("background", 0.0, 80.0, 800.0, 71.0)),
-                sprites: vec![sprite("stats", 634.0, 88.0, 28.0, 20.0)],
+                height: 80.0,
+                background: Some(sprite("background", 0.0, 9.0, 800.0, 71.0)),
+                sprites: vec![sprite("stats", 634.0, 17.0, 28.0, 20.0)],
             }),
             stat_window: Some(GuiWindow {
                 x: 20.0,

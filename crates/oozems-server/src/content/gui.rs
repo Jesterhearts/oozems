@@ -363,7 +363,7 @@ fn load_source(
 
 fn compose_status_bar(sources: &StatusBarSources) -> Result<GuiLayout, GuiContentError> {
     let width = sources.background.width;
-    let height = sources.background.height + sources.quick_slots.height;
+    let height = sources.background.height.max(sources.quick_slots.height);
     let bar_y = height - sources.background.height;
     let background = place_sprite(&sources.background, 0.0, bar_y, false);
     let overlay_x = 0.0;
@@ -600,30 +600,27 @@ mod tests {
 
         let layout = compose_status_bar(&sources).expect("valid native layout");
 
-        assert_eq!((layout.width, layout.height), (800.0, 151.0));
+        assert_eq!((layout.width, layout.height), (800.0, 80.0));
         assert_eq!(
             layout
                 .background
                 .as_ref()
                 .map(|sprite| (sprite.x, sprite.y)),
-            Some((0.0, 80.0))
+            Some((0.0, 9.0))
         );
-        assert_eq!(
-            sprite_position(&layout, "status-overlay"),
-            Some((0.0, 80.0))
-        );
-        assert_eq!(sprite_position(&layout, "gauge"), Some((209.0, 119.0)));
+        assert_eq!(sprite_position(&layout, "status-overlay"), Some((0.0, 9.0)));
+        assert_eq!(sprite_position(&layout, "gauge"), Some((209.0, 48.0)));
         assert_eq!(sprite_position(&layout, "quick-slots"), Some((649.0, 0.0)));
         assert_eq!(sprite_position(&layout, "key-0"), Some((657.0, 16.0)));
-        assert_eq!(sprite_position(&layout, "stats"), Some((634.0, 88.0)));
+        assert_eq!(sprite_position(&layout, "stats"), Some((634.0, 17.0)));
         assert_eq!(
             sprite_position(&layout, "stats-pressed"),
-            Some((634.0, 88.0))
+            Some((634.0, 17.0))
         );
-        assert_eq!(sprite_position(&layout, "skills"), Some((664.0, 88.0)));
+        assert_eq!(sprite_position(&layout, "skills"), Some((664.0, 17.0)));
         assert_eq!(
             sprite_position(&layout, "quick-slot-toggle"),
-            Some((724.0, 88.0))
+            Some((724.0, 17.0))
         );
     }
 
@@ -659,7 +656,7 @@ mod tests {
         let status_bar = gui.status_bar.expect("status bar layout");
 
         assert_eq!(status_bar.width, 800.0);
-        assert_eq!(status_bar.height, 151.0);
+        assert_eq!(status_bar.height, 80.0);
         assert_eq!(
             status_bar
                 .background
