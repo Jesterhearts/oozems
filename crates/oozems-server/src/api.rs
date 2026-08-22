@@ -194,6 +194,7 @@ pub async fn get_map(
         )
     })?;
     map.dropped_items = crate::items::map_drops(&state.drops, map.id)?;
+    map.mobs = crate::mobs::map_mobs(&state.mobs, &map)?;
 
     Ok(Protobuf(GetMapResponse { map: Some(map) }))
 }
@@ -749,6 +750,8 @@ pub enum ApiError {
     GameRules(#[from] crate::experience::ExperienceRuleError),
     #[error("dropped-item operation failed")]
     Drops(#[from] crate::items::DropStoreError),
+    #[error("mob spawning failed")]
+    Mobs(#[from] crate::mobs::MobStoreError),
     #[error("skill rules could not be applied")]
     SkillRules(#[from] crate::skills::SkillRuleError),
     #[error("recovery rules could not be applied")]
@@ -842,6 +845,14 @@ impl IntoResponse for ApiError {
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "drop_store_error",
                     "the server could not access dropped items".to_owned(),
+                )
+            }
+            Self::Mobs(error) => {
+                tracing::error!(%error, "mob spawning failed");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "mob_store_error",
+                    "the server could not access live mobs".to_owned(),
                 )
             }
             Self::SkillRules(error) => {

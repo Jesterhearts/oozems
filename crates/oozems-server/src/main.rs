@@ -9,6 +9,7 @@ mod experience;
 mod gameplay;
 mod items;
 mod keymap;
+mod mobs;
 mod movement;
 mod player_lock;
 mod recovery;

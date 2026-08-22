@@ -525,6 +525,64 @@ message Map {
   repeated Ladder ladders = 8;
   repeated Portal portals = 9;
   repeated DroppedItem dropped_items = 10;
+  repeated MobSpawnPoint mob_spawn_points = 11;
+  repeated MobDefinition mob_definitions = 12;
+  repeated Mob mobs = 13;
+}
+
+message MobSpawnPoint {
+  uint32 spawn_id = 1;
+  uint32 mob_id = 2;
+  Vec2 position = 3;
+  float roam_left = 4;
+  float roam_right = 5;
+  bool flip_x = 6;
+  int32 layer = 7;
+  uint32 respawn_seconds = 8;
+  uint32 foothold_id = 9;
+}
+
+message MobDefinition {
+  uint32 id = 1;
+  uint32 level = 2;
+  uint64 max_hp = 3;
+  uint64 max_mp = 4;
+  uint64 experience = 5;
+  int32 physical_attack = 6;
+  int32 physical_defense = 7;
+  int32 magic_attack = 8;
+  int32 magic_defense = 9;
+  int32 accuracy = 10;
+  int32 avoidability = 11;
+  int32 speed = 12;
+  bool body_attack = 13;
+  bool boss = 14;
+  bool undead = 15;
+  repeated MobAnimation animations = 16;
+}
+
+message MobAnimation {
+  string name = 1;
+  repeated MobFrame frames = 2;
+}
+
+message MobFrame {
+  string asset_id = 1;
+  float width = 2;
+  float height = 3;
+  float origin_x = 4;
+  float origin_y = 5;
+  uint32 delay_ms = 6;
+}
+
+message Mob {
+  string id = 1;
+  uint32 definition_id = 2;
+  Vec2 position = 3;
+  bool flip_x = 4;
+  int32 layer = 5;
+  uint64 current_hp = 6;
+  uint32 spawn_id = 7;
 }
 
 message DroppedItem {
@@ -543,6 +601,7 @@ message Platform {
   float end_y = 6;
   bool hidden = 7;
   int32 layer = 8;
+  uint32 id = 9;
 }
 
 enum PlatformKind {

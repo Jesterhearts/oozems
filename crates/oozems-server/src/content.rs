@@ -361,6 +361,7 @@ fn build_map(
                 end_y: platform.y,
                 hidden: false,
                 layer: platform.layer,
+                id: 0,
             })
             .collect(),
         decorations: source
@@ -381,6 +382,9 @@ fn build_map(
         ladders: Vec::new(),
         portals: Vec::new(),
         dropped_items: Vec::new(),
+        mob_spawn_points: Vec::new(),
+        mob_definitions: Vec::new(),
+        mobs: Vec::new(),
     })
 }
 
@@ -581,6 +585,40 @@ mod tests {
                 && portal.layer == 1
                 && !portal.frames.is_empty()
         }));
+        if wz_dir.join("Mob.wz").exists() {
+            let mob_map = catalog
+                .get_map(100_010_000)
+                .expect("mob map lookup should succeed")
+                .expect("Henesys Hunting Ground should exist");
+            assert!(
+                mob_map
+                    .mob_spawn_points
+                    .iter()
+                    .any(|spawn| spawn.mob_id == 100_101 && spawn.position.is_some())
+            );
+            let slime = mob_map
+                .mob_definitions
+                .iter()
+                .find(|definition| definition.id == 100_101)
+                .expect("slime definition");
+            assert_eq!(slime.level, 2);
+            assert_eq!(slime.max_hp, 15);
+            assert!(slime.animations.iter().any(|animation| {
+                animation.name == "move"
+                    && animation.frames.len() == 4
+                    && animation.frames.iter().all(|frame| frame.delay_ms == 120)
+            }));
+            assert!(
+                slime
+                    .animations
+                    .iter()
+                    .flat_map(|animation| &animation.frames)
+                    .all(|frame| mob_map
+                        .assets
+                        .iter()
+                        .any(|asset| asset.id == frame.asset_id))
+            );
+        }
         if wz_dir.join("Character.wz").exists() && wz_dir.join("UI.wz").exists() {
             let gui = catalog.game_gui();
             assert_eq!(gui.items.len(), 6);

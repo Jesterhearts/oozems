@@ -19,6 +19,7 @@ use crate::database::Database;
 use crate::experience::ExperienceCurves;
 use crate::gameplay::GameplayConfig;
 use crate::items::DropStore;
+use crate::mobs::MobStore;
 use crate::movement::MovementTracker;
 use crate::player_lock::PlayerLocks;
 use crate::recovery::RecoveryTimers;
@@ -33,6 +34,7 @@ pub struct AppState {
     pub drops: Arc<DropStore>,
     pub gameplay: GameplayConfig,
     pub movement: Arc<MovementTracker>,
+    pub mobs: Arc<MobStore>,
     pub player_locks: Arc<PlayerLocks>,
     pub recovery_timers: Arc<RecoveryTimers>,
     pub skill_cooldowns: Arc<SkillCooldowns>,
@@ -55,6 +57,7 @@ pub fn router(
         drops: Arc::new(DropStore::new(gameplay.item_drop_despawn)),
         gameplay,
         movement: Arc::new(MovementTracker::default()),
+        mobs: Arc::new(MobStore::default()),
         player_locks: Arc::new(PlayerLocks::default()),
         recovery_timers: Arc::new(RecoveryTimers::default()),
         skill_cooldowns: Arc::new(SkillCooldowns::default()),

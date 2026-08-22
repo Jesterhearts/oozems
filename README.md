@@ -17,6 +17,8 @@ The current vertical slice includes:
   settings windows composed from `UI.wz` sprites;
 - persisted equipment and inventory state with WZ item icons and transient
   map drops that characters can pick up;
+- server-owned mob instances created from `Map.wz` spawn points, with stats and
+  streamed animations loaded from `Mob.wz`;
 - persisted, drag-and-drop keyboard bindings for every supported action;
 - WZ skill books with persisted skill levels, resource costs, cooldowns, and
   draggable skill bindings, plus streamed skill animations and sounds;
@@ -76,6 +78,7 @@ server
   -> config/skill-formulas.toml   validated combat formulas
   -> content/maps/*.json          immutable map source
   -> data/Map.wz                  optional, lazy WZ map source
+  -> data/Mob.wz                  optional mob stats and animation source
   -> data/Character.wz            optional character sprite source
   -> data/UI.wz                   optional GUI sprite source
   -> data/Skill.wz                optional skill data, icons, and effects
@@ -106,6 +109,13 @@ compressed in `Map.wz` until the browser requests its opaque
 `/wz-assets/...` URL. The server then decodes that sprite, returns a normal PNG,
 and caches it for later requests. WZ files and extracted assets are not added to
 the client bundle.
+
+Place `Mob.wz` beside `Map.wz` to enable mobs. The server reads map-local mob
+spawn points, snaps each initial position to its supporting foothold, and
+creates the live instances. It loads each distinct mob definition once for the
+requested map, including combat stats and all available animation metadata.
+The browser requests only the animation frames that it renders. Mob state is
+owned by the server and resets when the server restarts.
 
 Place `Character.wz` beside the map archives to enable character creation. The
 server indexes the available skin, face, and hair styles, then composes idle,

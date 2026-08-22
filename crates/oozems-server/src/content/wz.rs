@@ -1,14 +1,10 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::fs;
-use std::io::Cursor;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::OnceLock;
 use std::sync::RwLock;
 
-use image::ImageFormat;
 use oozems_proto::v1::AssetDescriptor;
 use oozems_proto::v1::Decoration;
 use oozems_proto::v1::DecorationFrame;
@@ -18,19 +14,23 @@ use oozems_proto::v1::PlatformKind;
 use sha2::Digest;
 use sha2::Sha256;
 use thiserror::Error;
-use wz_reader::WzFile;
-use wz_reader::WzNode;
 use wz_reader::WzNodeArc;
 use wz_reader::WzNodeCast;
 use wz_reader::WzObjectType;
 use wz_reader::property::Vector2D;
 use wz_reader::property::WzPngParseError;
-use wz_reader::property::WzSoundType;
-use wz_reader::property::png::get_image;
 use wz_reader::util::node_util::parse_node;
 
+mod archive;
+mod asset;
 mod features;
+mod mob;
+mod names;
 
+pub(super) use archive::archive_fingerprint;
+pub(super) use archive::open_archive;
+pub(super) use archive::wrap_archive_root;
+pub(crate) use asset::WzAsset;
 use features::RawLadder;
 use features::RawPortal;
 
@@ -46,20 +46,7 @@ pub struct WzContent {
     fingerprint: String,
     maps: RwLock<HashMap<u32, Map>>,
     assets: RwLock<HashMap<String, Arc<WzAsset>>>,
-}
-
-pub(crate) struct WzAsset {
-    id: String,
-    node: WzNodeArc,
-    kind: WzAssetKind,
-    bytes: OnceLock<Arc<[u8]>>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum WzAssetKind {
-    Png,
-    Mp3,
-    Wav,
+    mobs: Option<mob::MobContent>,
 }
 
 #[derive(Debug, Error)]
@@ -114,6 +101,7 @@ struct Bounds {
 
 #[derive(Clone, Copy, Debug)]
 struct RawPlatform {
+    id: u32,
     x1: i32,
     y1: i32,
     x2: i32,
@@ -180,8 +168,9 @@ impl WzContent {
         let base = wrap_archive_root(&root)?;
         parse(&root, format!("{} root", map_path.display()))?;
         let map_nodes = index_map_nodes(&root, &map_path)?;
-        let map_names = load_map_names(&directory.join(STRING_ARCHIVE))?;
+        let map_names = names::load_map_names(&directory.join(STRING_ARCHIVE))?;
         let fingerprint = archive_fingerprint(&map_path)?;
+        let mobs = mob::MobContent::open_optional(directory)?;
 
         tracing::info!(
             path = %map_path.display(),
@@ -197,6 +186,7 @@ impl WzContent {
             fingerprint,
             maps: RwLock::new(HashMap::new()),
             assets: RwLock::new(HashMap::new()),
+            mobs,
         }))
     }
 
@@ -243,7 +233,11 @@ impl WzContent {
         &self,
         asset_id: &str,
     ) -> Option<Arc<WzAsset>> {
-        self.assets.read().ok()?.get(asset_id).cloned()
+        self.assets
+            .read()
+            .ok()
+            .and_then(|assets| assets.get(asset_id).cloned())
+            .or_else(|| self.mobs.as_ref().and_then(|mobs| mobs.get_asset(asset_id)))
     }
 
     fn register_asset(
@@ -270,158 +264,11 @@ impl WzContent {
     }
 }
 
-impl WzAsset {
-    pub(super) fn new(
-        id: String,
-        node: WzNodeArc,
-    ) -> Self {
-        Self {
-            id,
-            node,
-            kind: WzAssetKind::Png,
-            bytes: OnceLock::new(),
-        }
-    }
-
-    pub(super) fn new_sound(
-        id: String,
-        node: WzNodeArc,
-    ) -> Result<Self, WzContentError> {
-        let kind = {
-            let read = node.read().map_err(|_| lock_error("WZ sound asset"))?;
-            let sound = read
-                .try_as_sound()
-                .ok_or_else(|| WzContentError::InvalidAsset {
-                    asset_id: id.clone(),
-                    message: "source is not a sound property".to_owned(),
-                })?;
-            match sound.sound_type {
-                WzSoundType::Mp3 => WzAssetKind::Mp3,
-                WzSoundType::Wav => WzAssetKind::Wav,
-                WzSoundType::Binary => {
-                    return Err(WzContentError::InvalidAsset {
-                        asset_id: id,
-                        message: "binary sound data has no browser media type".to_owned(),
-                    });
-                }
-            }
-        };
-        Ok(Self {
-            id,
-            node,
-            kind,
-            bytes: OnceLock::new(),
-        })
-    }
-
-    #[cfg(test)]
-    pub fn png_bytes(&self) -> Result<Arc<[u8]>, WzContentError> {
-        if self.kind != WzAssetKind::Png {
-            return Err(WzContentError::InvalidAsset {
-                asset_id: self.id.clone(),
-                message: "sound was requested as a PNG".to_owned(),
-            });
-        }
-        self.asset_bytes()
-    }
-
-    pub fn asset_bytes(&self) -> Result<Arc<[u8]>, WzContentError> {
-        if let Some(bytes) = self.bytes.get() {
-            return Ok(Arc::clone(bytes));
-        }
-
-        let bytes: Arc<[u8]> = match self.kind {
-            WzAssetKind::Png => {
-                let image =
-                    get_image(&self.node).map_err(|source| WzContentError::DecodeAsset {
-                        asset_id: self.id.clone(),
-                        source,
-                    })?;
-                let mut output = Cursor::new(Vec::new());
-                image
-                    .write_to(&mut output, ImageFormat::Png)
-                    .map_err(|source| WzContentError::EncodeAsset {
-                        asset_id: self.id.clone(),
-                        source,
-                    })?;
-                output.into_inner().into()
-            }
-            WzAssetKind::Mp3 | WzAssetKind::Wav => {
-                let read = self.node.read().map_err(|_| lock_error("WZ sound bytes"))?;
-                read.try_as_sound()
-                    .ok_or_else(|| WzContentError::InvalidAsset {
-                        asset_id: self.id.clone(),
-                        message: "source is no longer a sound property".to_owned(),
-                    })?
-                    .get_buffer()
-                    .into()
-            }
-        };
-        let _ = self.bytes.set(Arc::clone(&bytes));
-        Ok(self.bytes.get().cloned().unwrap_or(bytes))
-    }
-
-    pub fn extension(&self) -> &'static str {
-        match self.kind {
-            WzAssetKind::Png => "png",
-            WzAssetKind::Mp3 => "mp3",
-            WzAssetKind::Wav => "wav",
-        }
-    }
-
-    pub fn content_type(&self) -> &'static str {
-        match self.kind {
-            WzAssetKind::Png => "image/png",
-            WzAssetKind::Mp3 => "audio/mpeg",
-            WzAssetKind::Wav => "audio/wav",
-        }
-    }
-}
-
-pub(super) fn open_archive(path: &Path) -> Result<WzNodeArc, WzContentError> {
-    WzNode::from_wz_file(path, None)
-        .map(Into::into)
-        .map_err(|source| WzContentError::Open {
-            path: path.to_owned(),
-            source,
-        })
-}
-
-pub(super) fn wrap_archive_root(root: &WzNodeArc) -> Result<WzNodeArc, WzContentError> {
-    let base = WzNode::from_str("Base", WzFile::default(), None).into_lock();
-    root.write()
-        .map_err(|_| lock_error("WZ archive parent"))?
-        .parent = Arc::downgrade(&base);
-    base.write()
-        .map_err(|_| lock_error("WZ synthetic Base root"))?
-        .add(root);
-    Ok(base)
-}
-
 pub(super) fn parse(
     node: &WzNodeArc,
     context: String,
 ) -> Result<(), WzContentError> {
     parse_node(node).map_err(|source| WzContentError::Parse { context, source })
-}
-
-pub(super) fn archive_fingerprint(path: &Path) -> Result<String, WzContentError> {
-    let metadata = fs::metadata(path).map_err(|source| WzContentError::Metadata {
-        path: path.to_owned(),
-        source,
-    })?;
-    let modified = metadata
-        .modified()
-        .map_err(|source| WzContentError::Metadata {
-            path: path.to_owned(),
-            source,
-        })?
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    Ok(hex::encode(Sha256::digest(
-        format!("{}:{modified}", metadata.len()).as_bytes(),
-    )))
 }
 
 fn index_map_nodes(
@@ -472,46 +319,6 @@ fn index_map_directory(
     Ok(())
 }
 
-fn load_map_names(path: &Path) -> Result<HashMap<u32, String>, WzContentError> {
-    if !path
-        .try_exists()
-        .map_err(|source| WzContentError::Metadata {
-            path: path.to_owned(),
-            source,
-        })?
-    {
-        tracing::warn!(path = %path.display(), "String.wz is absent; using numeric map names");
-        return Ok(HashMap::new());
-    }
-
-    let root = open_archive(path)?;
-    parse(&root, format!("{} root", path.display()))?;
-    let map_image = child(&root, "Map.img")?.ok_or_else(|| WzContentError::InvalidMap {
-        map_id: 0,
-        message: format!("{} does not contain Map.img", path.display()),
-    })?;
-    parse(&map_image, format!("{} Map.img", path.display()))?;
-    let mut names = HashMap::new();
-    collect_map_names(&map_image, &mut names)?;
-    Ok(names)
-}
-
-fn collect_map_names(
-    node: &WzNodeArc,
-    names: &mut HashMap<u32, String>,
-) -> Result<(), WzContentError> {
-    let name = node_name(node)?;
-    if let Ok(map_id) = name.parse::<u32>()
-        && let Some(map_name) = string_value(node, "mapName")?.filter(|value| !value.is_empty())
-    {
-        names.insert(map_id, map_name);
-    }
-    for child in children(node)? {
-        collect_map_names(&child, names)?;
-    }
-    Ok(())
-}
-
 fn build_map(
     source: &WzContent,
     map_id: u32,
@@ -521,6 +328,7 @@ fn build_map(
     let mut raw_decorations = read_decorations(&source.root, node, map_id)?;
     let raw_ladders = features::read_ladders(node)?;
     let raw_portals = features::read_portals(&source.root, node)?;
+    let raw_mob_spawns = mob::read_spawn_points(node)?;
     // zM associates an item with a foothold group. It does not control drawing.
     // The order key keeps the separate WZ draw-order fields comparable.
     raw_decorations.sort_by_key(|decoration| decoration.order);
@@ -566,6 +374,13 @@ fn build_map(
         &mut assets,
         &mut asset_ids,
     )?;
+    let mob_spawn_points = mob::build_spawn_points(raw_mob_spawns, &platforms, bounds);
+    let mob_definitions = mob::load_definitions(
+        source.mobs.as_ref(),
+        &mob_spawn_points,
+        &mut assets,
+        &mut asset_ids,
+    )?;
 
     Ok(Map {
         id: map_id,
@@ -582,6 +397,9 @@ fn build_map(
         ladders,
         portals,
         dropped_items: Vec::new(),
+        mob_spawn_points,
+        mob_definitions,
+        mobs: Vec::new(),
     })
 }
 
@@ -610,6 +428,7 @@ fn collect_platforms(
         .collect::<Result<Vec<_>, _>>()?;
     if let [Some(x1), Some(y1), Some(x2), Some(y2)] = values.as_slice() {
         output.push(RawPlatform {
+            id: node_name(node)?.parse::<u32>().unwrap_or_default(),
             x1: *x1,
             y1: *y1,
             x2: *x2,
@@ -1032,6 +851,7 @@ fn build_platform(
         end_y: y2,
         hidden: true,
         layer: source.layer,
+        id: source.id,
     }
 }
 
@@ -1181,6 +1001,7 @@ mod tests {
     #[test]
     fn derived_bounds_include_geometry_and_padding() {
         let platforms = [RawPlatform {
+            id: 1,
             x1: -40,
             y1: 20,
             x2: 80,
@@ -1204,6 +1025,7 @@ mod tests {
     fn platform_keeps_its_wz_layer() {
         let platform = build_platform(
             RawPlatform {
+                id: 1,
                 x1: 10,
                 y1: 20,
                 x2: 30,

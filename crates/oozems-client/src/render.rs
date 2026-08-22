@@ -15,6 +15,7 @@ use crate::character_render::CharacterPlacement;
 use crate::game::Game;
 use crate::game_gui;
 
+mod mob;
 mod skillbook;
 
 const GAUGE_HEADER_HEIGHT: f64 = 15.0;
@@ -26,6 +27,7 @@ enum LayerPass {
     Decorations,
     Platforms,
     Portals,
+    Mobs,
     DroppedItems,
     Player,
     SkillEffects,
@@ -35,11 +37,13 @@ const ORDINARY_LAYER_PASSES: &[LayerPass] = &[
     LayerPass::Decorations,
     LayerPass::Platforms,
     LayerPass::Portals,
+    LayerPass::Mobs,
 ];
 const PLAYER_LAYER_PASSES: &[LayerPass] = &[
     LayerPass::Decorations,
     LayerPass::Platforms,
     LayerPass::Portals,
+    LayerPass::Mobs,
     LayerPass::DroppedItems,
     LayerPass::Player,
     LayerPass::SkillEffects,
@@ -68,6 +72,7 @@ pub fn draw(game: &Game) {
                 LayerPass::Decorations => draw_decorations(game, camera_x, camera_y, *layer),
                 LayerPass::Platforms => draw_platforms(game, camera_x, camera_y, *layer),
                 LayerPass::Portals => draw_portals(game, camera_x, camera_y, *layer),
+                LayerPass::Mobs => mob::draw(game, camera_x, camera_y, *layer),
                 LayerPass::DroppedItems => draw_dropped_items(game, camera_x, camera_y),
                 LayerPass::Player => draw_player(game, camera_x, camera_y),
                 LayerPass::SkillEffects => {
@@ -81,13 +86,19 @@ pub fn draw(game: &Game) {
 
 pub(crate) fn world_layers(map: &Map) -> Vec<i32> {
     let mut layers = Vec::with_capacity(
-        map.decorations.len() + map.platforms.len() + map.ladders.len() + map.portals.len() + 1,
+        map.decorations.len()
+            + map.platforms.len()
+            + map.ladders.len()
+            + map.portals.len()
+            + map.mobs.len()
+            + 1,
     );
     layers.push(0);
     layers.extend(map.decorations.iter().map(|decoration| decoration.layer));
     layers.extend(map.platforms.iter().map(|platform| platform.layer));
     layers.extend(map.ladders.iter().map(|ladder| ladder.layer));
     layers.extend(map.portals.iter().map(|portal| portal.layer));
+    layers.extend(map.mobs.iter().map(|mob| mob.layer));
     layers.sort_unstable();
     layers.dedup();
     layers
@@ -902,6 +913,7 @@ mod tests {
     use oozems_proto::v1::DecorationFrame;
     use oozems_proto::v1::Ladder;
     use oozems_proto::v1::Map;
+    use oozems_proto::v1::Mob;
     use oozems_proto::v1::Platform;
     use oozems_proto::v1::Portal;
     use oozems_proto::v1::PortalFrame;
@@ -931,10 +943,14 @@ mod tests {
                 layer: 2,
                 ..Portal::default()
             }],
+            mobs: vec![Mob {
+                layer: 5,
+                ..Mob::default()
+            }],
             ..Map::default()
         };
 
-        assert_eq!(world_layers(&map), vec![0, 1, 2, 3, 4]);
+        assert_eq!(world_layers(&map), vec![0, 1, 2, 3, 4, 5]);
     }
 
     #[test]
@@ -945,6 +961,7 @@ mod tests {
                 LayerPass::Decorations,
                 LayerPass::Platforms,
                 LayerPass::Portals,
+                LayerPass::Mobs,
             ]
         );
         assert_eq!(
@@ -953,6 +970,7 @@ mod tests {
                 LayerPass::Decorations,
                 LayerPass::Platforms,
                 LayerPass::Portals,
+                LayerPass::Mobs,
                 LayerPass::DroppedItems,
                 LayerPass::Player,
                 LayerPass::SkillEffects,
