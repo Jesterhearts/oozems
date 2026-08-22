@@ -1,6 +1,30 @@
 [package]
-name = "oozems-client"
+name    = "oozems-client"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+
 [dependencies]
+console_error_panic_hook = "0.1.7"
+gloo-net                 = "0.7.0"
+js-sys                   = "0.3.104"
+oozems-proto             = { path = "../oozems-proto", version = "0.1.0" }
+prost                    = "0.14.4"
+thiserror                = "2.0.20"
+wasm-bindgen             = "0.2.127"
+wasm-bindgen-futures     = "0.4.77"
+web-sys                  = { version = "0.3.104", features = [
+  "CanvasRenderingContext2d",
+  "Document",
+  "Element",
+  "EventTarget",
+  "HtmlCanvasElement",
+  "HtmlImageElement",
+  "KeyboardEvent",
+  "Performance",
+  "Response",
+  "Window",
+  "console"
+] }

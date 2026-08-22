@@ -1,0 +1,86 @@
+syntax = "proto3";
+
+package oozems.v1;
+
+// All API payloads use this schema. Binary image and audio assets keep their
+// native formats so browsers can cache and decode them without another copy.
+
+message Vec2 {
+  float x = 1;
+  float y = 2;
+}
+
+message PlayerState {
+  string id = 1;
+  string name = 2;
+  uint32 level = 3;
+  uint32 map_id = 4;
+  Vec2 position = 5;
+}
+
+message BootstrapRequest {
+  string player_id = 1;
+}
+
+message BootstrapResponse {
+  PlayerState player = 1;
+}
+
+message GetMapRequest {
+  uint32 map_id = 1;
+}
+
+message GetMapResponse {
+  Map map = 1;
+}
+
+message SavePlayerRequest {
+  PlayerState player = 1;
+}
+
+message SavePlayerResponse {
+  PlayerState player = 1;
+}
+
+message Map {
+  uint32 id = 1;
+  string name = 2;
+  uint32 width = 3;
+  uint32 height = 4;
+  repeated Platform platforms = 5;
+  repeated Decoration decorations = 6;
+  repeated AssetDescriptor assets = 7;
+}
+
+message Platform {
+  float x = 1;
+  float y = 2;
+  float width = 3;
+  PlatformKind kind = 4;
+}
+
+enum PlatformKind {
+  PLATFORM_KIND_UNSPECIFIED = 0;
+  PLATFORM_KIND_GROUND = 1;
+  PLATFORM_KIND_WOOD = 2;
+}
+
+message Decoration {
+  string asset_id = 1;
+  float x = 2;
+  float y = 3;
+  float width = 4;
+  float height = 5;
+  int32 layer = 6;
+}
+
+message AssetDescriptor {
+  string id = 1;
+  string url = 2;
+  string content_hash = 3;
+}
+
+message ErrorResponse {
+  string code = 1;
+  string message = 2;
+}

@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#203b38">
+    <title>Oozems</title>
+    <link data-trunk rel="rust" data-wasm-opt="z">
+    <link data-trunk rel="css" href="styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header>
+        <div>
+          <p class="eyebrow">OOZEMS</p>
+          <h1>Mossy Clearing</h1>
+        </div>
+        <p class="controls">Move: A/D or arrows <span>Jump: W, up, or space</span></p>
+      </header>
+      <section class="frame" aria-label="Game">
+        <canvas id="game" width="960" height="600" tabindex="0">
+          Your browser does not support canvas.
+        </canvas>
+      </section>
+      <p id="status" class="status" role="status">Starting WASM client...</p>
+    </main>
+  </body>
+</html>

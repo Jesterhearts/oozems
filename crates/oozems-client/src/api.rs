@@ -1,0 +1,102 @@
+use gloo_net::http::Request;
+use js_sys::Uint8Array;
+use oozems_proto::PROTOBUF_CONTENT_TYPE;
+use oozems_proto::v1::BootstrapRequest;
+use oozems_proto::v1::BootstrapResponse;
+use oozems_proto::v1::ErrorResponse;
+use oozems_proto::v1::GetMapRequest;
+use oozems_proto::v1::GetMapResponse;
+use oozems_proto::v1::Map;
+use oozems_proto::v1::PlayerState;
+use oozems_proto::v1::SavePlayerRequest;
+use oozems_proto::v1::SavePlayerResponse;
+use prost::Message;
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum ClientError {
+    #[error("request failed: {0}")]
+    Network(String),
+    #[error("server returned {status}: {code}: {message}")]
+    Server {
+        status: u16,
+        code: String,
+        message: String,
+    },
+    #[error("invalid protobuf response: {0}")]
+    InvalidResponse(String),
+    #[error("response did not contain {0}")]
+    MissingData(&'static str),
+}
+
+pub async fn bootstrap(player_id: &str) -> Result<PlayerState, ClientError> {
+    let response: BootstrapResponse = post_protobuf(
+        "/api/v1/bootstrap",
+        BootstrapRequest {
+            player_id: player_id.to_owned(),
+        },
+    )
+    .await?;
+
+    response.player.ok_or(ClientError::MissingData("player"))
+}
+
+pub async fn get_map(map_id: u32) -> Result<Map, ClientError> {
+    let response: GetMapResponse =
+        post_protobuf("/api/v1/maps/get", GetMapRequest { map_id }).await?;
+
+    response.map.ok_or(ClientError::MissingData("map"))
+}
+
+pub async fn save_player(player: PlayerState) -> Result<PlayerState, ClientError> {
+    let response: SavePlayerResponse = post_protobuf(
+        "/api/v1/players/save",
+        SavePlayerRequest {
+            player: Some(player),
+        },
+    )
+    .await?;
+
+    response.player.ok_or(ClientError::MissingData("player"))
+}
+
+async fn post_protobuf<I, O>(
+    url: &str,
+    input: I,
+) -> Result<O, ClientError>
+where
+    I: Message,
+    O: Message + Default,
+{
+    let encoded = input.encode_to_vec();
+    let body = Uint8Array::from(encoded.as_slice());
+    let request = Request::post(url)
+        .header("Content-Type", PROTOBUF_CONTENT_TYPE)
+        .header("Accept", PROTOBUF_CONTENT_TYPE)
+        .body(body)
+        .map_err(|error| ClientError::Network(error.to_string()))?;
+    let response = request
+        .send()
+        .await
+        .map_err(|error| ClientError::Network(error.to_string()))?;
+    let status = response.status();
+    let bytes = response
+        .binary()
+        .await
+        .map_err(|error| ClientError::Network(error.to_string()))?;
+
+    if !response.ok() {
+        let error = ErrorResponse::decode(bytes.as_slice()).map_err(|decode_error| {
+            ClientError::InvalidResponse(format!(
+                "HTTP {status} error was not valid protobuf: {decode_error}"
+            ))
+        })?;
+        return Err(ClientError::Server {
+            status,
+            code: error.code,
+            message: error.message,
+        });
+    }
+
+    O::decode(bytes.as_slice()).map_err(|error| ClientError::InvalidResponse(error.to_string()))
+}

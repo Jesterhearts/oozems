@@ -1,0 +1,51 @@
+{
+  "id": 100000000,
+  "name": "Mossy Clearing",
+  "width": 1280,
+  "height": 720,
+  "platforms": [
+    { "x": 0.0, "y": 570.0, "width": 1280.0, "kind": "ground" },
+    { "x": 240.0, "y": 455.0, "width": 220.0, "kind": "wood" },
+    { "x": 610.0, "y": 390.0, "width": 190.0, "kind": "wood" },
+    { "x": 930.0, "y": 480.0, "width": 180.0, "kind": "wood" }
+  ],
+  "decorations": [
+    {
+      "asset_id": "cloud",
+      "x": 105.0,
+      "y": 85.0,
+      "width": 180.0,
+      "height": 90.0,
+      "layer": -2
+    },
+    {
+      "asset_id": "cloud",
+      "x": 765.0,
+      "y": 135.0,
+      "width": 145.0,
+      "height": 72.0,
+      "layer": -2
+    },
+    {
+      "asset_id": "tree",
+      "x": 1010.0,
+      "y": 270.0,
+      "width": 210.0,
+      "height": 310.0,
+      "layer": -1
+    },
+    {
+      "asset_id": "mushroom",
+      "x": 80.0,
+      "y": 500.0,
+      "width": 68.0,
+      "height": 72.0,
+      "layer": 1
+    }
+  ],
+  "assets": [
+    { "id": "cloud", "path": "scenery/cloud.svg" },
+    { "id": "tree", "path": "scenery/tree.svg" },
+    { "id": "mushroom", "path": "scenery/mushroom.svg" }
+  ]
+}
