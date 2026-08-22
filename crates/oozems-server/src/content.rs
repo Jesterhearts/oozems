@@ -9,7 +9,9 @@ use oozems_proto::v1::CharacterAppearance;
 use oozems_proto::v1::CharacterCreationOptions;
 use oozems_proto::v1::CharacterSpriteSet;
 use oozems_proto::v1::Decoration;
+use oozems_proto::v1::EquippedItem;
 use oozems_proto::v1::GameGui;
+use oozems_proto::v1::ItemDefinition;
 use oozems_proto::v1::Map;
 use oozems_proto::v1::Platform;
 use oozems_proto::v1::PlatformKind;
@@ -192,16 +194,29 @@ impl ContentCatalog {
     }
 
     pub fn game_gui(&self) -> GameGui {
-        self.gui
+        let mut gui = self
+            .gui
             .as_ref()
             .map(GuiContent::game_gui)
-            .unwrap_or_default()
+            .unwrap_or_default();
+        if let Some(characters) = &self.characters {
+            gui.assets.extend(characters.item_assets());
+            gui.items = characters.item_definitions();
+        }
+        gui
     }
 
     pub fn character_creation_options(&self) -> CharacterCreationOptions {
         self.characters
             .as_ref()
             .map(CharacterContent::creation_options)
+            .unwrap_or_default()
+    }
+
+    pub fn item_definitions(&self) -> Vec<ItemDefinition> {
+        self.characters
+            .as_ref()
+            .map(CharacterContent::item_definitions)
             .unwrap_or_default()
     }
 
@@ -217,10 +232,11 @@ impl ContentCatalog {
     pub fn get_character_sprites(
         &self,
         appearance: &CharacterAppearance,
+        equipment: &[EquippedItem],
     ) -> Result<Option<CharacterSpriteSet>, ContentError> {
         self.characters
             .as_ref()
-            .map(|source| source.get_sprites(appearance))
+            .map(|source| source.get_sprites(appearance, equipment))
             .transpose()
             .map(|sprites| sprites.flatten())
             .map_err(Into::into)
@@ -313,6 +329,7 @@ fn build_map(
         assets,
         ladders: Vec::new(),
         portals: Vec::new(),
+        dropped_items: Vec::new(),
     })
 }
 
@@ -495,6 +512,17 @@ mod tests {
                 && portal.target_name == "west00"
                 && !portal.frames.is_empty()
         }));
+        if wz_dir.join("Character.wz").exists() && wz_dir.join("UI.wz").exists() {
+            let gui = catalog.game_gui();
+            assert_eq!(gui.items.len(), 6);
+            assert!(gui.equipment_window.is_some());
+            assert!(gui.inventory_window.is_some());
+            assert!(gui.items.iter().all(|item| {
+                gui.assets
+                    .iter()
+                    .any(|asset| asset.id == item.icon_asset_id)
+            }));
+        }
         for descriptor in &map.assets {
             let asset = catalog
                 .get_wz_asset(&descriptor.id)

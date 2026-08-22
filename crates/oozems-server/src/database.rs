@@ -2,6 +2,9 @@ use std::path::Path;
 
 use oozems_proto::v1::CharacterAppearance;
 use oozems_proto::v1::CharacterStats;
+use oozems_proto::v1::EquipmentSlot;
+use oozems_proto::v1::EquippedItem;
+use oozems_proto::v1::InventoryState;
 use oozems_proto::v1::PlayerState;
 use oozems_proto::v1::Vec2;
 use surrealdb::Surreal;
@@ -58,6 +61,11 @@ struct PlayerData {
     skin_id: Option<u32>,
     face_id: Option<u32>,
     hair_id: Option<u32>,
+    inventory_item_ids: Vec<u32>,
+    inventory_capacity: u32,
+    equipped_top: Option<u32>,
+    equipped_bottom: Option<u32>,
+    equipped_shoes: Option<u32>,
 }
 
 #[derive(Clone, Debug, SurrealValue)]
@@ -86,6 +94,11 @@ struct PlayerRecord {
     skin_id: Option<u32>,
     face_id: Option<u32>,
     hair_id: Option<u32>,
+    inventory_item_ids: Option<Vec<u32>>,
+    inventory_capacity: Option<u32>,
+    equipped_top: Option<u32>,
+    equipped_bottom: Option<u32>,
+    equipped_shoes: Option<u32>,
 }
 
 impl PlayerId {
@@ -157,6 +170,11 @@ async fn initialize_schema(database: &Database) -> surrealdb::Result<()> {
             DEFINE FIELD IF NOT EXISTS skin_id ON TABLE player TYPE option<int>;
             DEFINE FIELD IF NOT EXISTS face_id ON TABLE player TYPE option<int>;
             DEFINE FIELD IF NOT EXISTS hair_id ON TABLE player TYPE option<int>;
+            DEFINE FIELD IF NOT EXISTS inventory_item_ids ON TABLE player TYPE option<array<int>>;
+            DEFINE FIELD IF NOT EXISTS inventory_capacity ON TABLE player TYPE option<int>;
+            DEFINE FIELD IF NOT EXISTS equipped_top ON TABLE player TYPE option<int>;
+            DEFINE FIELD IF NOT EXISTS equipped_bottom ON TABLE player TYPE option<int>;
+            DEFINE FIELD IF NOT EXISTS equipped_shoes ON TABLE player TYPE option<int>;
             "#,
         )
         .await?
@@ -190,6 +208,7 @@ pub async fn create_player(
         position: Some(position),
         appearance: Some(appearance),
         stats: Some(stats),
+        inventory: Some(crate::items::starter_inventory()),
     };
     save_player(database, &player).await
 }
@@ -229,12 +248,14 @@ pub fn apply_player_movement(
         position: Some(position),
         appearance: current.appearance,
         stats: current.stats,
+        inventory: current.inventory,
     }
 }
 
 fn player_from_record(record: PlayerRecord) -> PlayerState {
     let appearance = appearance_from_record(&record);
     let stats = stats_from_record(&record);
+    let inventory = inventory_from_record(&record);
     let _record_id = record.id;
     PlayerState {
         id: record.player_id,
@@ -247,6 +268,7 @@ fn player_from_record(record: PlayerRecord) -> PlayerState {
         }),
         appearance,
         stats: Some(stats),
+        inventory: Some(inventory),
     }
 }
 
@@ -302,11 +324,47 @@ fn appearance_from_record(record: &PlayerRecord) -> Option<CharacterAppearance> 
     })
 }
 
+fn inventory_from_record(record: &PlayerRecord) -> InventoryState {
+    let Some(item_ids) = record.inventory_item_ids.clone() else {
+        return crate::items::starter_inventory();
+    };
+    let capacity = record
+        .inventory_capacity
+        .unwrap_or(crate::items::INVENTORY_CAPACITY)
+        .max(item_ids.len() as u32);
+    let equipment = [
+        (EquipmentSlot::Top, record.equipped_top),
+        (EquipmentSlot::Bottom, record.equipped_bottom),
+        (EquipmentSlot::Shoes, record.equipped_shoes),
+    ]
+    .into_iter()
+    .filter_map(|(slot, item_id)| {
+        item_id.map(|item_id| EquippedItem {
+            slot: slot as i32,
+            item_id,
+        })
+    })
+    .collect();
+
+    InventoryState {
+        item_ids,
+        equipment,
+        capacity,
+    }
+}
+
 impl From<&PlayerState> for PlayerData {
     fn from(player: &PlayerState) -> Self {
         let position = player.position.as_ref().cloned().unwrap_or_default();
         let appearance = player.appearance.as_ref();
         let stats = player.stats.unwrap_or_else(starter_character_stats);
+        let inventory = player
+            .inventory
+            .clone()
+            .unwrap_or_else(crate::items::starter_inventory);
+        let equipped_top = equipped_item(&inventory, EquipmentSlot::Top);
+        let equipped_bottom = equipped_item(&inventory, EquipmentSlot::Bottom);
+        let equipped_shoes = equipped_item(&inventory, EquipmentSlot::Shoes);
         Self {
             player_id: player.id.clone(),
             name: player.name.clone(),
@@ -331,8 +389,24 @@ impl From<&PlayerState> for PlayerData {
             skin_id: appearance.map(|value| value.skin_id),
             face_id: appearance.map(|value| value.face_id),
             hair_id: appearance.map(|value| value.hair_id),
+            inventory_item_ids: inventory.item_ids,
+            inventory_capacity: inventory.capacity,
+            equipped_top,
+            equipped_bottom,
+            equipped_shoes,
         }
     }
+}
+
+fn equipped_item(
+    inventory: &InventoryState,
+    slot: EquipmentSlot,
+) -> Option<u32> {
+    inventory
+        .equipment
+        .iter()
+        .find(|equipped| equipped.slot == slot as i32)
+        .map(|equipped| equipped.item_id)
 }
 
 #[cfg(test)]
@@ -376,6 +450,7 @@ mod tests {
             position: Some(Vec2 { x: 5.0, y: 5.0 }),
             appearance: Some(appearance()),
             stats: Some(starter_character_stats()),
+            inventory: Some(crate::items::starter_inventory()),
         };
         let requested = PlayerState {
             id: "local".to_owned(),
@@ -385,6 +460,7 @@ mod tests {
             position: Some(Vec2 { x: -10.0, y: 900.0 }),
             appearance: None,
             stats: None,
+            inventory: None,
         };
 
         let result = apply_player_movement(current, &requested, 800, 600);
@@ -395,6 +471,7 @@ mod tests {
         assert_eq!(result.position, Some(Vec2 { x: 0.0, y: 600.0 }));
         assert_eq!(result.appearance, Some(appearance()));
         assert_eq!(result.stats, Some(starter_character_stats()));
+        assert_eq!(result.inventory, Some(crate::items::starter_inventory()));
     }
 
     #[tokio::test]
@@ -467,6 +544,7 @@ mod tests {
             .expect("legacy player exists");
 
         assert_eq!(loaded.stats, Some(starter_character_stats()));
+        assert_eq!(loaded.inventory, Some(crate::items::starter_inventory()));
     }
 
     fn appearance() -> CharacterAppearance {

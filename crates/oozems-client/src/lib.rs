@@ -35,8 +35,13 @@ async fn start_client() -> Result<(), String> {
             let appearance = player
                 .appearance
                 .ok_or("saved player has no character appearance")?;
+            let equipment = player
+                .inventory
+                .as_ref()
+                .map(|inventory| inventory.equipment.as_slice())
+                .unwrap_or_default();
             show_status("Loading character...", false);
-            let sprites = api::get_character_sprites(appearance)
+            let sprites = api::get_character_sprites(appearance, Some(equipment))
                 .await
                 .map_err(|error| error.to_string())?;
             set_visible("character-create", false)?;

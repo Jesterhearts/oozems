@@ -17,18 +17,22 @@ use tower_http::trace::TraceLayer;
 use crate::content::ContentCatalog;
 use crate::database::Database;
 use crate::experience::ExperienceCurves;
+use crate::gameplay::GameplayConfig;
+use crate::items::DropStore;
 
 #[derive(Clone)]
 pub struct AppState {
     pub catalog: Arc<ContentCatalog>,
     pub database: Database,
     pub experience: Arc<ExperienceCurves>,
+    pub drops: Arc<DropStore>,
 }
 
 pub fn router(
     database: Database,
     catalog: ContentCatalog,
     experience: ExperienceCurves,
+    gameplay: GameplayConfig,
     public_dir: &Path,
     asset_dir: &Path,
 ) -> Router {
@@ -36,6 +40,7 @@ pub fn router(
         catalog: Arc::new(catalog),
         database,
         experience: Arc::new(experience),
+        drops: Arc::new(DropStore::new(gameplay.item_drop_despawn)),
     };
     let api = Router::new()
         .route("/bootstrap", post(crate::api::bootstrap))
@@ -46,6 +51,9 @@ pub fn router(
         )
         .route("/gui/get", post(crate::api::get_gui))
         .route("/maps/get", post(crate::api::get_map))
+        .route("/items/equip", post(crate::api::equip_item))
+        .route("/items/unequip", post(crate::api::unequip_item))
+        .route("/items/drop", post(crate::api::drop_item))
         .route("/players/save", post(crate::api::save_player))
         .layer(DefaultBodyLimit::max(64 * 1024));
     let public = ServeDir::new(public_dir)

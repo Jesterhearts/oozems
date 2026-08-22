@@ -7,6 +7,9 @@ use oozems_proto::v1::CharacterAppearance;
 use oozems_proto::v1::CharacterSpriteSet;
 use oozems_proto::v1::CreateCharacterRequest;
 use oozems_proto::v1::CreateCharacterResponse;
+use oozems_proto::v1::DropItemRequest;
+use oozems_proto::v1::EquipItemRequest;
+use oozems_proto::v1::EquippedItem;
 use oozems_proto::v1::ErrorResponse;
 use oozems_proto::v1::GameGui;
 use oozems_proto::v1::GetCharacterSpritesRequest;
@@ -15,10 +18,12 @@ use oozems_proto::v1::GetGuiRequest;
 use oozems_proto::v1::GetGuiResponse;
 use oozems_proto::v1::GetMapRequest;
 use oozems_proto::v1::GetMapResponse;
+use oozems_proto::v1::ItemActionResponse;
 use oozems_proto::v1::Map;
 use oozems_proto::v1::PlayerState;
 use oozems_proto::v1::SavePlayerRequest;
 use oozems_proto::v1::SavePlayerResponse;
+use oozems_proto::v1::UnequipItemRequest;
 use prost::Message;
 use thiserror::Error;
 
@@ -67,12 +72,16 @@ pub async fn create_character(
 }
 
 pub async fn get_character_sprites(
-    appearance: CharacterAppearance
+    appearance: CharacterAppearance,
+    equipment: Option<&[EquippedItem]>,
 ) -> Result<CharacterSpriteSet, ClientError> {
+    let use_starter_equipment = equipment.is_none();
     let response: GetCharacterSpritesResponse = post_protobuf(
         "/api/v1/characters/sprites",
         GetCharacterSpritesRequest {
             appearance: Some(appearance),
+            equipment: equipment.unwrap_or_default().to_vec(),
+            use_starter_equipment,
         },
     )
     .await?;
@@ -80,6 +89,48 @@ pub async fn get_character_sprites(
     response
         .sprites
         .ok_or(ClientError::MissingData("character sprites"))
+}
+
+pub async fn equip_item(
+    player_id: &str,
+    inventory_index: u32,
+) -> Result<ItemActionResponse, ClientError> {
+    post_protobuf(
+        "/api/v1/items/equip",
+        EquipItemRequest {
+            player_id: player_id.to_owned(),
+            inventory_index,
+        },
+    )
+    .await
+}
+
+pub async fn unequip_item(
+    player_id: &str,
+    slot: i32,
+) -> Result<ItemActionResponse, ClientError> {
+    post_protobuf(
+        "/api/v1/items/unequip",
+        UnequipItemRequest {
+            player_id: player_id.to_owned(),
+            slot,
+        },
+    )
+    .await
+}
+
+pub async fn drop_item(
+    player_id: &str,
+    inventory_index: u32,
+) -> Result<ItemActionResponse, ClientError> {
+    post_protobuf(
+        "/api/v1/items/drop",
+        DropItemRequest {
+            player_id: player_id.to_owned(),
+            inventory_index,
+        },
+    )
+    .await
 }
 
 pub async fn get_map(map_id: u32) -> Result<Map, ClientError> {

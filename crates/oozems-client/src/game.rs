@@ -1,9 +1,11 @@
+use std::cell::Cell;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
 use oozems_proto::v1::CharacterSpriteSet;
 use oozems_proto::v1::GameGui;
+use oozems_proto::v1::ItemActionResponse;
 use oozems_proto::v1::Map;
 use oozems_proto::v1::PlayerState;
 use oozems_proto::v1::Vec2;
@@ -20,7 +22,9 @@ use crate::assets;
 use crate::assets::BrowserAsset;
 use crate::character_render::CharacterAnimation;
 use crate::game_gui;
+use crate::game_gui::GuiAction;
 use crate::game_gui::GuiState;
+use crate::game_gui::PointerButton;
 use crate::js_error;
 use crate::movement;
 use crate::movement::MapTransition;
@@ -46,6 +50,7 @@ pub struct Game {
     pub frame_time_ms: f64,
     input: Rc<RefCell<InputState>>,
     save_in_flight: Rc<std::cell::Cell<bool>>,
+    item_action_in_flight: Rc<Cell<bool>>,
     transition_in_flight: Rc<std::cell::Cell<bool>>,
     dirty: bool,
     jump_consumed: bool,
@@ -118,11 +123,10 @@ fn build_game(
     let input = Rc::new(RefCell::new(InputState::default()));
     install_keyboard_input(&window, input.clone())?;
     let gui_state = Rc::new(RefCell::new(GuiState::default()));
-    install_canvas_input(&canvas, gui.clone(), gui_state.clone())?;
     let images = prepare_game_assets(&map, &character_sprites, &gui)?;
 
-    Ok(Rc::new(RefCell::new(Game {
-        canvas,
+    let game = Rc::new(RefCell::new(Game {
+        canvas: canvas.clone(),
         character_animation: CharacterAnimation::Idle,
         character_animation_started_ms: 0.0,
         context,
@@ -136,6 +140,7 @@ fn build_game(
         frame_time_ms: 0.0,
         input,
         save_in_flight: Rc::new(std::cell::Cell::new(false)),
+        item_action_in_flight: Rc::new(Cell::new(false)),
         transition_in_flight: Rc::new(std::cell::Cell::new(false)),
         dirty: false,
         jump_consumed: false,
@@ -143,7 +148,9 @@ fn build_game(
         last_frame_ms: 0.0,
         next_save_ms: SAVE_INTERVAL_MS,
         motion: MotionState::default(),
-    })))
+    }));
+    install_canvas_input(&canvas, game.clone())?;
+    Ok(game)
 }
 
 fn prepare_game_assets(
@@ -188,29 +195,12 @@ fn install_keyboard_input(
 
 fn install_canvas_input(
     canvas: &HtmlCanvasElement,
-    gui: GameGui,
-    gui_state: Rc<RefCell<GuiState>>,
+    game: Rc<RefCell<Game>>,
 ) -> Result<(), String> {
     let event_canvas = canvas.clone();
+    let click_game = game.clone();
     let click = Closure::<dyn FnMut(MouseEvent)>::new(move |event: MouseEvent| {
-        let Some(point) = game_gui::canvas_point(
-            event.offset_x(),
-            event.offset_y(),
-            event_canvas.width(),
-            event_canvas.height(),
-            event_canvas.client_width(),
-            event_canvas.client_height(),
-        ) else {
-            return;
-        };
-        let handled = game_gui::handle_click(
-            &mut gui_state.borrow_mut(),
-            &gui,
-            event_canvas.width() as f32,
-            event_canvas.height() as f32,
-            point,
-        );
-        if handled {
+        if handle_canvas_pointer(&click_game, &event_canvas, &event, PointerButton::Left) {
             event.prevent_default();
             let _ = event_canvas.focus();
         }
@@ -219,7 +209,200 @@ fn install_canvas_input(
         .add_event_listener_with_callback("click", click.as_ref().unchecked_ref())
         .map_err(js_error)?;
     click.forget();
+
+    let context_canvas = canvas.clone();
+    let context_menu = Closure::<dyn FnMut(MouseEvent)>::new(move |event: MouseEvent| {
+        if handle_canvas_pointer(&game, &context_canvas, &event, PointerButton::Right) {
+            event.prevent_default();
+            let _ = context_canvas.focus();
+        }
+    });
+    canvas
+        .add_event_listener_with_callback("contextmenu", context_menu.as_ref().unchecked_ref())
+        .map_err(js_error)?;
+    context_menu.forget();
     Ok(())
+}
+
+fn handle_canvas_pointer(
+    game: &Rc<RefCell<Game>>,
+    canvas: &HtmlCanvasElement,
+    event: &MouseEvent,
+    button: PointerButton,
+) -> bool {
+    let Some(point) = game_gui::canvas_point(
+        event.offset_x(),
+        event.offset_y(),
+        canvas.width(),
+        canvas.height(),
+        canvas.client_width(),
+        canvas.client_height(),
+    ) else {
+        return false;
+    };
+    let action = {
+        let game = game.borrow();
+        game_gui::click_action(
+            *game.gui_state.borrow(),
+            &game.gui,
+            game.player.inventory.as_ref(),
+            canvas.width() as f32,
+            canvas.height() as f32,
+            point,
+            button,
+        )
+    };
+    let Some(action) = action else {
+        return false;
+    };
+    let gui_state = game.borrow().gui_state.clone();
+    if game_gui::apply_local_action(&mut gui_state.borrow_mut(), action) {
+        return true;
+    }
+    begin_item_action(game.clone(), action);
+    true
+}
+
+fn begin_item_action(
+    game: Rc<RefCell<Game>>,
+    action: GuiAction,
+) {
+    let in_flight = game.borrow().item_action_in_flight.clone();
+    if in_flight.replace(true) {
+        show_status("An item action is already in progress.", true);
+        return;
+    }
+    let player_id = game.borrow().player.id.clone();
+    spawn_local(async move {
+        let result = request_item_action(&player_id, action).await;
+        match result {
+            Ok(response) => match prepare_item_action_update(&game, action, response).await {
+                Ok(update) => {
+                    let warning = update.warning.clone();
+                    install_item_action_update(&mut game.borrow_mut(), update);
+                    match warning {
+                        Some(warning) => show_status(&warning, true),
+                        None => show_status(item_action_message(action), false),
+                    }
+                }
+                Err(error) => show_status(&format!("Item action could not finish: {error}"), true),
+            },
+            Err(error) => show_status(&format!("Item action failed: {error}"), true),
+        }
+        in_flight.set(false);
+    });
+}
+
+async fn request_item_action(
+    player_id: &str,
+    action: GuiAction,
+) -> Result<ItemActionResponse, api::ClientError> {
+    match action {
+        GuiAction::Equip { inventory_index } => api::equip_item(player_id, inventory_index).await,
+        GuiAction::Unequip { slot } => api::unequip_item(player_id, slot).await,
+        GuiAction::Drop { inventory_index } => api::drop_item(player_id, inventory_index).await,
+        GuiAction::ToggleStats
+        | GuiAction::ToggleEquipment
+        | GuiAction::ToggleInventory
+        | GuiAction::CloseStats
+        | GuiAction::CloseEquipment
+        | GuiAction::CloseInventory => unreachable!("local GUI action reached the server"),
+    }
+}
+
+struct ItemActionUpdate {
+    player: PlayerState,
+    dropped_item: Option<oozems_proto::v1::DroppedItem>,
+    sprites: Option<CharacterSpriteSet>,
+    images: Option<HashMap<String, BrowserAsset>>,
+    warning: Option<String>,
+}
+
+async fn prepare_item_action_update(
+    game: &Rc<RefCell<Game>>,
+    action: GuiAction,
+    response: ItemActionResponse,
+) -> Result<ItemActionUpdate, String> {
+    let player = response
+        .player
+        .ok_or("server item response did not contain a player")?;
+    let mut sprites = None;
+    let mut images = None;
+    let mut warning = None;
+    if matches!(action, GuiAction::Equip { .. } | GuiAction::Unequip { .. }) {
+        let appearance = player
+            .appearance
+            .ok_or("server item response did not contain an appearance")?;
+        let equipment = player
+            .inventory
+            .as_ref()
+            .map(|inventory| inventory.equipment.as_slice())
+            .unwrap_or_default();
+        match api::get_character_sprites(appearance, Some(equipment)).await {
+            Ok(next_sprites) => {
+                let prepared = {
+                    let game = game.borrow();
+                    prepare_game_assets(&game.map, &next_sprites, &game.gui)
+                };
+                match prepared {
+                    Ok(next_images) => {
+                        sprites = Some(next_sprites);
+                        images = Some(next_images);
+                    }
+                    Err(error) => {
+                        warning = Some(format!(
+                            "Item change was saved, but character assets could not refresh: \
+                             {error}"
+                        ));
+                    }
+                }
+            }
+            Err(error) => {
+                warning = Some(format!(
+                    "Item change was saved, but character sprites could not refresh: {error}"
+                ));
+            }
+        }
+    }
+    Ok(ItemActionUpdate {
+        player,
+        dropped_item: response.dropped_item,
+        sprites,
+        images,
+        warning,
+    })
+}
+
+fn install_item_action_update(
+    game: &mut Game,
+    update: ItemActionUpdate,
+) {
+    game.player.inventory = update.player.inventory;
+    if let (Some(sprites), Some(images)) = (update.sprites, update.images) {
+        game.character_sprites = sprites;
+        game.images = images;
+        game.character_animation_started_ms = game.frame_time_ms;
+    }
+    if let Some(drop) = update.dropped_item
+        && update.player.map_id == game.map.id
+        && drop.despawn_at_unix_ms > js_sys::Date::now().max(0.0) as u64
+    {
+        game.map.dropped_items.push(drop);
+    }
+}
+
+fn item_action_message(action: GuiAction) -> &'static str {
+    match action {
+        GuiAction::Equip { .. } => "Item equipped.",
+        GuiAction::Unequip { .. } => "Item moved to inventory.",
+        GuiAction::Drop { .. } => "Item dropped.",
+        GuiAction::ToggleStats
+        | GuiAction::ToggleEquipment
+        | GuiAction::ToggleInventory
+        | GuiAction::CloseStats
+        | GuiAction::CloseEquipment
+        | GuiAction::CloseInventory => "GUI updated.",
+    }
 }
 
 fn set_key(
@@ -270,6 +453,10 @@ fn update(
     };
     game.last_frame_ms = timestamp_ms;
     game.frame_time_ms = timestamp_ms;
+    let now_ms = js_sys::Date::now().max(0.0) as u64;
+    game.map
+        .dropped_items
+        .retain(|drop| drop.despawn_at_unix_ms > now_ms);
 
     let transition = if game.transition_in_flight.get() {
         None

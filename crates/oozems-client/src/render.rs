@@ -1,6 +1,8 @@
 use oozems_proto::v1::CharacterStats;
 use oozems_proto::v1::Decoration;
 use oozems_proto::v1::GuiSprite;
+use oozems_proto::v1::GuiWindow;
+use oozems_proto::v1::ItemDefinition;
 use oozems_proto::v1::PlatformKind;
 use oozems_proto::v1::PortalFrame;
 use web_sys::HtmlImageElement;
@@ -35,6 +37,7 @@ pub fn draw(game: &Game) {
     draw_decorations(game, camera_x, camera_y, |layer| layer <= 0);
     draw_platforms(game, camera_x, camera_y);
     draw_portals(game, camera_x, camera_y);
+    draw_dropped_items(game, camera_x, camera_y);
     draw_player(game, camera_x, camera_y);
     draw_decorations(game, camera_x, camera_y, |layer| layer > 0);
     draw_hud(game);
@@ -194,6 +197,37 @@ fn draw_portals(
     }
 }
 
+fn draw_dropped_items(
+    game: &Game,
+    camera_x: f64,
+    camera_y: f64,
+) {
+    let now_ms = js_sys::Date::now().max(0.0) as u64;
+    for drop in &game.map.dropped_items {
+        if drop.despawn_at_unix_ms <= now_ms {
+            continue;
+        }
+        let Some(position) = &drop.position else {
+            continue;
+        };
+        let Some(definition) = item_definition(game, drop.item_id) else {
+            continue;
+        };
+        let bounce = (game.frame_time_ms / 220.0).sin() as f32 * 2.0;
+        draw_sprite(
+            game,
+            &definition.icon_asset_id,
+            position.x - definition.icon_width / 2.0,
+            position.y - definition.icon_height - 3.0 + bounce,
+            definition.icon_width,
+            definition.icon_height,
+            false,
+            camera_x,
+            camera_y,
+        );
+    }
+}
+
 fn portal_frame_index(
     frames: &[PortalFrame],
     timestamp_ms: f64,
@@ -285,6 +319,117 @@ fn draw_hud(game: &Game) {
     if game.gui_state.borrow().stats_open {
         draw_stat_window(game);
     }
+    if game.gui_state.borrow().equipment_open {
+        draw_equipment_window(game);
+    }
+    if game.gui_state.borrow().inventory_open {
+        draw_inventory_window(game);
+    }
+}
+
+fn draw_equipment_window(game: &Game) {
+    let Some(window) = game.gui.equipment_window.as_ref() else {
+        return;
+    };
+    if !draw_window(game, window) {
+        return;
+    }
+    let Some(inventory) = game.player.inventory.as_ref() else {
+        return;
+    };
+    for equipped in &inventory.equipment {
+        let Some((x, y)) = game_gui::equipment_slot_position(equipped.slot) else {
+            continue;
+        };
+        if let Some(definition) = item_definition(game, equipped.item_id) {
+            draw_item_icon(game, definition, window.x + x, window.y + y);
+        }
+    }
+}
+
+fn draw_inventory_window(game: &Game) {
+    let Some(window) = game.gui.inventory_window.as_ref() else {
+        return;
+    };
+    if !draw_window(game, window) {
+        return;
+    }
+    let Some(inventory) = game.player.inventory.as_ref() else {
+        return;
+    };
+    for (index, item_id) in inventory.item_ids.iter().enumerate() {
+        let Some(definition) = item_definition(game, *item_id) else {
+            continue;
+        };
+        let (x, y) = game_gui::inventory_slot_position(index);
+        draw_item_icon(game, definition, window.x + x, window.y + y);
+    }
+}
+
+fn draw_window(
+    game: &Game,
+    window: &GuiWindow,
+) -> bool {
+    let Some(layout) = window
+        .layout
+        .as_ref()
+        .filter(|layout| game_gui::valid_layout(layout))
+    else {
+        return false;
+    };
+    let Some(background) = layout.background.as_ref() else {
+        return false;
+    };
+    let Some(background_image) = ready_image(&game.images, &background.asset_id) else {
+        return false;
+    };
+    let origin_x = f64::from(window.x);
+    let origin_y = f64::from(window.y);
+    let _ = game
+        .context
+        .draw_image_with_html_image_element_and_dw_and_dh(
+            background_image,
+            origin_x,
+            origin_y,
+            f64::from(background.width),
+            f64::from(background.height),
+        );
+    for sprite in &layout.sprites {
+        draw_window_sprite(game, sprite, origin_x, origin_y);
+    }
+    true
+}
+
+fn draw_item_icon(
+    game: &Game,
+    definition: &ItemDefinition,
+    slot_x: f32,
+    slot_y: f32,
+) {
+    let Some(image) = ready_image(&game.images, &definition.icon_asset_id) else {
+        return;
+    };
+    let x = f64::from(slot_x + (32.0 - definition.icon_width) / 2.0);
+    let y = f64::from(slot_y + (32.0 - definition.icon_height) / 2.0);
+    let _ = game
+        .context
+        .draw_image_with_html_image_element_and_dw_and_dh(
+            image,
+            x,
+            y,
+            f64::from(definition.icon_width),
+            f64::from(definition.icon_height),
+        );
+}
+
+fn item_definition(
+    game: &Game,
+    item_id: u32,
+) -> Option<&ItemDefinition> {
+    game.gui
+        .items
+        .iter()
+        .find(|definition| definition.item_id == item_id)
 }
 
 fn draw_wz_hud(game: &Game) -> bool {

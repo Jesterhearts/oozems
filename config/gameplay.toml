@@ -1,0 +1,4 @@
+# See README.md for configuration reference.
+
+[items]
+drop_despawn = "10m"

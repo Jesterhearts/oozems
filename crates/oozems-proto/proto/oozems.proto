@@ -18,6 +18,25 @@ message PlayerState {
   Vec2 position = 5;
   CharacterAppearance appearance = 6;
   CharacterStats stats = 7;
+  InventoryState inventory = 8;
+}
+
+message InventoryState {
+  repeated uint32 item_ids = 1;
+  repeated EquippedItem equipment = 2;
+  uint32 capacity = 3;
+}
+
+message EquippedItem {
+  EquipmentSlot slot = 1;
+  uint32 item_id = 2;
+}
+
+enum EquipmentSlot {
+  EQUIPMENT_SLOT_UNSPECIFIED = 0;
+  EQUIPMENT_SLOT_TOP = 1;
+  EQUIPMENT_SLOT_BOTTOM = 2;
+  EQUIPMENT_SLOT_SHOES = 3;
 }
 
 message CharacterStats {
@@ -82,6 +101,8 @@ message CreateCharacterResponse {
 
 message GetCharacterSpritesRequest {
   CharacterAppearance appearance = 1;
+  repeated EquippedItem equipment = 2;
+  bool use_starter_equipment = 3;
 }
 
 message GetCharacterSpritesResponse {
@@ -98,6 +119,18 @@ message GameGui {
   GuiLayout status_bar = 1;
   repeated AssetDescriptor assets = 2;
   GuiWindow stat_window = 3;
+  GuiWindow equipment_window = 4;
+  GuiWindow inventory_window = 5;
+  repeated ItemDefinition items = 6;
+}
+
+message ItemDefinition {
+  uint32 item_id = 1;
+  string name = 2;
+  EquipmentSlot slot = 3;
+  string icon_asset_id = 4;
+  float icon_width = 5;
+  float icon_height = 6;
 }
 
 message GuiLayout {
@@ -161,6 +194,26 @@ message SavePlayerResponse {
   PlayerState player = 1;
 }
 
+message EquipItemRequest {
+  string player_id = 1;
+  uint32 inventory_index = 2;
+}
+
+message UnequipItemRequest {
+  string player_id = 1;
+  EquipmentSlot slot = 2;
+}
+
+message DropItemRequest {
+  string player_id = 1;
+  uint32 inventory_index = 2;
+}
+
+message ItemActionResponse {
+  PlayerState player = 1;
+  DroppedItem dropped_item = 2;
+}
+
 message Map {
   uint32 id = 1;
   string name = 2;
@@ -171,6 +224,14 @@ message Map {
   repeated AssetDescriptor assets = 7;
   repeated Ladder ladders = 8;
   repeated Portal portals = 9;
+  repeated DroppedItem dropped_items = 10;
+}
+
+message DroppedItem {
+  string id = 1;
+  uint32 item_id = 2;
+  Vec2 position = 3;
+  uint64 despawn_at_unix_ms = 4;
 }
 
 message Platform {

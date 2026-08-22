@@ -1,11 +1,15 @@
 use oozems_proto::v1::CharacterStats;
+use oozems_proto::v1::EquipmentSlot;
 use oozems_proto::v1::GameGui;
 use oozems_proto::v1::GuiLayout;
 use oozems_proto::v1::GuiSprite;
+use oozems_proto::v1::InventoryState;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GuiState {
     pub stats_open: bool,
+    pub equipment_open: bool,
+    pub inventory_open: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -30,25 +34,63 @@ struct CanvasRect {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum GuiAction {
+pub enum GuiAction {
     ToggleStats,
+    ToggleEquipment,
+    ToggleInventory,
     CloseStats,
+    CloseEquipment,
+    CloseInventory,
+    Equip { inventory_index: u32 },
+    Unequip { slot: i32 },
+    Drop { inventory_index: u32 },
 }
 
-pub fn handle_click(
-    state: &mut GuiState,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PointerButton {
+    Left,
+    Right,
+}
+
+const INVENTORY_COLUMNS: usize = 4;
+const INVENTORY_SLOT_LEFT: f32 = 7.0;
+const INVENTORY_SLOT_TOP: f32 = 50.0;
+const INVENTORY_SLOT_STEP: f32 = 36.0;
+const ITEM_SLOT_SIZE: f32 = 32.0;
+
+pub fn click_action(
+    state: GuiState,
     gui: &GameGui,
+    inventory: Option<&InventoryState>,
     viewport_width: f32,
     viewport_height: f32,
     point: CanvasPoint,
-) -> bool {
-    let Some(action) = click_action(*state, gui, viewport_width, viewport_height, point) else {
-        return false;
-    };
+    button: PointerButton,
+) -> Option<GuiAction> {
+    window_action(state, gui, inventory, point, button)
+        .or_else(|| status_action(gui, viewport_width, viewport_height, point, button))
+}
 
+pub fn apply_local_action(
+    state: &mut GuiState,
+    action: GuiAction,
+) -> bool {
     match action {
-        GuiAction::ToggleStats => state.stats_open = !state.stats_open,
+        GuiAction::ToggleStats => {
+            state.stats_open = !state.stats_open;
+            state.equipment_open = false;
+        }
+        GuiAction::ToggleEquipment => {
+            state.equipment_open = !state.equipment_open;
+            state.stats_open = false;
+        }
+        GuiAction::ToggleInventory => state.inventory_open = !state.inventory_open,
         GuiAction::CloseStats => state.stats_open = false,
+        GuiAction::CloseEquipment => state.equipment_open = false,
+        GuiAction::CloseInventory => state.inventory_open = false,
+        GuiAction::Equip { .. } | GuiAction::Unequip { .. } | GuiAction::Drop { .. } => {
+            return false;
+        }
     }
     true
 }
@@ -99,7 +141,30 @@ pub fn status_sprite_visible(
     state: GuiState,
     sprite: &GuiSprite,
 ) -> bool {
-    sprite.name != "stats-pressed" || state.stats_open
+    match sprite.name.as_str() {
+        "stats-pressed" => state.stats_open,
+        "equip-pressed" => state.equipment_open,
+        "inventory-pressed" => state.inventory_open,
+        _ => true,
+    }
+}
+
+pub fn inventory_slot_position(index: usize) -> (f32, f32) {
+    let column = (index % INVENTORY_COLUMNS) as f32;
+    let row = (index / INVENTORY_COLUMNS) as f32;
+    (
+        INVENTORY_SLOT_LEFT + column * INVENTORY_SLOT_STEP,
+        INVENTORY_SLOT_TOP + row * INVENTORY_SLOT_STEP,
+    )
+}
+
+pub fn equipment_slot_position(slot_value: i32) -> Option<(f32, f32)> {
+    match EquipmentSlot::try_from(slot_value).ok()? {
+        EquipmentSlot::Top => Some((71.0, 134.0)),
+        EquipmentSlot::Bottom => Some((38.0, 167.0)),
+        EquipmentSlot::Shoes => Some((71.0, 167.0)),
+        EquipmentSlot::Unspecified => None,
+    }
 }
 
 pub fn gauge_fills(stats: &CharacterStats) -> [GaugeFill; 3] {
@@ -133,19 +198,71 @@ pub fn valid_layout(layout: &GuiLayout) -> bool {
             .all(|sprite| valid_sprite(sprite, layout.width, layout.height))
 }
 
-fn click_action(
+fn window_action(
     state: GuiState,
+    gui: &GameGui,
+    inventory: Option<&InventoryState>,
+    point: CanvasPoint,
+    button: PointerButton,
+) -> Option<GuiAction> {
+    if state.inventory_open {
+        if window_close_rect(gui.inventory_window.as_ref(), "inventory-close")
+            .is_some_and(|rect| rect_contains(rect, point))
+        {
+            return Some(GuiAction::CloseInventory);
+        }
+        if let Some(index) = inventory_item_at(gui, inventory?, point) {
+            return Some(match button {
+                PointerButton::Left => GuiAction::Equip {
+                    inventory_index: index,
+                },
+                PointerButton::Right => GuiAction::Drop {
+                    inventory_index: index,
+                },
+            });
+        }
+    }
+    if button == PointerButton::Left && state.equipment_open {
+        if window_close_rect(gui.equipment_window.as_ref(), "equipment-close")
+            .is_some_and(|rect| rect_contains(rect, point))
+        {
+            return Some(GuiAction::CloseEquipment);
+        }
+        if let Some(slot) = equipped_item_at(gui, inventory?, point) {
+            return Some(GuiAction::Unequip { slot });
+        }
+    }
+    if button == PointerButton::Left
+        && state.stats_open
+        && window_close_rect(gui.stat_window.as_ref(), "stat-close")
+            .is_some_and(|rect| rect_contains(rect, point))
+    {
+        return Some(GuiAction::CloseStats);
+    }
+    None
+}
+
+fn status_action(
     gui: &GameGui,
     viewport_width: f32,
     viewport_height: f32,
     point: CanvasPoint,
+    button: PointerButton,
 ) -> Option<GuiAction> {
-    if state.stats_open && stat_close_rect(gui).is_some_and(|rect| rect_contains(rect, point)) {
-        return Some(GuiAction::CloseStats);
+    if button != PointerButton::Left {
+        return None;
     }
-    stat_button_rect(gui, viewport_width, viewport_height)
-        .filter(|rect| rect_contains(*rect, point))
-        .map(|_| GuiAction::ToggleStats)
+    [
+        ("equip", GuiAction::ToggleEquipment),
+        ("inventory", GuiAction::ToggleInventory),
+        ("stats", GuiAction::ToggleStats),
+    ]
+    .into_iter()
+    .find_map(|(name, action)| {
+        status_button_rect(gui, viewport_width, viewport_height, name)
+            .filter(|rect| rect_contains(*rect, point))
+            .map(|_| action)
+    })
 }
 
 fn gauge_fill(
@@ -166,16 +283,17 @@ fn gauge_fill(
     }
 }
 
-fn stat_button_rect(
+fn status_button_rect(
     gui: &GameGui,
     viewport_width: f32,
     viewport_height: f32,
+    name: &str,
 ) -> Option<CanvasRect> {
     let layout = gui
         .status_bar
         .as_ref()
         .filter(|layout| valid_layout(layout))?;
-    let sprite = named_sprite(layout, "stats")?;
+    let sprite = named_sprite(layout, name)?;
     Some(CanvasRect {
         x: sprite_screen_x(viewport_width, layout.width, sprite),
         y: status_bar_top(viewport_height, layout.height) + sprite.y,
@@ -184,18 +302,67 @@ fn stat_button_rect(
     })
 }
 
-fn stat_close_rect(gui: &GameGui) -> Option<CanvasRect> {
-    let window = gui.stat_window.as_ref()?;
+fn window_close_rect(
+    window: Option<&oozems_proto::v1::GuiWindow>,
+    name: &str,
+) -> Option<CanvasRect> {
+    let window = window?;
     let layout = window
         .layout
         .as_ref()
         .filter(|layout| valid_layout(layout))?;
-    let sprite = named_sprite(layout, "stat-close")?;
+    let sprite = named_sprite(layout, name)?;
     Some(CanvasRect {
         x: window.x + sprite.x,
         y: window.y + sprite.y,
         width: sprite.width,
         height: sprite.height,
+    })
+}
+
+fn inventory_item_at(
+    gui: &GameGui,
+    inventory: &InventoryState,
+    point: CanvasPoint,
+) -> Option<u32> {
+    let window = gui.inventory_window.as_ref()?;
+    inventory
+        .item_ids
+        .iter()
+        .enumerate()
+        .find_map(|(index, _)| {
+            let (x, y) = inventory_slot_position(index);
+            rect_contains(
+                CanvasRect {
+                    x: window.x + x,
+                    y: window.y + y,
+                    width: ITEM_SLOT_SIZE,
+                    height: ITEM_SLOT_SIZE,
+                },
+                point,
+            )
+            .then_some(index as u32)
+        })
+}
+
+fn equipped_item_at(
+    gui: &GameGui,
+    inventory: &InventoryState,
+    point: CanvasPoint,
+) -> Option<i32> {
+    let window = gui.equipment_window.as_ref()?;
+    inventory.equipment.iter().find_map(|equipped| {
+        let (x, y) = equipment_slot_position(equipped.slot)?;
+        rect_contains(
+            CanvasRect {
+                x: window.x + x,
+                y: window.y + y,
+                width: ITEM_SLOT_SIZE,
+                height: ITEM_SLOT_SIZE,
+            },
+            point,
+        )
+        .then_some(equipped.slot)
     })
 }
 
@@ -235,17 +402,23 @@ fn rect_contains(
 #[cfg(test)]
 mod tests {
     use oozems_proto::v1::CharacterStats;
+    use oozems_proto::v1::EquipmentSlot;
+    use oozems_proto::v1::EquippedItem;
     use oozems_proto::v1::GameGui;
     use oozems_proto::v1::GuiLayout;
     use oozems_proto::v1::GuiSprite;
     use oozems_proto::v1::GuiWindow;
+    use oozems_proto::v1::InventoryState;
 
     use super::CanvasPoint;
+    use super::GuiAction;
     use super::GuiState;
+    use super::PointerButton;
+    use super::apply_local_action;
     use super::canvas_point;
+    use super::click_action;
     use super::gauge_fills;
     use super::gauge_labels;
-    use super::handle_click;
     use super::sprite_screen_x;
     use super::status_sprite_visible;
     use super::valid_layout;
@@ -255,22 +428,87 @@ mod tests {
         let gui = gui_fixture();
         let mut state = GuiState::default();
 
-        assert!(handle_click(
-            &mut state,
+        let action = click_action(
+            state,
             &gui,
+            None,
             960.0,
             600.0,
             CanvasPoint { x: 635.0, y: 540.0 },
-        ));
+            PointerButton::Left,
+        )
+        .expect("stat action");
+        assert!(apply_local_action(&mut state, action));
         assert!(state.stats_open);
-        assert!(handle_click(
-            &mut state,
+        let action = click_action(
+            state,
             &gui,
+            None,
             960.0,
             600.0,
             CanvasPoint { x: 181.0, y: 86.0 },
-        ));
+            PointerButton::Left,
+        )
+        .expect("close action");
+        assert!(apply_local_action(&mut state, action));
         assert!(!state.stats_open);
+    }
+
+    #[test]
+    fn item_slots_produce_server_actions() {
+        let gui = gui_fixture();
+        let inventory = InventoryState {
+            item_ids: vec![1_040_003],
+            equipment: vec![EquippedItem {
+                slot: EquipmentSlot::Top as i32,
+                item_id: 1_040_002,
+            }],
+            capacity: 24,
+        };
+        let state = GuiState {
+            equipment_open: true,
+            inventory_open: true,
+            ..GuiState::default()
+        };
+
+        assert_eq!(
+            click_action(
+                state,
+                &gui,
+                Some(&inventory),
+                960.0,
+                600.0,
+                CanvasPoint { x: 213.0, y: 131.0 },
+                PointerButton::Left,
+            ),
+            Some(GuiAction::Equip { inventory_index: 0 })
+        );
+        assert_eq!(
+            click_action(
+                state,
+                &gui,
+                Some(&inventory),
+                960.0,
+                600.0,
+                CanvasPoint { x: 213.0, y: 131.0 },
+                PointerButton::Right,
+            ),
+            Some(GuiAction::Drop { inventory_index: 0 })
+        );
+        assert_eq!(
+            click_action(
+                state,
+                &gui,
+                Some(&inventory),
+                960.0,
+                600.0,
+                CanvasPoint { x: 92.0, y: 215.0 },
+                PointerButton::Left,
+            ),
+            Some(GuiAction::Unequip {
+                slot: EquipmentSlot::Top as i32
+            })
+        );
     }
 
     #[test]
@@ -301,7 +539,10 @@ mod tests {
         assert!(status_sprite_visible(GuiState::default(), &normal));
         assert!(!status_sprite_visible(GuiState::default(), &pressed));
         assert!(status_sprite_visible(
-            GuiState { stats_open: true },
+            GuiState {
+                stats_open: true,
+                ..GuiState::default()
+            },
             &pressed
         ));
     }
@@ -348,7 +589,31 @@ mod tests {
                 width: 800.0,
                 height: 80.0,
                 background: Some(sprite("background", 0.0, 9.0, 800.0, 71.0)),
-                sprites: vec![sprite("stats", 634.0, 17.0, 28.0, 20.0)],
+                sprites: vec![
+                    sprite("equip", 574.0, 17.0, 28.0, 20.0),
+                    sprite("inventory", 604.0, 17.0, 28.0, 20.0),
+                    sprite("stats", 634.0, 17.0, 28.0, 20.0),
+                ],
+            }),
+            equipment_window: Some(GuiWindow {
+                x: 20.0,
+                y: 80.0,
+                layout: Some(GuiLayout {
+                    width: 175.0,
+                    height: 304.0,
+                    background: Some(sprite("equipment-background", 0.0, 0.0, 175.0, 304.0)),
+                    sprites: vec![sprite("equipment-close", 138.0, 5.0, 32.0, 15.0)],
+                }),
+            }),
+            inventory_window: Some(GuiWindow {
+                x: 205.0,
+                y: 80.0,
+                layout: Some(GuiLayout {
+                    width: 175.0,
+                    height: 289.0,
+                    background: Some(sprite("inventory-background", 0.0, 0.0, 175.0, 289.0)),
+                    sprites: vec![sprite("inventory-close", 138.0, 5.0, 32.0, 15.0)],
+                }),
             }),
             stat_window: Some(GuiWindow {
                 x: 20.0,

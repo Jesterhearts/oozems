@@ -12,6 +12,9 @@ use oozems_proto::v1::CharacterGender;
 use oozems_proto::v1::CharacterLayer;
 use oozems_proto::v1::CharacterSpriteSet;
 use oozems_proto::v1::CharacterStyleOption;
+use oozems_proto::v1::EquipmentSlot;
+use oozems_proto::v1::EquippedItem;
+use oozems_proto::v1::ItemDefinition;
 use sha2::Digest;
 use sha2::Sha256;
 use thiserror::Error;
@@ -36,9 +39,6 @@ use super::wz::vector_value;
 use super::wz::wrap_archive_root;
 
 const CHARACTER_ARCHIVE: &str = "Character.wz";
-const STARTER_COAT_ID: u32 = 1_040_002;
-const STARTER_PANTS_ID: u32 = 1_060_002;
-const STARTER_SHOES_ID: u32 = 1_072_000;
 const MAXIMUM_STYLE_CHOICES: usize = 12;
 
 pub struct CharacterContent {
@@ -47,10 +47,12 @@ pub struct CharacterContent {
     heads: HashMap<u32, WzNodeArc>,
     faces: HashMap<u32, WzNodeArc>,
     hairs: HashMap<u32, WzNodeArc>,
-    starter_clothes: Vec<WzNodeArc>,
+    equipment: HashMap<u32, WzNodeArc>,
+    item_assets: Vec<AssetDescriptor>,
+    item_definitions: Vec<ItemDefinition>,
     options: CharacterCreationOptions,
     fingerprint: String,
-    sprites: RwLock<HashMap<AppearanceKey, CharacterSpriteSet>>,
+    sprites: RwLock<HashMap<CharacterKey, CharacterSpriteSet>>,
     assets: RwLock<HashMap<String, Arc<WzAsset>>>,
 }
 
@@ -72,6 +74,12 @@ struct AppearanceKey {
     hair_id: u32,
 }
 
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct CharacterKey {
+    appearance: AppearanceKey,
+    equipment: Vec<(i32, u32)>,
+}
+
 #[derive(Clone, Debug)]
 struct PlacedLayer {
     source: WzNodeArc,
@@ -89,6 +97,7 @@ struct CharacterParts<'a> {
     head: &'a WzNodeArc,
     face: &'a WzNodeArc,
     hair: &'a WzNodeArc,
+    equipment: &'a [WzNodeArc],
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -123,13 +132,7 @@ impl CharacterContent {
         let coats = index_directory(&root, "Coat")?;
         let pants = index_directory(&root, "Pants")?;
         let shoes = index_directory(&root, "Shoes")?;
-        let starter_clothes = [
-            required_style(&coats, STARTER_COAT_ID, "starter coat")?,
-            required_style(&pants, STARTER_PANTS_ID, "starter pants")?,
-            required_style(&shoes, STARTER_SHOES_ID, "starter shoes")?,
-        ]
-        .into_iter()
-        .collect();
+        let equipment = index_supported_equipment(&coats, &pants, &shoes)?;
         let options = build_creation_options(&bodies, &heads, &faces, &hairs);
         validate_options(&options)?;
 
@@ -141,18 +144,24 @@ impl CharacterContent {
             "WZ character source ready"
         );
 
-        Ok(Some(Self {
+        let mut content = Self {
             _base: base,
             bodies,
             heads,
             faces,
             hairs,
-            starter_clothes,
+            equipment,
+            item_assets: Vec::new(),
+            item_definitions: Vec::new(),
             options,
             fingerprint: archive_fingerprint(&path)?,
             sprites: RwLock::new(HashMap::new()),
             assets: RwLock::new(HashMap::new()),
-        }))
+        };
+        let (item_definitions, item_assets) = build_item_catalog(&content)?;
+        content.item_definitions = item_definitions;
+        content.item_assets = item_assets;
+        Ok(Some(content))
     }
 
     pub fn creation_options(&self) -> CharacterCreationOptions {
@@ -169,10 +178,19 @@ impl CharacterContent {
     pub fn get_sprites(
         &self,
         appearance: &CharacterAppearance,
+        equipment: &[EquippedItem],
     ) -> Result<Option<CharacterSpriteSet>, CharacterContentError> {
-        let Some(key) = AppearanceKey::parse(appearance).filter(|key| self.supports_key(*key))
+        let Some(appearance) =
+            AppearanceKey::parse(appearance).filter(|key| self.supports_key(*key))
         else {
             return Ok(None);
+        };
+        let Some(equipment) = normalize_equipment(self, equipment) else {
+            return Ok(None);
+        };
+        let key = CharacterKey {
+            appearance,
+            equipment,
         };
         if let Some(sprites) = self
             .sprites
@@ -184,12 +202,20 @@ impl CharacterContent {
             return Ok(Some(sprites));
         }
 
-        let sprites = build_sprite_set(self, key)?;
+        let sprites = build_sprite_set(self, key.clone())?;
         self.sprites
             .write()
             .map_err(|_| lock_error("character sprite cache"))?
             .insert(key, sprites.clone());
         Ok(Some(sprites))
+    }
+
+    pub fn item_assets(&self) -> Vec<AssetDescriptor> {
+        self.item_assets.clone()
+    }
+
+    pub fn item_definitions(&self) -> Vec<ItemDefinition> {
+        self.item_definitions.clone()
     }
 
     pub fn get_asset(
@@ -307,6 +333,133 @@ fn required_style(
         })
 }
 
+fn index_supported_equipment(
+    coats: &HashMap<u32, WzNodeArc>,
+    pants: &HashMap<u32, WzNodeArc>,
+    shoes: &HashMap<u32, WzNodeArc>,
+) -> Result<HashMap<u32, WzNodeArc>, CharacterContentError> {
+    equipment_specs()
+        .into_iter()
+        .map(|(item_id, _, slot)| {
+            let source = match slot {
+                EquipmentSlot::Top => required_style(coats, item_id, "equipment top")?,
+                EquipmentSlot::Bottom => required_style(pants, item_id, "equipment bottom")?,
+                EquipmentSlot::Shoes => required_style(shoes, item_id, "equipment shoes")?,
+                EquipmentSlot::Unspecified => unreachable!("item specifications use valid slots"),
+            };
+            Ok((item_id, source))
+        })
+        .collect()
+}
+
+fn build_item_catalog(
+    content: &CharacterContent
+) -> Result<(Vec<ItemDefinition>, Vec<AssetDescriptor>), CharacterContentError> {
+    let mut definitions = Vec::new();
+    let mut assets = Vec::new();
+    for (item_id, name, slot) in equipment_specs() {
+        let source = required_style(&content.equipment, item_id, "equipment item")?;
+        parse(&source, format!("Character.wz equipment {item_id:08}"))?;
+        let info = child(&source, "info")?.ok_or_else(|| CharacterContentError::Invalid {
+            message: format!("equipment item {item_id} has no info node"),
+        })?;
+        let icon = child(&info, "icon")?.ok_or_else(|| CharacterContentError::Invalid {
+            message: format!("equipment item {item_id} has no icon"),
+        })?;
+        let (icon_width, icon_height) = png_size(&icon, "equipment icon")?;
+        let descriptor =
+            content.register_asset(&format!("Character.wz/{item_id:08}.img/info/icon"), &icon)?;
+        definitions.push(ItemDefinition {
+            item_id,
+            name: name.to_owned(),
+            slot: slot as i32,
+            icon_asset_id: descriptor.id.clone(),
+            icon_width: icon_width as f32,
+            icon_height: icon_height as f32,
+        });
+        assets.push(descriptor);
+    }
+    Ok((definitions, assets))
+}
+
+fn equipment_specs() -> [(u32, &'static str, EquipmentSlot); 6] {
+    [
+        (
+            crate::items::STARTER_TOP_ID,
+            "White Undershirt",
+            EquipmentSlot::Top,
+        ),
+        (
+            crate::items::STARTER_BOTTOM_ID,
+            "Blue Jean Shorts",
+            EquipmentSlot::Bottom,
+        ),
+        (
+            crate::items::STARTER_SHOES_ID,
+            "Brown Jangoon Shoes",
+            EquipmentSlot::Shoes,
+        ),
+        (
+            crate::items::SPARE_TOP_ID,
+            "Brown Hard Leather Top",
+            EquipmentSlot::Top,
+        ),
+        (
+            crate::items::SPARE_BOTTOM_ID,
+            "Black Suit Pants",
+            EquipmentSlot::Bottom,
+        ),
+        (
+            crate::items::SPARE_SHOES_ID,
+            "Red Rubber Boots",
+            EquipmentSlot::Shoes,
+        ),
+    ]
+}
+
+fn normalize_equipment(
+    content: &CharacterContent,
+    equipment: &[EquippedItem],
+) -> Option<Vec<(i32, u32)>> {
+    let mut normalized = Vec::with_capacity(equipment.len());
+    for equipped in equipment {
+        let definition = content
+            .item_definitions
+            .iter()
+            .find(|definition| definition.item_id == equipped.item_id)?;
+        let slot = EquipmentSlot::try_from(equipped.slot).ok()?;
+        if slot == EquipmentSlot::Unspecified
+            || definition.slot != equipped.slot
+            || normalized
+                .iter()
+                .any(|(equipped_slot, _)| *equipped_slot == equipped.slot)
+        {
+            return None;
+        }
+        normalized.push((equipped.slot, equipped.item_id));
+    }
+    normalized.sort_unstable();
+    Some(normalized)
+}
+
+fn png_size(
+    node: &WzNodeArc,
+    label: &str,
+) -> Result<(u32, u32), CharacterContentError> {
+    let read = node.read().map_err(|_| lock_error("character item icon"))?;
+    let png = read
+        .try_as_png()
+        .ok_or_else(|| CharacterContentError::Invalid {
+            message: format!("{label} is not a PNG layer"),
+        })?;
+    if png.width == 0 || png.height == 0 {
+        return Err(CharacterContentError::Invalid {
+            message: format!("{label} is empty"),
+        });
+    }
+    Ok((png.width, png.height))
+}
+
 fn build_creation_options(
     bodies: &HashMap<u32, WzNodeArc>,
     heads: &HashMap<u32, WzNodeArc>,
@@ -417,8 +570,9 @@ fn head_id(skin_id: u32) -> u32 {
 
 fn build_sprite_set(
     source: &CharacterContent,
-    appearance: AppearanceKey,
+    key: CharacterKey,
 ) -> Result<CharacterSpriteSet, CharacterContentError> {
+    let appearance = key.appearance;
     let body = required_style(&source.bodies, appearance.skin_id, "body")?;
     let head = required_style(&source.heads, head_id(appearance.skin_id), "head")?;
     let face = required_style(&source.faces, appearance.face_id, "face")?;
@@ -431,7 +585,12 @@ fn build_sprite_set(
     ] {
         parse(node, format!("Character.wz {label} {}", appearance.skin_id))?;
     }
-    for node in &source.starter_clothes {
+    let equipment = key
+        .equipment
+        .iter()
+        .map(|(_, item_id)| required_style(&source.equipment, *item_id, "equipped item"))
+        .collect::<Result<Vec<_>, _>>()?;
+    for node in &equipment {
         parse(node, node_path(node)?)?;
     }
 
@@ -442,6 +601,7 @@ fn build_sprite_set(
         head: &head,
         face: &face,
         hair: &hair,
+        equipment: &equipment,
     };
     let idle_frames = build_animation(source, parts, "stand1", &mut assets, &mut asset_ids)?;
     let walk_frames = build_animation(source, parts, "walk1", &mut assets, &mut asset_ids)?;
@@ -540,7 +700,7 @@ fn build_frame(
     let hair_frame = hair_frame(parts.hair, animation_name, frame_name, head_view)?;
     add_direct_layers(&hair_frame, &["brow"], None, &mut bones, &mut layers)?;
 
-    for clothing in &source.starter_clothes {
+    for clothing in parts.equipment {
         if let Some(frame) = animation_frame(clothing, animation_name, frame_name)? {
             add_direct_layers(&frame, &["navel"], None, &mut bones, &mut layers)?;
         }
@@ -761,6 +921,8 @@ mod tests {
 
     use oozems_proto::v1::CharacterAppearance;
     use oozems_proto::v1::CharacterGender;
+    use oozems_proto::v1::EquipmentSlot;
+    use oozems_proto::v1::EquippedItem;
     use wz_reader::WzNode;
     use wz_reader::WzNodeArc;
     use wz_reader::property::Vector2D;
@@ -869,7 +1031,7 @@ mod tests {
         };
 
         let sprites = content
-            .get_sprites(&appearance)
+            .get_sprites(&appearance, &crate::items::starter_inventory().equipment)
             .expect("build sprites")
             .expect("supported appearance");
 
@@ -916,6 +1078,46 @@ mod tests {
                 .all(|frame| !frame.layers.is_empty())
         );
         assert!(!sprites.assets.is_empty());
+        let item_definitions = content.item_definitions();
+        assert_eq!(item_definitions.len(), 6);
+        for definition in &item_definitions {
+            let png = content
+                .get_asset(&definition.icon_asset_id)
+                .expect("registered item icon")
+                .png_bytes()
+                .expect("decode item icon");
+            assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+        }
+        let alternate = [
+            EquippedItem {
+                slot: EquipmentSlot::Top as i32,
+                item_id: crate::items::SPARE_TOP_ID,
+            },
+            EquippedItem {
+                slot: EquipmentSlot::Bottom as i32,
+                item_id: crate::items::SPARE_BOTTOM_ID,
+            },
+            EquippedItem {
+                slot: EquipmentSlot::Shoes as i32,
+                item_id: crate::items::SPARE_SHOES_ID,
+            },
+        ];
+        let alternate_sprites = content
+            .get_sprites(&appearance, &alternate)
+            .expect("build alternate equipment sprites")
+            .expect("supported alternate equipment");
+        assert_ne!(
+            sprites.idle_frames[0]
+                .layers
+                .iter()
+                .map(|layer| layer.asset_id.as_str())
+                .collect::<Vec<_>>(),
+            alternate_sprites.idle_frames[0]
+                .layers
+                .iter()
+                .map(|layer| layer.asset_id.as_str())
+                .collect::<Vec<_>>()
+        );
         for frames in [
             &sprites.idle_frames,
             &sprites.walk_frames,

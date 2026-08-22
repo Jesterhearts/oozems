@@ -475,6 +475,7 @@ fn build_map(
         assets,
         ladders,
         portals,
+        dropped_items: Vec::new(),
     })
 }
 

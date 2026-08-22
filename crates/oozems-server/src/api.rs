@@ -11,6 +11,8 @@ use oozems_proto::v1::BootstrapRequest;
 use oozems_proto::v1::BootstrapResponse;
 use oozems_proto::v1::CreateCharacterRequest;
 use oozems_proto::v1::CreateCharacterResponse;
+use oozems_proto::v1::DropItemRequest;
+use oozems_proto::v1::EquipItemRequest;
 use oozems_proto::v1::ErrorResponse;
 use oozems_proto::v1::GetCharacterSpritesRequest;
 use oozems_proto::v1::GetCharacterSpritesResponse;
@@ -18,9 +20,11 @@ use oozems_proto::v1::GetGuiRequest;
 use oozems_proto::v1::GetGuiResponse;
 use oozems_proto::v1::GetMapRequest;
 use oozems_proto::v1::GetMapResponse;
+use oozems_proto::v1::ItemActionResponse;
 use oozems_proto::v1::PlayerState;
 use oozems_proto::v1::SavePlayerRequest;
 use oozems_proto::v1::SavePlayerResponse;
+use oozems_proto::v1::UnequipItemRequest;
 use oozems_proto::v1::Vec2;
 use prost::Message;
 use thiserror::Error;
@@ -116,15 +120,21 @@ pub async fn get_character_sprites(
             "request does not contain an appearance",
         )
     })?;
+    let equipment = if request.use_starter_equipment {
+        crate::items::starter_inventory().equipment
+    } else {
+        request.equipment
+    };
     let catalog = state.catalog.clone();
-    let sprites = tokio::task::spawn_blocking(move || catalog.get_character_sprites(&appearance))
-        .await??
-        .ok_or_else(|| {
-            ApiError::bad_request(
-                "unsupported_appearance",
-                "the selected character appearance is not available",
-            )
-        })?;
+    let sprites =
+        tokio::task::spawn_blocking(move || catalog.get_character_sprites(&appearance, &equipment))
+            .await??
+            .ok_or_else(|| {
+                ApiError::bad_request(
+                    "unsupported_appearance",
+                    "the selected character appearance is not available",
+                )
+            })?;
 
     Ok(Protobuf(GetCharacterSpritesResponse {
         sprites: Some(sprites),
@@ -137,14 +147,88 @@ pub async fn get_map(
     body: Bytes,
 ) -> Result<Protobuf<GetMapResponse>, ApiError> {
     let request: GetMapRequest = decode_request(&headers, body)?;
-    let map = load_map(&state, request.map_id).await?.ok_or_else(|| {
+    let mut map = load_map(&state, request.map_id).await?.ok_or_else(|| {
         ApiError::not_found(
             "map_not_found",
             format!("map {} does not exist", request.map_id),
         )
     })?;
+    map.dropped_items = crate::items::map_drops(&state.drops, map.id)?;
 
     Ok(Protobuf(GetMapResponse { map: Some(map) }))
+}
+
+pub async fn equip_item(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Protobuf<ItemActionResponse>, ApiError> {
+    let request: EquipItemRequest = decode_request(&headers, body)?;
+    let player_id = parse_player_id(&request.player_id)?;
+    let current = require_player(&state, &player_id).await?;
+    let updated = crate::items::equip_inventory_item(
+        current,
+        request.inventory_index,
+        &state.catalog.item_definitions(),
+    )
+    .map_err(item_rule_error)?;
+    let player = crate::database::save_player(&state.database, &updated).await?;
+
+    Ok(Protobuf(ItemActionResponse {
+        player: Some(player),
+        dropped_item: None,
+    }))
+}
+
+pub async fn unequip_item(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Protobuf<ItemActionResponse>, ApiError> {
+    let request: UnequipItemRequest = decode_request(&headers, body)?;
+    let player_id = parse_player_id(&request.player_id)?;
+    let current = require_player(&state, &player_id).await?;
+    let updated = crate::items::unequip_item(current, request.slot).map_err(item_rule_error)?;
+    let player = crate::database::save_player(&state.database, &updated).await?;
+
+    Ok(Protobuf(ItemActionResponse {
+        player: Some(player),
+        dropped_item: None,
+    }))
+}
+
+pub async fn drop_item(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Protobuf<ItemActionResponse>, ApiError> {
+    let request: DropItemRequest = decode_request(&headers, body)?;
+    let player_id = parse_player_id(&request.player_id)?;
+    let current = require_player(&state, &player_id).await?;
+    let original = current.clone();
+    let removed = crate::items::remove_inventory_item(
+        current,
+        request.inventory_index,
+        &state.catalog.item_definitions(),
+    )
+    .map_err(item_rule_error)?;
+    let player = crate::database::save_player(&state.database, &removed.player).await?;
+    let dropped_item = match crate::items::create_drop(&state.drops, &removed) {
+        Ok(drop) => drop,
+        Err(error) => {
+            if let Err(rollback_error) =
+                crate::database::save_player(&state.database, &original).await
+            {
+                tracing::error!(%rollback_error, "failed to restore an item after a drop-store error");
+            }
+            return Err(error.into());
+        }
+    };
+
+    Ok(Protobuf(ItemActionResponse {
+        player: Some(player),
+        dropped_item: Some(dropped_item),
+    }))
 }
 
 pub async fn get_gui(
@@ -238,6 +322,25 @@ async fn load_player(
         .transpose()
 }
 
+fn parse_player_id(value: &str) -> Result<PlayerId, ApiError> {
+    PlayerId::parse(value)
+        .map_err(|error| ApiError::bad_request("invalid_player_id", error.to_string()))
+}
+
+async fn require_player(
+    state: &AppState,
+    player_id: &PlayerId,
+) -> Result<PlayerState, ApiError> {
+    load_player(state, player_id)
+        .await?
+        .filter(|player| player.appearance.is_some())
+        .ok_or_else(|| ApiError::not_found("player_not_found", "player does not exist"))
+}
+
+fn item_rule_error(error: crate::items::ItemRuleError) -> ApiError {
+    ApiError::bad_request("invalid_item_action", error.to_string())
+}
+
 fn starter_position(map: &oozems_proto::v1::Map) -> Vec2 {
     map.portals
         .iter()
@@ -319,6 +422,8 @@ pub enum ApiError {
     Worker(#[from] tokio::task::JoinError),
     #[error("game rules could not be applied")]
     GameRules(#[from] crate::experience::ExperienceRuleError),
+    #[error("dropped-item operation failed")]
+    Drops(#[from] crate::items::DropStoreError),
 }
 
 impl ApiError {
@@ -394,6 +499,14 @@ impl IntoResponse for ApiError {
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "game_rules_error",
                     "the server could not apply its game rules".to_owned(),
+                )
+            }
+            Self::Drops(error) => {
+                tracing::error!(%error, "dropped-item operation failed");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "drop_store_error",
+                    "the server could not access dropped items".to_owned(),
                 )
             }
         };

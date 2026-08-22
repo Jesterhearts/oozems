@@ -6,11 +6,14 @@ mod config;
 mod content;
 mod database;
 mod experience;
+mod gameplay;
+mod items;
 
 use anyhow::Context;
 use config::Config;
 use content::ContentCatalog;
 use experience::ExperienceCurves;
+use gameplay::GameplayConfig;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -27,10 +30,15 @@ async fn main() -> anyhow::Result<()> {
     })?;
 
     let experience = ExperienceCurves::load(&config.config_dir.join("xp-curves.toml"))?;
+    let gameplay = GameplayConfig::load(&config.config_dir.join("gameplay.toml"))?;
     info!(
         curve = experience.default_curve().name(),
         max_level = experience.default_curve().max_level(),
         "XP curve configuration ready"
+    );
+    info!(
+        item_drop_despawn = %humantime::format_duration(gameplay.item_drop_despawn),
+        "gameplay configuration ready"
     );
     let catalog =
         ContentCatalog::load_with_wz(&config.content_dir, &config.asset_dir, &config.wz_dir)?;
@@ -39,6 +47,7 @@ async fn main() -> anyhow::Result<()> {
         database,
         catalog,
         experience,
+        gameplay,
         &config.public_dir,
         &config.asset_dir,
     );

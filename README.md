@@ -13,8 +13,10 @@ The current vertical slice includes:
 - optional classic PKG1 WZ map archives parsed lazily by the server;
 - a character creation screen with idle, walk, jump, ladder, and rope
   animations composed from `Character.wz`;
-- an optional in-game status bar and character-stat window composed from
-  `UI.wz` sprites;
+- optional in-game status, character-stat, equipment, and inventory windows
+  composed from `UI.wz` sprites;
+- persisted equipment and inventory state with WZ item icons and transient
+  map drops;
 - validated TOML game rules with named, formula-based XP curves;
 - server-owned assets fetched only when referenced by the current view; and
 - player movement, platforms, jumping, ladder and rope climbing, direct portal
@@ -53,12 +55,14 @@ browser
   -> POST /api/v1/characters/...  create a character or get sprite metadata
   -> POST /api/v1/gui/get         current GUI layout and asset metadata
   -> POST /api/v1/maps/get        current map protobuf
+  -> POST /api/v1/items/...       equip, unequip, or drop an item
   -> GET /assets/...              only bundled assets named by that map
   -> GET /wz-assets/...           requested map, character, and GUI PNG layers
   -> POST /api/v1/players/save    player position protobuf
 
 server
   -> config/xp-curves.toml        validated game progression rules
+  -> config/gameplay.toml         validated item drop rules
   -> content/maps/*.json          immutable map source
   -> data/Map.wz                  optional, lazy WZ map source
   -> data/Character.wz            optional character sprite source
@@ -97,11 +101,11 @@ layer. The browser receives only frame metadata at first. It requests the
 individual PNG layers while the preview or game renderer needs them. The
 chosen name and appearance are stored with the player in SurrealKV.
 
-Place `UI.wz` beside the other archives to use its classic `StatusBar.img`
-sprites for the in-game HUD. The server sends the status bar layout through
-protobuf. The browser then requests its background, gauges, quick-slot panel,
-and button images as normal versioned PNG assets. If `UI.wz` is absent, the
-client keeps using its built-in fallback HUD.
+Place `UI.wz` beside the other archives to use its classic `StatusBar.img` and
+`UIWindow.img` sprites for the in-game HUD. The server sends the layouts
+through protobuf. The browser then requests backgrounds, gauges, quick-slot
+panels, buttons, and open windows as normal versioned PNG assets. If `UI.wz`
+is absent, the client keeps using its built-in fallback HUD.
 
 The HP, MP, and EXP gauges use the persisted character values for their fill
 levels and display bracketed current and maximum values over the WZ artwork.
@@ -111,6 +115,34 @@ stat window. Its background, close control, and job label remain unloaded until
 the window is first opened. New characters receive server-owned Beginner stats,
 and existing SurrealDB records receive the same defaults when their older
 records do not contain stat fields.
+
+Click the equipment or inventory button to open its `UIWindow.img` window.
+Left-click an inventory item to equip it. Left-click an equipped item to move
+it back to inventory. Right-click an inventory item to drop it at the
+server-owned player position. Equipment and inventory changes are persisted in
+SurrealKV. The browser requests each equipment icon from `Character.wz` only
+when the icon is first visible. Equipping or removing an item also refreshes
+the composed character layers.
+
+Dropped items are transient and scoped to their map. Their item ID, position,
+and server-issued expiry time are sent in the map protobuf. Expired drops are
+removed from the server drop store and stop rendering in the client.
+
+## Configure gameplay rules
+
+Item rules are configured in `config/gameplay.toml`:
+
+```toml
+# See README.md for configuration reference.
+
+[items]
+drop_despawn = "10m"
+```
+
+`items.drop_despawn` controls how long a dropped item remains in a map. It must
+be a positive human-readable duration, such as `30s`, `10m`, `2h`, or
+`1h 30m`. Restart the server after changing it. Drops are intentionally not
+persisted across a server restart.
 
 ## Configure XP curves
 
@@ -208,5 +240,5 @@ its database engine in the server binary.
 2. Add a protobuf WebSocket stream for authoritative movement and other
    players while retaining HTTP for bootstrap and content.
 3. Split maps into spatial chunks if maps become much wider than the viewport.
-4. Add server-side portal scripts, NPCs, and inventory as separate typed
-   pipelines.
+4. Add server-side portal scripts, NPCs, consumable items, and item pickup as
+   separate typed pipelines.

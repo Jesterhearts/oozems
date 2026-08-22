@@ -187,7 +187,7 @@ async fn create_and_start(
     name: String,
     appearance: CharacterAppearance,
 ) -> Result<(), String> {
-    let sprites = api::get_character_sprites(appearance)
+    let sprites = api::get_character_sprites(appearance, None)
         .await
         .map_err(|error| error.to_string())?;
     let player = api::create_character(PLAYER_ID, &name, appearance)
@@ -211,7 +211,7 @@ fn request_preview(creator: &Rc<Creator>) {
     creator.preview_generation.set(generation);
     let pending_creator = creator.clone();
     spawn_local(async move {
-        match api::get_character_sprites(appearance).await {
+        match api::get_character_sprites(appearance, None).await {
             Ok(sprites) if pending_creator.preview_generation.get() == generation => {
                 match assets::prepare_assets(sprites.assets.iter()) {
                     Ok(images) => {

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::RwLock;
@@ -40,6 +41,10 @@ const STAT_CLOSE_RIGHT: f32 = 5.0;
 const STAT_CLOSE_TOP: f32 = 5.0;
 const STAT_JOB_LEFT: f32 = 60.0;
 const STAT_JOB_TOP: f32 = 57.0;
+const EQUIPMENT_WINDOW_X: f32 = 20.0;
+const EQUIPMENT_WINDOW_Y: f32 = 80.0;
+const INVENTORY_WINDOW_X: f32 = 205.0;
+const INVENTORY_WINDOW_Y: f32 = 80.0;
 
 pub struct GuiContent {
     _base: WzNodeArc,
@@ -73,7 +78,9 @@ struct StatusBarSources {
     gauge_graduation: SourceSprite,
     quick_slots: SourceSprite,
     equip: SourceSprite,
+    equip_pressed: SourceSprite,
     inventory: SourceSprite,
+    inventory_pressed: SourceSprite,
     stats: SourceSprite,
     stats_pressed: SourceSprite,
     skills: SourceSprite,
@@ -86,6 +93,11 @@ struct StatWindowSources {
     background: SourceSprite,
     close: SourceSprite,
     job: SourceSprite,
+}
+
+struct ItemWindowSources {
+    background: SourceSprite,
+    close: SourceSprite,
 }
 
 impl GuiContent {
@@ -174,10 +186,25 @@ fn build_game_gui(
     let (stat_sources, stat_assets) = load_stat_window_sources(content, ui_window)?;
     let stat_window = compose_stat_window(&stat_sources)?;
     assets.extend(stat_assets);
+    let (equipment_sources, equipment_assets) =
+        load_item_window_sources(content, ui_window, "equipment", "Equip")?;
+    let equipment_window =
+        compose_item_window(&equipment_sources, EQUIPMENT_WINDOW_X, EQUIPMENT_WINDOW_Y)?;
+    assets.extend(equipment_assets);
+    let (inventory_sources, inventory_assets) =
+        load_item_window_sources(content, ui_window, "inventory", "Item")?;
+    let inventory_window =
+        compose_item_window(&inventory_sources, INVENTORY_WINDOW_X, INVENTORY_WINDOW_Y)?;
+    assets.extend(inventory_assets);
+    let mut asset_ids = HashSet::new();
+    assets.retain(|asset| asset_ids.insert(asset.id.clone()));
     Ok(GameGui {
         status_bar: Some(status_bar),
         assets,
         stat_window: Some(stat_window),
+        equipment_window: Some(equipment_window),
+        inventory_window: Some(inventory_window),
+        items: Vec::new(),
     })
 }
 
@@ -216,7 +243,23 @@ fn load_status_bar_sources(
         &mut assets,
     )?;
     let equip = load_normal_button(content, status_bar, "equip", "EquipKey", &mut assets)?;
+    let equip_pressed = load_button_state(
+        content,
+        status_bar,
+        "equip-pressed",
+        "EquipKey",
+        "pressed",
+        &mut assets,
+    )?;
     let inventory = load_normal_button(content, status_bar, "inventory", "InvenKey", &mut assets)?;
+    let inventory_pressed = load_button_state(
+        content,
+        status_bar,
+        "inventory-pressed",
+        "InvenKey",
+        "pressed",
+        &mut assets,
+    )?;
     let stats = load_normal_button(content, status_bar, "stats", "StatKey", &mut assets)?;
     let stats_pressed = load_button_state(
         content,
@@ -256,7 +299,9 @@ fn load_status_bar_sources(
             gauge_graduation,
             quick_slots,
             equip,
+            equip_pressed,
             inventory,
+            inventory_pressed,
             stats,
             stats_pressed,
             skills,
@@ -266,6 +311,32 @@ fn load_status_bar_sources(
         },
         assets,
     ))
+}
+
+fn load_item_window_sources(
+    content: &GuiContent,
+    ui_window: &WzNodeArc,
+    name: &str,
+    wz_name: &str,
+) -> Result<(ItemWindowSources, Vec<AssetDescriptor>), GuiContentError> {
+    let mut assets = Vec::new();
+    let background = load_source(
+        content,
+        ui_window,
+        UI_WINDOW_IMAGE,
+        &format!("{name}-background"),
+        &[wz_name, "backgrnd"],
+        &mut assets,
+    )?;
+    let close = load_source(
+        content,
+        ui_window,
+        UI_WINDOW_IMAGE,
+        &format!("{name}-close"),
+        &["BtUIClose", "normal", "0"],
+        &mut assets,
+    )?;
+    Ok((ItemWindowSources { background, close }, assets))
 }
 
 fn load_stat_window_sources(
@@ -393,8 +464,8 @@ fn compose_status_bar(sources: &StatusBarSources) -> Result<GuiLayout, GuiConten
             .map(|(index, source)| place_key_reference(source, quick_slots_x, index)),
     );
     let menu_buttons = [
-        (&sources.equip, None),
-        (&sources.inventory, None),
+        (&sources.equip, Some(&sources.equip_pressed)),
+        (&sources.inventory, Some(&sources.inventory_pressed)),
         (&sources.stats, Some(&sources.stats_pressed)),
         (&sources.skills, None),
         (&sources.key_settings, None),
@@ -417,6 +488,32 @@ fn compose_status_bar(sources: &StatusBarSources) -> Result<GuiLayout, GuiConten
     };
     validate_layout(&layout)?;
     Ok(layout)
+}
+
+fn compose_item_window(
+    sources: &ItemWindowSources,
+    x: f32,
+    y: f32,
+) -> Result<GuiWindow, GuiContentError> {
+    let width = sources.background.width;
+    let height = sources.background.height;
+    let layout = GuiLayout {
+        width,
+        height,
+        background: Some(place_sprite(&sources.background, 0.0, 0.0, false)),
+        sprites: vec![place_sprite(
+            &sources.close,
+            width - sources.close.width - STAT_CLOSE_RIGHT,
+            STAT_CLOSE_TOP,
+            false,
+        )],
+    };
+    validate_layout(&layout)?;
+    Ok(GuiWindow {
+        x,
+        y,
+        layout: Some(layout),
+    })
 }
 
 fn compose_stat_window(sources: &StatWindowSources) -> Result<GuiWindow, GuiContentError> {
@@ -576,7 +673,9 @@ mod tests {
             gauge_graduation: source("gauge-graduation", 340.0, 31.0),
             quick_slots: source("quick-slots", 151.0, 80.0),
             equip: source("equip", 28.0, 20.0),
+            equip_pressed: source("equip-pressed", 28.0, 20.0),
             inventory: source("inventory", 28.0, 20.0),
+            inventory_pressed: source("inventory-pressed", 28.0, 20.0),
             stats: source("stats", 28.0, 20.0),
             stats_pressed: source("stats-pressed", 28.0, 20.0),
             skills: source("skills", 28.0, 20.0),
@@ -672,7 +771,21 @@ mod tests {
             stat_window.layout.as_ref().map(|layout| layout.height),
             Some(347.0)
         );
-        assert_eq!(gui.assets.len(), 23);
+        assert_eq!(gui.assets.len(), 27);
+        assert_eq!(
+            gui.equipment_window
+                .as_ref()
+                .and_then(|window| window.layout.as_ref())
+                .map(|layout| (layout.width, layout.height)),
+            Some((175.0, 304.0))
+        );
+        assert_eq!(
+            gui.inventory_window
+                .as_ref()
+                .and_then(|window| window.layout.as_ref())
+                .map(|layout| (layout.width, layout.height)),
+            Some((175.0, 289.0))
+        );
 
         for descriptor in &gui.assets {
             let asset = content
