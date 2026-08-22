@@ -16,6 +16,7 @@ const LADDER_TOP_PLATFORM_REACH: f32 = 24.0;
 const PORTAL_HORIZONTAL_REACH: f32 = 48.0;
 const PORTAL_VERTICAL_REACH: f32 = 64.0;
 const PORTAL_FLOOR_PENETRATION_LIMIT: f32 = 16.0;
+const PLATFORM_CONTACT_TOLERANCE: f32 = 1.0;
 const SCRIPT_PORTAL_TARGET: u32 = 999_999_999;
 const SPAWN_PORTAL_KIND: u32 = 0;
 
@@ -24,6 +25,7 @@ pub struct MotionState {
     pub velocity_y: f32,
     pub on_ground: bool,
     pub climbing: Option<usize>,
+    pub platform_layer: i32,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -45,6 +47,23 @@ pub struct MotionOutput {
     pub position: Vec2,
     pub state: MotionState,
     pub transition: Option<MapTransition>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct GroundContact {
+    y: f32,
+    layer: i32,
+}
+
+pub fn initial_motion_state(
+    map: &Map,
+    position: &Vec2,
+) -> MotionState {
+    supporting_platform(map, position).map_or_else(MotionState::default, |contact| MotionState {
+        on_ground: true,
+        platform_layer: contact.layer,
+        ..MotionState::default()
+    })
 }
 
 pub fn update_player(
@@ -76,6 +95,7 @@ pub fn update_player(
         state.climbing = Some(index);
         state.velocity_y = 0.0;
         state.on_ground = false;
+        state.platform_layer = map.ladders[index].layer;
         position.x = map.ladders[index].x;
     }
 
@@ -121,10 +141,11 @@ fn move_with_gravity(
 
     state.velocity_y += GRAVITY * elapsed_seconds;
     let proposed_y = position.y + state.velocity_y * elapsed_seconds;
-    if let Some(landing_y) = find_landing_platform(map, old_x, position.x, old_y, proposed_y) {
-        position.y = landing_y;
+    if let Some(contact) = find_landing_platform(map, old_x, position.x, old_y, proposed_y) {
+        position.y = contact.y;
         state.velocity_y = 0.0;
         state.on_ground = true;
+        state.platform_layer = contact.layer;
     } else {
         position.y = proposed_y.min(map.height as f32);
         state.on_ground = false;
@@ -150,10 +171,16 @@ fn move_on_ladder(
 
     if vertical < 0.0 && position.y <= ladder.top {
         if ladder.upper_floor {
-            let (exit_y, on_ground) = upper_floor_exit(map, ladder);
-            position.y = exit_y;
+            let exit_y = ladder.top - LADDER_TOP_EXIT_OFFSET;
+            if let Some(contact) = upper_floor_contact(map, ladder, exit_y) {
+                position.y = contact.y;
+                state.on_ground = true;
+                state.platform_layer = contact.layer;
+            } else {
+                position.y = exit_y;
+                state.on_ground = false;
+            }
             state.climbing = None;
-            state.on_ground = on_ground;
         } else {
             position.y = ladder.top;
         }
@@ -173,20 +200,24 @@ fn move_on_ladder(
     }
 }
 
-fn upper_floor_exit(
+fn upper_floor_contact(
     map: &Map,
     ladder: &Ladder,
-) -> (f32, bool) {
-    let exit_y = ladder.top - LADDER_TOP_EXIT_OFFSET;
-    let platform_y = map
-        .platforms
+    exit_y: f32,
+) -> Option<GroundContact> {
+    map.platforms
         .iter()
-        .filter_map(|platform| platform_surface_near_ladder(platform, ladder.x))
-        .filter(|surface| {
-            *surface <= ladder.top && (*surface - exit_y).abs() <= LADDER_TOP_PLATFORM_REACH
+        .filter_map(|platform| {
+            let y = platform_surface_near_ladder(platform, ladder.x)?;
+            Some(GroundContact {
+                y,
+                layer: platform.layer,
+            })
         })
-        .min_by(|left, right| (left - exit_y).abs().total_cmp(&(right - exit_y).abs()));
-    platform_y.map_or((exit_y, false), |surface| (surface, true))
+        .filter(|contact| {
+            contact.y <= ladder.top && (contact.y - exit_y).abs() <= LADDER_TOP_PLATFORM_REACH
+        })
+        .min_by(|left, right| (left.y - exit_y).abs().total_cmp(&(right.y - exit_y).abs()))
 }
 
 fn platform_surface_near_ladder(
@@ -305,7 +336,7 @@ fn find_landing_platform(
     new_x: f32,
     old_y: f32,
     new_y: f32,
-) -> Option<f32> {
+) -> Option<GroundContact> {
     if new_y < old_y {
         return None;
     }
@@ -321,12 +352,35 @@ fn find_landing_platform(
             let old_surface = platform_y(platform, old_x.clamp(minimum_x, maximum_x))?;
             let new_surface = platform_y(platform, new_x.clamp(minimum_x, maximum_x))?;
             if old_y <= old_surface + 1.0 && new_y >= new_surface {
-                Some(new_surface)
+                Some(GroundContact {
+                    y: new_surface,
+                    layer: platform.layer,
+                })
             } else {
                 None
             }
         })
-        .min_by(f32::total_cmp)
+        .min_by(|left, right| left.y.total_cmp(&right.y))
+}
+
+fn supporting_platform(
+    map: &Map,
+    position: &Vec2,
+) -> Option<GroundContact> {
+    map.platforms
+        .iter()
+        .filter_map(|platform| {
+            let y = platform_surface_at_x(platform, position.x)?;
+            ((y - position.y).abs() <= PLATFORM_CONTACT_TOLERANCE).then_some(GroundContact {
+                y,
+                layer: platform.layer,
+            })
+        })
+        .min_by(|left, right| {
+            (left.y - position.y)
+                .abs()
+                .total_cmp(&(right.y - position.y).abs())
+        })
 }
 
 fn platform_y(
@@ -353,6 +407,7 @@ mod tests {
     use super::MotionState;
     use super::PlayerInput;
     use super::destination_position;
+    use super::initial_motion_state;
     use super::update_player;
 
     #[test]
@@ -364,6 +419,7 @@ mod tests {
                 width: 100.0,
                 end_x: 200.0,
                 end_y: 250.0,
+                layer: 2,
                 ..Platform::default()
             }],
             width: 800,
@@ -386,6 +442,53 @@ mod tests {
 
         assert_eq!(output.position.y, 275.0);
         assert!(output.state.on_ground);
+        assert_eq!(output.state.platform_layer, 2);
+    }
+
+    #[test]
+    fn player_keeps_the_platform_layer_while_jumping() {
+        let map = Map {
+            width: 800,
+            height: 600,
+            ..Map::default()
+        };
+        let output = update_player(
+            &map,
+            Vec2 { x: 140.0, y: 280.0 },
+            MotionState {
+                on_ground: true,
+                platform_layer: 3,
+                ..MotionState::default()
+            },
+            PlayerInput {
+                jump_pressed: true,
+                ..PlayerInput::default()
+            },
+            0.016,
+        );
+
+        assert!(!output.state.on_ground);
+        assert_eq!(output.state.platform_layer, 3);
+    }
+
+    #[test]
+    fn initial_state_uses_the_supporting_platform_layer() {
+        let map = Map {
+            platforms: vec![Platform {
+                x: 100.0,
+                y: 300.0,
+                end_x: 200.0,
+                end_y: 300.0,
+                layer: 2,
+                ..Platform::default()
+            }],
+            ..Map::default()
+        };
+
+        let state = initial_motion_state(&map, &Vec2 { x: 150.0, y: 300.0 });
+
+        assert!(state.on_ground);
+        assert_eq!(state.platform_layer, 2);
     }
 
     #[test]
@@ -398,6 +501,7 @@ mod tests {
                 top: 100.0,
                 bottom: 300.0,
                 upper_floor: true,
+                layer: 2,
                 ..Ladder::default()
             }],
             ..Map::default()
@@ -416,6 +520,7 @@ mod tests {
         assert_eq!(output.position, Vec2 { x: 200.0, y: 266.5 });
         assert_eq!(output.state.climbing, Some(0));
         assert_eq!(output.state.velocity_y, 0.0);
+        assert_eq!(output.state.platform_layer, 2);
     }
 
     #[test]
@@ -428,6 +533,7 @@ mod tests {
                 y: 95.0,
                 end_x: 250.0,
                 end_y: 95.0,
+                layer: 3,
                 ..Platform::default()
             }],
             ladders: vec![Ladder {
@@ -456,6 +562,7 @@ mod tests {
         assert_eq!(output.position, Vec2 { x: 200.0, y: 95.0 });
         assert_eq!(output.state.climbing, None);
         assert!(output.state.on_ground);
+        assert_eq!(output.state.platform_layer, 3);
         assert_eq!(output.state.velocity_y, 0.0);
 
         let settled = update_player(

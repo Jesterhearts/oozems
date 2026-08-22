@@ -242,6 +242,7 @@ message Platform {
   float end_x = 5;
   float end_y = 6;
   bool hidden = 7;
+  int32 layer = 8;
 }
 
 enum PlatformKind {
@@ -266,6 +267,7 @@ message Ladder {
   float bottom = 3;
   bool is_ladder = 4;
   bool upper_floor = 5;
+  int32 layer = 6;
 }
 
 message Portal {
@@ -276,6 +278,7 @@ message Portal {
   string target_name = 5;
   uint32 kind = 6;
   repeated PortalFrame frames = 7;
+  int32 layer = 8;
 }
 
 message PortalFrame {

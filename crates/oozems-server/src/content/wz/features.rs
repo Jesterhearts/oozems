@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use oozems_proto::v1::AssetDescriptor;
 use oozems_proto::v1::Ladder;
+use oozems_proto::v1::Platform;
 use oozems_proto::v1::Portal;
 use oozems_proto::v1::PortalFrame;
 use wz_reader::WzNodeArc;
@@ -26,6 +27,7 @@ pub(super) struct RawLadder {
     pub(super) y2: i32,
     is_ladder: bool,
     upper_floor: bool,
+    layer: i32,
 }
 
 pub(super) struct RawPortal {
@@ -72,6 +74,7 @@ fn read_ladder(node: &WzNodeArc) -> Result<Option<RawLadder>, WzContentError> {
         y2,
         is_ladder: int_value(node, "l")?.unwrap_or_default() != 0,
         upper_floor: int_value(node, "uf")?.unwrap_or_default() != 0,
+        layer: int_value(node, "page")?.unwrap_or_default(),
     }))
 }
 
@@ -175,6 +178,7 @@ pub(super) fn build_ladders(
             bottom: (ladder.y1.max(ladder.y2) - bounds.top) as f32,
             is_ladder: ladder.is_ladder,
             upper_floor: ladder.upper_floor,
+            layer: ladder.layer,
         })
         .collect()
 }
@@ -182,19 +186,21 @@ pub(super) fn build_ladders(
 pub(super) fn build_portals(
     content: &WzContent,
     source: Vec<RawPortal>,
+    platforms: &[Platform],
     bounds: Bounds,
     assets: &mut Vec<AssetDescriptor>,
     asset_ids: &mut HashSet<String>,
 ) -> Result<Vec<Portal>, WzContentError> {
     source
         .into_iter()
-        .map(|portal| build_portal(content, portal, bounds, assets, asset_ids))
+        .map(|portal| build_portal(content, portal, platforms, bounds, assets, asset_ids))
         .collect()
 }
 
 fn build_portal(
     content: &WzContent,
     source: RawPortal,
+    platforms: &[Platform],
     bounds: Bounds,
     assets: &mut Vec<AssetDescriptor>,
     asset_ids: &mut HashSet<String>,
@@ -215,24 +221,65 @@ fn build_portal(
         });
     }
 
+    let x = (source.x - bounds.left) as f32;
+    let y = (source.y - bounds.top) as f32;
     Ok(Portal {
         name: source.name,
-        x: (source.x - bounds.left) as f32,
-        y: (source.y - bounds.top) as f32,
+        x,
+        y,
         target_map_id: source.target_map_id,
         target_name: source.target_name,
         kind: source.kind,
         frames,
+        layer: attached_platform_layer(platforms, x, y),
     })
+}
+
+fn attached_platform_layer(
+    platforms: &[Platform],
+    portal_x: f32,
+    portal_y: f32,
+) -> i32 {
+    platforms
+        .iter()
+        .filter_map(|platform| {
+            let surface = platform_surface_at_x(platform, portal_x)?;
+            Some((platform.layer, (surface - portal_y).abs(), surface))
+        })
+        .min_by(|left, right| {
+            left.1
+                .total_cmp(&right.1)
+                .then_with(|| right.2.total_cmp(&left.2))
+        })
+        .map_or(0, |(layer, _, _)| layer)
+}
+
+fn platform_surface_at_x(
+    platform: &Platform,
+    x: f32,
+) -> Option<f32> {
+    let minimum_x = platform.x.min(platform.end_x);
+    let maximum_x = platform.x.max(platform.end_x);
+    if !(minimum_x..=maximum_x).contains(&x) {
+        return None;
+    }
+    let width = platform.end_x - platform.x;
+    if width.abs() < f32::EPSILON {
+        return None;
+    }
+    let progress = (x - platform.x) / width;
+    Some(platform.y + progress * (platform.end_y - platform.y))
 }
 
 #[cfg(test)]
 mod tests {
+    use oozems_proto::v1::Platform;
     use wz_reader::WzNode;
     use wz_reader::WzNodeArc;
     use wz_reader::property::WzString;
 
     use super::Bounds;
+    use super::attached_platform_layer;
     use super::build_ladders;
     use super::read_ladder;
     use super::read_portal;
@@ -240,7 +287,14 @@ mod tests {
     #[test]
     fn ladder_fields_become_bounded_collision_data() {
         let node = WzNode::from_str("0", 0, None).into_lock();
-        for (name, value) in [("x", 120), ("y1", 80), ("y2", 240), ("l", 1), ("uf", 1)] {
+        for (name, value) in [
+            ("x", 120),
+            ("y1", 80),
+            ("y2", 240),
+            ("l", 1),
+            ("uf", 1),
+            ("page", 3),
+        ] {
             add(
                 &node,
                 WzNode::from_str(name, value, Some(&node)).into_lock(),
@@ -263,6 +317,7 @@ mod tests {
         assert_eq!(ladders[0].bottom, 280.0);
         assert!(ladders[0].is_ladder);
         assert!(ladders[0].upper_floor);
+        assert_eq!(ladders[0].layer, 3);
     }
 
     #[test]
@@ -287,6 +342,30 @@ mod tests {
         assert_eq!(portal.target_map_id, 100_010_000);
         assert_eq!(portal.target_name, "west00");
         assert_eq!(portal.kind, 2);
+    }
+
+    #[test]
+    fn portal_uses_the_layer_of_its_nearest_supporting_platform() {
+        let platforms = vec![
+            Platform {
+                x: 100.0,
+                y: 100.0,
+                end_x: 300.0,
+                end_y: 100.0,
+                layer: 1,
+                ..Platform::default()
+            },
+            Platform {
+                x: 100.0,
+                y: 300.0,
+                end_x: 300.0,
+                end_y: 300.0,
+                layer: 3,
+                ..Platform::default()
+            },
+        ];
+
+        assert_eq!(attached_platform_layer(&platforms, 200.0, 290.0), 3);
     }
 
     fn add(

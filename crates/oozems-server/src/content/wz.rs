@@ -34,7 +34,6 @@ use features::RawPortal;
 
 const MAP_ARCHIVE: &str = "Map.wz";
 const STRING_ARCHIVE: &str = "String.wz";
-const PLAYER_LAYER: i32 = 4;
 
 pub struct WzContent {
     _base: WzNodeArc,
@@ -106,6 +105,7 @@ struct RawPlatform {
     y1: i32,
     x2: i32,
     y2: i32,
+    layer: i32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -441,7 +441,7 @@ fn build_map(
     });
     validate_bounds(map_id, bounds)?;
 
-    let platforms = raw_platforms
+    let platforms: Vec<Platform> = raw_platforms
         .into_iter()
         .filter(|platform| platform.x1 != platform.x2)
         .map(|platform| build_platform(platform, bounds))
@@ -458,8 +458,14 @@ fn build_map(
         decorations.push(build_decoration(decoration, &asset.id, bounds));
     }
     let ladders = features::build_ladders(raw_ladders, bounds);
-    let portals =
-        features::build_portals(source, raw_portals, bounds, &mut assets, &mut asset_ids)?;
+    let portals = features::build_portals(
+        source,
+        raw_portals,
+        &platforms,
+        bounds,
+        &mut assets,
+        &mut asset_ids,
+    )?;
 
     Ok(Map {
         id: map_id,
@@ -484,12 +490,18 @@ fn read_platforms(node: &WzNodeArc) -> Result<Vec<RawPlatform>, WzContentError> 
         return Ok(Vec::new());
     };
     let mut output = Vec::new();
-    collect_platforms(&footholds, &mut output)?;
+    for layer_index in 0..=7 {
+        let Some(layer) = child(&footholds, &layer_index.to_string())? else {
+            continue;
+        };
+        collect_platforms(&layer, layer_index, &mut output)?;
+    }
     Ok(output)
 }
 
 fn collect_platforms(
     node: &WzNodeArc,
+    layer: i32,
     output: &mut Vec<RawPlatform>,
 ) -> Result<(), WzContentError> {
     let values = ["x1", "y1", "x2", "y2"]
@@ -502,12 +514,13 @@ fn collect_platforms(
             y1: *y1,
             x2: *x2,
             y2: *y2,
+            layer,
         });
         return Ok(());
     }
 
     for child in children(node)? {
-        collect_platforms(&child, output)?;
+        collect_platforms(&child, layer, output)?;
     }
     Ok(())
 }
@@ -858,6 +871,7 @@ fn build_platform(
         end_x: x2,
         end_y: y2,
         hidden: true,
+        layer: source.layer,
     }
 }
 
@@ -872,7 +886,7 @@ fn build_decoration(
         y: (source.sprite.y - bounds.top) as f32,
         width: source.sprite.width as f32,
         height: source.sprite.height as f32,
-        layer: source.order.layer - PLAYER_LAYER,
+        layer: source.order.layer,
         flip_x: source.sprite.flip_x,
     }
 }
@@ -968,6 +982,7 @@ mod tests {
     use super::Bounds;
     use super::RawDecoration;
     use super::RawPlatform;
+    use super::build_platform;
     use super::derive_bounds;
     use super::object_order;
     use super::read_bounds;
@@ -980,6 +995,7 @@ mod tests {
             y1: 20,
             x2: 80,
             y2: 30,
+            layer: 0,
         }];
         let decorations: [RawDecoration; 0] = [];
 
@@ -992,6 +1008,27 @@ mod tests {
                 bottom: 130,
             })
         );
+    }
+
+    #[test]
+    fn platform_keeps_its_wz_layer() {
+        let platform = build_platform(
+            RawPlatform {
+                x1: 10,
+                y1: 20,
+                x2: 30,
+                y2: 20,
+                layer: 3,
+            },
+            Bounds {
+                left: 0,
+                top: 0,
+                right: 100,
+                bottom: 100,
+            },
+        );
+
+        assert_eq!(platform.layer, 3);
     }
 
     #[test]

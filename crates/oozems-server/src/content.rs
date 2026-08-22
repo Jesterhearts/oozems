@@ -90,6 +90,8 @@ struct PlatformFile {
     y: f32,
     width: f32,
     kind: PlatformKindFile,
+    #[serde(default)]
+    layer: i32,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -311,6 +313,7 @@ fn build_map(
                 end_x: platform.x + platform.width,
                 end_y: platform.y,
                 hidden: false,
+                layer: platform.layer,
             })
             .collect(),
         decorations: source
@@ -504,12 +507,20 @@ mod tests {
 
         assert_eq!(map.name, "Henesys");
         assert!(map.platforms.iter().any(|platform| platform.hidden));
+        assert!(map.platforms.iter().any(|platform| platform.layer == 0));
+        assert!(map.platforms.iter().any(|platform| platform.layer == 1));
         assert!(!map.decorations.is_empty());
+        assert!(
+            map.decorations
+                .iter()
+                .any(|decoration| decoration.layer > 1)
+        );
         assert!(!map.ladders.is_empty());
         assert!(map.portals.iter().any(|portal| {
             portal.name == "east00"
                 && portal.target_map_id == 100_010_000
                 && portal.target_name == "west00"
+                && portal.layer == 1
                 && !portal.frames.is_empty()
         }));
         if wz_dir.join("Character.wz").exists() && wz_dir.join("UI.wz").exists() {

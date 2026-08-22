@@ -46,8 +46,10 @@ pub struct Game {
     pub gui_state: Rc<RefCell<GuiState>>,
     pub images: HashMap<String, BrowserAsset>,
     pub map: Map,
+    pub motion: MotionState,
     pub player: PlayerState,
     pub frame_time_ms: f64,
+    pub world_layers: Vec<i32>,
     input: Rc<RefCell<InputState>>,
     save_in_flight: Rc<std::cell::Cell<bool>>,
     item_action_in_flight: Rc<Cell<bool>>,
@@ -57,7 +59,6 @@ pub struct Game {
     portal_consumed: bool,
     last_frame_ms: f64,
     next_save_ms: f64,
-    motion: MotionState,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -124,6 +125,13 @@ fn build_game(
     install_keyboard_input(&window, input.clone())?;
     let gui_state = Rc::new(RefCell::new(GuiState::default()));
     let images = prepare_game_assets(&map, &character_sprites, &gui)?;
+    let motion = player
+        .position
+        .as_ref()
+        .map_or_else(MotionState::default, |position| {
+            movement::initial_motion_state(&map, position)
+        });
+    let world_layers = render::world_layers(&map);
 
     let game = Rc::new(RefCell::new(Game {
         canvas: canvas.clone(),
@@ -136,8 +144,10 @@ fn build_game(
         gui_state,
         images,
         map,
+        motion,
         player,
         frame_time_ms: 0.0,
+        world_layers,
         input,
         save_in_flight: Rc::new(std::cell::Cell::new(false)),
         item_action_in_flight: Rc::new(Cell::new(false)),
@@ -147,7 +157,6 @@ fn build_game(
         portal_consumed: false,
         last_frame_ms: 0.0,
         next_save_ms: SAVE_INTERVAL_MS,
-        motion: MotionState::default(),
     }));
     install_canvas_input(&canvas, game.clone())?;
     Ok(game)
@@ -577,12 +586,15 @@ fn install_map(
     let images = prepare_game_assets(&map, &game.character_sprites, &game.gui)?;
     let position = movement::destination_position(&map, &transition.target_portal_name)
         .unwrap_or_else(|| fallback_position(&map));
+    let motion = movement::initial_motion_state(&map, &position);
+    let world_layers = render::world_layers(&map);
 
     game.player.map_id = map.id;
     game.player.position = Some(position);
     game.map = map;
     game.images = images;
-    game.motion = MotionState::default();
+    game.motion = motion;
+    game.world_layers = world_layers;
     game.character_animation = CharacterAnimation::Idle;
     game.character_animation_started_ms = game.frame_time_ms;
     game.dirty = true;

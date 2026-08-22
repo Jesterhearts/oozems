@@ -3,6 +3,7 @@ use oozems_proto::v1::Decoration;
 use oozems_proto::v1::GuiSprite;
 use oozems_proto::v1::GuiWindow;
 use oozems_proto::v1::ItemDefinition;
+use oozems_proto::v1::Map;
 use oozems_proto::v1::PlatformKind;
 use oozems_proto::v1::PortalFrame;
 use web_sys::HtmlImageElement;
@@ -16,6 +17,28 @@ use crate::game_gui;
 const GAUGE_HEADER_HEIGHT: f64 = 15.0;
 const GAUGE_FILL_TOP: f64 = 15.0;
 const GAUGE_FILL_HEIGHT: f64 = 14.0;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LayerPass {
+    Decorations,
+    Platforms,
+    Portals,
+    DroppedItems,
+    Player,
+}
+
+const ORDINARY_LAYER_PASSES: &[LayerPass] = &[
+    LayerPass::Decorations,
+    LayerPass::Platforms,
+    LayerPass::Portals,
+];
+const PLAYER_LAYER_PASSES: &[LayerPass] = &[
+    LayerPass::Decorations,
+    LayerPass::Platforms,
+    LayerPass::Portals,
+    LayerPass::DroppedItems,
+    LayerPass::Player,
+];
 
 pub fn draw(game: &Game) {
     let viewport_width = f64::from(game.canvas.width());
@@ -34,13 +57,40 @@ pub fn draw(game: &Game) {
     let camera_y = camera_y(player_y, viewport_height, f64::from(game.map.height));
 
     draw_background(game, viewport_width, viewport_height, camera_x);
-    draw_decorations(game, camera_x, camera_y, |layer| layer <= 0);
-    draw_platforms(game, camera_x, camera_y);
-    draw_portals(game, camera_x, camera_y);
-    draw_dropped_items(game, camera_x, camera_y);
-    draw_player(game, camera_x, camera_y);
-    draw_decorations(game, camera_x, camera_y, |layer| layer > 0);
+    for layer in &game.world_layers {
+        for pass in layer_passes(*layer == game.motion.platform_layer) {
+            match pass {
+                LayerPass::Decorations => draw_decorations(game, camera_x, camera_y, *layer),
+                LayerPass::Platforms => draw_platforms(game, camera_x, camera_y, *layer),
+                LayerPass::Portals => draw_portals(game, camera_x, camera_y, *layer),
+                LayerPass::DroppedItems => draw_dropped_items(game, camera_x, camera_y),
+                LayerPass::Player => draw_player(game, camera_x, camera_y),
+            }
+        }
+    }
     draw_hud(game);
+}
+
+pub(crate) fn world_layers(map: &Map) -> Vec<i32> {
+    let mut layers = Vec::with_capacity(
+        map.decorations.len() + map.platforms.len() + map.ladders.len() + map.portals.len() + 1,
+    );
+    layers.push(0);
+    layers.extend(map.decorations.iter().map(|decoration| decoration.layer));
+    layers.extend(map.platforms.iter().map(|platform| platform.layer));
+    layers.extend(map.ladders.iter().map(|ladder| ladder.layer));
+    layers.extend(map.portals.iter().map(|portal| portal.layer));
+    layers.sort_unstable();
+    layers.dedup();
+    layers
+}
+
+fn layer_passes(has_player: bool) -> &'static [LayerPass] {
+    if has_player {
+        PLAYER_LAYER_PASSES
+    } else {
+        ORDINARY_LAYER_PASSES
+    }
 }
 
 fn camera_x(
@@ -92,16 +142,14 @@ fn draw_background(
     context.fill();
 }
 
-fn draw_decorations<F>(
+fn draw_decorations(
     game: &Game,
     camera_x: f64,
     camera_y: f64,
-    include: F,
-) where
-    F: Fn(i32) -> bool,
-{
+    layer: i32,
+) {
     for decoration in &game.map.decorations {
-        if include(decoration.layer) {
+        if decoration.layer == layer {
             draw_decoration(game, decoration, camera_x, camera_y);
         }
     }
@@ -177,8 +225,12 @@ fn draw_portals(
     game: &Game,
     camera_x: f64,
     camera_y: f64,
+    layer: i32,
 ) {
     for portal in &game.map.portals {
+        if portal.layer != layer {
+            continue;
+        }
         let Some(index) = portal_frame_index(&portal.frames, game.frame_time_ms) else {
             continue;
         };
@@ -255,9 +307,10 @@ fn draw_platforms(
     game: &Game,
     camera_x: f64,
     camera_y: f64,
+    layer: i32,
 ) {
     for platform in &game.map.platforms {
-        if platform.hidden {
+        if platform.hidden || platform.layer != layer {
             continue;
         }
         let x = f64::from(platform.x) - camera_x;
@@ -765,9 +818,64 @@ fn draw_fallback_hud(game: &Game) {
 
 #[cfg(test)]
 mod tests {
+    use oozems_proto::v1::Decoration;
+    use oozems_proto::v1::Ladder;
+    use oozems_proto::v1::Map;
+    use oozems_proto::v1::Platform;
+    use oozems_proto::v1::Portal;
     use oozems_proto::v1::PortalFrame;
 
+    use super::LayerPass;
+    use super::layer_passes;
     use super::portal_frame_index;
+    use super::world_layers;
+
+    #[test]
+    fn world_layers_include_each_layer_source_in_order() {
+        let map = Map {
+            decorations: vec![Decoration {
+                layer: 3,
+                ..Decoration::default()
+            }],
+            platforms: vec![Platform {
+                layer: 1,
+                ..Platform::default()
+            }],
+            ladders: vec![Ladder {
+                layer: 4,
+                ..Ladder::default()
+            }],
+            portals: vec![Portal {
+                layer: 2,
+                ..Portal::default()
+            }],
+            ..Map::default()
+        };
+
+        assert_eq!(world_layers(&map), vec![0, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn portals_render_after_decorations_on_their_layer() {
+        assert_eq!(
+            layer_passes(false),
+            &[
+                LayerPass::Decorations,
+                LayerPass::Platforms,
+                LayerPass::Portals,
+            ]
+        );
+        assert_eq!(
+            layer_passes(true),
+            &[
+                LayerPass::Decorations,
+                LayerPass::Platforms,
+                LayerPass::Portals,
+                LayerPass::DroppedItems,
+                LayerPass::Player,
+            ]
+        );
+    }
 
     #[test]
     fn portal_animation_uses_each_frame_delay() {
