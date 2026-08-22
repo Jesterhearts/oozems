@@ -528,6 +528,13 @@ message Map {
   repeated MobSpawnPoint mob_spawn_points = 11;
   repeated MobDefinition mob_definitions = 12;
   repeated Mob mobs = 13;
+  MapMovementBounds movement_bounds = 14;
+}
+
+message MapMovementBounds {
+  // Inclusive limits for the horizontal player anchor after collision width.
+  float left = 1;
+  float right = 2;
 }
 
 message MobSpawnPoint {

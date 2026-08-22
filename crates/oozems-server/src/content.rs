@@ -13,6 +13,7 @@ use oozems_proto::v1::EquippedItem;
 use oozems_proto::v1::GameGui;
 use oozems_proto::v1::ItemDefinition;
 use oozems_proto::v1::Map;
+use oozems_proto::v1::MapMovementBounds;
 use oozems_proto::v1::Platform;
 use oozems_proto::v1::PlatformKind;
 use oozems_proto::v1::SkillBook;
@@ -36,6 +37,8 @@ use skill::SkillContentError;
 pub(crate) use wz::WzAsset;
 use wz::WzContent;
 use wz::WzContentError;
+
+const PLAYER_HALF_WIDTH: f32 = 18.0;
 
 pub struct ContentCatalog {
     characters: Option<CharacterContent>,
@@ -334,6 +337,7 @@ fn build_map(
     asset_dir: &Path,
 ) -> Result<Map, ContentError> {
     validate_map_dimensions(&source)?;
+    let width = source.width;
 
     let assets = source
         .assets
@@ -347,7 +351,7 @@ fn build_map(
     Ok(Map {
         id: source.id,
         name: source.name,
-        width: source.width,
+        width,
         height: source.height,
         platforms: source
             .platforms
@@ -385,6 +389,10 @@ fn build_map(
         mob_spawn_points: Vec::new(),
         mob_definitions: Vec::new(),
         mobs: Vec::new(),
+        movement_bounds: Some(MapMovementBounds {
+            left: PLAYER_HALF_WIDTH.min(width as f32 / 2.0),
+            right: (width as f32 - PLAYER_HALF_WIDTH).max(width as f32 / 2.0),
+        }),
     })
 }
 
@@ -590,6 +598,13 @@ mod tests {
                 .get_map(100_010_000)
                 .expect("mob map lookup should succeed")
                 .expect("Henesys Hunting Ground should exist");
+            let movement_bounds = mob_map
+                .movement_bounds
+                .as_ref()
+                .expect("WZ movement bounds");
+            assert!(movement_bounds.left > 0.0);
+            assert!(movement_bounds.right < mob_map.width as f32);
+            assert!(movement_bounds.left < movement_bounds.right);
             assert!(
                 mob_map
                     .mob_spawn_points

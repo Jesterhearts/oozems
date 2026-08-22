@@ -25,6 +25,7 @@ mod archive;
 mod asset;
 mod features;
 mod mob;
+mod movement_bounds;
 mod names;
 
 pub(super) use archive::archive_fingerprint;
@@ -347,6 +348,7 @@ fn build_map(
         })
     });
     validate_bounds(map_id, bounds)?;
+    let movement_bounds = movement_bounds::build(&raw_platforms, bounds);
 
     let platforms: Vec<Platform> = raw_platforms
         .into_iter()
@@ -400,6 +402,7 @@ fn build_map(
         mob_spawn_points,
         mob_definitions,
         mobs: Vec::new(),
+        movement_bounds: Some(movement_bounds),
     })
 }
 

@@ -57,7 +57,7 @@ pub async fn bootstrap(
     let player = load_player(&state, &player_id)
         .await?
         .filter(|player| player.appearance.is_some());
-    if let Some(player) = player.as_ref() {
+    let player = if let Some(player) = player {
         let activity_time_ms = unix_time_ms()?;
         let map = load_map(&state, player.map_id).await?.ok_or_else(|| {
             ApiError::not_found(
@@ -67,13 +67,19 @@ pub async fn bootstrap(
         })?;
         crate::movement::initialize_player(
             &state.movement,
-            player,
+            &player,
             &map,
             state.gameplay.movement,
             activity_time_ms,
         )?;
         record_recovery_activity(&state, player_id.as_str(), activity_time_ms);
-    }
+        Some(crate::movement::synchronize_player(
+            &state.movement,
+            player,
+        )?)
+    } else {
+        None
+    };
 
     Ok(Protobuf(BootstrapResponse {
         player,

@@ -156,6 +156,7 @@ pub fn update_player(
     input: PlayerInput,
     elapsed_seconds: f32,
 ) -> MotionOutput {
+    let position = constrain_position(map, position);
     if input.portal_pressed
         && let Some(portal) = find_usable_portal(&map.portals, &position, rules)
     {
@@ -226,10 +227,10 @@ fn move_with_gravity(
 ) -> MotionOutput {
     let old_x = position.x;
     let old_y = position.y;
-    let edge = PLAYER_HALF_WIDTH.min(map.width as f32 / 2.0);
+    let (left_edge, right_edge) = horizontal_movement_limits(map);
     let move_speed = modified_speed(rules.walk_speed, input.speed_bonus, rules.speed_cap);
-    position.x = (position.x + input.horizontal * move_speed * elapsed_seconds)
-        .clamp(edge, (map.width as f32 - edge).max(edge));
+    position.x =
+        (position.x + input.horizontal * move_speed * elapsed_seconds).clamp(left_edge, right_edge);
 
     state.velocity_y += rules.gravity * elapsed_seconds;
     let proposed_y = position.y + state.velocity_y * elapsed_seconds;
@@ -255,6 +256,35 @@ fn move_with_gravity(
         state,
         transition: None,
     }
+}
+
+fn horizontal_movement_limits(map: &Map) -> (f32, f32) {
+    let map_right = map.width as f32;
+    map.movement_bounds
+        .as_ref()
+        .filter(|bounds| {
+            bounds.left.is_finite()
+                && bounds.right.is_finite()
+                && bounds.left >= 0.0
+                && bounds.right <= map_right
+                && bounds.left <= bounds.right
+        })
+        .map_or_else(
+            || {
+                let inset = PLAYER_HALF_WIDTH.min(map_right / 2.0);
+                (inset, (map_right - inset).max(inset))
+            },
+            |bounds| (bounds.left, bounds.right),
+        )
+}
+
+pub fn constrain_position(
+    map: &Map,
+    mut position: Vec2,
+) -> Vec2 {
+    let (left, right) = horizontal_movement_limits(map);
+    position.x = position.x.clamp(left, right);
+    position
 }
 
 fn modified_speed(
@@ -469,6 +499,7 @@ fn platform_y(
 mod tests {
     use oozems_proto::v1::Ladder;
     use oozems_proto::v1::Map;
+    use oozems_proto::v1::MapMovementBounds;
     use oozems_proto::v1::MovementMode;
     use oozems_proto::v1::MovementRules;
     use oozems_proto::v1::Platform;
@@ -535,6 +566,72 @@ mod tests {
         assert_eq!(output.position.y, 275.0);
         assert!(output.state.on_ground);
         assert_eq!(output.state.platform_layer, 2);
+    }
+
+    #[test]
+    fn walking_stops_at_the_wz_map_wall() {
+        let map = map_with_inset_walls();
+
+        let output = update_player(
+            &map,
+            &rules(),
+            Vec2 { x: 670.0, y: 300.0 },
+            MotionState {
+                on_ground: true,
+                ..MotionState::default()
+            },
+            PlayerInput {
+                horizontal: 1.0,
+                ..PlayerInput::default()
+            },
+            1.0,
+        );
+
+        assert_eq!(output.position, Vec2 { x: 682.0, y: 300.0 });
+        assert!(output.state.on_ground);
+    }
+
+    #[test]
+    fn jumping_cannot_cross_the_wz_map_wall() {
+        let map = map_with_inset_walls();
+
+        let output = update_player(
+            &map,
+            &rules(),
+            Vec2 { x: 670.0, y: 300.0 },
+            MotionState {
+                on_ground: true,
+                ..MotionState::default()
+            },
+            PlayerInput {
+                horizontal: 1.0,
+                jump_pressed: true,
+                ..PlayerInput::default()
+            },
+            0.1,
+        );
+
+        assert_eq!(output.position.x, 682.0);
+        assert!(!output.state.on_ground);
+    }
+
+    #[test]
+    fn positions_are_constrained_before_non_walking_movement() {
+        let map = map_with_inset_walls();
+
+        let output = update_player(
+            &map,
+            &rules(),
+            Vec2 { x: 740.0, y: 300.0 },
+            MotionState {
+                on_ground: true,
+                ..MotionState::default()
+            },
+            PlayerInput::default(),
+            0.0,
+        );
+
+        assert_eq!(output.position, Vec2 { x: 682.0, y: 300.0 });
     }
 
     #[test]
@@ -739,6 +836,8 @@ mod tests {
     #[test]
     fn up_at_a_direct_portal_requests_a_transition() {
         let map = Map {
+            width: 800,
+            height: 600,
             portals: vec![Portal {
                 name: "out".to_owned(),
                 x: 200.0,
@@ -773,14 +872,14 @@ mod tests {
     #[test]
     fn script_portals_do_not_transition_without_server_scripts() {
         let map = Map {
+            width: 800,
+            height: 600,
             portals: vec![Portal {
                 x: 200.0,
                 y: 300.0,
                 target_map_id: 999_999_999,
                 ..Portal::default()
             }],
-            width: 800,
-            height: 600,
             ..Map::default()
         };
         let output = update_player(
@@ -815,6 +914,25 @@ mod tests {
             ladder_end_reach: 20.0,
             portal_horizontal_reach: 48.0,
             portal_vertical_reach: 64.0,
+        }
+    }
+
+    fn map_with_inset_walls() -> Map {
+        Map {
+            width: 800,
+            height: 600,
+            platforms: vec![Platform {
+                x: 100.0,
+                y: 300.0,
+                end_x: 700.0,
+                end_y: 300.0,
+                ..Platform::default()
+            }],
+            movement_bounds: Some(MapMovementBounds {
+                left: 118.0,
+                right: 682.0,
+            }),
+            ..Map::default()
         }
     }
 }

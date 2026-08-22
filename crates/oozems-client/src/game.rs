@@ -148,13 +148,16 @@ pub async fn run(
 }
 
 fn build_game(
-    player: PlayerState,
+    mut player: PlayerState,
     map: Map,
     movement_rules: MovementRules,
     character_sprites: CharacterSpriteSet,
     gui: GameGui,
     skill_book: SkillBook,
 ) -> Result<Rc<RefCell<Game>>, String> {
+    if let Some(position) = player.position {
+        player.position = Some(movement::constrain_position(&map, position));
+    }
     let window = web_sys::window().ok_or("browser window is unavailable")?;
     let document = window.document().ok_or("browser document is unavailable")?;
     let canvas = document

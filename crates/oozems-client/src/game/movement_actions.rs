@@ -152,6 +152,7 @@ fn install_map(
     map: oozems_proto::v1::Map,
     position: Vec2,
 ) -> Result<(), String> {
+    let position = movement::constrain_position(&map, position);
     let images =
         super::prepare_game_assets(&map, &game.character_sprites, &game.gui, &game.skill_book)?;
     let motion = movement::initial_motion_state(&map, &position);
@@ -275,6 +276,7 @@ pub(super) fn install_response(
     let position = authoritative
         .position
         .ok_or("authoritative movement snapshot has no position")?;
+    let position = movement::constrain_position(&game.map, position);
     let mode = MovementMode::try_from(authoritative.mode)
         .map_err(|_| "authoritative movement snapshot has an invalid mode")?;
     let motion =

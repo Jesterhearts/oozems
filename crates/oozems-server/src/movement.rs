@@ -302,6 +302,7 @@ pub fn enter_portal(
             )
         });
     };
+    let position = clamp_to_movement_bounds(portal.target_map, position);
     session.map_id = portal.target_map.id;
     session.position = position;
     session.mode = initial_mode(portal.target_map, &position, config);
@@ -415,6 +416,7 @@ fn initial_session(
     config: MovementConfig,
     now_ms: u64,
 ) -> MovementSession {
+    let position = clamp_to_movement_bounds(map, position);
     let mode = initial_mode(map, &position, config);
     MovementSession {
         sequence: 0,
@@ -838,10 +840,34 @@ fn within_map(
     map: &Map,
     position: &Position,
 ) -> bool {
-    position.x >= 0.0
-        && position.x <= map.width as f32
+    let (left, right) = horizontal_movement_bounds(map);
+    position.x >= left
+        && position.x <= right
         && position.y >= 0.0
         && position.y <= map.height as f32
+}
+
+fn clamp_to_movement_bounds(
+    map: &Map,
+    mut position: Position,
+) -> Position {
+    let (left, right) = horizontal_movement_bounds(map);
+    position.x = position.x.clamp(left, right);
+    position
+}
+
+fn horizontal_movement_bounds(map: &Map) -> (f32, f32) {
+    let map_right = map.width as f32;
+    map.movement_bounds
+        .as_ref()
+        .filter(|bounds| {
+            bounds.left.is_finite()
+                && bounds.right.is_finite()
+                && bounds.left >= 0.0
+                && bounds.right <= map_right
+                && bounds.left <= bounds.right
+        })
+        .map_or((0.0, map_right), |bounds| (bounds.left, bounds.right))
 }
 
 fn destination_position(
@@ -945,6 +971,7 @@ mod tests {
 
     use oozems_proto::v1::Ladder;
     use oozems_proto::v1::Map;
+    use oozems_proto::v1::MapMovementBounds;
     use oozems_proto::v1::Platform;
     use oozems_proto::v1::PlayerState;
     use oozems_proto::v1::Portal;
@@ -961,6 +988,7 @@ mod tests {
     use super::record_skill_effect;
     use super::register_map;
     use super::submit_movement;
+    use super::synchronize_player;
     use crate::gameplay::MovementConfig;
 
     #[test]
@@ -1229,6 +1257,47 @@ mod tests {
     }
 
     #[test]
+    fn snapshots_cannot_cross_wz_map_walls() {
+        let tracker = MovementTracker::default();
+        let mut bounded_map = map();
+        bounded_map.movement_bounds = Some(MapMovementBounds {
+            left: 68.0,
+            right: 732.0,
+        });
+        initialize_player(&tracker, &player(), &bounded_map, config(), 1_000).expect("initialize");
+
+        let decision = submit_movement(
+            &tracker,
+            &player(),
+            submitted(1, 60.0, 300.0, MovementMode::Grounded),
+            config(),
+            1_200,
+        )
+        .expect("bounded movement");
+
+        assert!(!decision.accepted);
+        assert_eq!(decision.rejection_reason, "the position is outside the map");
+    }
+
+    #[test]
+    fn legacy_positions_are_clamped_inside_new_map_walls() {
+        let tracker = MovementTracker::default();
+        let mut bounded_map = map();
+        bounded_map.movement_bounds = Some(MapMovementBounds {
+            left: 68.0,
+            right: 732.0,
+        });
+        let mut outside_player = player();
+        outside_player.position = Some(Vec2 { x: 780.0, y: 300.0 });
+        initialize_player(&tracker, &outside_player, &bounded_map, config(), 1_000)
+            .expect("initialize");
+
+        let synchronized = synchronize_player(&tracker, outside_player).expect("synchronize");
+
+        assert_eq!(synchronized.position, Some(Vec2 { x: 732.0, y: 300.0 }));
+    }
+
+    #[test]
     fn airborne_snapshots_cannot_hover_indefinitely() {
         let tracker = initialized_tracker();
         let first = submit_movement(
@@ -1433,6 +1502,10 @@ mod tests {
                 y: 300.0,
                 ..Portal::default()
             }],
+            movement_bounds: Some(MapMovementBounds {
+                left: 18.0,
+                right: 682.0,
+            }),
             ..Map::default()
         };
         let decision = enter_portal(
@@ -1453,7 +1526,7 @@ mod tests {
         assert_eq!(decision.authoritative.map_id, 2);
         assert_eq!(
             decision.authoritative.position.expect("position"),
-            Vec2 { x: 700.0, y: 300.0 }
+            Vec2 { x: 682.0, y: 300.0 }
         );
     }
 
