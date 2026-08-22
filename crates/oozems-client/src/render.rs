@@ -14,13 +14,19 @@ pub fn draw(game: &Game) {
         .position
         .as_ref()
         .map_or(0.0, |position| f64::from(position.x));
+    let player_y = game
+        .player
+        .position
+        .as_ref()
+        .map_or(0.0, |position| f64::from(position.y));
     let camera_x = camera_x(player_x, viewport_width, f64::from(game.map.width));
+    let camera_y = camera_y(player_y, viewport_height, f64::from(game.map.height));
 
     draw_background(game, viewport_width, viewport_height, camera_x);
-    draw_decorations(game, camera_x, |layer| layer <= 0);
-    draw_platforms(game, camera_x);
-    draw_player(game, camera_x);
-    draw_decorations(game, camera_x, |layer| layer > 0);
+    draw_decorations(game, camera_x, camera_y, |layer| layer <= 0);
+    draw_platforms(game, camera_x, camera_y);
+    draw_player(game, camera_x, camera_y);
+    draw_decorations(game, camera_x, camera_y, |layer| layer > 0);
     draw_hud(game);
 }
 
@@ -30,6 +36,14 @@ fn camera_x(
     map_width: f64,
 ) -> f64 {
     (player_x - viewport_width * 0.45).clamp(0.0, (map_width - viewport_width).max(0.0))
+}
+
+fn camera_y(
+    player_y: f64,
+    viewport_height: f64,
+    map_height: f64,
+) -> f64 {
+    (player_y - viewport_height * 0.55).clamp(0.0, (map_height - viewport_height).max(0.0))
 }
 
 fn draw_background(
@@ -68,13 +82,14 @@ fn draw_background(
 fn draw_decorations<F>(
     game: &Game,
     camera_x: f64,
+    camera_y: f64,
     include: F,
 ) where
     F: Fn(i32) -> bool,
 {
     for decoration in &game.map.decorations {
         if include(decoration.layer) {
-            draw_decoration(game, decoration, camera_x);
+            draw_decoration(game, decoration, camera_x, camera_y);
         }
     }
 }
@@ -83,32 +98,61 @@ fn draw_decoration(
     game: &Game,
     decoration: &Decoration,
     camera_x: f64,
+    camera_y: f64,
 ) {
-    let Some(image) = game.images.get(&decoration.asset_id) else {
+    let x = f64::from(decoration.x) - camera_x;
+    let y = f64::from(decoration.y) - camera_y;
+    let width = f64::from(decoration.width);
+    let height = f64::from(decoration.height);
+    if x + width < 0.0
+        || x > f64::from(game.canvas.width())
+        || y + height < 0.0
+        || y > f64::from(game.canvas.height())
+    {
+        return;
+    }
+
+    let Some(asset) = game.images.get(&decoration.asset_id) else {
         return;
     };
+    if !asset.requested.replace(true) {
+        asset.element.set_src(&asset.url);
+    }
+    let image = &asset.element;
     if !image.complete() || image.natural_width() == 0 {
         return;
     }
 
-    let _ = game
-        .context
-        .draw_image_with_html_image_element_and_dw_and_dh(
-            image,
-            f64::from(decoration.x) - camera_x,
-            f64::from(decoration.y),
-            f64::from(decoration.width),
-            f64::from(decoration.height),
-        );
+    if decoration.flip_x {
+        game.context.save();
+        let transformed = game
+            .context
+            .translate(x + width, y)
+            .and_then(|()| game.context.scale(-1.0, 1.0));
+        if transformed.is_ok() {
+            let _ = game
+                .context
+                .draw_image_with_html_image_element_and_dw_and_dh(image, 0.0, 0.0, width, height);
+        }
+        game.context.restore();
+    } else {
+        let _ = game
+            .context
+            .draw_image_with_html_image_element_and_dw_and_dh(image, x, y, width, height);
+    }
 }
 
 fn draw_platforms(
     game: &Game,
     camera_x: f64,
+    camera_y: f64,
 ) {
     for platform in &game.map.platforms {
+        if platform.hidden {
+            continue;
+        }
         let x = f64::from(platform.x) - camera_x;
-        let y = f64::from(platform.y);
+        let y = f64::from(platform.y) - camera_y;
         let width = f64::from(platform.width);
         let kind = PlatformKind::try_from(platform.kind).unwrap_or(PlatformKind::Unspecified);
 
@@ -134,12 +178,13 @@ fn draw_platforms(
 fn draw_player(
     game: &Game,
     camera_x: f64,
+    camera_y: f64,
 ) {
     let Some(position) = &game.player.position else {
         return;
     };
     let x = f64::from(position.x) - camera_x;
-    let y = f64::from(position.y);
+    let y = f64::from(position.y) - camera_y;
 
     game.context.set_fill_style_str("rgba(29, 45, 43, 0.25)");
     game.context

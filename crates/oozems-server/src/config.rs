@@ -13,6 +13,7 @@ pub struct Config {
     pub content_dir: PathBuf,
     pub data_dir: PathBuf,
     pub public_dir: PathBuf,
+    pub wz_dir: PathBuf,
 }
 
 #[derive(Debug, Error)]
@@ -42,6 +43,7 @@ impl Config {
             content_dir: env_path("OOZEMS_CONTENT_DIR", manifest_dir.join("content/maps")),
             data_dir: env_path("OOZEMS_DATA_DIR", PathBuf::from("data")),
             public_dir: env_path("OOZEMS_PUBLIC_DIR", manifest_dir.join("public")),
+            wz_dir: env_path("OOZEMS_WZ_DIR", PathBuf::from("data")),
         })
     }
 }

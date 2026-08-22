@@ -1,4 +1,5 @@
 use axum::body::Bytes;
+use axum::extract::Path as AxumPath;
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::http::StatusCode;
@@ -40,7 +41,7 @@ pub async fn get_map(
     body: Bytes,
 ) -> Result<Protobuf<GetMapResponse>, ApiError> {
     let request: GetMapRequest = decode_request(&headers, body)?;
-    let map = state.catalog.get_map(request.map_id).ok_or_else(|| {
+    let map = load_map(&state, request.map_id).await?.ok_or_else(|| {
         ApiError::not_found(
             "map_not_found",
             format!("map {} does not exist", request.map_id),
@@ -63,7 +64,7 @@ pub async fn save_player(
 
     let player_id = PlayerId::parse(&requested.id)
         .map_err(|error| ApiError::bad_request("invalid_player_id", error.to_string()))?;
-    let map = state.catalog.get_map(requested.map_id).ok_or_else(|| {
+    let map = load_map(&state, requested.map_id).await?.ok_or_else(|| {
         ApiError::bad_request(
             "invalid_map",
             format!("map {} does not exist", requested.map_id),
@@ -77,6 +78,41 @@ pub async fn save_player(
     Ok(Protobuf(SavePlayerResponse {
         player: Some(player),
     }))
+}
+
+pub async fn get_wz_asset(
+    State(state): State<AppState>,
+    AxumPath(requested_id): AxumPath<String>,
+) -> Result<Response, ApiError> {
+    let version = requested_id
+        .strip_suffix(".png")
+        .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .ok_or_else(|| ApiError::not_found("asset_not_found", "asset does not exist"))?;
+    let asset_id = format!("wz-{version}");
+    let asset = state
+        .catalog
+        .get_wz_asset(&asset_id)
+        .ok_or_else(|| ApiError::not_found("asset_not_found", "asset does not exist"))?;
+    let bytes = tokio::task::spawn_blocking(move || asset.png_bytes())
+        .await?
+        .map_err(crate::content::ContentError::from)?;
+
+    Ok((
+        [
+            (header::CONTENT_TYPE, "image/png"),
+            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+        ],
+        Bytes::from_owner(bytes),
+    )
+        .into_response())
+}
+
+async fn load_map(
+    state: &AppState,
+    map_id: u32,
+) -> Result<Option<oozems_proto::v1::Map>, ApiError> {
+    let catalog = state.catalog.clone();
+    Ok(tokio::task::spawn_blocking(move || catalog.get_map(map_id)).await??)
 }
 
 fn decode_request<T>(
@@ -140,6 +176,10 @@ pub enum ApiError {
     },
     #[error("database operation failed")]
     Database(#[from] surrealdb::Error),
+    #[error("content operation failed")]
+    Content(#[from] crate::content::ContentError),
+    #[error("content worker failed")]
+    Worker(#[from] tokio::task::JoinError),
 }
 
 impl ApiError {
@@ -180,6 +220,22 @@ impl IntoResponse for ApiError {
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "database_error",
                     "the server could not access player data".to_owned(),
+                )
+            }
+            Self::Content(error) => {
+                tracing::error!(%error, "content request failed");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "content_error",
+                    "the server could not load map content".to_owned(),
+                )
+            }
+            Self::Worker(error) => {
+                tracing::error!(%error, "content worker failed");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "content_worker_error",
+                    "the server could not load map content".to_owned(),
                 )
             }
         };

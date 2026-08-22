@@ -27,7 +27,7 @@ const SAVE_INTERVAL_MS: f64 = 2_000.0;
 pub struct Game {
     pub canvas: HtmlCanvasElement,
     pub context: CanvasRenderingContext2d,
-    pub images: HashMap<String, HtmlImageElement>,
+    pub images: HashMap<String, MapImage>,
     pub map: Map,
     pub player: PlayerState,
     input: Rc<RefCell<InputState>>,
@@ -38,6 +38,12 @@ pub struct Game {
     next_save_ms: f64,
     on_ground: bool,
     velocity_y: f32,
+}
+
+pub struct MapImage {
+    pub element: HtmlImageElement,
+    pub requested: Cell<bool>,
+    pub url: String,
 }
 
 #[derive(Default)]
@@ -107,14 +113,20 @@ fn build_game(
     })))
 }
 
-fn begin_asset_downloads(map: &Map) -> Result<HashMap<String, HtmlImageElement>, String> {
+fn begin_asset_downloads(map: &Map) -> Result<HashMap<String, MapImage>, String> {
     map.assets
         .iter()
         .map(|asset| {
             let image = HtmlImageElement::new().map_err(js_error)?;
             image.set_decoding("async");
-            image.set_src(&asset.url);
-            Ok((asset.id.clone(), image))
+            Ok((
+                asset.id.clone(),
+                MapImage {
+                    element: image,
+                    requested: Cell::new(false),
+                    url: asset.url.clone(),
+                },
+            ))
         })
         .collect()
 }
@@ -218,7 +230,7 @@ fn update_player(
 
     game.velocity_y += GRAVITY * elapsed_seconds;
     let proposed_y = position.y + game.velocity_y * elapsed_seconds;
-    let landing_y = find_landing_platform(&game.map, position.x, position.y, proposed_y);
+    let landing_y = find_landing_platform(&game.map, old_x, position.x, position.y, proposed_y);
     if let Some(landing_y) = landing_y {
         position.y = landing_y;
         game.velocity_y = 0.0;
@@ -233,7 +245,8 @@ fn update_player(
 
 fn find_landing_platform(
     map: &Map,
-    player_x: f32,
+    old_x: f32,
+    new_x: f32,
     old_y: f32,
     new_y: f32,
 ) -> Option<f32> {
@@ -243,14 +256,33 @@ fn find_landing_platform(
 
     map.platforms
         .iter()
-        .filter(|platform| {
-            old_y <= platform.y
-                && new_y >= platform.y
-                && player_x >= platform.x - 16.0
-                && player_x <= platform.x + platform.width + 16.0
+        .filter_map(|platform| {
+            let minimum_x = platform.x.min(platform.end_x);
+            let maximum_x = platform.x.max(platform.end_x);
+            if new_x < minimum_x - 16.0 || new_x > maximum_x + 16.0 {
+                return None;
+            }
+            let old_surface = platform_y(platform, old_x.clamp(minimum_x, maximum_x))?;
+            let new_surface = platform_y(platform, new_x.clamp(minimum_x, maximum_x))?;
+            if old_y <= old_surface + 1.0 && new_y >= new_surface {
+                Some(new_surface)
+            } else {
+                None
+            }
         })
-        .map(|platform| platform.y)
         .min_by(f32::total_cmp)
+}
+
+fn platform_y(
+    platform: &oozems_proto::v1::Platform,
+    x: f32,
+) -> Option<f32> {
+    let delta_x = platform.end_x - platform.x;
+    if delta_x.abs() < f32::EPSILON {
+        return None;
+    }
+    let progress = (x - platform.x) / delta_x;
+    Some(platform.y + progress * (platform.end_y - platform.y))
 }
 
 fn save_if_due(
@@ -278,4 +310,32 @@ fn js_error(error: JsValue) -> String {
     error
         .as_string()
         .unwrap_or_else(|| "browser operation failed".to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use oozems_proto::v1::Map;
+    use oozems_proto::v1::Platform;
+
+    use super::find_landing_platform;
+
+    #[test]
+    fn player_lands_on_a_sloped_foothold() {
+        let map = Map {
+            platforms: vec![Platform {
+                x: 100.0,
+                y: 300.0,
+                width: 100.0,
+                end_x: 200.0,
+                end_y: 250.0,
+                ..Platform::default()
+            }],
+            ..Map::default()
+        };
+
+        assert_eq!(
+            find_landing_platform(&map, 140.0, 150.0, 280.0, 290.0),
+            Some(275.0)
+        );
+    }
 }

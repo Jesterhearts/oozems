@@ -5,6 +5,7 @@ use axum::Router;
 use axum::extract::DefaultBodyLimit;
 use axum::http::HeaderValue;
 use axum::http::header;
+use axum::routing::get;
 use axum::routing::post;
 use tower::ServiceBuilder;
 use tower_http::compression::CompressionLayer;
@@ -49,6 +50,7 @@ pub fn router(
 
     Router::new()
         .nest("/api/v1", api)
+        .route("/wz-assets/{asset_id}", get(crate::api::get_wz_asset))
         .nest_service("/assets", assets)
         .fallback_service(public)
         .layer(CompressionLayer::new())

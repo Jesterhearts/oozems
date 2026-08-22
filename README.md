@@ -10,6 +10,7 @@ The current vertical slice includes:
 - a small Rust WASM client rendered with the browser canvas;
 - protobuf request and response bodies over HTTP;
 - server-owned map files fetched only when entered;
+- optional classic PKG1 WZ map archives parsed lazily by the server;
 - server-owned assets fetched only when referenced by the current map; and
 - player movement, platforms, jumping, and periodic position saves.
 
@@ -34,6 +35,7 @@ variables override the defaults:
 | `OOZEMS_ASSET_DIR` | `crates/oozems-server/assets` |
 | `OOZEMS_CONTENT_DIR` | `crates/oozems-server/content/maps` |
 | `OOZEMS_PUBLIC_DIR` | `crates/oozems-server/public` |
+| `OOZEMS_WZ_DIR` | `./data` |
 
 ## Data flow
 
@@ -47,6 +49,8 @@ browser
 
 server
   -> content/maps/*.json          immutable map source
+  -> data/Map.wz                  optional, lazy WZ map source
+  -> data/String.wz               optional WZ map names
   -> assets/**                    immutable source assets
   -> SurrealDB -> SurrealKV       mutable player state
 ```
@@ -56,6 +60,20 @@ The API schema is in
 native formats instead of being wrapped in protobuf. This lets the browser
 stream, cache, and decode them directly. Asset URLs include a SHA-256-derived
 version, so changing one file invalidates only that cached file.
+
+## Use classic WZ maps
+
+Place `Map.wz` in `./data`. Place the matching `String.wz` beside it to use the
+original map names. The server detects the archive version, indexes map image
+entries at startup, and parses each map only when it is requested. A WZ map
+overrides a JSON map with the same ID.
+
+The map response contains footholds and references to only the sprite assets
+used by that map. The client requests a sprite when one of its placements first
+enters the viewport. Each sprite stays compressed in `Map.wz` until the browser
+requests its opaque `/wz-assets/...` URL. The server then decodes that sprite,
+returns a normal PNG, and caches it for later requests. WZ files and extracted
+assets are not added to the client bundle.
 
 ## Add a map
 

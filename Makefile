@@ -10,4 +10,4 @@ check:
 	cargo check --package oozems-client --target wasm32-unknown-unknown
 
 run: build-client
-	cargo run --package oozems-server
+	cargo run --package oozems-server --bin oozems-server

@@ -14,9 +14,15 @@ use sha2::Digest;
 use sha2::Sha256;
 use thiserror::Error;
 
-#[derive(Clone, Debug)]
+mod wz;
+
+pub(crate) use wz::WzAsset;
+use wz::WzContent;
+use wz::WzContentError;
+
 pub struct ContentCatalog {
     maps: HashMap<u32, Map>,
+    wz: Option<WzContent>,
 }
 
 #[derive(Debug, Error)]
@@ -45,6 +51,8 @@ pub enum ContentError {
     DuplicateMap { map_id: u32 },
     #[error("map content directory {path} contains no JSON maps")]
     Empty { path: PathBuf },
+    #[error(transparent)]
+    Wz(#[from] WzContentError),
 }
 
 #[derive(Debug, Deserialize)]
@@ -113,14 +121,41 @@ impl ContentCatalog {
             });
         }
 
-        Ok(Self { maps })
+        Ok(Self { maps, wz: None })
+    }
+
+    pub fn load_with_wz(
+        map_dir: &Path,
+        asset_dir: &Path,
+        wz_dir: &Path,
+    ) -> Result<Self, ContentError> {
+        let mut catalog = Self::load(map_dir, asset_dir)?;
+        catalog.wz = WzContent::open_optional(wz_dir)?;
+        Ok(catalog)
     }
 
     pub fn get_map(
         &self,
         map_id: u32,
-    ) -> Option<Map> {
-        self.maps.get(&map_id).cloned()
+    ) -> Result<Option<Map>, ContentError> {
+        if let Some(source) = self
+            .wz
+            .as_ref()
+            .filter(|source| source.contains_map(map_id))
+        {
+            return source.get_map(map_id).map(Some).map_err(Into::into);
+        }
+
+        Ok(self.maps.get(&map_id).cloned())
+    }
+
+    pub fn get_wz_asset(
+        &self,
+        asset_id: &str,
+    ) -> Option<std::sync::Arc<WzAsset>> {
+        self.wz
+            .as_ref()
+            .and_then(|source| source.get_asset(asset_id))
     }
 }
 
@@ -189,6 +224,9 @@ fn build_map(
                 y: platform.y,
                 width: platform.width,
                 kind: platform_kind(platform.kind) as i32,
+                end_x: platform.x + platform.width,
+                end_y: platform.y,
+                hidden: false,
             })
             .collect(),
         decorations: source
@@ -201,6 +239,7 @@ fn build_map(
                 width: decoration.width,
                 height: decoration.height,
                 layer: decoration.layer,
+                flip_x: false,
             })
             .collect(),
         assets,
@@ -349,8 +388,42 @@ mod tests {
         )
         .expect("bundled content should be valid");
 
-        let map = catalog.get_map(100_000_000).expect("starter map");
+        let map = catalog
+            .get_map(100_000_000)
+            .expect("map lookup should succeed")
+            .expect("starter map");
         assert_eq!(map.name, "Mossy Clearing");
         assert!(!map.assets.is_empty());
+    }
+
+    #[test]
+    fn local_wz_sample_loads_when_present() {
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let wz_dir = manifest_dir.join("../../data");
+        if !wz_dir.join("Map.wz").exists() {
+            return;
+        }
+
+        let catalog = ContentCatalog::load_with_wz(
+            &manifest_dir.join("content/maps"),
+            &manifest_dir.join("assets"),
+            &wz_dir,
+        )
+        .expect("sample WZ archives should be valid");
+        let map = catalog
+            .get_map(100_000_000)
+            .expect("WZ map lookup should succeed")
+            .expect("Henesys should exist");
+
+        assert_eq!(map.name, "Henesys");
+        assert!(map.platforms.iter().any(|platform| platform.hidden));
+        assert!(!map.decorations.is_empty());
+        for descriptor in &map.assets {
+            let asset = catalog
+                .get_wz_asset(&descriptor.id)
+                .expect("map asset should be registered");
+            let png = asset.png_bytes().expect("map asset should decode");
+            assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
+        }
     }
 }

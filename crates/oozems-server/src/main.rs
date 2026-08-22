@@ -24,7 +24,8 @@ async fn main() -> anyhow::Result<()> {
         )
     })?;
 
-    let catalog = ContentCatalog::load(&config.content_dir, &config.asset_dir)?;
+    let catalog =
+        ContentCatalog::load_with_wz(&config.content_dir, &config.asset_dir, &config.wz_dir)?;
     let database = database::open_surreal_kv(&config.data_dir.join("surrealkv")).await?;
     let router = app::router(database, catalog, &config.public_dir, &config.asset_dir);
     let listener = tokio::net::TcpListener::bind(config.bind).await?;

@@ -57,6 +57,9 @@ message Platform {
   float y = 2;
   float width = 3;
   PlatformKind kind = 4;
+  float end_x = 5;
+  float end_y = 6;
+  bool hidden = 7;
 }
 
 enum PlatformKind {
@@ -72,6 +75,7 @@ message Decoration {
   float width = 4;
   float height = 5;
   int32 layer = 6;
+  bool flip_x = 7;
 }
 
 message AssetDescriptor {
