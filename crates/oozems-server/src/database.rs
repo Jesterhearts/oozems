@@ -77,6 +77,23 @@ struct PlayerData {
 }
 
 #[derive(Clone, Debug, SurrealValue)]
+struct PlayerPositionData {
+    map_id: u32,
+    x: f64,
+    y: f64,
+}
+
+#[derive(Clone, Debug, SurrealValue)]
+struct PlayerSessionData {
+    map_id: u32,
+    x: f64,
+    y: f64,
+    key_binding_codes: Vec<String>,
+    key_binding_actions: Vec<i32>,
+    key_binding_skill_ids: Vec<u32>,
+}
+
+#[derive(Clone, Debug, SurrealValue)]
 struct PlayerRecord {
     id: RecordId,
     player_id: String,
@@ -253,31 +270,36 @@ pub async fn save_player(
         .ok_or_else(|| surrealdb::Error::internal("player upsert returned no record".to_owned()))
 }
 
-pub fn apply_player_movement(
-    current: PlayerState,
-    requested: &PlayerState,
-    map_width: u32,
-    map_height: u32,
-) -> PlayerState {
-    let requested_position = requested.position.as_ref().cloned().unwrap_or_default();
-    let position = Vec2 {
-        x: requested_position.x.clamp(0.0, map_width as f32),
-        y: requested_position.y.clamp(0.0, map_height as f32),
-    };
+pub async fn save_player_position(
+    database: &Database,
+    player: &PlayerState,
+) -> surrealdb::Result<()> {
+    let data = PlayerPositionData::from(player);
+    let _: Option<PlayerRecord> = database
+        .update(("player", player.id.as_str()))
+        .merge(data)
+        .await?;
+    Ok(())
+}
 
-    PlayerState {
-        id: current.id,
-        name: current.name,
-        level: current.level,
-        map_id: requested.map_id,
-        position: Some(position),
-        appearance: current.appearance,
-        stats: current.stats,
-        inventory: current.inventory,
-        key_bindings: requested.key_bindings.clone(),
-        skill_points: current.skill_points,
-        learned_skills: current.learned_skills,
-    }
+pub async fn save_player_session(
+    database: &Database,
+    player: &PlayerState,
+) -> surrealdb::Result<()> {
+    let data = PlayerSessionData::from(player);
+    let _: Option<PlayerRecord> = database
+        .update(("player", player.id.as_str()))
+        .merge(data)
+        .await?;
+    Ok(())
+}
+
+pub fn apply_player_preferences(
+    mut current: PlayerState,
+    requested: &PlayerState,
+) -> PlayerState {
+    current.key_bindings = requested.key_bindings.clone();
+    current
 }
 
 fn player_from_record(
@@ -522,6 +544,43 @@ impl From<&PlayerState> for PlayerData {
     }
 }
 
+impl From<&PlayerState> for PlayerPositionData {
+    fn from(player: &PlayerState) -> Self {
+        let position = player.position.as_ref().cloned().unwrap_or_default();
+        Self {
+            map_id: player.map_id,
+            x: f64::from(position.x),
+            y: f64::from(position.y),
+        }
+    }
+}
+
+impl From<&PlayerState> for PlayerSessionData {
+    fn from(player: &PlayerState) -> Self {
+        let position = PlayerPositionData::from(player);
+        Self {
+            map_id: position.map_id,
+            x: position.x,
+            y: position.y,
+            key_binding_codes: player
+                .key_bindings
+                .iter()
+                .map(|binding| binding.code.clone())
+                .collect(),
+            key_binding_actions: player
+                .key_bindings
+                .iter()
+                .map(|binding| binding.action)
+                .collect(),
+            key_binding_skill_ids: player
+                .key_bindings
+                .iter()
+                .map(|binding| binding.skill_id)
+                .collect(),
+        }
+    }
+}
+
 fn equipped_item(
     inventory: &InventoryState,
     slot: EquipmentSlot,
@@ -543,11 +602,12 @@ mod tests {
 
     use super::CharacterName;
     use super::PlayerId;
-    use super::apply_player_movement;
+    use super::apply_player_preferences;
     use super::create_player;
     use super::load_player;
     use super::open_surreal_kv;
     use super::save_player;
+    use super::save_player_position;
     use super::starter_character_stats;
 
     #[derive(SurrealValue)]
@@ -565,7 +625,7 @@ mod tests {
     }
 
     #[test]
-    fn movement_is_bounded_and_does_not_change_authoritative_fields() {
+    fn preference_updates_do_not_change_authoritative_fields() {
         let current = PlayerState {
             id: "local".to_owned(),
             name: "Newcomer".to_owned(),
@@ -596,12 +656,12 @@ mod tests {
             }],
         };
 
-        let result = apply_player_movement(current, &requested, 800, 600);
+        let result = apply_player_preferences(current, &requested);
 
         assert_eq!(result.name, "Newcomer");
         assert_eq!(result.level, 7);
-        assert_eq!(result.map_id, 2);
-        assert_eq!(result.position, Some(Vec2 { x: 0.0, y: 600.0 }));
+        assert_eq!(result.map_id, 1);
+        assert_eq!(result.position, Some(Vec2 { x: 5.0, y: 5.0 }));
         assert_eq!(result.appearance, Some(appearance()));
         assert_eq!(result.stats, Some(starter_character_stats()));
         assert_eq!(result.inventory, Some(crate::items::starter_inventory()));
@@ -657,6 +717,41 @@ mod tests {
             .expect("saved player exists");
 
         assert_eq!(loaded, player);
+    }
+
+    #[tokio::test]
+    async fn position_updates_do_not_overwrite_character_stats() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let database = open_surreal_kv(&directory.path().join("database"))
+            .await
+            .expect("open SurrealKV");
+        let player_id = PlayerId::parse("position-test").expect("valid player ID");
+        let name = CharacterName::parse("Mina").expect("valid name");
+        let mut player = create_player(
+            &database,
+            &player_id,
+            &name,
+            appearance(),
+            Vec2 { x: 160.0, y: 420.0 },
+            123,
+            3,
+        )
+        .await
+        .expect("create player");
+        let original_stats = player.stats;
+        player.position = Some(Vec2 { x: 300.0, y: 250.0 });
+        player.stats.as_mut().expect("stats").hp = 1;
+
+        save_player_position(&database, &player)
+            .await
+            .expect("save position");
+        let loaded = load_player(&database, &player_id, 3)
+            .await
+            .expect("load player")
+            .expect("saved player exists");
+
+        assert_eq!(loaded.position, Some(Vec2 { x: 300.0, y: 250.0 }));
+        assert_eq!(loaded.stats, original_stats);
     }
 
     #[tokio::test]

@@ -9,6 +9,8 @@ mod experience;
 mod gameplay;
 mod items;
 mod keymap;
+mod movement;
+mod player_lock;
 mod recovery;
 mod skill_formula;
 mod skills;
@@ -45,6 +47,9 @@ async fn main() -> anyhow::Result<()> {
     info!(
         item_drop_despawn = %humantime::format_duration(gameplay.item_drop_despawn),
         initial_skill_points = gameplay.initial_skill_points,
+        movement_snapshot_interval = %humantime::format_duration(gameplay.movement.snapshot_interval),
+        movement_speed_cap = gameplay.movement.speed_cap,
+        movement_jump_cap = gameplay.movement.jump_cap,
         "gameplay configuration ready"
     );
     info!(

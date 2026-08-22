@@ -10,6 +10,7 @@ use oozems_proto::v1::CharacterSpriteSet;
 use oozems_proto::v1::CreateCharacterRequest;
 use oozems_proto::v1::CreateCharacterResponse;
 use oozems_proto::v1::DropItemRequest;
+use oozems_proto::v1::EnterPortalRequest;
 use oozems_proto::v1::EquipItemRequest;
 use oozems_proto::v1::EquippedItem;
 use oozems_proto::v1::ErrorResponse;
@@ -20,10 +21,15 @@ use oozems_proto::v1::GetGuiRequest;
 use oozems_proto::v1::GetGuiResponse;
 use oozems_proto::v1::GetMapRequest;
 use oozems_proto::v1::GetMapResponse;
+use oozems_proto::v1::GetMovementRulesRequest;
+use oozems_proto::v1::GetMovementRulesResponse;
 use oozems_proto::v1::GetSkillBookRequest;
 use oozems_proto::v1::GetSkillBookResponse;
 use oozems_proto::v1::ItemActionResponse;
 use oozems_proto::v1::Map;
+use oozems_proto::v1::MovementRules;
+use oozems_proto::v1::MovementSnapshot;
+use oozems_proto::v1::MovementUpdateResponse;
 use oozems_proto::v1::PickUpItemRequest;
 use oozems_proto::v1::PlayerState;
 use oozems_proto::v1::RecoverPlayerRequest;
@@ -31,10 +37,10 @@ use oozems_proto::v1::RecoverPlayerResponse;
 use oozems_proto::v1::SavePlayerRequest;
 use oozems_proto::v1::SavePlayerResponse;
 use oozems_proto::v1::SkillBook;
+use oozems_proto::v1::SubmitMovementRequest;
 use oozems_proto::v1::UnequipItemRequest;
 use oozems_proto::v1::UseSkillRequest;
 use oozems_proto::v1::UseSkillResponse;
-use oozems_proto::v1::Vec2;
 use prost::Message;
 use thiserror::Error;
 
@@ -147,14 +153,12 @@ pub async fn drop_item(
 pub async fn pick_up_item(
     player_id: &str,
     map_id: u32,
-    position: Vec2,
 ) -> Result<ItemActionResponse, ClientError> {
     post_protobuf(
         "/api/v1/items/pick-up",
         PickUpItemRequest {
             player_id: player_id.to_owned(),
             map_id,
-            position: Some(position),
         },
     )
     .await
@@ -165,6 +169,47 @@ pub async fn get_map(map_id: u32) -> Result<Map, ClientError> {
         post_protobuf("/api/v1/maps/get", GetMapRequest { map_id }).await?;
 
     response.map.ok_or(ClientError::MissingData("map"))
+}
+
+pub async fn get_movement_rules() -> Result<MovementRules, ClientError> {
+    let response: GetMovementRulesResponse =
+        post_protobuf("/api/v1/movement/rules", GetMovementRulesRequest {}).await?;
+
+    response
+        .rules
+        .ok_or(ClientError::MissingData("movement rules"))
+}
+
+pub async fn submit_movement(
+    player_id: &str,
+    snapshot: MovementSnapshot,
+) -> Result<MovementUpdateResponse, ClientError> {
+    post_protobuf(
+        "/api/v1/movement/submit",
+        SubmitMovementRequest {
+            player_id: player_id.to_owned(),
+            snapshot: Some(snapshot),
+        },
+    )
+    .await
+}
+
+pub async fn enter_portal(
+    player_id: &str,
+    source: MovementSnapshot,
+    target_map_id: u32,
+    target_portal_name: &str,
+) -> Result<MovementUpdateResponse, ClientError> {
+    post_protobuf(
+        "/api/v1/movement/portal",
+        EnterPortalRequest {
+            player_id: player_id.to_owned(),
+            source: Some(source),
+            target_map_id,
+            target_portal_name: target_portal_name.to_owned(),
+        },
+    )
+    .await
 }
 
 pub async fn get_gui() -> Result<GameGui, ClientError> {

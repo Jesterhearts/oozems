@@ -9,9 +9,9 @@ use oozems_proto::v1::ItemActionResponse;
 use oozems_proto::v1::KeyAction;
 use oozems_proto::v1::KeyBinding;
 use oozems_proto::v1::Map;
+use oozems_proto::v1::MovementRules;
 use oozems_proto::v1::PlayerState;
 use oozems_proto::v1::SkillBook;
-use oozems_proto::v1::Vec2;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen_futures::spawn_local;
@@ -41,6 +41,7 @@ use crate::show_status;
 use crate::skill_effects;
 use crate::skill_effects::SkillEffectState;
 
+mod movement_actions;
 mod recovery_actions;
 mod skill_actions;
 
@@ -59,6 +60,7 @@ pub struct Game {
     pub key_bindings: Rc<RefCell<Vec<KeyBinding>>>,
     pub key_drag: Option<KeyDrag>,
     pub map: Map,
+    pub movement_rules: MovementRules,
     pub motion: MotionState,
     pub player: PlayerState,
     pub skill_book: SkillBook,
@@ -75,6 +77,7 @@ pub struct Game {
     suppress_click: Rc<Cell<bool>>,
     last_frame_ms: f64,
     next_save_ms: f64,
+    movement_sync: movement_actions::MovementSyncState,
     recovery_state: recovery_actions::RecoveryState,
     active_skill_effects: Vec<ActiveSkillEffect>,
 }
@@ -95,6 +98,10 @@ pub async fn run(
     let map = api::get_map(player.map_id)
         .await
         .map_err(|error| error.to_string())?;
+    let movement_rules = api::get_movement_rules()
+        .await
+        .map_err(|error| error.to_string())?;
+    movement::validate_rules(&movement_rules)?;
     let gui_result = api::get_gui().await;
     let gui_warning = gui_result.as_ref().err().map(ToString::to_string);
     let gui = gui_result.unwrap_or_default();
@@ -105,7 +112,14 @@ pub async fn run(
         name: "Skills".to_owned(),
         ..SkillBook::default()
     });
-    let game = build_game(player, map, character_sprites, gui, skill_book)?;
+    let game = build_game(
+        player,
+        map,
+        movement_rules,
+        character_sprites,
+        gui,
+        skill_book,
+    )?;
     let asset_count = game.borrow().images.len();
 
     let warnings = [
@@ -136,6 +150,7 @@ pub async fn run(
 fn build_game(
     player: PlayerState,
     map: Map,
+    movement_rules: MovementRules,
     character_sprites: CharacterSpriteSet,
     gui: GameGui,
     skill_book: SkillBook,
@@ -181,6 +196,7 @@ fn build_game(
         key_bindings,
         key_drag: None,
         map,
+        movement_rules,
         motion,
         player,
         skill_book,
@@ -197,6 +213,7 @@ fn build_game(
         suppress_click: Rc::new(Cell::new(false)),
         last_frame_ms: 0.0,
         next_save_ms: SAVE_INTERVAL_MS,
+        movement_sync: movement_actions::MovementSyncState::default(),
         recovery_state: recovery_actions::RecoveryState::default(),
         active_skill_effects: Vec::new(),
     }));
@@ -485,17 +502,10 @@ fn begin_pick_up(game: Rc<RefCell<Game>>) {
     }
     let request = {
         let game = game.borrow();
-        game.player
-            .position
-            .map(|position| (game.player.id.clone(), game.map.id, position))
-    };
-    let Some((player_id, map_id, position)) = request else {
-        in_flight.set(false);
-        show_status("The character does not have a valid pickup position.", true);
-        return;
+        (game.player.id.clone(), game.map.id)
     };
     spawn_local(async move {
-        match api::pick_up_item(&player_id, map_id, position).await {
+        match api::pick_up_item(&request.0, request.1).await {
             Ok(response) => {
                 let result = response
                     .player
@@ -660,6 +670,9 @@ fn schedule_frame(game: Rc<RefCell<Game>>) -> Result<(), String> {
         if update.pick_up {
             begin_pick_up(game.clone());
         }
+        if update.movement_snapshot {
+            movement_actions::begin(game.clone());
+        }
         if let Some(skill_id) = update.skill_id {
             skill_actions::begin(game.clone(), GuiAction::UseSkill { skill_id });
         }
@@ -667,7 +680,7 @@ fn schedule_frame(game: Rc<RefCell<Game>>) -> Result<(), String> {
             recovery_actions::begin(game.clone());
         }
         if let Some(transition) = update.transition {
-            begin_map_transition(game.clone(), transition);
+            movement_actions::begin_portal(game.clone(), transition);
         }
         if let Err(error) = schedule_frame(game) {
             show_status(&format!("Animation stopped: {error}"), true);
@@ -682,6 +695,7 @@ fn schedule_frame(game: Rc<RefCell<Game>>) -> Result<(), String> {
 struct FrameUpdate {
     transition: Option<MapTransition>,
     pick_up: bool,
+    movement_snapshot: bool,
     recover: bool,
     skill_id: Option<u32>,
 }
@@ -730,6 +744,15 @@ fn update(
         game.transition_in_flight.set(true);
     }
     let skill_id = input.skills.into_iter().next();
+    let movement_observation =
+        movement_actions::observation(game.map.id, game.player.position, game.motion);
+    let movement_snapshot = movement_actions::update(
+        &mut game.movement_sync,
+        game.movement_rules.snapshot_interval_ms,
+        transition.is_none() && !game.transition_in_flight.get(),
+        timestamp_ms,
+        movement_observation,
+    );
     let needs_recovery = game
         .player
         .stats
@@ -753,6 +776,7 @@ fn update(
     FrameUpdate {
         transition,
         pick_up,
+        movement_snapshot,
         recover,
         skill_id,
     }
@@ -815,7 +839,14 @@ fn update_player(
     if input.horizontal != 0.0 {
         game.facing_left = input.horizontal < 0.0;
     }
-    let output = movement::update_player(&game.map, position, game.motion, input, elapsed_seconds);
+    let output = movement::update_player(
+        &game.map,
+        &game.movement_rules,
+        position,
+        game.motion,
+        input,
+        elapsed_seconds,
+    );
     let animation = character_animation(&game.map, output.state, input);
     update_character_animation(
         &mut game.character_animation,
@@ -823,7 +854,6 @@ fn update_player(
         animation,
         game.frame_time_ms,
     );
-    game.dirty |= position != output.position;
     game.player.position = Some(output.position);
     game.motion = output.state;
     output.transition
@@ -860,59 +890,6 @@ fn update_character_animation(
     }
     *current = next;
     *started_ms = timestamp_ms;
-}
-
-fn begin_map_transition(
-    game: Rc<RefCell<Game>>,
-    transition: MapTransition,
-) {
-    let transition_in_flight = game.borrow().transition_in_flight.clone();
-    spawn_local(async move {
-        match api::get_map(transition.target_map_id).await {
-            Ok(map) => {
-                let name = map.name.clone();
-                let result = install_map(&mut game.borrow_mut(), map, &transition);
-                match result {
-                    Ok(()) => show_status(&format!("Entered {name}."), false),
-                    Err(error) => show_status(&format!("Could not enter map: {error}"), true),
-                }
-            }
-            Err(error) => show_status(&format!("Could not enter map: {error}"), true),
-        }
-        transition_in_flight.set(false);
-    });
-}
-
-fn install_map(
-    game: &mut Game,
-    map: Map,
-    transition: &MapTransition,
-) -> Result<(), String> {
-    let images = prepare_game_assets(&map, &game.character_sprites, &game.gui, &game.skill_book)?;
-    let position = movement::destination_position(&map, &transition.target_portal_name)
-        .unwrap_or_else(|| fallback_position(&map));
-    let motion = movement::initial_motion_state(&map, &position);
-    let world_layers = render::world_layers(&map);
-    skill_effects::clear(&mut game.skill_effect_state);
-    recovery_actions::reset(&mut game.recovery_state);
-
-    game.player.map_id = map.id;
-    game.player.position = Some(position);
-    game.map = map;
-    game.images = images;
-    game.motion = motion;
-    game.world_layers = world_layers;
-    game.character_animation = CharacterAnimation::Idle;
-    game.character_animation_started_ms = game.frame_time_ms;
-    game.dirty = true;
-    Ok(())
-}
-
-fn fallback_position(map: &Map) -> Vec2 {
-    Vec2 {
-        x: map.width as f32 / 2.0,
-        y: (map.height as f32 / 2.0).min(map.height as f32),
-    }
 }
 
 fn save_if_due(

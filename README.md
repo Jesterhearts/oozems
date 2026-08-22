@@ -24,8 +24,8 @@ The current vertical slice includes:
 - validated TOML game rules with named, formula-based XP curves;
 - validated TOML combat formulas based on the classic Ayumilove compilation;
 - server-owned assets fetched only when referenced by the current view; and
-- player movement, platforms, jumping, ladder and rope climbing, direct portal
-  transitions, and periodic position saves.
+- client-rendered movement with server-owned reachability checks for speed,
+  jumping, airborne time, footholds, ladders, ropes, and portal transitions.
 
 ## Run it
 
@@ -60,16 +60,19 @@ browser
   -> POST /api/v1/characters/...  create a character or get sprite metadata
   -> POST /api/v1/gui/get         current GUI layout and asset metadata
   -> POST /api/v1/maps/get        current map protobuf
+  -> POST /api/v1/movement/rules server-configured movement constants and caps
+  -> POST /api/v1/movement/submit ordered movement snapshot and correction
+  -> POST /api/v1/movement/portal server-authorized portal transition
   -> POST /api/v1/items/...       equip, unequip, drop, or pick up an item
   -> POST /api/v1/skills/...      allocate a skill point or use a skill
   -> POST /api/v1/players/recover apply one rate-limited natural recovery tick
   -> GET /assets/...              only bundled assets named by that map
   -> GET /wz-assets/...           requested WZ PNG and skill audio assets
-  -> POST /api/v1/players/save    player position and key bindings protobuf
+  -> POST /api/v1/players/save    key bindings and authoritative session state
 
 server
   -> config/xp-curves.toml        validated game progression rules
-  -> config/gameplay.toml         validated item and initial skill rules
+  -> config/gameplay.toml         validated item, skill, and movement rules
   -> config/skill-formulas.toml   validated combat formulas
   -> content/maps/*.json          immutable map source
   -> data/Map.wz                  optional, lazy WZ map source
@@ -192,6 +195,24 @@ drop_despawn = "10m"
 
 [skills]
 initial_points = 3
+
+[movement]
+walk_speed = 220.0
+climb_speed = 135.0
+gravity = 1150.0
+jump_speed = 480.0
+speed_cap = 200
+jump_cap = 200
+snapshot_interval = "200ms"
+maximum_snapshot_gap = "1s"
+persistence_interval = "2s"
+position_tolerance = 24.0
+ground_tolerance = 8.0
+platform_edge_tolerance = 20.0
+ladder_reach = 32.0
+ladder_end_reach = 20.0
+portal_horizontal_reach = 48.0
+portal_vertical_reach = 64.0
 ```
 
 `items.drop_despawn` controls how long a dropped item remains in a map. It must
@@ -203,6 +224,41 @@ persisted across a server restart.
 character. It is also used when an older SurrealKV player record has no skill
 point field. Learned levels and later point changes are persisted and are not
 replaced when this setting changes.
+
+Movement speeds are measured in map pixels per second, and gravity is measured
+in map pixels per second squared. `speed_cap` and `jump_cap` are percentage
+stats with 100 as the unmodified value. The default cap of 200 therefore allows
+at most twice the configured base speed or jump impulse. Timed WZ skill values,
+including Haste-style `speed` and `jump` bonuses, are summed by the client and
+server before these caps are applied.
+
+The client submits an ordered movement snapshot every `snapshot_interval`.
+The server uses its own receipt time to calculate a reachable horizontal and
+vertical envelope. `maximum_snapshot_gap` limits the time included in that
+calculation, so an absent client cannot accumulate an unlimited movement
+budget. `persistence_interval` controls partial SurrealKV position writes;
+these writes cannot overwrite character stats, skills, or inventory.
+
+If the character lands or grabs a ladder between heartbeats, the next snapshot
+includes that brief support contact without replacing the current position.
+The server verifies the foothold, ladder, and full path through the contact
+before it resets airborne time.
+
+`position_tolerance` provides latency and floating-point tolerance around the
+physical envelope. `ground_tolerance` controls how close a grounded snapshot
+must be vertically to a parsed foothold. `platform_edge_tolerance` preserves
+ground contact while the character moves just beyond a foothold end.
+`ladder_reach` controls horizontal ladder and rope snapping, while
+`ladder_end_reach` controls attachment just above or below an endpoint. The two
+portal reach settings control how close the authoritative position must be
+before the server permits a transition. All numeric movement values and
+durations must be positive, and `maximum_snapshot_gap` must not be shorter than
+`snapshot_interval`. Restart the server after changing these rules.
+
+Rejected snapshots return the last authoritative server position and the WASM
+client resynchronizes to it. Purely visual movement inside a modified client is
+not observable, but it cannot change the server position used for recovery,
+pickups, drops, portals, persistence, or later gameplay calculations.
 
 ## Configure formula profiles
 

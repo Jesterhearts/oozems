@@ -5,3 +5,21 @@ drop_despawn = "10m"
 
 [skills]
 initial_points = 3
+
+[movement]
+walk_speed              = 220.0
+climb_speed             = 135.0
+gravity                 = 1150.0
+jump_speed              = 480.0
+speed_cap               = 200
+jump_cap                = 200
+snapshot_interval       = "200ms"
+maximum_snapshot_gap    = "1s"
+persistence_interval    = "2s"
+position_tolerance      = 24.0
+ground_tolerance        = 8.0
+platform_edge_tolerance = 20.0
+ladder_reach            = 32.0
+ladder_end_reach        = 20.0
+portal_horizontal_reach = 48.0
+portal_vertical_reach   = 64.0

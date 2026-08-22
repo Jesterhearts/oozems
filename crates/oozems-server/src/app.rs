@@ -19,6 +19,8 @@ use crate::database::Database;
 use crate::experience::ExperienceCurves;
 use crate::gameplay::GameplayConfig;
 use crate::items::DropStore;
+use crate::movement::MovementTracker;
+use crate::player_lock::PlayerLocks;
 use crate::recovery::RecoveryTimers;
 use crate::skill_formula::FormulaCatalog;
 use crate::skills::SkillCooldowns;
@@ -30,6 +32,8 @@ pub struct AppState {
     pub experience: Arc<ExperienceCurves>,
     pub drops: Arc<DropStore>,
     pub gameplay: GameplayConfig,
+    pub movement: Arc<MovementTracker>,
+    pub player_locks: Arc<PlayerLocks>,
     pub recovery_timers: Arc<RecoveryTimers>,
     pub skill_cooldowns: Arc<SkillCooldowns>,
     pub formulas: Arc<FormulaCatalog>,
@@ -50,6 +54,8 @@ pub fn router(
         experience: Arc::new(experience),
         drops: Arc::new(DropStore::new(gameplay.item_drop_despawn)),
         gameplay,
+        movement: Arc::new(MovementTracker::default()),
+        player_locks: Arc::new(PlayerLocks::default()),
         recovery_timers: Arc::new(RecoveryTimers::default()),
         skill_cooldowns: Arc::new(SkillCooldowns::default()),
         formulas: Arc::new(formulas),
@@ -62,6 +68,15 @@ pub fn router(
             post(crate::api::get_character_sprites),
         )
         .route("/gui/get", post(crate::api::get_gui))
+        .route(
+            "/movement/rules",
+            post(crate::api::movement::get_movement_rules),
+        )
+        .route(
+            "/movement/submit",
+            post(crate::api::movement::submit_movement),
+        )
+        .route("/movement/portal", post(crate::api::movement::enter_portal))
         .route("/skills/book", post(crate::api::get_skill_book))
         .route("/skills/allocate", post(crate::api::allocate_skill_point))
         .route("/skills/use", post(crate::api::use_skill))

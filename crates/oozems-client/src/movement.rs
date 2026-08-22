@@ -1,24 +1,16 @@
 use oozems_proto::v1::Ladder;
 use oozems_proto::v1::Map;
+use oozems_proto::v1::MovementMode;
+use oozems_proto::v1::MovementRules;
 use oozems_proto::v1::Platform;
 use oozems_proto::v1::Portal;
 use oozems_proto::v1::Vec2;
 
-const MOVE_SPEED: f32 = 220.0;
-const CLIMB_SPEED: f32 = 135.0;
-const GRAVITY: f32 = 1_150.0;
-const JUMP_SPEED: f32 = 480.0;
 const PLAYER_HALF_WIDTH: f32 = 18.0;
-const LADDER_REACH: f32 = 24.0;
-const LADDER_END_REACH: f32 = 14.0;
 const LADDER_TOP_EXIT_OFFSET: f32 = 5.0;
 const LADDER_TOP_PLATFORM_REACH: f32 = 24.0;
-const PORTAL_HORIZONTAL_REACH: f32 = 48.0;
-const PORTAL_VERTICAL_REACH: f32 = 64.0;
-const PORTAL_FLOOR_PENETRATION_LIMIT: f32 = 16.0;
 const PLATFORM_CONTACT_TOLERANCE: f32 = 1.0;
 const SCRIPT_PORTAL_TARGET: u32 = 999_999_999;
-const SPAWN_PORTAL_KIND: u32 = 0;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct MotionState {
@@ -51,6 +43,83 @@ pub struct MotionOutput {
     pub transition: Option<MapTransition>,
 }
 
+pub fn validate_rules(rules: &MovementRules) -> Result<(), String> {
+    for (name, value) in [
+        ("walk_speed", rules.walk_speed),
+        ("climb_speed", rules.climb_speed),
+        ("gravity", rules.gravity),
+        ("jump_speed", rules.jump_speed),
+        ("position_tolerance", rules.position_tolerance),
+        ("ground_tolerance", rules.ground_tolerance),
+        ("platform_edge_tolerance", rules.platform_edge_tolerance),
+        ("ladder_reach", rules.ladder_reach),
+        ("ladder_end_reach", rules.ladder_end_reach),
+        ("portal_horizontal_reach", rules.portal_horizontal_reach),
+        ("portal_vertical_reach", rules.portal_vertical_reach),
+    ] {
+        if !value.is_finite() || value <= 0.0 {
+            return Err(format!("movement rule {name} must be finite and positive"));
+        }
+    }
+    if rules.speed_cap == 0 || rules.jump_cap == 0 || rules.snapshot_interval_ms == 0 {
+        return Err("movement stat caps and snapshot interval must be positive".to_owned());
+    }
+    if rules.maximum_snapshot_gap_ms < rules.snapshot_interval_ms {
+        return Err("maximum movement snapshot gap is shorter than its interval".to_owned());
+    }
+    Ok(())
+}
+
+pub fn motion_mode(state: MotionState) -> MovementMode {
+    if state.climbing.is_some() {
+        MovementMode::Climbing
+    } else if state.on_ground {
+        MovementMode::Grounded
+    } else {
+        MovementMode::Airborne
+    }
+}
+
+pub fn authoritative_motion_state(
+    map: &Map,
+    rules: &MovementRules,
+    position: &Vec2,
+    mode: MovementMode,
+) -> Result<MotionState, String> {
+    match mode {
+        MovementMode::Grounded => Ok(grounded_motion_state(
+            map,
+            position,
+            rules.platform_edge_tolerance,
+        )),
+        MovementMode::Airborne => Ok(MotionState::default()),
+        MovementMode::Climbing => {
+            let climbing = map
+                .ladders
+                .iter()
+                .enumerate()
+                .filter(|(_, ladder)| {
+                    (position.x - ladder.x).abs() <= rules.ladder_reach
+                        && position.y >= ladder.top - rules.ladder_end_reach
+                        && position.y <= ladder.bottom + rules.ladder_end_reach
+                })
+                .min_by(|(_, left), (_, right)| {
+                    (position.x - left.x)
+                        .abs()
+                        .total_cmp(&(position.x - right.x).abs())
+                })
+                .map(|(index, _)| index)
+                .ok_or("authoritative climbing position has no nearby ladder")?;
+            Ok(MotionState {
+                climbing: Some(climbing),
+                platform_layer: map.ladders[climbing].layer,
+                ..MotionState::default()
+            })
+        }
+        MovementMode::Unspecified => Err("authoritative movement mode is unspecified".to_owned()),
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct GroundContact {
     y: f32,
@@ -61,22 +130,34 @@ pub fn initial_motion_state(
     map: &Map,
     position: &Vec2,
 ) -> MotionState {
-    supporting_platform(map, position).map_or_else(MotionState::default, |contact| MotionState {
-        on_ground: true,
-        platform_layer: contact.layer,
-        ..MotionState::default()
-    })
+    grounded_motion_state(map, position, 0.0)
+}
+
+fn grounded_motion_state(
+    map: &Map,
+    position: &Vec2,
+    edge_tolerance: f32,
+) -> MotionState {
+    supporting_platform(map, position, edge_tolerance).map_or_else(
+        MotionState::default,
+        |contact| MotionState {
+            on_ground: true,
+            platform_layer: contact.layer,
+            ..MotionState::default()
+        },
+    )
 }
 
 pub fn update_player(
     map: &Map,
+    rules: &MovementRules,
     position: Vec2,
     state: MotionState,
     input: PlayerInput,
     elapsed_seconds: f32,
 ) -> MotionOutput {
     if input.portal_pressed
-        && let Some(portal) = find_usable_portal(&map.portals, &position)
+        && let Some(portal) = find_usable_portal(&map.portals, &position, rules)
     {
         return MotionOutput {
             position,
@@ -92,7 +173,13 @@ pub fn update_player(
     let mut state = state;
     if state.climbing.is_none()
         && input.vertical != 0.0
-        && let Some(index) = find_climbable_ladder(&map.ladders, &position, input.vertical)
+        && let Some(index) = find_climbable_ladder(
+            &map.ladders,
+            &position,
+            input.vertical,
+            rules.ladder_reach,
+            rules.ladder_end_reach,
+        )
     {
         state.climbing = Some(index);
         state.velocity_y = 0.0;
@@ -104,15 +191,16 @@ pub fn update_player(
     if let Some(index) = state.climbing {
         let Some(ladder) = map.ladders.get(index) else {
             state.climbing = None;
-            return move_with_gravity(map, position, state, input, elapsed_seconds);
+            return move_with_gravity(map, rules, position, state, input, elapsed_seconds);
         };
         if input.jump_pressed {
             state.climbing = None;
-            state.velocity_y = -modified_speed(JUMP_SPEED, input.jump_bonus);
-            return move_with_gravity(map, position, state, input, elapsed_seconds);
+            state.velocity_y = -modified_speed(rules.jump_speed, input.jump_bonus, rules.jump_cap);
+            return move_with_gravity(map, rules, position, state, input, elapsed_seconds);
         }
         return move_on_ladder(
             map,
+            rules,
             position,
             state,
             input.vertical,
@@ -122,14 +210,15 @@ pub fn update_player(
     }
 
     if input.jump_pressed && state.on_ground {
-        state.velocity_y = -modified_speed(JUMP_SPEED, input.jump_bonus);
+        state.velocity_y = -modified_speed(rules.jump_speed, input.jump_bonus, rules.jump_cap);
         state.on_ground = false;
     }
-    move_with_gravity(map, position, state, input, elapsed_seconds)
+    move_with_gravity(map, rules, position, state, input, elapsed_seconds)
 }
 
 fn move_with_gravity(
     map: &Map,
+    rules: &MovementRules,
     mut position: Vec2,
     mut state: MotionState,
     input: PlayerInput,
@@ -138,13 +227,20 @@ fn move_with_gravity(
     let old_x = position.x;
     let old_y = position.y;
     let edge = PLAYER_HALF_WIDTH.min(map.width as f32 / 2.0);
-    let move_speed = modified_speed(MOVE_SPEED, input.speed_bonus);
+    let move_speed = modified_speed(rules.walk_speed, input.speed_bonus, rules.speed_cap);
     position.x = (position.x + input.horizontal * move_speed * elapsed_seconds)
         .clamp(edge, (map.width as f32 - edge).max(edge));
 
-    state.velocity_y += GRAVITY * elapsed_seconds;
+    state.velocity_y += rules.gravity * elapsed_seconds;
     let proposed_y = position.y + state.velocity_y * elapsed_seconds;
-    if let Some(contact) = find_landing_platform(map, old_x, position.x, old_y, proposed_y) {
+    if let Some(contact) = find_landing_platform(
+        map,
+        old_x,
+        position.x,
+        old_y,
+        proposed_y,
+        rules.platform_edge_tolerance,
+    ) {
         position.y = contact.y;
         state.velocity_y = 0.0;
         state.on_ground = true;
@@ -164,12 +260,15 @@ fn move_with_gravity(
 fn modified_speed(
     base: f32,
     bonus: i32,
+    cap: u32,
 ) -> f32 {
-    base * (1.0 + bonus as f32 / 100.0).max(0.0)
+    let percentage = (100_i64 + i64::from(bonus)).clamp(0, i64::from(cap));
+    base * percentage as f32 / 100.0
 }
 
 fn move_on_ladder(
     map: &Map,
+    rules: &MovementRules,
     mut position: Vec2,
     mut state: MotionState,
     vertical: f32,
@@ -177,7 +276,7 @@ fn move_on_ladder(
     elapsed_seconds: f32,
 ) -> MotionOutput {
     position.x = ladder.x;
-    position.y += vertical * CLIMB_SPEED * elapsed_seconds;
+    position.y += vertical * rules.climb_speed * elapsed_seconds;
 
     if vertical < 0.0 && position.y <= ladder.top {
         if ladder.upper_floor {
@@ -246,17 +345,19 @@ fn find_climbable_ladder(
     ladders: &[Ladder],
     position: &Vec2,
     vertical: f32,
+    ladder_reach: f32,
+    ladder_end_reach: f32,
 ) -> Option<usize> {
     ladders
         .iter()
         .enumerate()
         .filter(|(_, ladder)| {
             let within_vertical_reach = if vertical < 0.0 {
-                position.y >= ladder.top && position.y <= ladder.bottom + LADDER_END_REACH
+                position.y >= ladder.top && position.y <= ladder.bottom + ladder_end_reach
             } else {
-                position.y >= ladder.top - LADDER_END_REACH && position.y <= ladder.bottom
+                position.y >= ladder.top - ladder_end_reach && position.y <= ladder.bottom
             };
-            (position.x - ladder.x).abs() <= LADDER_REACH && within_vertical_reach
+            (position.x - ladder.x).abs() <= ladder_reach && within_vertical_reach
         })
         .min_by(|(_, left), (_, right)| {
             (position.x - left.x)
@@ -269,13 +370,14 @@ fn find_climbable_ladder(
 fn find_usable_portal<'a>(
     portals: &'a [Portal],
     position: &Vec2,
+    rules: &MovementRules,
 ) -> Option<&'a Portal> {
     portals
         .iter()
         .filter(|portal| portal.target_map_id != SCRIPT_PORTAL_TARGET)
         .filter(|portal| {
-            (position.x - portal.x).abs() <= PORTAL_HORIZONTAL_REACH
-                && (position.y - portal.y).abs() <= PORTAL_VERTICAL_REACH
+            (position.x - portal.x).abs() <= rules.portal_horizontal_reach
+                && (position.y - portal.y).abs() <= rules.portal_vertical_reach
         })
         .min_by(|left, right| {
             squared_distance(position, left).total_cmp(&squared_distance(position, right))
@@ -289,63 +391,13 @@ fn squared_distance(
     (position.x - portal.x).powi(2) + (position.y - portal.y).powi(2)
 }
 
-pub fn destination_position(
-    map: &Map,
-    target_portal_name: &str,
-) -> Option<Vec2> {
-    let target = (!target_portal_name.is_empty())
-        .then(|| {
-            map.portals
-                .iter()
-                .find(|portal| portal.name == target_portal_name)
-        })
-        .flatten()
-        .or_else(|| {
-            map.portals
-                .iter()
-                .find(|portal| portal.kind == SPAWN_PORTAL_KIND)
-        })?;
-    Some(place_portal_on_floor(map, target))
-}
-
-fn place_portal_on_floor(
-    map: &Map,
-    portal: &Portal,
-) -> Vec2 {
-    let floor = map
-        .platforms
-        .iter()
-        .filter_map(|platform| platform_surface_at_x(platform, portal.x))
-        .filter(|surface| {
-            let penetration = portal.y - surface;
-            (0.0..=PORTAL_FLOOR_PENETRATION_LIMIT).contains(&penetration)
-        })
-        .max_by(f32::total_cmp);
-
-    Vec2 {
-        x: portal.x,
-        y: floor.unwrap_or(portal.y),
-    }
-}
-
-fn platform_surface_at_x(
-    platform: &Platform,
-    x: f32,
-) -> Option<f32> {
-    let minimum_x = platform.x.min(platform.end_x);
-    let maximum_x = platform.x.max(platform.end_x);
-    if !(minimum_x..=maximum_x).contains(&x) {
-        return None;
-    }
-    platform_y(platform, x)
-}
-
 fn find_landing_platform(
     map: &Map,
     old_x: f32,
     new_x: f32,
     old_y: f32,
     new_y: f32,
+    platform_edge_tolerance: f32,
 ) -> Option<GroundContact> {
     if new_y < old_y {
         return None;
@@ -356,7 +408,9 @@ fn find_landing_platform(
         .filter_map(|platform| {
             let minimum_x = platform.x.min(platform.end_x);
             let maximum_x = platform.x.max(platform.end_x);
-            if new_x < minimum_x - 16.0 || new_x > maximum_x + 16.0 {
+            if new_x < minimum_x - platform_edge_tolerance
+                || new_x > maximum_x + platform_edge_tolerance
+            {
                 return None;
             }
             let old_surface = platform_y(platform, old_x.clamp(minimum_x, maximum_x))?;
@@ -376,11 +430,17 @@ fn find_landing_platform(
 fn supporting_platform(
     map: &Map,
     position: &Vec2,
+    edge_tolerance: f32,
 ) -> Option<GroundContact> {
     map.platforms
         .iter()
         .filter_map(|platform| {
-            let y = platform_surface_at_x(platform, position.x)?;
+            let minimum_x = platform.x.min(platform.end_x);
+            let maximum_x = platform.x.max(platform.end_x);
+            if position.x < minimum_x - edge_tolerance || position.x > maximum_x + edge_tolerance {
+                return None;
+            }
+            let y = platform_y(platform, position.x.clamp(minimum_x, maximum_x))?;
             ((y - position.y).abs() <= PLATFORM_CONTACT_TOLERANCE).then_some(GroundContact {
                 y,
                 layer: platform.layer,
@@ -409,6 +469,8 @@ fn platform_y(
 mod tests {
     use oozems_proto::v1::Ladder;
     use oozems_proto::v1::Map;
+    use oozems_proto::v1::MovementMode;
+    use oozems_proto::v1::MovementRules;
     use oozems_proto::v1::Platform;
     use oozems_proto::v1::Portal;
     use oozems_proto::v1::Vec2;
@@ -416,16 +478,27 @@ mod tests {
     use super::MapTransition;
     use super::MotionState;
     use super::PlayerInput;
-    use super::destination_position;
+    use super::authoritative_motion_state;
     use super::initial_motion_state;
     use super::modified_speed;
     use super::update_player;
+    use super::validate_rules;
 
     #[test]
     fn skill_bonuses_scale_movement_without_allowing_negative_speed() {
-        assert_eq!(modified_speed(220.0, 10), 242.0);
-        assert_eq!(modified_speed(480.0, 20), 576.0);
-        assert_eq!(modified_speed(220.0, -150), 0.0);
+        assert_eq!(modified_speed(220.0, 10, 200), 242.0);
+        assert_eq!(modified_speed(480.0, 20, 200), 576.0);
+        assert_eq!(modified_speed(220.0, -150, 200), 0.0);
+        assert_eq!(modified_speed(220.0, 150, 200), 440.0);
+    }
+
+    #[test]
+    fn rejects_invalid_rules_at_the_client_boundary() {
+        let mut invalid = rules();
+        invalid.speed_cap = 0;
+
+        assert!(validate_rules(&rules()).is_ok());
+        assert!(validate_rules(&invalid).is_err());
     }
 
     #[test]
@@ -446,6 +519,7 @@ mod tests {
         };
         let output = update_player(
             &map,
+            &rules(),
             Vec2 { x: 140.0, y: 280.0 },
             MotionState {
                 velocity_y: 200.0,
@@ -472,6 +546,7 @@ mod tests {
         };
         let output = update_player(
             &map,
+            &rules(),
             Vec2 { x: 140.0, y: 280.0 },
             MotionState {
                 on_ground: true,
@@ -510,6 +585,32 @@ mod tests {
     }
 
     #[test]
+    fn authoritative_grounding_preserves_platform_edge_contact() {
+        let map = Map {
+            platforms: vec![Platform {
+                x: 100.0,
+                y: 300.0,
+                end_x: 200.0,
+                end_y: 300.0,
+                layer: 2,
+                ..Platform::default()
+            }],
+            ..Map::default()
+        };
+
+        let state = authoritative_motion_state(
+            &map,
+            &rules(),
+            &Vec2 { x: 218.0, y: 300.0 },
+            MovementMode::Grounded,
+        )
+        .expect("authoritative state");
+
+        assert!(state.on_ground);
+        assert_eq!(state.platform_layer, 2);
+    }
+
+    #[test]
     fn vertical_input_attaches_to_and_climbs_a_ladder() {
         let map = Map {
             width: 800,
@@ -526,6 +627,7 @@ mod tests {
         };
         let output = update_player(
             &map,
+            &rules(),
             Vec2 { x: 215.0, y: 280.0 },
             MotionState::default(),
             PlayerInput {
@@ -565,6 +667,7 @@ mod tests {
         };
         let output = update_player(
             &map,
+            &rules(),
             Vec2 { x: 200.0, y: 105.0 },
             MotionState {
                 climbing: Some(0),
@@ -585,6 +688,7 @@ mod tests {
 
         let settled = update_player(
             &map,
+            &rules(),
             output.position,
             output.state,
             PlayerInput {
@@ -614,6 +718,7 @@ mod tests {
         };
         let output = update_player(
             &map,
+            &rules(),
             Vec2 { x: 200.0, y: 101.0 },
             MotionState {
                 climbing: Some(0),
@@ -646,6 +751,7 @@ mod tests {
         };
         let output = update_player(
             &map,
+            &rules(),
             Vec2 { x: 210.0, y: 300.0 },
             MotionState::default(),
             PlayerInput {
@@ -679,6 +785,7 @@ mod tests {
         };
         let output = update_player(
             &map,
+            &rules(),
             Vec2 { x: 200.0, y: 300.0 },
             MotionState::default(),
             PlayerInput {
@@ -691,82 +798,23 @@ mod tests {
         assert_eq!(output.transition, None);
     }
 
-    #[test]
-    fn destination_uses_the_named_portal_then_falls_back_to_spawn() {
-        let map = Map {
-            portals: vec![
-                Portal {
-                    name: "sp".to_owned(),
-                    x: 10.0,
-                    y: 20.0,
-                    kind: 0,
-                    ..Portal::default()
-                },
-                Portal {
-                    name: "west".to_owned(),
-                    x: 30.0,
-                    y: 40.0,
-                    kind: 2,
-                    ..Portal::default()
-                },
-            ],
-            ..Map::default()
-        };
-
-        assert_eq!(
-            destination_position(&map, "west"),
-            Some(Vec2 { x: 30.0, y: 40.0 })
-        );
-        assert_eq!(
-            destination_position(&map, "missing"),
-            Some(Vec2 { x: 10.0, y: 20.0 })
-        );
-    }
-
-    #[test]
-    fn destination_snaps_shallow_penetration_without_moving_air_portals() {
-        let map = Map {
-            platforms: vec![Platform {
-                x: 100.0,
-                y: 300.0,
-                end_x: 200.0,
-                end_y: 350.0,
-                ..Platform::default()
-            }],
-            portals: vec![
-                Portal {
-                    name: "inside".to_owned(),
-                    x: 150.0,
-                    y: 327.0,
-                    ..Portal::default()
-                },
-                Portal {
-                    name: "air".to_owned(),
-                    x: 150.0,
-                    y: 323.0,
-                    ..Portal::default()
-                },
-                Portal {
-                    name: "deep".to_owned(),
-                    x: 150.0,
-                    y: 350.0,
-                    ..Portal::default()
-                },
-            ],
-            ..Map::default()
-        };
-
-        assert_eq!(
-            destination_position(&map, "inside"),
-            Some(Vec2 { x: 150.0, y: 325.0 })
-        );
-        assert_eq!(
-            destination_position(&map, "air"),
-            Some(Vec2 { x: 150.0, y: 323.0 })
-        );
-        assert_eq!(
-            destination_position(&map, "deep"),
-            Some(Vec2 { x: 150.0, y: 350.0 })
-        );
+    fn rules() -> MovementRules {
+        MovementRules {
+            walk_speed: 220.0,
+            climb_speed: 135.0,
+            gravity: 1_150.0,
+            jump_speed: 480.0,
+            speed_cap: 200,
+            jump_cap: 200,
+            snapshot_interval_ms: 200,
+            maximum_snapshot_gap_ms: 1_000,
+            position_tolerance: 24.0,
+            ground_tolerance: 8.0,
+            platform_edge_tolerance: 20.0,
+            ladder_reach: 32.0,
+            ladder_end_reach: 20.0,
+            portal_horizontal_reach: 48.0,
+            portal_vertical_reach: 64.0,
+        }
     }
 }

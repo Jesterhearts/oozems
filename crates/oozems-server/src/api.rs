@@ -43,6 +43,8 @@ use crate::database::CharacterName;
 use crate::database::PlayerId;
 use crate::database::STARTER_MAP_ID;
 
+pub(crate) mod movement;
+
 pub async fn bootstrap(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -51,11 +53,26 @@ pub async fn bootstrap(
     let request: BootstrapRequest = decode_request(&headers, body)?;
     let player_id = PlayerId::parse(&request.player_id)
         .map_err(|error| ApiError::bad_request("invalid_player_id", error.to_string()))?;
+    let _player_guard = lock_player(&state, &player_id).await?;
     let player = load_player(&state, &player_id)
         .await?
         .filter(|player| player.appearance.is_some());
-    if player.is_some() {
-        record_recovery_activity(&state, player_id.as_str(), unix_time_ms()?);
+    if let Some(player) = player.as_ref() {
+        let activity_time_ms = unix_time_ms()?;
+        let map = load_map(&state, player.map_id).await?.ok_or_else(|| {
+            ApiError::not_found(
+                "map_not_found",
+                format!("map {} does not exist", player.map_id),
+            )
+        })?;
+        crate::movement::initialize_player(
+            &state.movement,
+            player,
+            &map,
+            state.gameplay.movement,
+            activity_time_ms,
+        )?;
+        record_recovery_activity(&state, player_id.as_str(), activity_time_ms);
     }
 
     Ok(Protobuf(BootstrapResponse {
@@ -72,6 +89,7 @@ pub async fn create_character(
     let request: CreateCharacterRequest = decode_request(&headers, body)?;
     let player_id = PlayerId::parse(&request.player_id)
         .map_err(|error| ApiError::bad_request("invalid_player_id", error.to_string()))?;
+    let _player_guard = lock_player(&state, &player_id).await?;
     let name = CharacterName::parse(&request.name)
         .map_err(|error| ApiError::bad_request("invalid_character_name", error.to_string()))?;
     let appearance = request.appearance.ok_or_else(|| {
@@ -116,6 +134,13 @@ pub async fn create_character(
         state.gameplay.initial_skill_points,
     )
     .await?;
+    crate::movement::initialize_player(
+        &state.movement,
+        &player,
+        &map,
+        state.gameplay.movement,
+        activity_time_ms,
+    )?;
     record_recovery_activity(&state, player_id.as_str(), activity_time_ms);
 
     Ok(Protobuf(CreateCharacterResponse {
@@ -180,6 +205,7 @@ pub async fn equip_item(
 ) -> Result<Protobuf<ItemActionResponse>, ApiError> {
     let request: EquipItemRequest = decode_request(&headers, body)?;
     let player_id = parse_player_id(&request.player_id)?;
+    let _player_guard = lock_player(&state, &player_id).await?;
     let current = require_player(&state, &player_id).await?;
     let updated = crate::items::equip_inventory_item(
         current,
@@ -205,6 +231,7 @@ pub async fn unequip_item(
 ) -> Result<Protobuf<ItemActionResponse>, ApiError> {
     let request: UnequipItemRequest = decode_request(&headers, body)?;
     let player_id = parse_player_id(&request.player_id)?;
+    let _player_guard = lock_player(&state, &player_id).await?;
     let current = require_player(&state, &player_id).await?;
     let updated = crate::items::unequip_item(current, request.slot).map_err(item_rule_error)?;
     let activity_time_ms = unix_time_ms()?;
@@ -225,6 +252,7 @@ pub async fn drop_item(
 ) -> Result<Protobuf<ItemActionResponse>, ApiError> {
     let request: DropItemRequest = decode_request(&headers, body)?;
     let player_id = parse_player_id(&request.player_id)?;
+    let _player_guard = lock_player(&state, &player_id).await?;
     let current = require_player(&state, &player_id).await?;
     let original = current.clone();
     let removed = crate::items::remove_inventory_item(
@@ -262,6 +290,7 @@ pub async fn pick_up_item(
 ) -> Result<Protobuf<ItemActionResponse>, ApiError> {
     let request: PickUpItemRequest = decode_request(&headers, body)?;
     let player_id = parse_player_id(&request.player_id)?;
+    let _player_guard = lock_player(&state, &player_id).await?;
     let current = require_player(&state, &player_id).await?;
     if current.map_id != request.map_id {
         return Err(ApiError::bad_request(
@@ -269,30 +298,9 @@ pub async fn pick_up_item(
             "the pickup map does not match the player's map",
         ));
     }
-    let position = request.position.ok_or_else(|| {
-        ApiError::bad_request(
-            "missing_position",
-            "pickup request does not contain a position",
-        )
-    })?;
-    let map = load_map(&state, current.map_id).await?.ok_or_else(|| {
-        ApiError::not_found(
-            "map_not_found",
-            format!("map {} does not exist", current.map_id),
-        )
-    })?;
-    if !position.x.is_finite()
-        || !position.y.is_finite()
-        || position.x < 0.0
-        || position.x > map.width as f32
-        || position.y < 0.0
-        || position.y > map.height as f32
-    {
-        return Err(ApiError::bad_request(
-            "invalid_position",
-            "pickup position must be finite and inside the current map",
-        ));
-    }
+    let position = current
+        .position
+        .ok_or(crate::movement::MovementError::MissingPlayerPosition)?;
     let picked =
         crate::items::pick_up_nearest(&state.drops, current, position).map_err(pick_up_error)?;
     let map_id = picked.player.map_id;
@@ -353,6 +361,7 @@ pub async fn allocate_skill_point(
 ) -> Result<Protobuf<AllocateSkillPointResponse>, ApiError> {
     let request: AllocateSkillPointRequest = decode_request(&headers, body)?;
     let player_id = parse_player_id(&request.player_id)?;
+    let _player_guard = lock_player(&state, &player_id).await?;
     let current = require_player(&state, &player_id).await?;
     let job_id = current.stats.as_ref().map_or(0, |stats| stats.job_id);
     let base_book = load_skill_book(&state, job_id).await?;
@@ -377,6 +386,7 @@ pub async fn use_skill(
 ) -> Result<Protobuf<UseSkillResponse>, ApiError> {
     let request: UseSkillRequest = decode_request(&headers, body)?;
     let player_id = parse_player_id(&request.player_id)?;
+    let _player_guard = lock_player(&state, &player_id).await?;
     let current = require_player(&state, &player_id).await?;
     let job_id = current.stats.as_ref().map_or(0, |stats| stats.job_id);
     let book = load_skill_book(&state, job_id).await?;
@@ -412,6 +422,18 @@ pub async fn use_skill(
             return Err(error.into());
         }
     };
+    crate::movement::record_skill_effect(
+        &state.movement,
+        player_id.as_str(),
+        prepared.result.skill_id,
+        prepared.result.speed_bonus,
+        prepared.result.jump_bonus,
+        prepared.result.duration_ms.saturating_add(
+            u64::try_from(state.gameplay.movement.maximum_snapshot_gap.as_millis())
+                .unwrap_or(u64::MAX),
+        ),
+        now_ms,
+    )?;
     record_recovery_activity(&state, player_id.as_str(), now_ms);
 
     Ok(Protobuf(UseSkillResponse {
@@ -428,6 +450,7 @@ pub async fn recover_player(
 ) -> Result<Protobuf<RecoverPlayerResponse>, ApiError> {
     let request: RecoverPlayerRequest = decode_request(&headers, body)?;
     let player_id = parse_player_id(&request.player_id)?;
+    let _player_guard = lock_player(&state, &player_id).await?;
     let current = require_player(&state, &player_id).await?;
     let now_ms = unix_time_ms()?;
     let deadline_ms = match crate::recovery::reserve_recovery(
@@ -480,32 +503,18 @@ pub async fn save_player(
     let requested = request.player.ok_or_else(|| {
         ApiError::bad_request("missing_player", "request does not contain a player")
     })?;
-    validate_position(&requested)?;
     crate::keymap::validate_bindings(&requested.key_bindings)
         .map_err(|error| ApiError::bad_request("invalid_key_bindings", error.to_string()))?;
 
     let player_id = PlayerId::parse(&requested.id)
         .map_err(|error| ApiError::bad_request("invalid_player_id", error.to_string()))?;
-    let map = load_map(&state, requested.map_id).await?.ok_or_else(|| {
-        ApiError::bad_request(
-            "invalid_map",
-            format!("map {} does not exist", requested.map_id),
-        )
-    })?;
-    let current = load_player(&state, &player_id)
-        .await?
-        .filter(|player| player.appearance.is_some())
-        .ok_or_else(|| ApiError::not_found("player_not_found", "player does not exist"))?;
-    let moved = current.map_id != requested.map_id || current.position != requested.position;
-    let activity_time_ms = moved.then(unix_time_ms).transpose()?;
+    let _player_guard = lock_player(&state, &player_id).await?;
+    let current = require_player(&state, &player_id).await?;
     crate::skills::validate_bound_skills(&requested.key_bindings, &current.learned_skills)
         .map_err(skill_rule_error)?;
-    let updated =
-        crate::database::apply_player_movement(current, &requested, map.width, map.height);
-    let player = crate::database::save_player(&state.database, &updated).await?;
-    if let Some(now_ms) = activity_time_ms {
-        record_recovery_activity(&state, player_id.as_str(), now_ms);
-    }
+    let player = crate::database::apply_player_preferences(current, &requested);
+    crate::database::save_player_session(&state.database, &player).await?;
+    crate::movement::mark_persisted(&state.movement, player_id.as_str(), unix_time_ms()?)?;
 
     Ok(Protobuf(SavePlayerResponse {
         player: Some(player),
@@ -599,14 +608,25 @@ fn parse_player_id(value: &str) -> Result<PlayerId, ApiError> {
         .map_err(|error| ApiError::bad_request("invalid_player_id", error.to_string()))
 }
 
+async fn lock_player(
+    state: &AppState,
+    player_id: &PlayerId,
+) -> Result<tokio::sync::OwnedMutexGuard<()>, ApiError> {
+    Ok(crate::player_lock::acquire_player(&state.player_locks, player_id.as_str()).await?)
+}
+
 async fn require_player(
     state: &AppState,
     player_id: &PlayerId,
 ) -> Result<PlayerState, ApiError> {
-    load_player(state, player_id)
+    let player = load_player(state, player_id)
         .await?
         .filter(|player| player.appearance.is_some())
-        .ok_or_else(|| ApiError::not_found("player_not_found", "player does not exist"))
+        .ok_or_else(|| ApiError::not_found("player_not_found", "player does not exist"))?;
+    Ok(crate::movement::synchronize_player(
+        &state.movement,
+        player,
+    )?)
 }
 
 fn item_rule_error(error: crate::items::ItemRuleError) -> ApiError {
@@ -699,19 +719,6 @@ where
     })
 }
 
-fn validate_position(player: &oozems_proto::v1::PlayerState) -> Result<(), ApiError> {
-    let position = player.position.as_ref().ok_or_else(|| {
-        ApiError::bad_request("missing_position", "player does not contain a position")
-    })?;
-    if !position.x.is_finite() || !position.y.is_finite() {
-        return Err(ApiError::bad_request(
-            "invalid_position",
-            "position coordinates must be finite",
-        ));
-    }
-    Ok(())
-}
-
 pub struct Protobuf<T>(pub T);
 
 impl<T: Message> IntoResponse for Protobuf<T> {
@@ -746,6 +753,10 @@ pub enum ApiError {
     SkillRules(#[from] crate::skills::SkillRuleError),
     #[error("recovery rules could not be applied")]
     Recovery(#[from] crate::recovery::RecoveryError),
+    #[error("movement rules could not be applied")]
+    Movement(#[from] crate::movement::MovementError),
+    #[error("player operations could not be serialized")]
+    PlayerLock(#[from] crate::player_lock::PlayerLockError),
     #[error("system time is earlier than the Unix epoch")]
     Clock,
 }
@@ -847,6 +858,22 @@ impl IntoResponse for ApiError {
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "recovery_rules_error",
                     "the server could not apply its recovery rules".to_owned(),
+                )
+            }
+            Self::Movement(error) => {
+                tracing::error!(%error, "movement rules could not be applied");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "movement_rules_error",
+                    "the server could not apply its movement rules".to_owned(),
+                )
+            }
+            Self::PlayerLock(error) => {
+                tracing::error!(%error, "player operation lock failed");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "player_lock_error",
+                    "the server could not serialize player operations".to_owned(),
                 )
             }
             Self::Clock => {

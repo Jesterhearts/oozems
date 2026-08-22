@@ -114,6 +114,68 @@ message BootstrapResponse {
   CharacterCreationOptions creation_options = 2;
 }
 
+message GetMovementRulesRequest {}
+
+message GetMovementRulesResponse {
+  MovementRules rules = 1;
+}
+
+message MovementRules {
+  float walk_speed = 1;
+  float climb_speed = 2;
+  float gravity = 3;
+  float jump_speed = 4;
+  uint32 speed_cap = 5;
+  uint32 jump_cap = 6;
+  uint64 snapshot_interval_ms = 7;
+  uint64 maximum_snapshot_gap_ms = 8;
+  float position_tolerance = 9;
+  float ground_tolerance = 10;
+  float ladder_reach = 11;
+  float portal_horizontal_reach = 12;
+  float portal_vertical_reach = 13;
+  float platform_edge_tolerance = 14;
+  float ladder_end_reach = 15;
+}
+
+enum MovementMode {
+  MOVEMENT_MODE_UNSPECIFIED = 0;
+  MOVEMENT_MODE_GROUNDED = 1;
+  MOVEMENT_MODE_AIRBORNE = 2;
+  MOVEMENT_MODE_CLIMBING = 3;
+}
+
+message MovementSnapshot {
+  uint64 sequence = 1;
+  uint32 map_id = 2;
+  Vec2 position = 3;
+  MovementMode mode = 4;
+  MovementContact support_contact = 5;
+}
+
+message MovementContact {
+  Vec2 position = 1;
+  MovementMode mode = 2;
+}
+
+message SubmitMovementRequest {
+  string player_id = 1;
+  MovementSnapshot snapshot = 2;
+}
+
+message EnterPortalRequest {
+  string player_id = 1;
+  MovementSnapshot source = 2;
+  uint32 target_map_id = 3;
+  string target_portal_name = 4;
+}
+
+message MovementUpdateResponse {
+  MovementSnapshot authoritative = 1;
+  bool accepted = 2;
+  string rejection_reason = 3;
+}
+
 message CreateCharacterRequest {
   string player_id = 1;
   string name = 2;
@@ -443,7 +505,7 @@ message DropItemRequest {
 message PickUpItemRequest {
   string player_id = 1;
   uint32 map_id = 2;
-  Vec2 position = 3;
+  reserved 3;
 }
 
 message ItemActionResponse {
