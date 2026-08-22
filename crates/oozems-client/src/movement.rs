@@ -15,6 +15,7 @@ const LADDER_TOP_EXIT_OFFSET: f32 = 5.0;
 const LADDER_TOP_PLATFORM_REACH: f32 = 24.0;
 const PORTAL_HORIZONTAL_REACH: f32 = 48.0;
 const PORTAL_VERTICAL_REACH: f32 = 64.0;
+const PORTAL_FLOOR_PENETRATION_LIMIT: f32 = 16.0;
 const SCRIPT_PORTAL_TARGET: u32 = 999_999_999;
 const SPAWN_PORTAL_KIND: u32 = 0;
 
@@ -263,10 +264,39 @@ pub fn destination_position(
                 .iter()
                 .find(|portal| portal.kind == SPAWN_PORTAL_KIND)
         })?;
-    Some(Vec2 {
-        x: target.x,
-        y: target.y,
-    })
+    Some(place_portal_on_floor(map, target))
+}
+
+fn place_portal_on_floor(
+    map: &Map,
+    portal: &Portal,
+) -> Vec2 {
+    let floor = map
+        .platforms
+        .iter()
+        .filter_map(|platform| platform_surface_at_x(platform, portal.x))
+        .filter(|surface| {
+            let penetration = portal.y - surface;
+            (0.0..=PORTAL_FLOOR_PENETRATION_LIMIT).contains(&penetration)
+        })
+        .max_by(f32::total_cmp);
+
+    Vec2 {
+        x: portal.x,
+        y: floor.unwrap_or(portal.y),
+    }
+}
+
+fn platform_surface_at_x(
+    platform: &Platform,
+    x: f32,
+) -> Option<f32> {
+    let minimum_x = platform.x.min(platform.end_x);
+    let maximum_x = platform.x.max(platform.end_x);
+    if !(minimum_x..=maximum_x).contains(&x) {
+        return None;
+    }
+    platform_y(platform, x)
 }
 
 fn find_landing_platform(
@@ -565,6 +595,53 @@ mod tests {
         assert_eq!(
             destination_position(&map, "missing"),
             Some(Vec2 { x: 10.0, y: 20.0 })
+        );
+    }
+
+    #[test]
+    fn destination_snaps_shallow_penetration_without_moving_air_portals() {
+        let map = Map {
+            platforms: vec![Platform {
+                x: 100.0,
+                y: 300.0,
+                end_x: 200.0,
+                end_y: 350.0,
+                ..Platform::default()
+            }],
+            portals: vec![
+                Portal {
+                    name: "inside".to_owned(),
+                    x: 150.0,
+                    y: 327.0,
+                    ..Portal::default()
+                },
+                Portal {
+                    name: "air".to_owned(),
+                    x: 150.0,
+                    y: 323.0,
+                    ..Portal::default()
+                },
+                Portal {
+                    name: "deep".to_owned(),
+                    x: 150.0,
+                    y: 350.0,
+                    ..Portal::default()
+                },
+            ],
+            ..Map::default()
+        };
+
+        assert_eq!(
+            destination_position(&map, "inside"),
+            Some(Vec2 { x: 150.0, y: 325.0 })
+        );
+        assert_eq!(
+            destination_position(&map, "air"),
+            Some(Vec2 { x: 150.0, y: 323.0 })
+        );
+        assert_eq!(
+            destination_position(&map, "deep"),
+            Some(Vec2 { x: 150.0, y: 350.0 })
         );
     }
 }
