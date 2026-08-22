@@ -13,11 +13,14 @@ use wasm_bindgen_futures::spawn_local;
 use web_sys::CanvasRenderingContext2d;
 use web_sys::HtmlCanvasElement;
 use web_sys::KeyboardEvent;
+use web_sys::MouseEvent;
 
 use crate::api;
 use crate::assets;
 use crate::assets::BrowserAsset;
 use crate::character_render::CharacterAnimation;
+use crate::game_gui;
+use crate::game_gui::GuiState;
 use crate::js_error;
 use crate::movement;
 use crate::movement::MapTransition;
@@ -36,6 +39,7 @@ pub struct Game {
     pub character_sprites: CharacterSpriteSet,
     pub facing_left: bool,
     pub gui: GameGui,
+    pub gui_state: Rc<RefCell<GuiState>>,
     pub images: HashMap<String, BrowserAsset>,
     pub map: Map,
     pub player: PlayerState,
@@ -113,6 +117,8 @@ fn build_game(
 
     let input = Rc::new(RefCell::new(InputState::default()));
     install_keyboard_input(&window, input.clone())?;
+    let gui_state = Rc::new(RefCell::new(GuiState::default()));
+    install_canvas_input(&canvas, gui.clone(), gui_state.clone())?;
     let images = prepare_game_assets(&map, &character_sprites, &gui)?;
 
     Ok(Rc::new(RefCell::new(Game {
@@ -123,6 +129,7 @@ fn build_game(
         character_sprites,
         facing_left: false,
         gui,
+        gui_state,
         images,
         map,
         player,
@@ -176,6 +183,42 @@ fn install_keyboard_input(
         .add_event_listener_with_callback("keyup", keyup.as_ref().unchecked_ref())
         .map_err(js_error)?;
     keyup.forget();
+    Ok(())
+}
+
+fn install_canvas_input(
+    canvas: &HtmlCanvasElement,
+    gui: GameGui,
+    gui_state: Rc<RefCell<GuiState>>,
+) -> Result<(), String> {
+    let event_canvas = canvas.clone();
+    let click = Closure::<dyn FnMut(MouseEvent)>::new(move |event: MouseEvent| {
+        let Some(point) = game_gui::canvas_point(
+            event.offset_x(),
+            event.offset_y(),
+            event_canvas.width(),
+            event_canvas.height(),
+            event_canvas.client_width(),
+            event_canvas.client_height(),
+        ) else {
+            return;
+        };
+        let handled = game_gui::handle_click(
+            &mut gui_state.borrow_mut(),
+            &gui,
+            event_canvas.width() as f32,
+            event_canvas.height() as f32,
+            point,
+        );
+        if handled {
+            event.prevent_default();
+            let _ = event_canvas.focus();
+        }
+    });
+    canvas
+        .add_event_listener_with_callback("click", click.as_ref().unchecked_ref())
+        .map_err(js_error)?;
+    click.forget();
     Ok(())
 }
 

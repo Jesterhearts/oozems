@@ -17,6 +17,22 @@ message PlayerState {
   uint32 map_id = 4;
   Vec2 position = 5;
   CharacterAppearance appearance = 6;
+  CharacterStats stats = 7;
+}
+
+message CharacterStats {
+  uint32 job_id = 1;
+  uint32 hp = 2;
+  uint32 max_hp = 3;
+  uint32 mp = 4;
+  uint32 max_mp = 5;
+  uint64 experience = 6;
+  int32 fame = 7;
+  uint32 ability_points = 8;
+  uint32 strength = 9;
+  uint32 dexterity = 10;
+  uint32 intelligence = 11;
+  uint32 luck = 12;
 }
 
 enum CharacterGender {
@@ -80,6 +96,7 @@ message GetGuiResponse {
 message GameGui {
   GuiLayout status_bar = 1;
   repeated AssetDescriptor assets = 2;
+  GuiWindow stat_window = 3;
 }
 
 message GuiLayout {
@@ -97,6 +114,12 @@ message GuiSprite {
   float width = 5;
   float height = 6;
   bool anchor_right = 7;
+}
+
+message GuiWindow {
+  float x = 1;
+  float y = 2;
+  GuiLayout layout = 3;
 }
 
 message CharacterSpriteSet {

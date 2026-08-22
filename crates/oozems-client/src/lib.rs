@@ -5,6 +5,7 @@ mod assets;
 mod character_create;
 mod character_render;
 mod game;
+mod game_gui;
 mod movement;
 mod render;
 

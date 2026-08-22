@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use oozems_proto::v1::CharacterAppearance;
+use oozems_proto::v1::CharacterStats;
 use oozems_proto::v1::PlayerState;
 use oozems_proto::v1::Vec2;
 use surrealdb::Surreal;
@@ -37,6 +38,18 @@ struct PlayerData {
     player_id: String,
     name: String,
     level: u32,
+    job_id: u32,
+    hp: u32,
+    max_hp: u32,
+    mp: u32,
+    max_mp: u32,
+    experience: u64,
+    fame: i32,
+    ability_points: u32,
+    strength: u32,
+    dexterity: u32,
+    intelligence: u32,
+    luck: u32,
     map_id: u32,
     x: f64,
     y: f64,
@@ -52,6 +65,18 @@ struct PlayerRecord {
     player_id: String,
     name: String,
     level: u32,
+    job_id: Option<u32>,
+    hp: Option<u32>,
+    max_hp: Option<u32>,
+    mp: Option<u32>,
+    max_mp: Option<u32>,
+    experience: Option<u64>,
+    fame: Option<i32>,
+    ability_points: Option<u32>,
+    strength: Option<u32>,
+    dexterity: Option<u32>,
+    intelligence: Option<u32>,
+    luck: Option<u32>,
     map_id: u32,
     x: f64,
     y: f64,
@@ -110,6 +135,18 @@ async fn initialize_schema(database: &Database) -> surrealdb::Result<()> {
             DEFINE FIELD IF NOT EXISTS player_id ON TABLE player TYPE string;
             DEFINE FIELD IF NOT EXISTS name ON TABLE player TYPE string;
             DEFINE FIELD IF NOT EXISTS level ON TABLE player TYPE int;
+            DEFINE FIELD IF NOT EXISTS job_id ON TABLE player TYPE option<int>;
+            DEFINE FIELD IF NOT EXISTS hp ON TABLE player TYPE option<int>;
+            DEFINE FIELD IF NOT EXISTS max_hp ON TABLE player TYPE option<int>;
+            DEFINE FIELD IF NOT EXISTS mp ON TABLE player TYPE option<int>;
+            DEFINE FIELD IF NOT EXISTS max_mp ON TABLE player TYPE option<int>;
+            DEFINE FIELD IF NOT EXISTS experience ON TABLE player TYPE option<int>;
+            DEFINE FIELD IF NOT EXISTS fame ON TABLE player TYPE option<int>;
+            DEFINE FIELD IF NOT EXISTS ability_points ON TABLE player TYPE option<int>;
+            DEFINE FIELD IF NOT EXISTS strength ON TABLE player TYPE option<int>;
+            DEFINE FIELD IF NOT EXISTS dexterity ON TABLE player TYPE option<int>;
+            DEFINE FIELD IF NOT EXISTS intelligence ON TABLE player TYPE option<int>;
+            DEFINE FIELD IF NOT EXISTS luck ON TABLE player TYPE option<int>;
             DEFINE FIELD IF NOT EXISTS map_id ON TABLE player TYPE int;
             DEFINE FIELD IF NOT EXISTS x ON TABLE player TYPE float;
             DEFINE FIELD IF NOT EXISTS y ON TABLE player TYPE float;
@@ -146,6 +183,7 @@ pub async fn create_player(
         map_id: STARTER_MAP_ID,
         position: Some(position),
         appearance: Some(appearance),
+        stats: Some(starter_character_stats()),
     };
     save_player(database, &player).await
 }
@@ -184,11 +222,13 @@ pub fn apply_player_movement(
         map_id: requested.map_id,
         position: Some(position),
         appearance: current.appearance,
+        stats: current.stats,
     }
 }
 
 fn player_from_record(record: PlayerRecord) -> PlayerState {
     let appearance = appearance_from_record(&record);
+    let stats = stats_from_record(&record);
     let _record_id = record.id;
     PlayerState {
         id: record.player_id,
@@ -200,6 +240,44 @@ fn player_from_record(record: PlayerRecord) -> PlayerState {
             y: record.y as f32,
         }),
         appearance,
+        stats: Some(stats),
+    }
+}
+
+fn stats_from_record(record: &PlayerRecord) -> CharacterStats {
+    let defaults = starter_character_stats();
+    let max_hp = record.max_hp.unwrap_or(defaults.max_hp).max(1);
+    let max_mp = record.max_mp.unwrap_or(defaults.max_mp).max(1);
+    CharacterStats {
+        job_id: record.job_id.unwrap_or(defaults.job_id),
+        hp: record.hp.unwrap_or(defaults.hp).min(max_hp),
+        max_hp,
+        mp: record.mp.unwrap_or(defaults.mp).min(max_mp),
+        max_mp,
+        experience: record.experience.unwrap_or(defaults.experience),
+        fame: record.fame.unwrap_or(defaults.fame),
+        ability_points: record.ability_points.unwrap_or(defaults.ability_points),
+        strength: record.strength.unwrap_or(defaults.strength),
+        dexterity: record.dexterity.unwrap_or(defaults.dexterity),
+        intelligence: record.intelligence.unwrap_or(defaults.intelligence),
+        luck: record.luck.unwrap_or(defaults.luck),
+    }
+}
+
+fn starter_character_stats() -> CharacterStats {
+    CharacterStats {
+        job_id: 0,
+        hp: 50,
+        max_hp: 50,
+        mp: 5,
+        max_mp: 5,
+        experience: 0,
+        fame: 0,
+        ability_points: 0,
+        strength: 12,
+        dexterity: 5,
+        intelligence: 4,
+        luck: 4,
     }
 }
 
@@ -216,10 +294,23 @@ impl From<&PlayerState> for PlayerData {
     fn from(player: &PlayerState) -> Self {
         let position = player.position.as_ref().cloned().unwrap_or_default();
         let appearance = player.appearance.as_ref();
+        let stats = player.stats.unwrap_or_else(starter_character_stats);
         Self {
             player_id: player.id.clone(),
             name: player.name.clone(),
             level: player.level,
+            job_id: stats.job_id,
+            hp: stats.hp,
+            max_hp: stats.max_hp,
+            mp: stats.mp,
+            max_mp: stats.max_mp,
+            experience: stats.experience,
+            fame: stats.fame,
+            ability_points: stats.ability_points,
+            strength: stats.strength,
+            dexterity: stats.dexterity,
+            intelligence: stats.intelligence,
+            luck: stats.luck,
             map_id: player.map_id,
             x: f64::from(position.x),
             y: f64::from(position.y),
@@ -237,6 +328,7 @@ mod tests {
     use oozems_proto::v1::CharacterGender;
     use oozems_proto::v1::PlayerState;
     use oozems_proto::v1::Vec2;
+    use surrealdb::types::SurrealValue;
 
     use super::CharacterName;
     use super::PlayerId;
@@ -245,6 +337,21 @@ mod tests {
     use super::load_player;
     use super::open_surreal_kv;
     use super::save_player;
+    use super::starter_character_stats;
+
+    #[derive(SurrealValue)]
+    struct LegacyPlayerData {
+        player_id: String,
+        name: String,
+        level: u32,
+        map_id: u32,
+        x: f64,
+        y: f64,
+        gender: Option<i32>,
+        skin_id: Option<u32>,
+        face_id: Option<u32>,
+        hair_id: Option<u32>,
+    }
 
     #[test]
     fn movement_is_bounded_and_does_not_change_authoritative_fields() {
@@ -255,6 +362,7 @@ mod tests {
             map_id: 1,
             position: Some(Vec2 { x: 5.0, y: 5.0 }),
             appearance: Some(appearance()),
+            stats: Some(starter_character_stats()),
         };
         let requested = PlayerState {
             id: "local".to_owned(),
@@ -263,6 +371,7 @@ mod tests {
             map_id: 2,
             position: Some(Vec2 { x: -10.0, y: 900.0 }),
             appearance: None,
+            stats: None,
         };
 
         let result = apply_player_movement(current, &requested, 800, 600);
@@ -272,6 +381,7 @@ mod tests {
         assert_eq!(result.map_id, 2);
         assert_eq!(result.position, Some(Vec2 { x: 0.0, y: 600.0 }));
         assert_eq!(result.appearance, Some(appearance()));
+        assert_eq!(result.stats, Some(starter_character_stats()));
     }
 
     #[tokio::test]
@@ -306,6 +416,39 @@ mod tests {
             .expect("saved player exists");
 
         assert_eq!(loaded, player);
+    }
+
+    #[tokio::test]
+    async fn legacy_player_records_receive_starter_stats() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let database = open_surreal_kv(&directory.path().join("database"))
+            .await
+            .expect("open SurrealKV");
+        let player_id = PlayerId::parse("legacy-test").expect("valid player ID");
+        let legacy = LegacyPlayerData {
+            player_id: player_id.as_str().to_owned(),
+            name: "Legacy".to_owned(),
+            level: 3,
+            map_id: 100_000_000,
+            x: 160.0,
+            y: 420.0,
+            gender: Some(CharacterGender::Male as i32),
+            skin_id: Some(2_000),
+            face_id: Some(20_000),
+            hair_id: Some(30_000),
+        };
+        let _: Option<super::PlayerRecord> = database
+            .upsert(("player", player_id.as_str()))
+            .content(legacy)
+            .await
+            .expect("insert legacy player");
+
+        let loaded = load_player(&database, &player_id)
+            .await
+            .expect("load legacy player")
+            .expect("legacy player exists");
+
+        assert_eq!(loaded.stats, Some(starter_character_stats()));
     }
 
     fn appearance() -> CharacterAppearance {

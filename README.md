@@ -13,7 +13,8 @@ The current vertical slice includes:
 - optional classic PKG1 WZ map archives parsed lazily by the server;
 - a character creation screen with idle, walk, jump, ladder, and rope
   animations composed from `Character.wz`;
-- an optional in-game status bar composed from `UI.wz` sprites;
+- an optional in-game status bar and character-stat window composed from
+  `UI.wz` sprites;
 - server-owned assets fetched only when referenced by the current view; and
 - player movement, platforms, jumping, ladder and rope climbing, direct portal
   transitions, and periodic position saves.
@@ -98,6 +99,12 @@ sprites for the in-game HUD. The server sends the status bar layout through
 protobuf. The browser then requests its background, gauges, quick-slot panel,
 and button images as normal versioned PNG assets. If `UI.wz` is absent, the
 client keeps using its built-in fallback HUD.
+
+Click the stat button in the status bar to open the `UIWindow.img` character
+stat window. Its background, close control, and job label remain unloaded until
+the window is first opened. New characters receive server-owned Beginner stats,
+and existing SurrealDB records receive the same defaults when their older
+records do not contain stat fields.
 
 Use the left and right arrow keys, or A and D, to walk. Use Space to jump. Use
 the up and down arrow keys, or W and S, to climb. Press Up or W while standing

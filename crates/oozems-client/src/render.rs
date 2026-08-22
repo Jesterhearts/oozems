@@ -1,5 +1,5 @@
+use oozems_proto::v1::CharacterStats;
 use oozems_proto::v1::Decoration;
-use oozems_proto::v1::GuiLayout;
 use oozems_proto::v1::GuiSprite;
 use oozems_proto::v1::PlatformKind;
 use oozems_proto::v1::PortalFrame;
@@ -8,6 +8,7 @@ use crate::assets::ready_image;
 use crate::character_render;
 use crate::character_render::CharacterPlacement;
 use crate::game::Game;
+use crate::game_gui;
 
 pub fn draw(game: &Game) {
     let viewport_width = f64::from(game.canvas.width());
@@ -273,10 +274,12 @@ fn draw_player(
 }
 
 fn draw_hud(game: &Game) {
-    if draw_wz_hud(game) {
-        return;
+    if !draw_wz_hud(game) {
+        draw_fallback_hud(game);
     }
-    draw_fallback_hud(game);
+    if game.gui_state.borrow().stats_open {
+        draw_stat_window(game);
+    }
 }
 
 fn draw_wz_hud(game: &Game) -> bool {
@@ -284,7 +287,7 @@ fn draw_wz_hud(game: &Game) -> bool {
         .gui
         .status_bar
         .as_ref()
-        .filter(|layout| valid_layout(layout))
+        .filter(|layout| game_gui::valid_layout(layout))
     else {
         return false;
     };
@@ -296,7 +299,10 @@ fn draw_wz_hud(game: &Game) -> bool {
     };
     let viewport_width = f64::from(game.canvas.width());
     let viewport_height = f64::from(game.canvas.height());
-    let origin_y = status_bar_top(viewport_height, f64::from(layout.height));
+    let origin_y = f64::from(game_gui::status_bar_top(
+        viewport_height as f32,
+        layout.height,
+    ));
 
     let _ = game
         .context
@@ -307,7 +313,12 @@ fn draw_wz_hud(game: &Game) -> bool {
             viewport_width,
             f64::from(background.height),
         );
-    for sprite in &layout.sprites {
+    let gui_state = *game.gui_state.borrow();
+    for sprite in layout
+        .sprites
+        .iter()
+        .filter(|sprite| game_gui::status_sprite_visible(gui_state, sprite))
+    {
         draw_gui_sprite(
             game,
             sprite,
@@ -334,7 +345,11 @@ fn draw_gui_sprite(
         .context
         .draw_image_with_html_image_element_and_dw_and_dh(
             image,
-            gui_sprite_x(viewport_width, layout_width, sprite),
+            f64::from(game_gui::sprite_screen_x(
+                viewport_width as f32,
+                layout_width as f32,
+                sprite,
+            )),
             origin_y + f64::from(sprite.y),
             f64::from(sprite.width),
             f64::from(sprite.height),
@@ -353,12 +368,15 @@ fn draw_status_bar_text(
         .context
         .fill_text(&game.player.level.to_string(), 44.0, bar_top + 61.0);
 
-    // Character progression is not modeled yet, so every current character is a
-    // Beginner.
     game.context.set_font("bold 10px monospace");
+    let job = game
+        .player
+        .stats
+        .as_ref()
+        .map_or("Beginner", |stats| job_name(stats.job_id));
     let _ = game
         .context
-        .fill_text_with_max_width("Beginner", 84.0, bar_top + 50.0, 118.0);
+        .fill_text_with_max_width(job, 84.0, bar_top + 50.0, 118.0);
     game.context.set_font("11px monospace");
     let _ = game
         .context
@@ -371,54 +389,111 @@ fn draw_status_bar_text(
         .fill_text_with_max_width(&game.map.name, 10.0, bar_top + 22.0, 550.0);
 }
 
-fn valid_layout(layout: &GuiLayout) -> bool {
-    layout.width.is_finite()
-        && layout.height.is_finite()
-        && layout.width > 0.0
-        && layout.height > 0.0
-        && layout
-            .background
-            .as_ref()
-            .is_some_and(|sprite| valid_gui_sprite(sprite, layout.width, layout.height))
-        && layout
-            .sprites
-            .iter()
-            .all(|sprite| valid_gui_sprite(sprite, layout.width, layout.height))
-}
-
-fn valid_gui_sprite(
-    sprite: &GuiSprite,
-    layout_width: f32,
-    layout_height: f32,
-) -> bool {
-    let values = [sprite.x, sprite.y, sprite.width, sprite.height];
-    !sprite.asset_id.is_empty()
-        && values.iter().all(|value| value.is_finite())
-        && sprite.x >= 0.0
-        && sprite.y >= 0.0
-        && sprite.width > 0.0
-        && sprite.height > 0.0
-        && sprite.x + sprite.width <= layout_width
-        && sprite.y + sprite.height <= layout_height
-}
-
-fn gui_sprite_x(
-    viewport_width: f64,
-    layout_width: f64,
-    sprite: &GuiSprite,
-) -> f64 {
-    if sprite.anchor_right {
-        viewport_width - (layout_width - f64::from(sprite.x))
-    } else {
-        f64::from(sprite.x)
+fn draw_stat_window(game: &Game) {
+    let Some(window) = game.gui.stat_window.as_ref() else {
+        return;
+    };
+    let Some(layout) = window
+        .layout
+        .as_ref()
+        .filter(|layout| game_gui::valid_layout(layout))
+    else {
+        return;
+    };
+    let Some(background) = layout.background.as_ref() else {
+        return;
+    };
+    let Some(background_image) = ready_image(&game.images, &background.asset_id) else {
+        return;
+    };
+    let origin_x = f64::from(window.x);
+    let origin_y = f64::from(window.y);
+    let _ = game
+        .context
+        .draw_image_with_html_image_element_and_dw_and_dh(
+            background_image,
+            origin_x,
+            origin_y,
+            f64::from(background.width),
+            f64::from(background.height),
+        );
+    for sprite in &layout.sprites {
+        draw_window_sprite(game, sprite, origin_x, origin_y);
+    }
+    if let Some(stats) = game.player.stats.as_ref() {
+        draw_stat_values(game, stats, origin_x, origin_y);
     }
 }
 
-fn status_bar_top(
-    viewport_height: f64,
-    layout_height: f64,
-) -> f64 {
-    (viewport_height - layout_height).max(0.0)
+fn draw_window_sprite(
+    game: &Game,
+    sprite: &GuiSprite,
+    origin_x: f64,
+    origin_y: f64,
+) {
+    let Some(image) = ready_image(&game.images, &sprite.asset_id) else {
+        return;
+    };
+    let _ = game
+        .context
+        .draw_image_with_html_image_element_and_dw_and_dh(
+            image,
+            origin_x + f64::from(sprite.x),
+            origin_y + f64::from(sprite.y),
+            f64::from(sprite.width),
+            f64::from(sprite.height),
+        );
+}
+
+fn draw_stat_values(
+    game: &Game,
+    stats: &CharacterStats,
+    origin_x: f64,
+    origin_y: f64,
+) {
+    let values = [
+        (game.player.name.clone(), 45.0),
+        (game.player.level.to_string(), 89.0),
+        ("-".to_owned(), 106.0),
+        (format!("{} / {}", stats.hp, stats.max_hp), 124.0),
+        (format!("{} / {}", stats.mp, stats.max_mp), 142.0),
+        (stats.experience.to_string(), 160.0),
+        (stats.fame.to_string(), 178.0),
+    ];
+    game.context.set_fill_style_str("#30383b");
+    game.context.set_font("10px monospace");
+    for (value, y) in values {
+        let _ = game
+            .context
+            .fill_text_with_max_width(&value, origin_x + 60.0, origin_y + y, 106.0);
+    }
+
+    let _ = game.context.fill_text_with_max_width(
+        &stats.ability_points.to_string(),
+        origin_x + 64.0,
+        origin_y + 226.0,
+        22.0,
+    );
+    for (value, y) in [
+        (stats.strength, 256.0),
+        (stats.dexterity, 273.0),
+        (stats.intelligence, 290.0),
+        (stats.luck, 307.0),
+    ] {
+        let _ = game.context.fill_text_with_max_width(
+            &value.to_string(),
+            origin_x + 60.0,
+            origin_y + y,
+            106.0,
+        );
+    }
+}
+
+fn job_name(job_id: u32) -> &'static str {
+    match job_id {
+        0 => "Beginner",
+        _ => "Unknown",
+    }
 }
 
 fn draw_fallback_hud(game: &Game) {
@@ -437,14 +512,9 @@ fn draw_fallback_hud(game: &Game) {
 
 #[cfg(test)]
 mod tests {
-    use oozems_proto::v1::GuiLayout;
-    use oozems_proto::v1::GuiSprite;
     use oozems_proto::v1::PortalFrame;
 
-    use super::gui_sprite_x;
     use super::portal_frame_index;
-    use super::status_bar_top;
-    use super::valid_layout;
 
     #[test]
     fn portal_animation_uses_each_frame_delay() {
@@ -463,52 +533,5 @@ mod tests {
         assert_eq!(portal_frame_index(&frames, 100.0), Some(1));
         assert_eq!(portal_frame_index(&frames, 299.0), Some(1));
         assert_eq!(portal_frame_index(&frames, 300.0), Some(0));
-    }
-
-    #[test]
-    fn status_bar_uses_independent_left_and_right_anchors() {
-        let left = GuiSprite {
-            x: 10.0,
-            ..GuiSprite::default()
-        };
-        let right = GuiSprite {
-            x: 649.0,
-            anchor_right: true,
-            ..GuiSprite::default()
-        };
-
-        assert_eq!(gui_sprite_x(960.0, 800.0, &left), 10.0);
-        assert_eq!(gui_sprite_x(960.0, 800.0, &right), 809.0);
-        assert_eq!(status_bar_top(600.0, 151.0), 449.0);
-        assert_eq!(status_bar_top(120.0, 151.0), 0.0);
-    }
-
-    #[test]
-    fn invalid_gui_layouts_are_rejected_at_the_client_boundary() {
-        let background = GuiSprite {
-            asset_id: "background".to_owned(),
-            width: 800.0,
-            height: 71.0,
-            y: 80.0,
-            ..GuiSprite::default()
-        };
-        assert!(valid_layout(&GuiLayout {
-            width: 800.0,
-            height: 151.0,
-            background: Some(background.clone()),
-            ..GuiLayout::default()
-        }));
-        assert!(!valid_layout(&GuiLayout {
-            width: f32::NAN,
-            height: 151.0,
-            background: Some(background.clone()),
-            ..GuiLayout::default()
-        }));
-        assert!(!valid_layout(&GuiLayout {
-            width: 799.0,
-            height: 151.0,
-            background: Some(background),
-            ..GuiLayout::default()
-        }));
     }
 }

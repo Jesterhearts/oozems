@@ -7,6 +7,7 @@ use oozems_proto::v1::AssetDescriptor;
 use oozems_proto::v1::GameGui;
 use oozems_proto::v1::GuiLayout;
 use oozems_proto::v1::GuiSprite;
+use oozems_proto::v1::GuiWindow;
 use sha2::Digest;
 use sha2::Sha256;
 use thiserror::Error;
@@ -23,6 +24,7 @@ use super::wz::wrap_archive_root;
 
 const GUI_ARCHIVE: &str = "UI.wz";
 const STATUS_BAR_IMAGE: &str = "StatusBar.img";
+const UI_WINDOW_IMAGE: &str = "UIWindow.img";
 const GAUGE_LEFT_IN_OVERLAY: f32 = 209.0;
 const GAUGE_BOTTOM_PADDING: f32 = 1.0;
 const MENU_BUTTON_LEFT: f32 = 574.0;
@@ -32,6 +34,12 @@ const KEY_COLUMN_CENTER: f32 = 22.0;
 const KEY_COLUMN_WIDTH: f32 = 35.0;
 const KEY_ROW_CENTER: f32 = 22.0;
 const KEY_ROW_HEIGHT: f32 = 35.0;
+const STAT_WINDOW_X: f32 = 20.0;
+const STAT_WINDOW_Y: f32 = 80.0;
+const STAT_CLOSE_RIGHT: f32 = 5.0;
+const STAT_CLOSE_TOP: f32 = 5.0;
+const STAT_JOB_LEFT: f32 = 60.0;
+const STAT_JOB_TOP: f32 = 57.0;
 
 pub struct GuiContent {
     _base: WzNodeArc,
@@ -67,10 +75,17 @@ struct StatusBarSources {
     equip: SourceSprite,
     inventory: SourceSprite,
     stats: SourceSprite,
+    stats_pressed: SourceSprite,
     skills: SourceSprite,
     key_settings: SourceSprite,
     quick_slot_toggle: SourceSprite,
     key_references: Vec<SourceSprite>,
+}
+
+struct StatWindowSources {
+    background: SourceSprite,
+    close: SourceSprite,
+    job: SourceSprite,
 }
 
 impl GuiContent {
@@ -95,6 +110,8 @@ impl GuiContent {
             &status_bar,
             format!("{} {STATUS_BAR_IMAGE}", path.display()),
         )?;
+        let ui_window = required_child(&root, UI_WINDOW_IMAGE)?;
+        parse(&ui_window, format!("{} {UI_WINDOW_IMAGE}", path.display()))?;
 
         let mut content = Self {
             _base: base,
@@ -102,7 +119,7 @@ impl GuiContent {
             fingerprint: archive_fingerprint(&path)?,
             assets: RwLock::new(HashMap::new()),
         };
-        content.gui = build_game_gui(&content, &status_bar)?;
+        content.gui = build_game_gui(&content, &status_bar, &ui_window)?;
 
         tracing::info!(
             path = %path.display(),
@@ -150,12 +167,17 @@ impl GuiContent {
 fn build_game_gui(
     content: &GuiContent,
     status_bar: &WzNodeArc,
+    ui_window: &WzNodeArc,
 ) -> Result<GameGui, GuiContentError> {
-    let (sources, assets) = load_status_bar_sources(content, status_bar)?;
-    let layout = compose_status_bar(&sources)?;
+    let (status_sources, mut assets) = load_status_bar_sources(content, status_bar)?;
+    let status_bar = compose_status_bar(&status_sources)?;
+    let (stat_sources, stat_assets) = load_stat_window_sources(content, ui_window)?;
+    let stat_window = compose_stat_window(&stat_sources)?;
+    assets.extend(stat_assets);
     Ok(GameGui {
-        status_bar: Some(layout),
+        status_bar: Some(status_bar),
         assets,
+        stat_window: Some(stat_window),
     })
 }
 
@@ -164,29 +186,29 @@ fn load_status_bar_sources(
     status_bar: &WzNodeArc,
 ) -> Result<(StatusBarSources, Vec<AssetDescriptor>), GuiContentError> {
     let mut assets = Vec::new();
-    let background = load_source(
+    let background = load_status_source(
         content,
         status_bar,
         "background",
         &["base", "backgrnd"],
         &mut assets,
     )?;
-    let overlay = load_source(
+    let overlay = load_status_source(
         content,
         status_bar,
         "status-overlay",
         &["base", "backgrnd2"],
         &mut assets,
     )?;
-    let gauge = load_source(content, status_bar, "gauge", &["gauge", "bar"], &mut assets)?;
-    let gauge_graduation = load_source(
+    let gauge = load_status_source(content, status_bar, "gauge", &["gauge", "bar"], &mut assets)?;
+    let gauge_graduation = load_status_source(
         content,
         status_bar,
         "gauge-graduation",
         &["gauge", "graduation"],
         &mut assets,
     )?;
-    let quick_slots = load_source(
+    let quick_slots = load_status_source(
         content,
         status_bar,
         "quick-slots",
@@ -196,6 +218,14 @@ fn load_status_bar_sources(
     let equip = load_normal_button(content, status_bar, "equip", "EquipKey", &mut assets)?;
     let inventory = load_normal_button(content, status_bar, "inventory", "InvenKey", &mut assets)?;
     let stats = load_normal_button(content, status_bar, "stats", "StatKey", &mut assets)?;
+    let stats_pressed = load_button_state(
+        content,
+        status_bar,
+        "stats-pressed",
+        "StatKey",
+        "pressed",
+        &mut assets,
+    )?;
     let skills = load_normal_button(content, status_bar, "skills", "SkillKey", &mut assets)?;
     let key_settings =
         load_normal_button(content, status_bar, "key-settings", "KeySet", &mut assets)?;
@@ -209,7 +239,7 @@ fn load_status_bar_sources(
     let mut key_references = Vec::with_capacity(8);
     for index in 0..8 {
         let index = index.to_string();
-        key_references.push(load_source(
+        key_references.push(load_status_source(
             content,
             status_bar,
             &format!("key-{index}"),
@@ -228,10 +258,51 @@ fn load_status_bar_sources(
             equip,
             inventory,
             stats,
+            stats_pressed,
             skills,
             key_settings,
             quick_slot_toggle,
             key_references,
+        },
+        assets,
+    ))
+}
+
+fn load_stat_window_sources(
+    content: &GuiContent,
+    ui_window: &WzNodeArc,
+) -> Result<(StatWindowSources, Vec<AssetDescriptor>), GuiContentError> {
+    let mut assets = Vec::new();
+    let background = load_source(
+        content,
+        ui_window,
+        UI_WINDOW_IMAGE,
+        "stat-background",
+        &["Stat", "backgrnd"],
+        &mut assets,
+    )?;
+    let close = load_source(
+        content,
+        ui_window,
+        UI_WINDOW_IMAGE,
+        "stat-close",
+        &["BtUIClose", "normal", "0"],
+        &mut assets,
+    )?;
+    let job = load_source(
+        content,
+        ui_window,
+        UI_WINDOW_IMAGE,
+        "stat-job",
+        &["Stat", "Job", "main", "0"],
+        &mut assets,
+    )?;
+
+    Ok((
+        StatWindowSources {
+            background,
+            close,
+            job,
         },
         assets,
     ))
@@ -244,19 +315,41 @@ fn load_normal_button(
     path: &str,
     assets: &mut Vec<AssetDescriptor>,
 ) -> Result<SourceSprite, GuiContentError> {
-    load_source(content, status_bar, name, &[path, "normal", "0"], assets)
+    load_button_state(content, status_bar, name, path, "normal", assets)
 }
 
-fn load_source(
+fn load_button_state(
+    content: &GuiContent,
+    status_bar: &WzNodeArc,
+    name: &str,
+    path: &str,
+    state: &str,
+    assets: &mut Vec<AssetDescriptor>,
+) -> Result<SourceSprite, GuiContentError> {
+    load_status_source(content, status_bar, name, &[path, state, "0"], assets)
+}
+
+fn load_status_source(
     content: &GuiContent,
     status_bar: &WzNodeArc,
     name: &str,
     path: &[&str],
     assets: &mut Vec<AssetDescriptor>,
 ) -> Result<SourceSprite, GuiContentError> {
-    let node = required_path(status_bar, path)?;
+    load_source(content, status_bar, STATUS_BAR_IMAGE, name, path, assets)
+}
+
+fn load_source(
+    content: &GuiContent,
+    root: &WzNodeArc,
+    image_name: &str,
+    name: &str,
+    path: &[&str],
+    assets: &mut Vec<AssetDescriptor>,
+) -> Result<SourceSprite, GuiContentError> {
+    let node = required_path(root, path)?;
     let (width, height) = png_dimensions(&node, path)?;
-    let source_path = format!("{STATUS_BAR_IMAGE}/{}", path.join("/"));
+    let source_path = format!("{image_name}/{}", path.join("/"));
     let descriptor = content.register_asset(&source_path, &node)?;
     let source = SourceSprite {
         name: name.to_owned(),
@@ -300,21 +393,20 @@ fn compose_status_bar(sources: &StatusBarSources) -> Result<GuiLayout, GuiConten
             .map(|(index, source)| place_key_reference(source, quick_slots_x, index)),
     );
     let menu_buttons = [
-        &sources.equip,
-        &sources.inventory,
-        &sources.stats,
-        &sources.skills,
-        &sources.key_settings,
-        &sources.quick_slot_toggle,
+        (&sources.equip, None),
+        (&sources.inventory, None),
+        (&sources.stats, Some(&sources.stats_pressed)),
+        (&sources.skills, None),
+        (&sources.key_settings, None),
+        (&sources.quick_slot_toggle, None),
     ];
     let mut button_x = MENU_BUTTON_LEFT;
-    for source in menu_buttons {
-        sprites.push(place_sprite(
-            source,
-            button_x,
-            bar_y + MENU_BUTTON_TOP,
-            false,
-        ));
+    for (source, pressed) in menu_buttons {
+        let x = button_x;
+        sprites.push(place_sprite(source, x, bar_y + MENU_BUTTON_TOP, false));
+        if let Some(pressed) = pressed {
+            sprites.push(place_sprite(pressed, x, bar_y + MENU_BUTTON_TOP, false));
+        }
         button_x += source.width + MENU_BUTTON_GAP;
     }
     let layout = GuiLayout {
@@ -325,6 +417,33 @@ fn compose_status_bar(sources: &StatusBarSources) -> Result<GuiLayout, GuiConten
     };
     validate_layout(&layout)?;
     Ok(layout)
+}
+
+fn compose_stat_window(sources: &StatWindowSources) -> Result<GuiWindow, GuiContentError> {
+    let width = sources.background.width;
+    let height = sources.background.height;
+    let background = place_sprite(&sources.background, 0.0, 0.0, false);
+    let sprites = vec![
+        place_sprite(
+            &sources.close,
+            width - sources.close.width - STAT_CLOSE_RIGHT,
+            STAT_CLOSE_TOP,
+            false,
+        ),
+        place_sprite(&sources.job, STAT_JOB_LEFT, STAT_JOB_TOP, false),
+    ];
+    let layout = GuiLayout {
+        width,
+        height,
+        background: Some(background),
+        sprites,
+    };
+    validate_layout(&layout)?;
+    Ok(GuiWindow {
+        x: STAT_WINDOW_X,
+        y: STAT_WINDOW_Y,
+        layout: Some(layout),
+    })
 }
 
 fn place_key_reference(
@@ -443,7 +562,9 @@ mod tests {
 
     use super::GuiContent;
     use super::SourceSprite;
+    use super::StatWindowSources;
     use super::StatusBarSources;
+    use super::compose_stat_window;
     use super::compose_status_bar;
 
     #[test]
@@ -457,6 +578,7 @@ mod tests {
             equip: source("equip", 28.0, 20.0),
             inventory: source("inventory", 28.0, 20.0),
             stats: source("stats", 28.0, 20.0),
+            stats_pressed: source("stats-pressed", 28.0, 20.0),
             skills: source("skills", 28.0, 20.0),
             key_settings: source("key-settings", 28.0, 20.0),
             quick_slot_toggle: source("quick-slot-toggle", 28.0, 20.0),
@@ -493,11 +615,33 @@ mod tests {
         assert_eq!(sprite_position(&layout, "gauge"), Some((209.0, 119.0)));
         assert_eq!(sprite_position(&layout, "quick-slots"), Some((649.0, 0.0)));
         assert_eq!(sprite_position(&layout, "key-0"), Some((657.0, 16.0)));
+        assert_eq!(sprite_position(&layout, "stats"), Some((634.0, 88.0)));
+        assert_eq!(
+            sprite_position(&layout, "stats-pressed"),
+            Some((634.0, 88.0))
+        );
         assert_eq!(sprite_position(&layout, "skills"), Some((664.0, 88.0)));
         assert_eq!(
             sprite_position(&layout, "quick-slot-toggle"),
             Some((724.0, 88.0))
         );
+    }
+
+    #[test]
+    fn stat_sources_form_a_clickable_window_layout() {
+        let sources = StatWindowSources {
+            background: source("stat-background", 175.0, 347.0),
+            close: source("stat-close", 10.0, 10.0),
+            job: source("stat-job", 50.0, 7.0),
+        };
+
+        let window = compose_stat_window(&sources).expect("valid stat window");
+        let layout = window.layout.expect("stat window layout");
+
+        assert_eq!((window.x, window.y), (20.0, 80.0));
+        assert_eq!((layout.width, layout.height), (175.0, 347.0));
+        assert_eq!(sprite_position(&layout, "stat-close"), Some((160.0, 5.0)));
+        assert_eq!(sprite_position(&layout, "stat-job"), Some((60.0, 57.0)));
     }
 
     #[test]
@@ -526,7 +670,12 @@ mod tests {
         assert!(status_bar.sprites.iter().any(|sprite| {
             sprite.name == "quick-slots" && sprite.x == 649.0 && sprite.anchor_right
         }));
-        assert_eq!(gui.assets.len(), 19);
+        let stat_window = gui.stat_window.as_ref().expect("stat window");
+        assert_eq!(
+            stat_window.layout.as_ref().map(|layout| layout.height),
+            Some(347.0)
+        );
+        assert_eq!(gui.assets.len(), 23);
 
         for descriptor in &gui.assets {
             let asset = content
