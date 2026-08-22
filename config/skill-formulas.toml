@@ -1,0 +1,302 @@
+# See README.md for configuration reference.
+
+source_url = "https://ayumilovemaple.wordpress.com/2009/09/06/maplestory-formula-compilation/"
+
+[weapon_profiles.one_handed_sword]
+minimum          = "(PrimaryStat * 0.9 * Mastery + SecondaryStat) * WeaponAttack / 100"
+maximum          = "(PrimaryStat + SecondaryStat) * WeaponAttack / 100"
+primary_stat     = "Strength"
+secondary_stat   = "Dexterity"
+primary_modifier = 4.0
+swing_modifier   = 4.4
+stab_modifier    = 3.2
+
+[weapon_profiles.two_handed_sword]
+minimum          = "(PrimaryStat * 0.9 * Mastery + SecondaryStat) * WeaponAttack / 100"
+maximum          = "(PrimaryStat + SecondaryStat) * WeaponAttack / 100"
+primary_stat     = "Strength"
+secondary_stat   = "Dexterity"
+primary_modifier = 4.6
+swing_modifier   = 4.8
+stab_modifier    = 3.4
+
+[weapon_profiles.spear]
+minimum        = "(PrimaryStat * 0.9 * Mastery + SecondaryStat) * WeaponAttack / 100"
+maximum        = "(PrimaryStat + SecondaryStat) * WeaponAttack / 100"
+primary_stat   = "Strength"
+secondary_stat = "Dexterity"
+swing_modifier = 3.0
+stab_modifier  = 5.0
+
+[weapon_profiles.polearm]
+minimum        = "(PrimaryStat * 0.9 * Mastery + SecondaryStat) * WeaponAttack / 100"
+maximum        = "(PrimaryStat + SecondaryStat) * WeaponAttack / 100"
+primary_stat   = "Strength"
+secondary_stat = "Dexterity"
+swing_modifier = 5.0
+stab_modifier  = 3.0
+
+[weapon_profiles.thief]
+minimum          = "(PrimaryStat * 0.9 * Mastery + SecondaryStat) * WeaponAttack / 100"
+maximum          = "(PrimaryStat + SecondaryStat) * WeaponAttack / 100"
+primary_stat     = "Luck"
+secondary_stat   = "Strength + Dexterity"
+primary_modifier = 3.6
+
+[weapon_profiles.bow]
+minimum          = "(PrimaryStat * 0.9 * Mastery + SecondaryStat) * WeaponAttack / 100"
+maximum          = "(PrimaryStat + SecondaryStat) * WeaponAttack / 100"
+primary_stat     = "Dexterity"
+secondary_stat   = "Strength"
+primary_modifier = 3.4
+
+[weapon_profiles.crossbow]
+minimum          = "(PrimaryStat * 0.9 * Mastery + SecondaryStat) * WeaponAttack / 100"
+maximum          = "(PrimaryStat + SecondaryStat) * WeaponAttack / 100"
+primary_stat     = "Dexterity"
+secondary_stat   = "Strength"
+primary_modifier = 3.6
+
+[weapon_profiles.knuckle]
+minimum          = "(PrimaryStat * 0.9 * Mastery + SecondaryStat) * WeaponAttack / 100"
+maximum          = "(PrimaryStat + SecondaryStat) * WeaponAttack / 100"
+primary_stat     = "Strength"
+secondary_stat   = "Dexterity"
+primary_modifier = 4.8
+
+[weapon_profiles.gun]
+minimum          = "(PrimaryStat * 0.9 * Mastery + SecondaryStat) * WeaponAttack / 100"
+maximum          = "(PrimaryStat + SecondaryStat) * WeaponAttack / 100"
+primary_stat     = "Dexterity"
+secondary_stat   = "Strength"
+primary_modifier = 3.6
+
+[weapon_profiles.spell]
+minimum = "((Magic ^ 2 / 1000 + Magic * Mastery * 0.9) / 30 + Intelligence / 200) * SpellAttack"
+maximum = "((Magic ^ 2 / 1000 + Magic) / 30 + Intelligence / 200) * SpellAttack"
+
+[weapon_profiles.claw]
+minimum = "(Luck * 0.1 + Strength + Dexterity) * WeaponAttack / 150"
+maximum = "(Luck + Strength + Dexterity) * WeaponAttack / 150"
+
+[weapon_profiles.bare_hands]
+attack  = "min(floor((2 * CharacterLevel + 31) / 3), 31)"
+minimum = "(Strength * JobMultiplier * 0.1 * 0.9 + Dexterity) * WeaponAttack / 100"
+maximum = "(Strength * JobMultiplier + Dexterity) * WeaponAttack / 100"
+
+[weapons.one_handed_sword]
+profile = "one_handed_sword"
+
+[weapons.two_handed_sword]
+profile = "two_handed_sword"
+
+[weapons.spear]
+profile = "spear"
+
+[weapons.polearm]
+profile = "polearm"
+
+[weapons.dagger]
+profile = "thief"
+
+[weapons.bow]
+profile = "bow"
+
+[weapons.crossbow]
+profile = "crossbow"
+
+[weapons.knuckle]
+profile = "knuckle"
+
+[weapons.gun]
+profile = "gun"
+
+[weapons.wand]
+profile = "spell"
+
+[weapons.staff]
+profile = "spell"
+
+[weapons.claw]
+profile = "claw"
+
+[weapons.bare_hands]
+profile = "bare_hands"
+
+[skill_profiles.lucky_seven]
+minimum = "Luck * 2.5 * WeaponAttack / 100"
+maximum = "Luck * 5.0 * WeaponAttack / 100"
+
+[skill_profiles.venom]
+minimum = "(8.0 * (Strength + Luck) + Dexterity * 2) / 100 * BasicAttack"
+maximum = "(18.5 * (Strength + Luck) + Dexterity * 2) / 100 * BasicAttack"
+
+[skill_profiles.ninja_ambush]
+tick = "2 * (Strength + Luck) * SkillDamage"
+
+[skill_profiles.shadow_web]
+tick = "MonsterHealth / (50 - SkillLevel)"
+
+[skill_profiles.shadow_meso]
+damage = "10 * Mesos"
+
+[skill_profiles.dragon_roar]
+minimum = "(Strength * 4.0 * Mastery * 0.9 + Dexterity) * WeaponAttack / 100"
+maximum = "(Strength * 4.0 + Dexterity) * WeaponAttack / 100"
+
+[skill_profiles.power_knock_back]
+minimum = "(Dexterity * 3.4 * Mastery * 0.9 + Strength) * WeaponAttack / 150"
+maximum = "(Dexterity * 3.4 + Strength) * WeaponAttack / 150"
+
+[skill_profiles.flamethrower]
+tick = "BasicAttack * (0.05 + AmpBulletDamage)"
+
+[skill_profiles.heal]
+damage_minimum    = "(Intelligence * 0.3 + Luck) * Magic / 1000 * TargetMultiplier"
+damage_maximum    = "(Intelligence * 1.2 + Luck) * Magic / 1000 * TargetMultiplier"
+recovery_minimum  = "(1.132682429 * 10 ^ -7 * Luck ^ 2 + 3.368846366 * 10 ^ -6 * Luck + 1.97124794 * 10 ^ -3) * Magic * Intelligence * HealLevel * TargetMultiplier * 0.8"
+recovery_maximum  = "(1.132682429 * 10 ^ -7 * Luck ^ 2 + 3.368846366 * 10 ^ -6 * Luck + 1.97124794 * 10 ^ -3) * Magic * Intelligence * HealLevel * TargetMultiplier"
+target_multiplier = "1.5 + 5 / TargetCount"
+
+[skill_profiles.poison]
+tick = "MonsterHealth / (70 - SkillLevel)"
+
+[skill_profiles.combo]
+one_to_five = "AdvancedComboDamage + floor((Orbs - 1) * ComboLevel / 6) / 100"
+six_to_ten  = "AdvancedComboDamage + 0.2 + (Orbs - 5) * 0.04"
+
+[skill_profiles.elemental_charge]
+advantage    = "BasicAttack * (1.05 + ChargeLevel * 0.015)"
+disadvantage = "BasicAttack * (0.95 - ChargeLevel * 0.015)"
+
+[skill_profiles.holy_charge]
+advantage    = "BasicAttack * (1.20 + ChargeLevel * 0.015)"
+disadvantage = "BasicAttack * (0.80 - ChargeLevel * 0.015)"
+
+[skill_profiles.inferno]
+advantage    = "BasicAttack * (1.10 + SkillLevel * 0.005)"
+disadvantage = "BasicAttack * (0.90 - SkillLevel * 0.005)"
+
+[skill_profiles.slash_blast]
+hit   = "2 * (1 / 3) ^ (HitNumber - 1)"
+total = "3 * (1 - (1 / 3) ^ TotalHits)"
+
+[skill_profiles.iron_arrow]
+hit   = "0.9 ^ (HitNumber - 1)"
+total = "10 * (1 - 0.9 ^ TotalHits)"
+
+[skill_profiles.pierce]
+hit   = "1.2 ^ (HitNumber - 1)"
+total = "5 * (-1 + 1.2 ^ TotalHits)"
+
+[skill_profiles.chain_lightning]
+hit   = "0.7 ^ (HitNumber - 1)"
+total = "3.333 * (1 - 0.7 ^ TotalHits)"
+
+[skill_profiles.energy_orb]
+hit   = "(2 / 3) ^ (HitNumber - 1)"
+total = "3 * (1 - (2 / 3) ^ TotalHits)"
+
+[skill_profiles.barrage]
+late_hit = "2 ^ (HitNumber - 4)"
+
+[skills."4001344"]
+profile = "lucky_seven"
+
+[summon_profiles.standard]
+minimum = "(Dexterity * 2.5 * 0.7 + Strength) * AttackRate / 100"
+maximum = "(Dexterity * 2.5 + Strength) * AttackRate / 100"
+
+[summon_profiles.battleship]
+durability = "(BattleshipLevel * 2 + (CharacterLevel - 120)) * 200"
+
+[summon."5220002"]
+profile = "standard"
+
+[defense_profiles.physical]
+minimum = "DamageBeforeDefense * (1 - 0.01 * max(MonsterLevel - PlayerLevel, 0)) - WeaponDefense * 0.6"
+maximum = "DamageBeforeDefense * (1 - 0.01 * max(MonsterLevel - PlayerLevel, 0)) - WeaponDefense * 0.5"
+
+[defense_profiles.magical]
+minimum = "DamageBeforeDefense - MagicDefense * 0.6 * (1 + 0.01 * max(MonsterLevel - PlayerLevel, 0))"
+maximum = "DamageBeforeDefense - MagicDefense * 0.5 * (1 + 0.01 * max(MonsterLevel - PlayerLevel, 0))"
+
+[defenses.physical]
+profile = "physical"
+
+[defenses.magical]
+profile = "magical"
+
+[accuracy_profiles.physical]
+hit_chance            = "Accuracy / ((1.84 + 0.07 * max(MonsterLevel - PlayerLevel, 0)) * Avoidability) - 1"
+required_for_full_hit = "(Avoidability + 1) * (1 + max(MonsterLevel - PlayerLevel, 0) / 24)"
+minimum               = "Accuracy * 10 / 24"
+
+[accuracy_profiles.magical]
+ratio    = "(trunc(Intelligence / 10) + trunc(Luck / 10)) / (Avoidability + 1) * (1 + 0.0415 * max(MonsterLevel - PlayerLevel, 0))"
+hit_rate = "-2.5795 * AccuracyRatio ^ 2 + 5.2343 * AccuracyRatio - 1.6749"
+accuracy = "trunc(Intelligence / 10) + trunc(Luck / 10)"
+
+[accuracy.physical]
+profile = "physical"
+
+[accuracy.magical]
+profile = "magical"
+
+[experience_profiles.party]
+highest_damager = "MonsterExperience * (0.2 + 0.8 * PlayerLevel / TotalPartyLevel) * PartyExperiencePortion * PartyBonus"
+member          = "MonsterExperience * (0.8 * PlayerLevel / TotalPartyLevel) * PartyExperiencePortion * PartyBonus"
+
+[experience_profiles.solo]
+last_hit = "MonsterExperience * (0.2 + 0.8 * DamageDealt / MonsterHealth)"
+other    = "MonsterExperience * 0.8 * DamageDealt / MonsterHealth"
+
+[experience.party]
+profile = "party"
+
+[experience.solo]
+profile = "solo"
+
+[stat_profiles.standard]
+accuracy     = "Dexterity * 0.8 + Luck * 0.5"
+avoidability = "Dexterity * 0.25 + Luck * 0.5"
+hands        = "Dexterity + Intelligence + Luck"
+
+[stat_profiles.brawler]
+accuracy     = "Dexterity * 0.9 + Luck * 0.3"
+avoidability = "Dexterity * 1.5 + Luck * 0.5"
+hands        = "Dexterity + Intelligence + Luck"
+
+[stat_profiles.ranged]
+accuracy = "Dexterity * 0.6 + Luck * 0.3"
+hands    = "Dexterity + Intelligence + Luck"
+
+[stat_profiles.gunslinger]
+avoidability = "Dexterity * 0.125 + Luck * 0.5"
+hands        = "Dexterity + Intelligence + Luck"
+
+[stats.standard]
+profile = "standard"
+
+[stats.brawler]
+profile = "brawler"
+
+[stats.ranged]
+profile = "ranged"
+
+[stats.gunslinger]
+profile = "gunslinger"
+
+[recovery_profiles.base]
+hp = 10
+mp = 3
+
+[recovery_profiles.mage]
+hp = 10
+mp = "CharacterLevel * SkillLevel / 10"
+
+[recovery.base]
+profile = "base"
+
+[recovery.mage]
+profile = "mage"

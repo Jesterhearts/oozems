@@ -18,7 +18,10 @@ The current vertical slice includes:
 - persisted equipment and inventory state with WZ item icons and transient
   map drops that characters can pick up;
 - persisted, drag-and-drop keyboard bindings for every supported action;
+- WZ skill books with persisted skill levels, resource costs, cooldowns, and
+  draggable skill bindings;
 - validated TOML game rules with named, formula-based XP curves;
+- validated TOML combat formulas based on the classic Ayumilove compilation;
 - server-owned assets fetched only when referenced by the current view; and
 - player movement, platforms, jumping, ladder and rope climbing, direct portal
   transitions, and periodic position saves.
@@ -57,18 +60,21 @@ browser
   -> POST /api/v1/gui/get         current GUI layout and asset metadata
   -> POST /api/v1/maps/get        current map protobuf
   -> POST /api/v1/items/...       equip, unequip, drop, or pick up an item
+  -> POST /api/v1/skills/...      allocate a skill point or use a skill
   -> GET /assets/...              only bundled assets named by that map
-  -> GET /wz-assets/...           requested map, character, and GUI PNG layers
+  -> GET /wz-assets/...           requested map, character, GUI, and skill PNG layers
   -> POST /api/v1/players/save    player position and key bindings protobuf
 
 server
   -> config/xp-curves.toml        validated game progression rules
-  -> config/gameplay.toml         validated item drop rules
+  -> config/gameplay.toml         validated item and initial skill rules
+  -> config/skill-formulas.toml   validated combat formulas
   -> content/maps/*.json          immutable map source
   -> data/Map.wz                  optional, lazy WZ map source
   -> data/Character.wz            optional character sprite source
   -> data/UI.wz                   optional GUI sprite source
-  -> data/String.wz               optional WZ map names
+  -> data/Skill.wz                optional skill data and icons
+  -> data/String.wz               optional WZ map names and skill text
   -> assets/**                    immutable source assets
   -> SurrealDB -> SurrealKV       mutable player state
 ```
@@ -119,8 +125,23 @@ open the original `UIWindow.img/KeyConfig` keyboard settings window. Drag an
 action icon from the lower palette, or from an assigned key, onto another key.
 Each action has one assignment, so moving an action removes its previous
 assignment and replaces any action already on the target key. The supported
-palette contains Jump, Pick Up, Character, Equipment, Inventory, and Key
-Settings. Changes are stored with the player in SurrealKV.
+palette contains Jump, Pick Up, Character, Equipment, Inventory, Key Settings,
+and Skills. Changes are stored with the player in SurrealKV.
+
+Place `Skill.wz` and its matching `String.wz` beside the other archives to use
+the original skill books. New characters receive the configured initial skill
+points. Open the Skills window and click the WZ plus button beside a skill to
+spend one point. Click a learned skill icon to use it directly. To bind a
+learned skill, leave the Skills window open, open Key Settings, and drag the
+skill icon onto a key. A skill can have one key assignment, like each built-in
+action.
+
+Skill use is server-owned. The server confirms the learned level, reads that
+level's WZ properties, checks and spends HP and MP, enforces WZ cooldowns,
+applies immediate HP recovery, and returns temporary speed and jump effects to
+the client. Fixed-damage skills return their exact damage range. No monsters
+exist yet, so calculated damage is displayed as status information rather than
+being applied to a target.
 
 The HP, MP, and EXP gauges use the persisted character values for their fill
 levels and display bracketed current and maximum values over the WZ artwork.
@@ -157,12 +178,161 @@ Item rules are configured in `config/gameplay.toml`:
 
 [items]
 drop_despawn = "10m"
+
+[skills]
+initial_points = 3
 ```
 
 `items.drop_despawn` controls how long a dropped item remains in a map. It must
 be a positive human-readable duration, such as `30s`, `10m`, `2h`, or
 `1h 30m`. Restart the server after changing it. Drops are intentionally not
 persisted across a server restart.
+
+`skills.initial_points` is the number of unspent skill points assigned to a new
+character. It is also used when an older SurrealKV player record has no skill
+point field. Learned levels and later point changes are persisted and are not
+replaced when this setting changes.
+
+## Configure formula profiles
+
+Combat formulas are configured in `config/skill-formulas.toml`. The bundled
+file records its source and groups formulas into reusable profiles. Each
+selector table maps a stable game identifier to one profile:
+
+```toml
+# See README.md for configuration reference.
+
+source_url = "https://ayumilovemaple.wordpress.com/2009/09/06/maplestory-formula-compilation/"
+
+[weapon_profiles.one_handed_sword]
+minimum = "(PrimaryStat * 0.9 * Mastery + SecondaryStat) * WeaponAttack / 100"
+maximum = "(PrimaryStat + SecondaryStat) * WeaponAttack / 100"
+primary_stat = "Strength"
+secondary_stat = "Dexterity"
+primary_modifier = 4.0
+swing_modifier = 4.4
+stab_modifier = 3.2
+
+[weapons.one_handed_sword]
+profile = "one_handed_sword"
+```
+
+The profile contains the formulas directly. There is no separate flat formula
+catalog and no naming convention that implicitly connects formulas to game
+content. The selector contains only the chosen profile name, so multiple game
+identifiers can share a profile.
+
+Skills use the same shape. For example, this intentionally makes Double Stab
+use the Lucky Seven formulas:
+
+```toml
+[skill_profiles.lucky_seven]
+minimum = "Luck * 2.5 * WeaponAttack / 100"
+maximum = "Luck * 5.0 * WeaponAttack / 100"
+
+[skills."4001334"]
+profile = "lucky_seven"
+```
+
+`4001334` is the Double Stab ID in the bundled WZ files. Quoted skill keys must
+be canonical decimal `u32` values without leading zeroes. A skill mapping takes
+priority over the automatic Pirate bare-hands profile. If a skill has no
+mapping, the server keeps the automatic Pirate behavior and does not guess a
+profile from the skill's display name.
+
+Summons also have independent profiles. A profile can expose properties other
+than damage, such as durability:
+
+```toml
+[summon_profiles.battleship]
+durability = "(BattleshipLevel * 2 + (CharacterLevel - 120)) * 200"
+
+[summon."5221006"]
+profile = "battleship"
+```
+
+Use the selector only when that skill ID exists in the loaded WZ version. The
+bundled archives do not contain Battleship, so the default file keeps this
+profile available without selecting it. Its verified summon example maps
+Wrath of the Octopi, skill `5220002`, to the `standard` summon profile.
+
+The supported profile and selector table pairs are:
+
+| Profile table | Selector table | Selector key |
+| --- | --- | --- |
+| `weapon_profiles` | `weapons` | Lowercase identifier such as `one_handed_sword` or `bare_hands` |
+| `skill_profiles` | `skills` | Quoted numeric WZ skill ID |
+| `summon_profiles` | `summon` | Quoted numeric WZ skill ID |
+| `defense_profiles` | `defenses` | Lowercase identifier |
+| `accuracy_profiles` | `accuracy` | Lowercase identifier |
+| `experience_profiles` | `experience` | Lowercase identifier |
+| `stat_profiles` | `stats` | Lowercase identifier |
+| `recovery_profiles` | `recovery` | Lowercase identifier |
+
+Profile names, property names, and identifier selector keys must contain only
+lowercase ASCII letters, digits, and underscores. Every profile must contain at
+least one property formula. Every selector must name a profile from its paired
+profile table. `weapons.bare_hands` is required, and its selected profile must
+define `attack`, `minimum`, and `maximum`.
+
+A property can be an expression string or a numeric TOML constant. Numeric
+constants are useful for properties such as `primary_modifier`,
+`swing_modifier`, and `stab_modifier`; they use the same evaluation path as
+expressions.
+
+The current skill damage pipeline reads `minimum` and `maximum` from a selected
+skill profile. It applies the skill level's WZ `damage` percentage afterward
+and truncates the final values. The current equipment model does not include
+weapons, so `WeaponAttack` is read from the `attack` property of the profile
+selected by `weapons.bare_hands`. This provides one clear input point for real
+weapon stats when weapon equipment is added later. Other profile categories
+are parsed, validated, and routed now so their combat pipelines can consume the
+same configuration model later.
+
+Profile formulas use decimal arithmetic and support these elements:
+
+| Syntax | Meaning |
+| --- | --- |
+| `^` | Exponentiation. It is right-associative. |
+| `*`, `/` | Multiplication and division. |
+| `+`, `-` | Addition and subtraction, including unary signs. |
+| `( ... )` | Explicit grouping. |
+| `floor(value)` | Round down to an integer value. |
+| `trunc(value)` | Discard the fractional part. |
+| `min(left, right)` | Select the smaller value. |
+| `max(left, right)` | Select the larger value. |
+
+Identifiers are case-sensitive. The accepted variables are grouped below.
+Each calculation supplies only the variables relevant to that formula. Using a
+variable that is not supplied produces an explicit formula evaluation error.
+
+| Group | Variables |
+| --- | --- |
+| Player | `CharacterLevel`, `PlayerLevel`, `Strength`, `Dexterity`, `Intelligence`, `Luck`, `Accuracy`, `Avoidability`, `Magic` |
+| Attack | `PrimaryStat`, `SecondaryStat`, `WeaponAttack`, `BasicAttack`, `AttackRate`, `Mastery`, `SkillDamage`, `SkillLevel`, `SpellAttack`, `JobMultiplier` |
+| Target | `MonsterLevel`, `MonsterHealth`, `MonsterExperience`, `WeaponDefense`, `MagicDefense`, `DamageBeforeDefense`, `TargetCount`, `TargetMultiplier` |
+| Multi-hit and modifiers | `HitNumber`, `TotalHits`, `Orbs`, `ComboLevel`, `AdvancedComboDamage`, `ChargeLevel`, `AmpBulletDamage` |
+| Accuracy and recovery | `AccuracyRatio`, `HealLevel`, `BattleshipLevel` |
+| Economy and parties | `Mesos`, `DamageDealt`, `TotalPartyLevel`, `PartyExperiencePortion`, `PartyBonus` |
+
+The current skill profile pipeline supplies `CharacterLevel`, `PlayerLevel`,
+`Strength`, `Dexterity`, `Intelligence`, `Luck`, `SkillDamage`, `SkillLevel`,
+and `WeaponAttack`. It also supplies `JobMultiplier` for Pirate jobs. The other
+accepted variables belong to formula pipelines that will be connected as their
+combat inputs are implemented. Selecting a profile that needs an unavailable
+variable returns an explicit skill-use error instead of substituting a value.
+
+The server parses every configured formula and rejects unknown identifiers,
+unknown functions, invalid syntax, non-ASCII text, invalid numeric IDs, invalid
+profile or property names, empty profiles, and selectors that name unknown
+profiles before it starts serving players. Evaluation also rejects missing
+properties, missing inputs, division by zero, and non-finite results. Restart
+the server after changing the file.
+
+The defaults group formulas from the linked 2009 Ayumilove compilation by the
+game concepts that consume them while preserving its constants and caps. This
+is a historical community source, so a server owner can replace any profile or
+expression when targeting a different version or interpretation.
 
 ## Configure XP curves
 
@@ -232,8 +402,8 @@ Use the left and right arrow keys to walk. Use the up and down arrow keys to
 climb. Press Up while standing at a direct portal to enter it. Arrow keys stay
 reserved for movement and interaction. The default action bindings are Space
 for Jump, Z for Pick Up, C for Character, E for Equipment, I for Inventory,
-and K for Key Settings. Script portals remain inactive because their behavior
-belongs to a future server-side scripting system.
+K for Key Settings, and S for Skills. Script portals remain inactive because
+their behavior belongs to a future server-side scripting system.
 
 ## Add a map
 

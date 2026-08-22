@@ -19,6 +19,8 @@ use crate::database::Database;
 use crate::experience::ExperienceCurves;
 use crate::gameplay::GameplayConfig;
 use crate::items::DropStore;
+use crate::skill_formula::FormulaCatalog;
+use crate::skills::SkillCooldowns;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -26,6 +28,9 @@ pub struct AppState {
     pub database: Database,
     pub experience: Arc<ExperienceCurves>,
     pub drops: Arc<DropStore>,
+    pub gameplay: GameplayConfig,
+    pub skill_cooldowns: Arc<SkillCooldowns>,
+    pub formulas: Arc<FormulaCatalog>,
 }
 
 pub fn router(
@@ -33,6 +38,7 @@ pub fn router(
     catalog: ContentCatalog,
     experience: ExperienceCurves,
     gameplay: GameplayConfig,
+    formulas: FormulaCatalog,
     public_dir: &Path,
     asset_dir: &Path,
 ) -> Router {
@@ -41,6 +47,9 @@ pub fn router(
         database,
         experience: Arc::new(experience),
         drops: Arc::new(DropStore::new(gameplay.item_drop_despawn)),
+        gameplay,
+        skill_cooldowns: Arc::new(SkillCooldowns::default()),
+        formulas: Arc::new(formulas),
     };
     let api = Router::new()
         .route("/bootstrap", post(crate::api::bootstrap))
@@ -51,6 +60,8 @@ pub fn router(
         )
         .route("/gui/get", post(crate::api::get_gui))
         .route("/skills/book", post(crate::api::get_skill_book))
+        .route("/skills/allocate", post(crate::api::allocate_skill_point))
+        .route("/skills/use", post(crate::api::use_skill))
         .route("/maps/get", post(crate::api::get_map))
         .route("/items/equip", post(crate::api::equip_item))
         .route("/items/unequip", post(crate::api::unequip_item))

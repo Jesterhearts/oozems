@@ -599,6 +599,24 @@ mod tests {
             assert!(content.get_asset(&descriptor.id).is_some());
         }
 
+        let rogue = content.skill_book(400).expect("rogue skill book");
+        let double_stab = rogue
+            .skills
+            .iter()
+            .filter_map(|skill| skill.definition.as_ref())
+            .find(|skill| skill.name == "Double Stab")
+            .expect("Double Stab skill");
+        assert_eq!(double_stab.skill_id, 4_001_334);
+
+        let corsair = content.skill_book(522).expect("corsair skill book");
+        let octopi = corsair
+            .skills
+            .iter()
+            .filter_map(|skill| skill.definition.as_ref())
+            .find(|skill| skill.name == "Wrath of the Octopi")
+            .expect("Wrath of the Octopi skill");
+        assert_eq!(octopi.skill_id, 5_220_002);
+
         assert!(book_has_stats(&content, 110, |stats| {
             stats.weapon_attack.is_some()
         }));

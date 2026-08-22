@@ -15,6 +15,13 @@ pub struct KeyboardState {
 pub struct FrameInput {
     pub player: PlayerInput,
     pub actions: Vec<KeyAction>,
+    pub skills: Vec<u32>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BindingTarget {
+    Action(KeyAction),
+    Skill(u32),
 }
 
 pub fn set_key(
@@ -47,44 +54,71 @@ pub fn drain_frame_input(
     let actions = bindings
         .iter()
         .filter(|binding| state.just_pressed.contains(&binding.code))
+        .filter(|binding| binding.skill_id == 0)
         .filter_map(|binding| KeyAction::try_from(binding.action).ok())
+        .collect::<Vec<_>>();
+    let skills = bindings
+        .iter()
+        .filter(|binding| state.just_pressed.contains(&binding.code))
+        .filter_map(|binding| (binding.skill_id != 0).then_some(binding.skill_id))
         .collect::<Vec<_>>();
     let player = PlayerInput {
         horizontal: axis(&state.pressed, "ArrowRight", "ArrowLeft"),
         vertical: axis(&state.pressed, "ArrowDown", "ArrowUp"),
         jump_pressed: action_is_just_pressed(state, bindings, KeyAction::Jump),
         portal_pressed: state.just_pressed.contains("ArrowUp"),
+        ..PlayerInput::default()
     };
     state.just_pressed.clear();
-    FrameInput { player, actions }
+    FrameInput {
+        player,
+        actions,
+        skills,
+    }
 }
 
-pub fn assign_action(
+pub fn assign_target(
     bindings: &[KeyBinding],
     code: &str,
-    action: KeyAction,
+    target: BindingTarget,
 ) -> Vec<KeyBinding> {
     let mut updated = bindings
         .iter()
-        .filter(|binding| binding.code != code && binding.action != action as i32)
+        .filter(|binding| binding.code != code && binding_target(binding) != Some(target))
         .cloned()
         .collect::<Vec<_>>();
+    let (action, skill_id) = match target {
+        BindingTarget::Action(action) => (action as i32, 0),
+        BindingTarget::Skill(skill_id) => (KeyAction::Unspecified as i32, skill_id),
+    };
     updated.push(KeyBinding {
         code: code.to_owned(),
-        action: action as i32,
+        action,
+        skill_id,
     });
     updated.sort_by(|left, right| left.code.cmp(&right.code));
     updated
 }
 
-pub fn action_for_code(
+pub fn target_for_code(
     bindings: &[KeyBinding],
     code: &str,
-) -> Option<KeyAction> {
+) -> Option<BindingTarget> {
     bindings
         .iter()
         .find(|binding| binding.code == code)
-        .and_then(|binding| KeyAction::try_from(binding.action).ok())
+        .and_then(binding_target)
+}
+
+fn binding_target(binding: &KeyBinding) -> Option<BindingTarget> {
+    if binding.skill_id != 0 && binding.action == KeyAction::Unspecified as i32 {
+        return Some(BindingTarget::Skill(binding.skill_id));
+    }
+    (binding.skill_id == 0)
+        .then(|| KeyAction::try_from(binding.action).ok())
+        .flatten()
+        .filter(|action| *action != KeyAction::Unspecified)
+        .map(BindingTarget::Action)
 }
 
 fn action_is_just_pressed(
@@ -114,8 +148,9 @@ mod tests {
     use oozems_proto::v1::KeyAction;
     use oozems_proto::v1::KeyBinding;
 
+    use super::BindingTarget;
     use super::KeyboardState;
-    use super::assign_action;
+    use super::assign_target;
     use super::drain_frame_input;
     use super::set_key;
 
@@ -132,6 +167,7 @@ mod tests {
         let held = drain_frame_input(&mut state, &bindings);
         assert!(!held.player.jump_pressed);
         assert!(held.actions.is_empty());
+        assert!(held.skills.is_empty());
     }
 
     #[test]
@@ -155,9 +191,25 @@ mod tests {
             binding("KeyZ", KeyAction::PickUp),
         ];
 
-        let updated = assign_action(&bindings, "KeyZ", KeyAction::Jump);
+        let updated = assign_target(&bindings, "KeyZ", BindingTarget::Action(KeyAction::Jump));
 
         assert_eq!(updated, vec![binding("KeyZ", KeyAction::Jump)]);
+    }
+
+    #[test]
+    fn configured_skills_are_edge_triggered() {
+        let bindings = vec![KeyBinding {
+            code: "KeyA".to_owned(),
+            action: KeyAction::Unspecified as i32,
+            skill_id: 1_000,
+        }];
+        let mut state = KeyboardState::default();
+
+        assert!(set_key(&mut state, &bindings, "KeyA", true));
+        let first = drain_frame_input(&mut state, &bindings);
+        assert_eq!(first.skills, vec![1_000]);
+        assert!(first.actions.is_empty());
+        assert!(drain_frame_input(&mut state, &bindings).skills.is_empty());
     }
 
     fn binding(
@@ -167,6 +219,7 @@ mod tests {
         KeyBinding {
             code: code.to_owned(),
             action: action as i32,
+            skill_id: 0,
         }
     }
 }

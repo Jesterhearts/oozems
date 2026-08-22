@@ -6,6 +6,7 @@ use oozems_proto::v1::EquipmentSlot;
 use oozems_proto::v1::EquippedItem;
 use oozems_proto::v1::InventoryState;
 use oozems_proto::v1::KeyBinding;
+use oozems_proto::v1::LearnedSkill;
 use oozems_proto::v1::PlayerState;
 use oozems_proto::v1::Vec2;
 use surrealdb::Surreal;
@@ -69,6 +70,10 @@ struct PlayerData {
     equipped_shoes: Option<u32>,
     key_binding_codes: Vec<String>,
     key_binding_actions: Vec<i32>,
+    key_binding_skill_ids: Vec<u32>,
+    skill_points: u32,
+    learned_skill_ids: Vec<u32>,
+    learned_skill_levels: Vec<u32>,
 }
 
 #[derive(Clone, Debug, SurrealValue)]
@@ -104,6 +109,10 @@ struct PlayerRecord {
     equipped_shoes: Option<u32>,
     key_binding_codes: Option<Vec<String>>,
     key_binding_actions: Option<Vec<i32>>,
+    key_binding_skill_ids: Option<Vec<u32>>,
+    skill_points: Option<u32>,
+    learned_skill_ids: Option<Vec<u32>>,
+    learned_skill_levels: Option<Vec<u32>>,
 }
 
 impl PlayerId {
@@ -182,6 +191,10 @@ async fn initialize_schema(database: &Database) -> surrealdb::Result<()> {
             DEFINE FIELD IF NOT EXISTS equipped_shoes ON TABLE player TYPE option<int>;
             DEFINE FIELD IF NOT EXISTS key_binding_codes ON TABLE player TYPE option<array<string>>;
             DEFINE FIELD IF NOT EXISTS key_binding_actions ON TABLE player TYPE option<array<int>>;
+            DEFINE FIELD IF NOT EXISTS key_binding_skill_ids ON TABLE player TYPE option<array<int>>;
+            DEFINE FIELD IF NOT EXISTS skill_points ON TABLE player TYPE option<int>;
+            DEFINE FIELD IF NOT EXISTS learned_skill_ids ON TABLE player TYPE option<array<int>>;
+            DEFINE FIELD IF NOT EXISTS learned_skill_levels ON TABLE player TYPE option<array<int>>;
             "#,
         )
         .await?
@@ -192,9 +205,10 @@ async fn initialize_schema(database: &Database) -> surrealdb::Result<()> {
 pub async fn load_player(
     database: &Database,
     player_id: &PlayerId,
+    initial_skill_points: u32,
 ) -> surrealdb::Result<Option<PlayerState>> {
     let record: Option<PlayerRecord> = database.select(("player", player_id.as_str())).await?;
-    Ok(record.map(player_from_record))
+    Ok(record.map(|record| player_from_record(record, initial_skill_points)))
 }
 
 pub async fn create_player(
@@ -204,6 +218,7 @@ pub async fn create_player(
     appearance: CharacterAppearance,
     position: Vec2,
     experience_required: u64,
+    initial_skill_points: u32,
 ) -> surrealdb::Result<PlayerState> {
     let mut stats = starter_character_stats();
     stats.experience_required = experience_required;
@@ -217,6 +232,8 @@ pub async fn create_player(
         stats: Some(stats),
         inventory: Some(crate::items::starter_inventory()),
         key_bindings: crate::keymap::default_bindings(),
+        skill_points: initial_skill_points,
+        learned_skills: Vec::new(),
     };
     save_player(database, &player).await
 }
@@ -232,7 +249,7 @@ pub async fn save_player(
         .await?;
 
     record
-        .map(player_from_record)
+        .map(|record| player_from_record(record, player.skill_points))
         .ok_or_else(|| surrealdb::Error::internal("player upsert returned no record".to_owned()))
 }
 
@@ -258,14 +275,20 @@ pub fn apply_player_movement(
         stats: current.stats,
         inventory: current.inventory,
         key_bindings: requested.key_bindings.clone(),
+        skill_points: current.skill_points,
+        learned_skills: current.learned_skills,
     }
 }
 
-fn player_from_record(record: PlayerRecord) -> PlayerState {
+fn player_from_record(
+    record: PlayerRecord,
+    initial_skill_points: u32,
+) -> PlayerState {
     let appearance = appearance_from_record(&record);
     let stats = stats_from_record(&record);
     let inventory = inventory_from_record(&record);
     let key_bindings = key_bindings_from_record(&record);
+    let learned_skills = learned_skills_from_record(&record);
     let _record_id = record.id;
     PlayerState {
         id: record.player_id,
@@ -280,6 +303,8 @@ fn player_from_record(record: PlayerRecord) -> PlayerState {
         stats: Some(stats),
         inventory: Some(inventory),
         key_bindings,
+        skill_points: record.skill_points.unwrap_or(initial_skill_points),
+        learned_skills,
     }
 }
 
@@ -374,12 +399,20 @@ fn key_bindings_from_record(record: &PlayerRecord) -> Vec<KeyBinding> {
     if codes.len() != actions.len() {
         return crate::keymap::default_bindings();
     }
+    let skill_ids = record
+        .key_binding_skill_ids
+        .clone()
+        .unwrap_or_else(|| vec![0; codes.len()]);
+    if skill_ids.len() != codes.len() {
+        return crate::keymap::default_bindings();
+    }
     let bindings = codes
         .iter()
-        .zip(actions)
-        .map(|(code, action)| KeyBinding {
+        .zip(actions.iter().zip(skill_ids))
+        .map(|(code, (action, skill_id))| KeyBinding {
             code: code.clone(),
             action: *action,
+            skill_id,
         })
         .collect::<Vec<_>>();
     if crate::keymap::validate_bindings(&bindings).is_ok() {
@@ -387,6 +420,30 @@ fn key_bindings_from_record(record: &PlayerRecord) -> Vec<KeyBinding> {
     } else {
         crate::keymap::default_bindings()
     }
+}
+
+fn learned_skills_from_record(record: &PlayerRecord) -> Vec<LearnedSkill> {
+    let (Some(skill_ids), Some(levels)) = (
+        record.learned_skill_ids.as_ref(),
+        record.learned_skill_levels.as_ref(),
+    ) else {
+        return Vec::new();
+    };
+    if skill_ids.len() != levels.len() {
+        return Vec::new();
+    }
+    let mut skills = skill_ids
+        .iter()
+        .zip(levels)
+        .filter(|(skill_id, level)| **skill_id != 0 && **level != 0)
+        .map(|(skill_id, level)| LearnedSkill {
+            skill_id: *skill_id,
+            level: *level,
+        })
+        .collect::<Vec<_>>();
+    skills.sort_by_key(|skill| skill.skill_id);
+    skills.dedup_by_key(|skill| skill.skill_id);
+    skills
 }
 
 impl From<&PlayerState> for PlayerData {
@@ -410,6 +467,21 @@ impl From<&PlayerState> for PlayerData {
             .key_bindings
             .iter()
             .map(|binding| binding.action)
+            .collect();
+        let key_binding_skill_ids = player
+            .key_bindings
+            .iter()
+            .map(|binding| binding.skill_id)
+            .collect();
+        let learned_skill_ids = player
+            .learned_skills
+            .iter()
+            .map(|skill| skill.skill_id)
+            .collect();
+        let learned_skill_levels = player
+            .learned_skills
+            .iter()
+            .map(|skill| skill.level)
             .collect();
         Self {
             player_id: player.id.clone(),
@@ -442,6 +514,10 @@ impl From<&PlayerState> for PlayerData {
             equipped_shoes,
             key_binding_codes,
             key_binding_actions,
+            key_binding_skill_ids,
+            skill_points: player.skill_points,
+            learned_skill_ids,
+            learned_skill_levels,
         }
     }
 }
@@ -500,6 +576,8 @@ mod tests {
             stats: Some(starter_character_stats()),
             inventory: Some(crate::items::starter_inventory()),
             key_bindings: crate::keymap::default_bindings(),
+            skill_points: 3,
+            learned_skills: Vec::new(),
         };
         let requested = PlayerState {
             id: "local".to_owned(),
@@ -511,6 +589,11 @@ mod tests {
             stats: None,
             inventory: None,
             key_bindings: crate::keymap::default_bindings(),
+            skill_points: 99,
+            learned_skills: vec![oozems_proto::v1::LearnedSkill {
+                skill_id: 1_000,
+                level: 2,
+            }],
         };
 
         let result = apply_player_movement(current, &requested, 800, 600);
@@ -522,6 +605,8 @@ mod tests {
         assert_eq!(result.appearance, Some(appearance()));
         assert_eq!(result.stats, Some(starter_character_stats()));
         assert_eq!(result.inventory, Some(crate::items::starter_inventory()));
+        assert_eq!(result.skill_points, 3);
+        assert!(result.learned_skills.is_empty());
     }
 
     #[tokio::test]
@@ -532,7 +617,7 @@ mod tests {
             .expect("open SurrealKV");
         let player_id = PlayerId::parse("database-test").expect("valid player ID");
         assert_eq!(
-            load_player(&database, &player_id)
+            load_player(&database, &player_id, 3)
                 .await
                 .expect("load absent player"),
             None
@@ -545,6 +630,7 @@ mod tests {
             appearance(),
             Vec2 { x: 160.0, y: 420.0 },
             123,
+            3,
         )
         .await
         .expect("create player");
@@ -553,9 +639,19 @@ mod tests {
             Some(123)
         );
         player.position = Some(Vec2 { x: 321.0, y: 456.0 });
+        player.skill_points = 2;
+        player.learned_skills.push(oozems_proto::v1::LearnedSkill {
+            skill_id: 1_000,
+            level: 1,
+        });
+        player.key_bindings.push(oozems_proto::v1::KeyBinding {
+            code: "F1".to_owned(),
+            action: oozems_proto::v1::KeyAction::Unspecified as i32,
+            skill_id: 1_000,
+        });
 
         save_player(&database, &player).await.expect("save player");
-        let loaded = load_player(&database, &player_id)
+        let loaded = load_player(&database, &player_id, 3)
             .await
             .expect("load player")
             .expect("saved player exists");
@@ -588,7 +684,7 @@ mod tests {
             .await
             .expect("insert legacy player");
 
-        let loaded = load_player(&database, &player_id)
+        let loaded = load_player(&database, &player_id, 7)
             .await
             .expect("load legacy player")
             .expect("legacy player exists");
@@ -596,6 +692,8 @@ mod tests {
         assert_eq!(loaded.stats, Some(starter_character_stats()));
         assert_eq!(loaded.inventory, Some(crate::items::starter_inventory()));
         assert_eq!(loaded.key_bindings, crate::keymap::default_bindings());
+        assert_eq!(loaded.skill_points, 7);
+        assert!(loaded.learned_skills.is_empty());
     }
 
     fn appearance() -> CharacterAppearance {

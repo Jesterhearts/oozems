@@ -8,6 +8,9 @@ use oozems_proto::v1::GuiSpriteTemplate;
 use oozems_proto::v1::InventoryState;
 use oozems_proto::v1::KeyAction;
 use oozems_proto::v1::KeyBinding;
+use oozems_proto::v1::SkillBook;
+
+use crate::keymap::BindingTarget;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GuiState {
@@ -34,13 +37,13 @@ pub struct GaugeFill {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct KeyDrag {
-    pub action: KeyAction,
+    pub target: BindingTarget,
     pub point: CanvasPoint,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct KeyIconPlacement {
-    pub action: KeyAction,
+    pub target: BindingTarget,
     pub asset_id: String,
     pub x: f32,
     pub y: f32,
@@ -52,6 +55,12 @@ pub struct KeyIconPlacement {
 struct CanvasRect {
     x: f32,
     y: f32,
+    width: f32,
+    height: f32,
+}
+
+struct BindingIcon {
+    asset_id: String,
     width: f32,
     height: f32,
 }
@@ -73,6 +82,8 @@ pub enum GuiAction {
     Equip { inventory_index: u32 },
     Unequip { slot: i32 },
     Drop { inventory_index: u32 },
+    AllocateSkill { skill_id: u32 },
+    UseSkill { skill_id: u32 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,15 +102,16 @@ pub fn click_action(
     state: GuiState,
     gui: &GameGui,
     inventory: Option<&InventoryState>,
+    skill_book: Option<&SkillBook>,
     viewport_width: f32,
     viewport_height: f32,
     point: CanvasPoint,
     button: PointerButton,
 ) -> Option<GuiAction> {
     if state.key_config_open {
-        return window_action(state, gui, inventory, point, button);
+        return window_action(state, gui, inventory, skill_book, point, button);
     }
-    window_action(state, gui, inventory, point, button)
+    window_action(state, gui, inventory, skill_book, point, button)
         .or_else(|| status_action(gui, viewport_width, viewport_height, point, button))
 }
 
@@ -140,7 +152,6 @@ pub fn apply_local_action(
                 state.stats_open = false;
                 state.equipment_open = false;
                 state.inventory_open = false;
-                state.skills_open = false;
             }
         }
         GuiAction::CloseStats => state.stats_open = false,
@@ -148,7 +159,11 @@ pub fn apply_local_action(
         GuiAction::CloseInventory => state.inventory_open = false,
         GuiAction::CloseKeyConfig => state.key_config_open = false,
         GuiAction::CloseSkills => state.skills_open = false,
-        GuiAction::Equip { .. } | GuiAction::Unequip { .. } | GuiAction::Drop { .. } => {
+        GuiAction::Equip { .. }
+        | GuiAction::Unequip { .. }
+        | GuiAction::Drop { .. }
+        | GuiAction::AllocateSkill { .. }
+        | GuiAction::UseSkill { .. } => {
             return false;
         }
     }
@@ -212,12 +227,17 @@ pub fn status_sprite_visible(
 }
 
 pub fn begin_key_drag(
+    state: GuiState,
     gui: &GameGui,
+    skill_book: &SkillBook,
     bindings: &[KeyBinding],
     point: CanvasPoint,
 ) -> Option<KeyDrag> {
-    let action = palette_action_at(gui, point).or_else(|| bound_action_at(gui, bindings, point))?;
-    Some(KeyDrag { action, point })
+    let target = skill_at_point(state, gui, skill_book, point)
+        .map(BindingTarget::Skill)
+        .or_else(|| palette_action_at(gui, point).map(BindingTarget::Action))
+        .or_else(|| bound_target_at(gui, bindings, point))?;
+    Some(KeyDrag { target, point })
 }
 
 pub fn move_key_drag(
@@ -234,11 +254,12 @@ pub fn finish_key_drag(
     point: CanvasPoint,
 ) -> Option<Vec<KeyBinding>> {
     let code = key_code_at(gui, point)?;
-    Some(crate::keymap::assign_action(bindings, code, drag.action))
+    Some(crate::keymap::assign_target(bindings, code, drag.target))
 }
 
 pub fn bound_key_icons(
     gui: &GameGui,
+    skill_book: &SkillBook,
     bindings: &[KeyBinding],
 ) -> Vec<KeyIconPlacement> {
     let Some(window) = valid_key_config_window(gui) else {
@@ -250,15 +271,14 @@ pub fn bound_key_icons(
     bindings
         .iter()
         .filter_map(|binding| {
-            let action = KeyAction::try_from(binding.action).ok()?;
-            let definition = action_definition(gui, action)?;
-            let icon = definition.icon.as_ref()?;
+            let target = crate::keymap::target_for_code(bindings, &binding.code)?;
+            let icon = target_icon(gui, skill_book, target)?;
             let slot = gui.key_slots.iter().find(|slot| {
                 slot.code == binding.code && valid_key_slot(slot, layout.width, layout.height)
             })?;
             Some(KeyIconPlacement {
-                action,
-                asset_id: icon.asset_id.clone(),
+                target,
+                asset_id: icon.asset_id,
                 x: window.x + slot.x + (slot.width - icon.width) / 2.0,
                 y: window.y + slot.y + (slot.height - icon.height) / 2.0,
                 width: icon.width,
@@ -270,12 +290,13 @@ pub fn bound_key_icons(
 
 pub fn dragged_key_icon(
     gui: &GameGui,
+    skill_book: &SkillBook,
     drag: &KeyDrag,
 ) -> Option<KeyIconPlacement> {
-    let icon = action_definition(gui, drag.action)?.icon.as_ref()?;
+    let icon = target_icon(gui, skill_book, drag.target)?;
     Some(KeyIconPlacement {
-        action: drag.action,
-        asset_id: icon.asset_id.clone(),
+        target: drag.target,
+        asset_id: icon.asset_id,
         x: drag.point.x - icon.width / 2.0,
         y: drag.point.y - icon.height / 2.0,
         width: icon.width,
@@ -341,14 +362,18 @@ fn window_action(
     state: GuiState,
     gui: &GameGui,
     inventory: Option<&InventoryState>,
+    skill_book: Option<&SkillBook>,
     point: CanvasPoint,
     button: PointerButton,
 ) -> Option<GuiAction> {
     if state.key_config_open {
-        return (button == PointerButton::Left
+        if button == PointerButton::Left
             && window_close_rect(gui.key_config_window.as_ref(), "key-config-close")
-                .is_some_and(|rect| rect_contains(rect, point)))
-        .then_some(GuiAction::CloseKeyConfig);
+                .is_some_and(|rect| rect_contains(rect, point))
+        {
+            return Some(GuiAction::CloseKeyConfig);
+        }
+        return None;
     }
     if state.inventory_open {
         if window_close_rect(gui.inventory_window.as_ref(), "inventory-close")
@@ -385,6 +410,11 @@ fn window_action(
         return Some(GuiAction::CloseSkills);
     }
     if button == PointerButton::Left && state.skills_open {
+        if let Some(skill_book) = skill_book
+            && let Some(action) = skill_action_at(state, gui, skill_book, point)
+        {
+            return Some(action);
+        }
         let window = gui.skill_window.as_ref()?;
         for (name, action) in [
             ("skill-page-previous", GuiAction::PreviousSkillPage),
@@ -455,13 +485,168 @@ fn palette_action_at(
     })
 }
 
-fn bound_action_at(
+pub fn can_allocate_skill(
+    book: &SkillBook,
+    skill_id: u32,
+) -> bool {
+    if book.available_points == 0 {
+        return false;
+    }
+    let Some(skill) = book.skills.iter().find(|skill| {
+        skill
+            .definition
+            .as_ref()
+            .is_some_and(|definition| definition.skill_id == skill_id)
+    }) else {
+        return false;
+    };
+    let Some(definition) = skill.definition.as_ref() else {
+        return false;
+    };
+    skill.level < definition.max_level
+        && definition.requirements.iter().all(|requirement| {
+            book.skills.iter().any(|candidate| {
+                candidate.level >= requirement.level
+                    && candidate
+                        .definition
+                        .as_ref()
+                        .is_some_and(|candidate_definition| {
+                            candidate_definition.skill_id == requirement.skill_id
+                        })
+            })
+        })
+}
+
+fn skill_action_at(
+    state: GuiState,
+    gui: &GameGui,
+    book: &SkillBook,
+    point: CanvasPoint,
+) -> Option<GuiAction> {
+    let (skill, row) = skill_row_at(state, gui, book, point)?;
+    let definition = skill.definition.as_ref()?;
+    let window = gui.skill_window.as_ref()?;
+    let layout = window.layout.as_ref()?;
+    let button = named_sprite_template(layout, "skill-point-up")?;
+    let button_rect = CanvasRect {
+        x: row.x + row.width - button.width - 2.0,
+        y: row.y + (row.height - button.height) / 2.0,
+        width: button.width,
+        height: button.height,
+    };
+    if rect_contains(button_rect, point) && can_allocate_skill(book, definition.skill_id) {
+        return Some(GuiAction::AllocateSkill {
+            skill_id: definition.skill_id,
+        });
+    }
+    let icon_slot = CanvasRect {
+        x: row.x,
+        y: row.y,
+        width: row.height,
+        height: row.height,
+    };
+    (skill.level > 0 && rect_contains(icon_slot, point)).then_some(GuiAction::UseSkill {
+        skill_id: definition.skill_id,
+    })
+}
+
+fn skill_at_point(
+    state: GuiState,
+    gui: &GameGui,
+    book: &SkillBook,
+    point: CanvasPoint,
+) -> Option<u32> {
+    let (skill, row) = skill_row_at(state, gui, book, point)?;
+    let icon_slot = CanvasRect {
+        x: row.x,
+        y: row.y,
+        width: row.height,
+        height: row.height,
+    };
+    (skill.level > 0 && rect_contains(icon_slot, point))
+        .then(|| {
+            skill
+                .definition
+                .as_ref()
+                .map(|definition| definition.skill_id)
+        })
+        .flatten()
+}
+
+fn skill_row_at<'a>(
+    state: GuiState,
+    gui: &GameGui,
+    book: &'a SkillBook,
+    point: CanvasPoint,
+) -> Option<(&'a oozems_proto::v1::PlayerSkill, CanvasRect)> {
+    if !state.skills_open || book.skills.is_empty() {
+        return None;
+    }
+    let window = gui.skill_window.as_ref()?;
+    let layout = window
+        .layout
+        .as_ref()
+        .filter(|layout| valid_layout(layout))?;
+    let list = named_region(layout, "skill-list")?;
+    let row = named_sprite_template(layout, "skill-row")?;
+    let page_size = (list.height / row.height).floor() as usize;
+    if page_size == 0 {
+        return None;
+    }
+    let page_count = book.skills.len().div_ceil(page_size);
+    let page = state.skill_page % page_count;
+    book.skills
+        .iter()
+        .skip(page * page_size)
+        .take(page_size)
+        .enumerate()
+        .find_map(|(index, skill)| {
+            let rect = CanvasRect {
+                x: window.x + list.x,
+                y: window.y + list.y + index as f32 * row.height,
+                width: row.width,
+                height: row.height,
+            };
+            rect_contains(rect, point).then_some((skill, rect))
+        })
+}
+
+fn bound_target_at(
     gui: &GameGui,
     bindings: &[KeyBinding],
     point: CanvasPoint,
-) -> Option<KeyAction> {
+) -> Option<BindingTarget> {
     let code = key_code_at(gui, point)?;
-    crate::keymap::action_for_code(bindings, code)
+    crate::keymap::target_for_code(bindings, code)
+}
+
+fn target_icon(
+    gui: &GameGui,
+    skill_book: &SkillBook,
+    target: BindingTarget,
+) -> Option<BindingIcon> {
+    match target {
+        BindingTarget::Action(action) => {
+            let icon = action_definition(gui, action)?.icon.as_ref()?;
+            Some(BindingIcon {
+                asset_id: icon.asset_id.clone(),
+                width: icon.width,
+                height: icon.height,
+            })
+        }
+        BindingTarget::Skill(skill_id) => {
+            let definition = skill_book
+                .skills
+                .iter()
+                .filter_map(|skill| skill.definition.as_ref())
+                .find(|definition| definition.skill_id == skill_id)?;
+            Some(BindingIcon {
+                asset_id: definition.icon_asset_id.clone(),
+                width: definition.icon_width,
+                height: definition.icon_height,
+            })
+        }
+    }
 }
 
 fn key_code_at(
@@ -741,11 +926,15 @@ mod tests {
     use oozems_proto::v1::GuiLayout;
     use oozems_proto::v1::GuiRegion;
     use oozems_proto::v1::GuiSprite;
+    use oozems_proto::v1::GuiSpriteTemplate;
     use oozems_proto::v1::GuiWindow;
     use oozems_proto::v1::InventoryState;
     use oozems_proto::v1::KeyAction;
     use oozems_proto::v1::KeyActionDefinition;
     use oozems_proto::v1::KeySlot;
+    use oozems_proto::v1::PlayerSkill;
+    use oozems_proto::v1::SkillBook;
+    use oozems_proto::v1::SkillDefinition;
 
     use super::CanvasPoint;
     use super::GuiAction;
@@ -762,6 +951,7 @@ mod tests {
     use super::sprite_screen_x;
     use super::status_sprite_visible;
     use super::valid_layout;
+    use crate::keymap::BindingTarget;
 
     #[test]
     fn stat_button_toggles_the_window_and_close_hides_it() {
@@ -771,6 +961,7 @@ mod tests {
         let action = click_action(
             state,
             &gui,
+            None,
             None,
             960.0,
             600.0,
@@ -783,6 +974,7 @@ mod tests {
         let action = click_action(
             state,
             &gui,
+            None,
             None,
             960.0,
             600.0,
@@ -816,6 +1008,7 @@ mod tests {
                 state,
                 &gui,
                 Some(&inventory),
+                None,
                 960.0,
                 600.0,
                 CanvasPoint { x: 213.0, y: 131.0 },
@@ -828,6 +1021,7 @@ mod tests {
                 state,
                 &gui,
                 Some(&inventory),
+                None,
                 960.0,
                 600.0,
                 CanvasPoint { x: 213.0, y: 131.0 },
@@ -840,6 +1034,7 @@ mod tests {
                 state,
                 &gui,
                 Some(&inventory),
+                None,
                 960.0,
                 600.0,
                 CanvasPoint { x: 92.0, y: 215.0 },
@@ -915,17 +1110,19 @@ mod tests {
     #[test]
     fn key_actions_drag_from_the_wz_palette_onto_a_keyboard_slot() {
         let gui = gui_fixture();
+        let skill_book = SkillBook::default();
         let point = CanvasPoint { x: 175.0, y: 330.0 };
-        let drag = begin_key_drag(&gui, &[], point).expect("pickup palette icon");
+        let drag = begin_key_drag(GuiState::default(), &gui, &skill_book, &[], point)
+            .expect("pickup palette icon");
 
-        assert_eq!(drag.action, KeyAction::PickUp);
+        assert_eq!(drag.target, BindingTarget::Action(KeyAction::PickUp));
         let bindings = finish_key_drag(&gui, &[], &drag, CanvasPoint { x: 250.0, y: 197.0 })
             .expect("KeyA target");
         assert_eq!(bindings.len(), 1);
         assert_eq!(bindings[0].code, "KeyA");
         assert_eq!(bindings[0].action, KeyAction::PickUp as i32);
 
-        let icons = bound_key_icons(&gui, &bindings);
+        let icons = bound_key_icons(&gui, &skill_book, &bindings);
         assert_eq!(icons.len(), 1);
         assert_eq!((icons[0].x, icons[0].y), (246.0, 193.0));
     }
@@ -938,6 +1135,7 @@ mod tests {
         let open = click_action(
             state,
             &gui,
+            None,
             None,
             960.0,
             600.0,
@@ -952,6 +1150,7 @@ mod tests {
         let close = click_action(
             state,
             &gui,
+            None,
             None,
             960.0,
             600.0,
@@ -973,6 +1172,7 @@ mod tests {
             state,
             &gui,
             None,
+            None,
             960.0,
             600.0,
             CanvasPoint { x: 670.0, y: 540.0 },
@@ -986,6 +1186,7 @@ mod tests {
         let next = click_action(
             state,
             &gui,
+            None,
             None,
             960.0,
             600.0,
@@ -1001,6 +1202,7 @@ mod tests {
             state,
             &gui,
             None,
+            None,
             960.0,
             600.0,
             CanvasPoint { x: 181.0, y: 86.0 },
@@ -1010,6 +1212,61 @@ mod tests {
         assert_eq!(close, GuiAction::CloseSkills);
         assert!(apply_local_action(&mut state, close));
         assert!(!state.skills_open);
+    }
+
+    #[test]
+    fn learned_skills_allocate_use_and_drag_from_native_rows() {
+        let gui = gui_fixture();
+        let mut book = skill_book_fixture(0, 1);
+        let state = GuiState {
+            skills_open: true,
+            ..GuiState::default()
+        };
+
+        assert_eq!(
+            click_action(
+                state,
+                &gui,
+                None,
+                Some(&book),
+                960.0,
+                600.0,
+                CanvasPoint { x: 165.0, y: 186.0 },
+                PointerButton::Left,
+            ),
+            Some(GuiAction::AllocateSkill { skill_id: 1_000 })
+        );
+        book.skills[0].level = 1;
+        assert_eq!(
+            click_action(
+                state,
+                &gui,
+                None,
+                Some(&book),
+                960.0,
+                600.0,
+                CanvasPoint { x: 40.0, y: 180.0 },
+                PointerButton::Left,
+            ),
+            Some(GuiAction::UseSkill { skill_id: 1_000 })
+        );
+
+        let drag = begin_key_drag(
+            GuiState {
+                key_config_open: true,
+                ..state
+            },
+            &gui,
+            &book,
+            &[],
+            CanvasPoint { x: 40.0, y: 180.0 },
+        )
+        .expect("learned skill drag");
+        assert_eq!(drag.target, BindingTarget::Skill(1_000));
+        let bindings = finish_key_drag(&gui, &[], &drag, CanvasPoint { x: 250.0, y: 197.0 })
+            .expect("KeyA target");
+        assert_eq!(bindings[0].skill_id, 1_000);
+        assert_eq!(bindings[0].action, KeyAction::Unspecified as i32);
     }
 
     #[test]
@@ -1079,7 +1336,12 @@ mod tests {
                     height: 289.0,
                     background: Some(sprite("skill-background", 0.0, 0.0, 175.0, 289.0)),
                     sprites: vec![sprite("skill-close", 160.0, 5.0, 10.0, 10.0)],
+                    sprite_templates: vec![
+                        template("skill-row", 141.0, 35.0),
+                        template("skill-point-up", 12.0, 12.0),
+                    ],
                     regions: vec![
+                        region("skill-list", 17.0, 94.0, 141.0, 140.0),
                         region("skill-page-previous", 80.0, 64.0, 18.0, 19.0),
                         region("skill-page-next", 139.0, 64.0, 18.0, 19.0),
                     ],
@@ -1149,6 +1411,43 @@ mod tests {
             y,
             width,
             height,
+        }
+    }
+
+    fn template(
+        name: &str,
+        width: f32,
+        height: f32,
+    ) -> GuiSpriteTemplate {
+        GuiSpriteTemplate {
+            name: name.to_owned(),
+            asset_id: format!("asset-{name}"),
+            width,
+            height,
+            origin_x: 0.0,
+            origin_y: 0.0,
+        }
+    }
+
+    fn skill_book_fixture(
+        level: u32,
+        available_points: u32,
+    ) -> SkillBook {
+        SkillBook {
+            job_id: 0,
+            available_points,
+            skills: vec![PlayerSkill {
+                definition: Some(SkillDefinition {
+                    skill_id: 1_000,
+                    max_level: 3,
+                    icon_asset_id: "skill-icon".to_owned(),
+                    icon_width: 32.0,
+                    icon_height: 32.0,
+                    ..SkillDefinition::default()
+                }),
+                level,
+            }],
+            ..SkillBook::default()
         }
     }
 }

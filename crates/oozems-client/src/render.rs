@@ -425,11 +425,13 @@ fn draw_key_config_window(game: &Game) {
     if !draw_window(game, window) {
         return;
     }
-    for placement in game_gui::bound_key_icons(&game.gui, &game.key_bindings.borrow()) {
+    for placement in
+        game_gui::bound_key_icons(&game.gui, &game.skill_book, &game.key_bindings.borrow())
+    {
         draw_key_icon(game, &placement);
     }
     if let Some(drag) = game.key_drag.as_ref()
-        && let Some(placement) = game_gui::dragged_key_icon(&game.gui, drag)
+        && let Some(placement) = game_gui::dragged_key_icon(&game.gui, &game.skill_book, drag)
     {
         draw_key_icon(game, &placement);
     }

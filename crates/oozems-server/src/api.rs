@@ -7,6 +7,8 @@ use axum::http::header;
 use axum::response::IntoResponse;
 use axum::response::Response;
 use oozems_proto::PROTOBUF_CONTENT_TYPE;
+use oozems_proto::v1::AllocateSkillPointRequest;
+use oozems_proto::v1::AllocateSkillPointResponse;
 use oozems_proto::v1::BootstrapRequest;
 use oozems_proto::v1::BootstrapResponse;
 use oozems_proto::v1::CreateCharacterRequest;
@@ -28,6 +30,8 @@ use oozems_proto::v1::PlayerState;
 use oozems_proto::v1::SavePlayerRequest;
 use oozems_proto::v1::SavePlayerResponse;
 use oozems_proto::v1::UnequipItemRequest;
+use oozems_proto::v1::UseSkillRequest;
+use oozems_proto::v1::UseSkillResponse;
 use oozems_proto::v1::Vec2;
 use prost::Message;
 use thiserror::Error;
@@ -103,6 +107,7 @@ pub async fn create_character(
         appearance,
         position,
         experience_required,
+        state.gameplay.initial_skill_points,
     )
     .await?;
 
@@ -317,11 +322,76 @@ pub async fn get_skill_book(
     let player_id = parse_player_id(&request.player_id)?;
     let player = require_player(&state, &player_id).await?;
     let job_id = player.stats.as_ref().map_or(0, |stats| stats.job_id);
-    let catalog = state.catalog.clone();
-    let skill_book = tokio::task::spawn_blocking(move || catalog.skill_book(job_id)).await??;
+    let skill_book = load_skill_book(&state, job_id).await?;
+    let skill_book =
+        crate::skills::personalize_skill_book(skill_book, &player).map_err(skill_rule_error)?;
 
     Ok(Protobuf(GetSkillBookResponse {
         skill_book: Some(skill_book),
+    }))
+}
+
+pub async fn allocate_skill_point(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Protobuf<AllocateSkillPointResponse>, ApiError> {
+    let request: AllocateSkillPointRequest = decode_request(&headers, body)?;
+    let player_id = parse_player_id(&request.player_id)?;
+    let current = require_player(&state, &player_id).await?;
+    let job_id = current.stats.as_ref().map_or(0, |stats| stats.job_id);
+    let base_book = load_skill_book(&state, job_id).await?;
+    let updated = crate::skills::allocate_skill_point(current, &base_book, request.skill_id)
+        .map_err(skill_rule_error)?;
+    let player = crate::database::save_player(&state.database, &updated).await?;
+    let skill_book =
+        crate::skills::personalize_skill_book(base_book, &player).map_err(skill_rule_error)?;
+
+    Ok(Protobuf(AllocateSkillPointResponse {
+        player: Some(player),
+        skill_book: Some(skill_book),
+    }))
+}
+
+pub async fn use_skill(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Protobuf<UseSkillResponse>, ApiError> {
+    let request: UseSkillRequest = decode_request(&headers, body)?;
+    let player_id = parse_player_id(&request.player_id)?;
+    let current = require_player(&state, &player_id).await?;
+    let job_id = current.stats.as_ref().map_or(0, |stats| stats.job_id);
+    let book = load_skill_book(&state, job_id).await?;
+    let prepared =
+        crate::skills::prepare_skill_use(current, &book, request.skill_id, &state.formulas)
+            .map_err(skill_rule_error)?;
+    let now_ms = unix_time_ms()?;
+    crate::skills::reserve_skill_cooldown(
+        &state.skill_cooldowns,
+        player_id.as_str(),
+        request.skill_id,
+        now_ms,
+        prepared.cooldown_ms,
+    )
+    .map_err(skill_rule_error)?;
+    let player = match crate::database::save_player(&state.database, &prepared.player).await {
+        Ok(player) => player,
+        Err(error) => {
+            if let Err(release_error) = crate::skills::release_skill_cooldown(
+                &state.skill_cooldowns,
+                player_id.as_str(),
+                request.skill_id,
+            ) {
+                tracing::error!(%release_error, "failed to release a skill cooldown after a save error");
+            }
+            return Err(error.into());
+        }
+    };
+
+    Ok(Protobuf(UseSkillResponse {
+        player: Some(player),
+        result: Some(prepared.result),
     }))
 }
 
@@ -350,6 +420,8 @@ pub async fn save_player(
         .await?
         .filter(|player| player.appearance.is_some())
         .ok_or_else(|| ApiError::not_found("player_not_found", "player does not exist"))?;
+    crate::skills::validate_bound_skills(&requested.key_bindings, &current.learned_skills)
+        .map_err(skill_rule_error)?;
     let updated =
         crate::database::apply_player_movement(current, &requested, map.width, map.height);
     let player = crate::database::save_player(&state.database, &updated).await?;
@@ -398,13 +470,25 @@ async fn load_player(
     state: &AppState,
     player_id: &PlayerId,
 ) -> Result<Option<PlayerState>, ApiError> {
-    crate::database::load_player(&state.database, player_id)
-        .await?
-        .map(|player| {
-            crate::experience::apply_curve(player, state.experience.default_curve())
-                .map_err(ApiError::from)
-        })
-        .transpose()
+    crate::database::load_player(
+        &state.database,
+        player_id,
+        state.gameplay.initial_skill_points,
+    )
+    .await?
+    .map(|player| {
+        crate::experience::apply_curve(player, state.experience.default_curve())
+            .map_err(ApiError::from)
+    })
+    .transpose()
+}
+
+async fn load_skill_book(
+    state: &AppState,
+    job_id: u32,
+) -> Result<oozems_proto::v1::SkillBook, ApiError> {
+    let catalog = state.catalog.clone();
+    Ok(tokio::task::spawn_blocking(move || catalog.skill_book(job_id)).await??)
 }
 
 fn parse_player_id(value: &str) -> Result<PlayerId, ApiError> {
@@ -431,6 +515,21 @@ fn pick_up_error(error: crate::items::PickUpError) -> ApiError {
         crate::items::PickUpError::Rule(error) => item_rule_error(error),
         crate::items::PickUpError::Store(error) => error.into(),
     }
+}
+
+fn skill_rule_error(error: crate::skills::SkillRuleError) -> ApiError {
+    match error {
+        crate::skills::SkillRuleError::CooldownStore
+        | crate::skills::SkillRuleError::Formula { .. } => ApiError::SkillRules(error),
+        _ => ApiError::bad_request("invalid_skill_action", error.to_string()),
+    }
+}
+
+fn unix_time_ms() -> Result<u64, ApiError> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
+        .map_err(|_| ApiError::Clock)
 }
 
 fn starter_position(map: &oozems_proto::v1::Map) -> Vec2 {
@@ -516,6 +615,10 @@ pub enum ApiError {
     GameRules(#[from] crate::experience::ExperienceRuleError),
     #[error("dropped-item operation failed")]
     Drops(#[from] crate::items::DropStoreError),
+    #[error("skill rules could not be applied")]
+    SkillRules(#[from] crate::skills::SkillRuleError),
+    #[error("system time is earlier than the Unix epoch")]
+    Clock,
 }
 
 impl ApiError {
@@ -599,6 +702,22 @@ impl IntoResponse for ApiError {
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "drop_store_error",
                     "the server could not access dropped items".to_owned(),
+                )
+            }
+            Self::SkillRules(error) => {
+                tracing::error!(%error, "skill rules could not be applied");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "skill_rules_error",
+                    "the server could not apply its skill rules".to_owned(),
+                )
+            }
+            Self::Clock => {
+                tracing::error!("system time is earlier than the Unix epoch");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "clock_error",
+                    "the server clock is unavailable".to_owned(),
                 )
             }
         };

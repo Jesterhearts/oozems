@@ -9,12 +9,15 @@ mod experience;
 mod gameplay;
 mod items;
 mod keymap;
+mod skill_formula;
+mod skills;
 
 use anyhow::Context;
 use config::Config;
 use content::ContentCatalog;
 use experience::ExperienceCurves;
 use gameplay::GameplayConfig;
+use skill_formula::FormulaCatalog;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -32,6 +35,7 @@ async fn main() -> anyhow::Result<()> {
 
     let experience = ExperienceCurves::load(&config.config_dir.join("xp-curves.toml"))?;
     let gameplay = GameplayConfig::load(&config.config_dir.join("gameplay.toml"))?;
+    let formulas = FormulaCatalog::load(&config.config_dir.join("skill-formulas.toml"))?;
     info!(
         curve = experience.default_curve().name(),
         max_level = experience.default_curve().max_level(),
@@ -39,7 +43,15 @@ async fn main() -> anyhow::Result<()> {
     );
     info!(
         item_drop_despawn = %humantime::format_duration(gameplay.item_drop_despawn),
+        initial_skill_points = gameplay.initial_skill_points,
         "gameplay configuration ready"
+    );
+    info!(
+        formula_count = formulas.len(),
+        profile_count = formulas.profile_count(),
+        mapping_count = formulas.mapping_count(),
+        source = formulas.source_url(),
+        "formula profile configuration ready"
     );
     let catalog =
         ContentCatalog::load_with_wz(&config.content_dir, &config.asset_dir, &config.wz_dir)?;
@@ -49,6 +61,7 @@ async fn main() -> anyhow::Result<()> {
         catalog,
         experience,
         gameplay,
+        formulas,
         &config.public_dir,
         &config.asset_dir,
     );

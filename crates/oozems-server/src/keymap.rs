@@ -27,10 +27,14 @@ pub enum KeyBindingError {
     UnsupportedCode { code: String },
     #[error("keyboard action {action} is not supported")]
     UnsupportedAction { action: i32 },
+    #[error("keyboard binding for {code:?} must contain exactly one action or skill")]
+    InvalidTarget { code: String },
     #[error("keyboard code {code:?} has more than one action")]
     DuplicateCode { code: String },
     #[error("keyboard action {action:?} has more than one key")]
     DuplicateAction { action: KeyAction },
+    #[error("skill {skill_id} has more than one key")]
+    DuplicateSkill { skill_id: u32 },
 }
 
 pub const ACTIONS: &[KeyActionSpec] = &[
@@ -193,6 +197,7 @@ pub fn default_bindings() -> Vec<KeyBinding> {
     .map(|(code, action)| KeyBinding {
         code: code.to_owned(),
         action: action as i32,
+        skill_id: 0,
     })
     .collect()
 }
@@ -200,20 +205,18 @@ pub fn default_bindings() -> Vec<KeyBinding> {
 pub fn validate_bindings(bindings: &[KeyBinding]) -> Result<(), KeyBindingError> {
     let mut codes = HashSet::new();
     let mut actions = HashSet::new();
+    let mut skills = HashSet::new();
     for binding in bindings {
         if !SLOTS.iter().any(|slot| slot.code == binding.code) {
             return Err(KeyBindingError::UnsupportedCode {
                 code: binding.code.clone(),
             });
         }
-        let action = KeyAction::try_from(binding.action).map_err(|_| {
-            KeyBindingError::UnsupportedAction {
-                action: binding.action,
-            }
-        })?;
-        if !ACTIONS.iter().any(|spec| spec.action == action) {
-            return Err(KeyBindingError::UnsupportedAction {
-                action: binding.action,
+        let has_action = binding.action != KeyAction::Unspecified as i32;
+        let has_skill = binding.skill_id != 0;
+        if has_action == has_skill {
+            return Err(KeyBindingError::InvalidTarget {
+                code: binding.code.clone(),
             });
         }
         if !codes.insert(binding.code.clone()) {
@@ -221,8 +224,24 @@ pub fn validate_bindings(bindings: &[KeyBinding]) -> Result<(), KeyBindingError>
                 code: binding.code.clone(),
             });
         }
-        if !actions.insert(action) {
-            return Err(KeyBindingError::DuplicateAction { action });
+        if has_action {
+            let action = KeyAction::try_from(binding.action).map_err(|_| {
+                KeyBindingError::UnsupportedAction {
+                    action: binding.action,
+                }
+            })?;
+            if !ACTIONS.iter().any(|spec| spec.action == action) {
+                return Err(KeyBindingError::UnsupportedAction {
+                    action: binding.action,
+                });
+            }
+            if !actions.insert(action) {
+                return Err(KeyBindingError::DuplicateAction { action });
+            }
+        } else if !skills.insert(binding.skill_id) {
+            return Err(KeyBindingError::DuplicateSkill {
+                skill_id: binding.skill_id,
+            });
         }
     }
     Ok(())
@@ -251,10 +270,12 @@ mod tests {
             KeyBinding {
                 code: "KeyA".to_owned(),
                 action: KeyAction::Jump as i32,
+                skill_id: 0,
             },
             KeyBinding {
                 code: "KeyB".to_owned(),
                 action: KeyAction::Jump as i32,
+                skill_id: 0,
             },
         ];
 
@@ -262,6 +283,38 @@ mod tests {
             validate_bindings(&bindings),
             Err(KeyBindingError::DuplicateAction {
                 action: KeyAction::Jump
+            })
+        );
+    }
+
+    #[test]
+    fn skill_targets_are_validated_and_unique() {
+        let duplicate = vec![
+            KeyBinding {
+                code: "KeyA".to_owned(),
+                action: KeyAction::Unspecified as i32,
+                skill_id: 1_000,
+            },
+            KeyBinding {
+                code: "KeyB".to_owned(),
+                action: KeyAction::Unspecified as i32,
+                skill_id: 1_000,
+            },
+        ];
+        assert_eq!(
+            validate_bindings(&duplicate),
+            Err(KeyBindingError::DuplicateSkill { skill_id: 1_000 })
+        );
+
+        let ambiguous = [KeyBinding {
+            code: "KeyA".to_owned(),
+            action: KeyAction::Jump as i32,
+            skill_id: 1_000,
+        }];
+        assert_eq!(
+            validate_bindings(&ambiguous),
+            Err(KeyBindingError::InvalidTarget {
+                code: "KeyA".to_owned(),
             })
         );
     }

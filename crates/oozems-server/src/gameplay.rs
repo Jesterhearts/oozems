@@ -9,18 +9,26 @@ use thiserror::Error;
 #[derive(Clone, Copy, Debug)]
 pub struct GameplayConfig {
     pub item_drop_despawn: Duration,
+    pub initial_skill_points: u32,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct GameplayFile {
     items: ItemRulesFile,
+    skills: SkillRulesFile,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ItemRulesFile {
     drop_despawn: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SkillRulesFile {
+    initial_points: u32,
 }
 
 #[derive(Debug, Error)]
@@ -72,7 +80,10 @@ impl GameplayConfig {
             });
         }
 
-        Ok(Self { item_drop_despawn })
+        Ok(Self {
+            item_drop_despawn,
+            initial_skill_points: file.skills.initial_points,
+        })
     }
 }
 
@@ -89,20 +100,31 @@ mod tests {
         let path = directory.path().join("gameplay.toml");
         fs::write(
             &path,
-            "# See README.md for configuration reference.\n[items]\ndrop_despawn = \"10m\"\n",
+            concat!(
+                "# See README.md for configuration reference.\n",
+                "[items]\n",
+                "drop_despawn = \"10m\"\n",
+                "[skills]\n",
+                "initial_points = 3\n",
+            ),
         )
         .expect("write configuration");
 
         let config = GameplayConfig::load(&path).expect("valid configuration");
 
         assert_eq!(config.item_drop_despawn, Duration::from_secs(600));
+        assert_eq!(config.initial_skill_points, 3);
     }
 
     #[test]
     fn rejects_zero_drop_duration() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("gameplay.toml");
-        fs::write(&path, "[items]\ndrop_despawn = \"0s\"\n").expect("write configuration");
+        fs::write(
+            &path,
+            "[items]\ndrop_despawn = \"0s\"\n[skills]\ninitial_points = 3\n",
+        )
+        .expect("write configuration");
 
         assert!(GameplayConfig::load(&path).is_err());
     }

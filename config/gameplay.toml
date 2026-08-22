@@ -2,3 +2,6 @@
 
 [items]
 drop_despawn = "10m"
+
+[skills]
+initial_points = 3

@@ -39,6 +39,8 @@ use crate::movement::PlayerInput;
 use crate::render;
 use crate::show_status;
 
+mod skill_actions;
+
 const SAVE_INTERVAL_MS: f64 = 2_000.0;
 
 pub struct Game {
@@ -63,11 +65,21 @@ pub struct Game {
     save_failed: Rc<Cell<bool>>,
     save_in_flight: Rc<std::cell::Cell<bool>>,
     item_action_in_flight: Rc<Cell<bool>>,
+    skill_action_in_flight: Rc<Cell<bool>>,
     transition_in_flight: Rc<std::cell::Cell<bool>>,
     dirty: bool,
     suppress_click: Rc<Cell<bool>>,
     last_frame_ms: f64,
     next_save_ms: f64,
+    active_skill_effects: Vec<ActiveSkillEffect>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ActiveSkillEffect {
+    skill_id: u32,
+    speed_bonus: i32,
+    jump_bonus: i32,
+    expires_at_ms: f64,
 }
 
 pub async fn run(
@@ -173,11 +185,13 @@ fn build_game(
         save_failed: Rc::new(Cell::new(false)),
         save_in_flight: Rc::new(std::cell::Cell::new(false)),
         item_action_in_flight: Rc::new(Cell::new(false)),
+        skill_action_in_flight: Rc::new(Cell::new(false)),
         transition_in_flight: Rc::new(std::cell::Cell::new(false)),
         dirty: false,
         suppress_click: Rc::new(Cell::new(false)),
         last_frame_ms: 0.0,
         next_save_ms: SAVE_INTERVAL_MS,
+        active_skill_effects: Vec::new(),
     }));
     install_canvas_input(&canvas, game.clone())?;
     Ok(game)
@@ -255,7 +269,13 @@ fn install_canvas_input(
             if !game.gui_state.borrow().key_config_open {
                 None
             } else {
-                game_gui::begin_key_drag(&game.gui, &game.key_bindings.borrow(), point)
+                game_gui::begin_key_drag(
+                    *game.gui_state.borrow(),
+                    &game.gui,
+                    &game.skill_book,
+                    &game.key_bindings.borrow(),
+                    point,
+                )
             }
         };
         if let Some(drag) = drag {
@@ -375,6 +395,7 @@ fn handle_canvas_pointer(
             *game.gui_state.borrow(),
             &game.gui,
             game.player.inventory.as_ref(),
+            Some(&game.skill_book),
             canvas.width() as f32,
             canvas.height() as f32,
             point,
@@ -388,7 +409,12 @@ fn handle_canvas_pointer(
     if game_gui::apply_local_action(&mut gui_state.borrow_mut(), action) {
         return true;
     }
-    begin_item_action(game.clone(), action);
+    match action {
+        GuiAction::AllocateSkill { .. } | GuiAction::UseSkill { .. } => {
+            skill_actions::begin(game.clone(), action);
+        }
+        _ => begin_item_action(game.clone(), action),
+    }
     true
 }
 
@@ -498,7 +524,9 @@ async fn request_item_action(
         | GuiAction::CloseEquipment
         | GuiAction::CloseInventory
         | GuiAction::CloseKeyConfig
-        | GuiAction::CloseSkills => unreachable!("local GUI action reached the server"),
+        | GuiAction::CloseSkills
+        | GuiAction::AllocateSkill { .. }
+        | GuiAction::UseSkill { .. } => unreachable!("non-item GUI action reached the item server"),
     }
 }
 
@@ -599,7 +627,9 @@ fn item_action_message(action: GuiAction) -> &'static str {
         | GuiAction::CloseEquipment
         | GuiAction::CloseInventory
         | GuiAction::CloseKeyConfig
-        | GuiAction::CloseSkills => "GUI updated.",
+        | GuiAction::CloseSkills
+        | GuiAction::AllocateSkill { .. }
+        | GuiAction::UseSkill { .. } => "GUI updated.",
     }
 }
 
@@ -613,6 +643,9 @@ fn schedule_frame(game: Rc<RefCell<Game>>) -> Result<(), String> {
         }
         if update.pick_up {
             begin_pick_up(game.clone());
+        }
+        if let Some(skill_id) = update.skill_id {
+            skill_actions::begin(game.clone(), GuiAction::UseSkill { skill_id });
         }
         if let Some(transition) = update.transition {
             begin_map_transition(game.clone(), transition);
@@ -630,6 +663,7 @@ fn schedule_frame(game: Rc<RefCell<Game>>) -> Result<(), String> {
 struct FrameUpdate {
     transition: Option<MapTransition>,
     pick_up: bool,
+    skill_id: Option<u32>,
 }
 
 fn update(
@@ -658,11 +692,13 @@ fn update(
     let key_config_open = game.gui_state.borrow().key_config_open;
     if key_config_open {
         input.player = PlayerInput::default();
+        input.skills.clear();
         input
             .actions
             .retain(|action| *action == KeyAction::OpenKeyConfig);
     }
     let pick_up = apply_key_actions(&mut game.gui_state.borrow_mut(), &game.gui, &input.actions);
+    apply_active_skill_effects(game, &mut input.player, timestamp_ms);
 
     let transition = if game.transition_in_flight.get() {
         None
@@ -676,7 +712,27 @@ fn update(
     FrameUpdate {
         transition,
         pick_up,
+        skill_id: input.skills.into_iter().next(),
     }
+}
+
+fn apply_active_skill_effects(
+    game: &mut Game,
+    input: &mut PlayerInput,
+    timestamp_ms: f64,
+) {
+    game.active_skill_effects
+        .retain(|effect| effect.expires_at_ms > timestamp_ms);
+    input.speed_bonus = game
+        .active_skill_effects
+        .iter()
+        .map(|effect| effect.speed_bonus)
+        .fold(0, i32::saturating_add);
+    input.jump_bonus = game
+        .active_skill_effects
+        .iter()
+        .map(|effect| effect.jump_bonus)
+        .fold(0, i32::saturating_add);
 }
 
 fn apply_key_actions(

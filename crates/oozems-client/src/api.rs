@@ -1,6 +1,8 @@
 use gloo_net::http::Request;
 use js_sys::Uint8Array;
 use oozems_proto::PROTOBUF_CONTENT_TYPE;
+use oozems_proto::v1::AllocateSkillPointRequest;
+use oozems_proto::v1::AllocateSkillPointResponse;
 use oozems_proto::v1::BootstrapRequest;
 use oozems_proto::v1::BootstrapResponse;
 use oozems_proto::v1::CharacterAppearance;
@@ -28,6 +30,8 @@ use oozems_proto::v1::SavePlayerRequest;
 use oozems_proto::v1::SavePlayerResponse;
 use oozems_proto::v1::SkillBook;
 use oozems_proto::v1::UnequipItemRequest;
+use oozems_proto::v1::UseSkillRequest;
+use oozems_proto::v1::UseSkillResponse;
 use oozems_proto::v1::Vec2;
 use prost::Message;
 use thiserror::Error;
@@ -179,6 +183,34 @@ pub async fn get_skill_book(player_id: &str) -> Result<SkillBook, ClientError> {
     response
         .skill_book
         .ok_or(ClientError::MissingData("skill book"))
+}
+
+pub async fn allocate_skill_point(
+    player_id: &str,
+    skill_id: u32,
+) -> Result<AllocateSkillPointResponse, ClientError> {
+    post_protobuf(
+        "/api/v1/skills/allocate",
+        AllocateSkillPointRequest {
+            player_id: player_id.to_owned(),
+            skill_id,
+        },
+    )
+    .await
+}
+
+pub async fn use_skill(
+    player_id: &str,
+    skill_id: u32,
+) -> Result<UseSkillResponse, ClientError> {
+    post_protobuf(
+        "/api/v1/skills/use",
+        UseSkillRequest {
+            player_id: player_id.to_owned(),
+            skill_id,
+        },
+    )
+    .await
 }
 
 pub async fn save_player(player: PlayerState) -> Result<PlayerState, ClientError> {

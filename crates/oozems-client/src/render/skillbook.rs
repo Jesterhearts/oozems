@@ -19,6 +19,8 @@ struct SkillUi<'a> {
     page_label: &'a GuiRegion,
     page_next: &'a GuiRegion,
     row: &'a GuiSpriteTemplate,
+    point_up: Option<&'a GuiSpriteTemplate>,
+    point_up_disabled: Option<&'a GuiSpriteTemplate>,
     page_size: usize,
 }
 
@@ -57,6 +59,7 @@ pub(super) fn draw(game: &Game) {
         draw_sprite_template(game, ui.row, row_x, row_y);
         draw_skill_icon(game, definition, row_x, row_y, ui.row.height);
         draw_skill_text(game, definition, skill.level, row_x, row_y, ui.row);
+        draw_skill_point_button(game, definition.skill_id, row_x, row_y, ui.row, &ui);
     }
     draw_page_controls(game, window.x, window.y, page, page_count, &ui);
 }
@@ -69,6 +72,8 @@ fn resolve_skill_ui(layout: &GuiLayout) -> Option<SkillUi<'_>> {
     let page_label = game_gui::named_region(layout, "skill-page-label")?;
     let page_next = game_gui::named_region(layout, "skill-page-next")?;
     let row = game_gui::named_sprite_template(layout, "skill-row")?;
+    let point_up = game_gui::named_sprite_template(layout, "skill-point-up");
+    let point_up_disabled = game_gui::named_sprite_template(layout, "skill-point-up-disabled");
     if row.width > list.width || row.height > list.height {
         return None;
     }
@@ -81,8 +86,32 @@ fn resolve_skill_ui(layout: &GuiLayout) -> Option<SkillUi<'_>> {
         page_label,
         page_next,
         row,
+        point_up,
+        point_up_disabled,
         page_size,
     })
+}
+
+fn draw_skill_point_button(
+    game: &Game,
+    skill_id: u32,
+    row_x: f32,
+    row_y: f32,
+    row: &GuiSpriteTemplate,
+    ui: &SkillUi<'_>,
+) {
+    let enabled = game_gui::can_allocate_skill(&game.skill_book, skill_id);
+    let template = if enabled {
+        ui.point_up
+    } else {
+        ui.point_up_disabled.or(ui.point_up)
+    };
+    let Some(template) = template else {
+        return;
+    };
+    let x = row_x + row.width - template.width - 2.0;
+    let y = row_y + (row.height - template.height) / 2.0;
+    draw_sprite_template(game, template, x, y);
 }
 
 fn draw_header(

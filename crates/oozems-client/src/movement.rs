@@ -34,6 +34,8 @@ pub struct PlayerInput {
     pub vertical: f32,
     pub jump_pressed: bool,
     pub portal_pressed: bool,
+    pub speed_bonus: i32,
+    pub jump_bonus: i32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -106,7 +108,7 @@ pub fn update_player(
         };
         if input.jump_pressed {
             state.climbing = None;
-            state.velocity_y = -JUMP_SPEED;
+            state.velocity_y = -modified_speed(JUMP_SPEED, input.jump_bonus);
             return move_with_gravity(map, position, state, input, elapsed_seconds);
         }
         return move_on_ladder(
@@ -120,7 +122,7 @@ pub fn update_player(
     }
 
     if input.jump_pressed && state.on_ground {
-        state.velocity_y = -JUMP_SPEED;
+        state.velocity_y = -modified_speed(JUMP_SPEED, input.jump_bonus);
         state.on_ground = false;
     }
     move_with_gravity(map, position, state, input, elapsed_seconds)
@@ -136,7 +138,8 @@ fn move_with_gravity(
     let old_x = position.x;
     let old_y = position.y;
     let edge = PLAYER_HALF_WIDTH.min(map.width as f32 / 2.0);
-    position.x = (position.x + input.horizontal * MOVE_SPEED * elapsed_seconds)
+    let move_speed = modified_speed(MOVE_SPEED, input.speed_bonus);
+    position.x = (position.x + input.horizontal * move_speed * elapsed_seconds)
         .clamp(edge, (map.width as f32 - edge).max(edge));
 
     state.velocity_y += GRAVITY * elapsed_seconds;
@@ -156,6 +159,13 @@ fn move_with_gravity(
         state,
         transition: None,
     }
+}
+
+fn modified_speed(
+    base: f32,
+    bonus: i32,
+) -> f32 {
+    base * (1.0 + bonus as f32 / 100.0).max(0.0)
 }
 
 fn move_on_ladder(
@@ -408,7 +418,15 @@ mod tests {
     use super::PlayerInput;
     use super::destination_position;
     use super::initial_motion_state;
+    use super::modified_speed;
     use super::update_player;
+
+    #[test]
+    fn skill_bonuses_scale_movement_without_allowing_negative_speed() {
+        assert_eq!(modified_speed(220.0, 10), 242.0);
+        assert_eq!(modified_speed(480.0, 20), 576.0);
+        assert_eq!(modified_speed(220.0, -150), 0.0);
+    }
 
     #[test]
     fn player_lands_on_a_sloped_foothold() {
