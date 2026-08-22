@@ -1,3 +1,4 @@
+use oozems_proto::v1::CharacterStats;
 use oozems_proto::v1::GameGui;
 use oozems_proto::v1::GuiLayout;
 use oozems_proto::v1::GuiSprite;
@@ -11,6 +12,13 @@ pub struct GuiState {
 pub struct CanvasPoint {
     pub x: f32,
     pub y: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GaugeFill {
+    pub source_x: f64,
+    pub full_width: f64,
+    pub filled_width: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -94,6 +102,22 @@ pub fn status_sprite_visible(
     sprite.name != "stats-pressed" || state.stats_open
 }
 
+pub fn gauge_fills(stats: &CharacterStats) -> [GaugeFill; 3] {
+    [
+        gauge_fill(2.0, 105.0, u64::from(stats.hp), u64::from(stats.max_hp)),
+        gauge_fill(110.0, 105.0, u64::from(stats.mp), u64::from(stats.max_mp)),
+        gauge_fill(223.0, 115.0, stats.experience, stats.experience_required),
+    ]
+}
+
+pub fn gauge_labels(stats: &CharacterStats) -> [String; 3] {
+    [
+        format!("[{}/{}]", stats.hp, stats.max_hp),
+        format!("[{}/{}]", stats.mp, stats.max_mp),
+        format!("[{}/{}]", stats.experience, stats.experience_required),
+    ]
+}
+
 pub fn valid_layout(layout: &GuiLayout) -> bool {
     layout.width.is_finite()
         && layout.height.is_finite()
@@ -122,6 +146,24 @@ fn click_action(
     stat_button_rect(gui, viewport_width, viewport_height)
         .filter(|rect| rect_contains(*rect, point))
         .map(|_| GuiAction::ToggleStats)
+}
+
+fn gauge_fill(
+    source_x: f64,
+    full_width: f64,
+    current: u64,
+    maximum: u64,
+) -> GaugeFill {
+    let ratio = if maximum == 0 {
+        0.0
+    } else {
+        current.min(maximum) as f64 / maximum as f64
+    };
+    GaugeFill {
+        source_x,
+        full_width,
+        filled_width: (full_width * ratio).round(),
+    }
 }
 
 fn stat_button_rect(
@@ -192,6 +234,7 @@ fn rect_contains(
 
 #[cfg(test)]
 mod tests {
+    use oozems_proto::v1::CharacterStats;
     use oozems_proto::v1::GameGui;
     use oozems_proto::v1::GuiLayout;
     use oozems_proto::v1::GuiSprite;
@@ -200,6 +243,8 @@ mod tests {
     use super::CanvasPoint;
     use super::GuiState;
     use super::canvas_point;
+    use super::gauge_fills;
+    use super::gauge_labels;
     use super::handle_click;
     use super::sprite_screen_x;
     use super::status_sprite_visible;
@@ -259,6 +304,31 @@ mod tests {
             GuiState { stats_open: true },
             &pressed
         ));
+    }
+
+    #[test]
+    fn gauges_use_clamped_ratios_and_bracketed_values() {
+        let stats = CharacterStats {
+            hp: 25,
+            max_hp: 50,
+            mp: 8,
+            max_mp: 5,
+            experience: 3,
+            experience_required: 15,
+            ..CharacterStats::default()
+        };
+
+        let fills = gauge_fills(&stats);
+
+        assert_eq!(fills[0].filled_width, 53.0);
+        assert_eq!(fills[1].filled_width, 105.0);
+        assert_eq!(fills[2].filled_width, 23.0);
+        assert_eq!(gauge_labels(&stats), ["[25/50]", "[8/5]", "[3/15]"]);
+        assert!(
+            gauge_fills(&CharacterStats::default())
+                .iter()
+                .all(|fill| fill.filled_width == 0.0)
+        );
     }
 
     #[test]

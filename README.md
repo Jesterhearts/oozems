@@ -100,6 +100,9 @@ protobuf. The browser then requests its background, gauges, quick-slot panel,
 and button images as normal versioned PNG assets. If `UI.wz` is absent, the
 client keeps using its built-in fallback HUD.
 
+The HP, MP, and EXP gauges use the persisted character values for their fill
+levels and display bracketed current and maximum values over the WZ artwork.
+
 Click the stat button in the status bar to open the `UIWindow.img` character
 stat window. Its background, close control, and job label remain unloaded until
 the window is first opened. New characters receive server-owned Beginner stats,

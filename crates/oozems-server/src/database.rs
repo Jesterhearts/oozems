@@ -44,6 +44,7 @@ struct PlayerData {
     mp: u32,
     max_mp: u32,
     experience: u64,
+    experience_required: u64,
     fame: i32,
     ability_points: u32,
     strength: u32,
@@ -71,6 +72,7 @@ struct PlayerRecord {
     mp: Option<u32>,
     max_mp: Option<u32>,
     experience: Option<u64>,
+    experience_required: Option<u64>,
     fame: Option<i32>,
     ability_points: Option<u32>,
     strength: Option<u32>,
@@ -141,6 +143,7 @@ async fn initialize_schema(database: &Database) -> surrealdb::Result<()> {
             DEFINE FIELD IF NOT EXISTS mp ON TABLE player TYPE option<int>;
             DEFINE FIELD IF NOT EXISTS max_mp ON TABLE player TYPE option<int>;
             DEFINE FIELD IF NOT EXISTS experience ON TABLE player TYPE option<int>;
+            DEFINE FIELD IF NOT EXISTS experience_required ON TABLE player TYPE option<int>;
             DEFINE FIELD IF NOT EXISTS fame ON TABLE player TYPE option<int>;
             DEFINE FIELD IF NOT EXISTS ability_points ON TABLE player TYPE option<int>;
             DEFINE FIELD IF NOT EXISTS strength ON TABLE player TYPE option<int>;
@@ -248,19 +251,27 @@ fn stats_from_record(record: &PlayerRecord) -> CharacterStats {
     let defaults = starter_character_stats();
     let max_hp = record.max_hp.unwrap_or(defaults.max_hp).max(1);
     let max_mp = record.max_mp.unwrap_or(defaults.max_mp).max(1);
+    let experience_required = record
+        .experience_required
+        .unwrap_or(defaults.experience_required)
+        .max(1);
     CharacterStats {
         job_id: record.job_id.unwrap_or(defaults.job_id),
         hp: record.hp.unwrap_or(defaults.hp).min(max_hp),
         max_hp,
         mp: record.mp.unwrap_or(defaults.mp).min(max_mp),
         max_mp,
-        experience: record.experience.unwrap_or(defaults.experience),
+        experience: record
+            .experience
+            .unwrap_or(defaults.experience)
+            .min(experience_required),
         fame: record.fame.unwrap_or(defaults.fame),
         ability_points: record.ability_points.unwrap_or(defaults.ability_points),
         strength: record.strength.unwrap_or(defaults.strength),
         dexterity: record.dexterity.unwrap_or(defaults.dexterity),
         intelligence: record.intelligence.unwrap_or(defaults.intelligence),
         luck: record.luck.unwrap_or(defaults.luck),
+        experience_required,
     }
 }
 
@@ -272,6 +283,7 @@ fn starter_character_stats() -> CharacterStats {
         mp: 5,
         max_mp: 5,
         experience: 0,
+        experience_required: 15,
         fame: 0,
         ability_points: 0,
         strength: 12,
@@ -305,6 +317,7 @@ impl From<&PlayerState> for PlayerData {
             mp: stats.mp,
             max_mp: stats.max_mp,
             experience: stats.experience,
+            experience_required: stats.experience_required,
             fame: stats.fame,
             ability_points: stats.ability_points,
             strength: stats.strength,

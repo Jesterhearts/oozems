@@ -3,12 +3,17 @@ use oozems_proto::v1::Decoration;
 use oozems_proto::v1::GuiSprite;
 use oozems_proto::v1::PlatformKind;
 use oozems_proto::v1::PortalFrame;
+use web_sys::HtmlImageElement;
 
 use crate::assets::ready_image;
 use crate::character_render;
 use crate::character_render::CharacterPlacement;
 use crate::game::Game;
 use crate::game_gui;
+
+const GAUGE_HEADER_HEIGHT: f64 = 15.0;
+const GAUGE_FILL_TOP: f64 = 15.0;
+const GAUGE_FILL_HEIGHT: f64 = 14.0;
 
 pub fn draw(game: &Game) {
     let viewport_width = f64::from(game.canvas.width());
@@ -327,7 +332,22 @@ fn draw_wz_hud(game: &Game) -> bool {
             origin_y,
         );
     }
-    draw_status_bar_text(game, origin_y, f64::from(background.y));
+    let gauge_origin = layout
+        .sprites
+        .iter()
+        .find(|sprite| sprite.name == "gauge")
+        .filter(|sprite| ready_image(&game.images, &sprite.asset_id).is_some())
+        .map(|sprite| {
+            (
+                f64::from(game_gui::sprite_screen_x(
+                    viewport_width as f32,
+                    layout.width,
+                    sprite,
+                )),
+                origin_y + f64::from(sprite.y),
+            )
+        });
+    draw_status_bar_text(game, origin_y, f64::from(background.y), gauge_origin);
     true
 }
 
@@ -341,25 +361,79 @@ fn draw_gui_sprite(
     let Some(image) = ready_image(&game.images, &sprite.asset_id) else {
         return;
     };
+    let destination_x = f64::from(game_gui::sprite_screen_x(
+        viewport_width as f32,
+        layout_width as f32,
+        sprite,
+    ));
+    let destination_y = origin_y + f64::from(sprite.y);
+    if sprite.name == "gauge"
+        && let Some(stats) = game.player.stats.as_ref()
+        && draw_gauge_fill(game, image, sprite, stats, destination_x, destination_y)
+    {
+        return;
+    }
     let _ = game
         .context
         .draw_image_with_html_image_element_and_dw_and_dh(
             image,
-            f64::from(game_gui::sprite_screen_x(
-                viewport_width as f32,
-                layout_width as f32,
-                sprite,
-            )),
-            origin_y + f64::from(sprite.y),
+            destination_x,
+            destination_y,
             f64::from(sprite.width),
             f64::from(sprite.height),
         );
+}
+
+fn draw_gauge_fill(
+    game: &Game,
+    image: &HtmlImageElement,
+    sprite: &GuiSprite,
+    stats: &CharacterStats,
+    destination_x: f64,
+    destination_y: f64,
+) -> bool {
+    if f64::from(sprite.width) < 340.0 || f64::from(sprite.height) < 31.0 {
+        return false;
+    }
+    let _ = game
+        .context
+        .draw_image_with_html_image_element_and_sw_and_sh_and_dx_and_dy_and_dw_and_dh(
+            image,
+            0.0,
+            0.0,
+            f64::from(sprite.width),
+            GAUGE_HEADER_HEIGHT,
+            destination_x,
+            destination_y,
+            f64::from(sprite.width),
+            GAUGE_HEADER_HEIGHT,
+        );
+    for fill in game_gui::gauge_fills(stats) {
+        if fill.filled_width == 0.0 {
+            continue;
+        }
+        let _ = game
+            .context
+            .draw_image_with_html_image_element_and_sw_and_sh_and_dx_and_dy_and_dw_and_dh(
+                image,
+                fill.source_x,
+                GAUGE_FILL_TOP,
+                fill.filled_width,
+                GAUGE_FILL_HEIGHT,
+                destination_x + fill.source_x,
+                destination_y + GAUGE_FILL_TOP,
+                fill.filled_width,
+                GAUGE_FILL_HEIGHT,
+            );
+    }
+    true
 }
 
 fn draw_status_bar_text(
     game: &Game,
     origin_y: f64,
     bar_y: f64,
+    gauge_origin: Option<(f64, f64)>,
 ) {
     let bar_top = origin_y + bar_y;
     game.context.set_fill_style_str("#e9eef2");
@@ -387,6 +461,40 @@ fn draw_status_bar_text(
     let _ = game
         .context
         .fill_text_with_max_width(&game.map.name, 10.0, bar_top + 22.0, 550.0);
+
+    if let (Some(stats), Some((gauge_x, gauge_y))) = (game.player.stats.as_ref(), gauge_origin) {
+        draw_gauge_text(game, stats, gauge_x, gauge_y);
+    }
+}
+
+fn draw_gauge_text(
+    game: &Game,
+    stats: &CharacterStats,
+    gauge_x: f64,
+    gauge_y: f64,
+) {
+    let fills = game_gui::gauge_fills(stats);
+    let labels = game_gui::gauge_labels(stats);
+    game.context.set_font("bold 10px Arial");
+    game.context.set_text_align("center");
+    for (fill, label) in fills.into_iter().zip(labels) {
+        let center_x = gauge_x + fill.source_x + fill.full_width / 2.0;
+        game.context.set_fill_style_str("#202020");
+        let _ = game.context.fill_text_with_max_width(
+            &label,
+            center_x + 1.0,
+            gauge_y + 28.0,
+            fill.full_width - 4.0,
+        );
+        game.context.set_fill_style_str("#ffffff");
+        let _ = game.context.fill_text_with_max_width(
+            &label,
+            center_x,
+            gauge_y + 27.0,
+            fill.full_width - 4.0,
+        );
+    }
+    game.context.set_text_align("left");
 }
 
 fn draw_stat_window(game: &Game) {

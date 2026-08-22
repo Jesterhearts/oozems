@@ -33,6 +33,7 @@ message CharacterStats {
   uint32 dexterity = 10;
   uint32 intelligence = 11;
   uint32 luck = 12;
+  uint64 experience_required = 13;
 }
 
 enum CharacterGender {
