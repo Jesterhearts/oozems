@@ -20,6 +20,8 @@ pub enum CharacterAnimation {
     Idle,
     Walk,
     Jump,
+    Ladder,
+    Rope,
 }
 
 pub fn draw_character(
@@ -63,6 +65,8 @@ fn animation_frames(
         CharacterAnimation::Idle => &sprites.idle_frames,
         CharacterAnimation::Walk => &sprites.walk_frames,
         CharacterAnimation::Jump => &sprites.jump_frames,
+        CharacterAnimation::Ladder => &sprites.ladder_frames,
+        CharacterAnimation::Rope => &sprites.rope_frames,
     };
     if selected.is_empty() {
         &sprites.idle_frames
@@ -131,6 +135,14 @@ mod tests {
         );
         assert_eq!(
             animation_frames(&sprites, CharacterAnimation::Jump),
+            sprites.idle_frames
+        );
+        assert_eq!(
+            animation_frames(&sprites, CharacterAnimation::Ladder),
+            sprites.idle_frames
+        );
+        assert_eq!(
+            animation_frames(&sprites, CharacterAnimation::Rope),
             sprites.idle_frames
         );
     }

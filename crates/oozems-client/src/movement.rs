@@ -11,6 +11,8 @@ const JUMP_SPEED: f32 = 480.0;
 const PLAYER_HALF_WIDTH: f32 = 18.0;
 const LADDER_REACH: f32 = 24.0;
 const LADDER_END_REACH: f32 = 14.0;
+const LADDER_TOP_EXIT_OFFSET: f32 = 5.0;
+const LADDER_TOP_PLATFORM_REACH: f32 = 24.0;
 const PORTAL_HORIZONTAL_REACH: f32 = 48.0;
 const PORTAL_VERTICAL_REACH: f32 = 64.0;
 const SCRIPT_PORTAL_TARGET: u32 = 999_999_999;
@@ -68,7 +70,7 @@ pub fn update_player(
     let mut state = state;
     if state.climbing.is_none()
         && input.vertical != 0.0
-        && let Some(index) = find_climbable_ladder(&map.ladders, &position)
+        && let Some(index) = find_climbable_ladder(&map.ladders, &position, input.vertical)
     {
         state.climbing = Some(index);
         state.velocity_y = 0.0;
@@ -86,7 +88,14 @@ pub fn update_player(
             state.velocity_y = -JUMP_SPEED;
             return move_with_gravity(map, position, state, input, elapsed_seconds);
         }
-        return move_on_ladder(position, state, input.vertical, ladder, elapsed_seconds);
+        return move_on_ladder(
+            map,
+            position,
+            state,
+            input.vertical,
+            ladder,
+            elapsed_seconds,
+        );
     }
 
     if input.jump_pressed && state.on_ground {
@@ -128,6 +137,7 @@ fn move_with_gravity(
 }
 
 fn move_on_ladder(
+    map: &Map,
     mut position: Vec2,
     mut state: MotionState,
     vertical: f32,
@@ -138,10 +148,13 @@ fn move_on_ladder(
     position.y += vertical * CLIMB_SPEED * elapsed_seconds;
 
     if vertical < 0.0 && position.y <= ladder.top {
-        position.y = ladder.top;
         if ladder.upper_floor {
+            let (exit_y, on_ground) = upper_floor_exit(map, ladder);
+            position.y = exit_y;
             state.climbing = None;
-            state.on_ground = true;
+            state.on_ground = on_ground;
+        } else {
+            position.y = ladder.top;
         }
     } else if vertical > 0.0 && position.y >= ladder.bottom {
         position.y = ladder.bottom;
@@ -159,17 +172,49 @@ fn move_on_ladder(
     }
 }
 
+fn upper_floor_exit(
+    map: &Map,
+    ladder: &Ladder,
+) -> (f32, bool) {
+    let exit_y = ladder.top - LADDER_TOP_EXIT_OFFSET;
+    let platform_y = map
+        .platforms
+        .iter()
+        .filter_map(|platform| platform_surface_near_ladder(platform, ladder.x))
+        .filter(|surface| {
+            *surface <= ladder.top && (*surface - exit_y).abs() <= LADDER_TOP_PLATFORM_REACH
+        })
+        .min_by(|left, right| (left - exit_y).abs().total_cmp(&(right - exit_y).abs()));
+    platform_y.map_or((exit_y, false), |surface| (surface, true))
+}
+
+fn platform_surface_near_ladder(
+    platform: &Platform,
+    ladder_x: f32,
+) -> Option<f32> {
+    let minimum_x = platform.x.min(platform.end_x);
+    let maximum_x = platform.x.max(platform.end_x);
+    if ladder_x < minimum_x - PLAYER_HALF_WIDTH || ladder_x > maximum_x + PLAYER_HALF_WIDTH {
+        return None;
+    }
+    platform_y(platform, ladder_x.clamp(minimum_x, maximum_x))
+}
+
 fn find_climbable_ladder(
     ladders: &[Ladder],
     position: &Vec2,
+    vertical: f32,
 ) -> Option<usize> {
     ladders
         .iter()
         .enumerate()
         .filter(|(_, ladder)| {
-            (position.x - ladder.x).abs() <= LADDER_REACH
-                && position.y >= ladder.top - LADDER_END_REACH
-                && position.y <= ladder.bottom + LADDER_END_REACH
+            let within_vertical_reach = if vertical < 0.0 {
+                position.y >= ladder.top && position.y <= ladder.bottom + LADDER_END_REACH
+            } else {
+                position.y >= ladder.top - LADDER_END_REACH && position.y <= ladder.bottom
+            };
+            (position.x - ladder.x).abs() <= LADDER_REACH && within_vertical_reach
         })
         .min_by(|(_, left), (_, right)| {
             (position.x - left.x)
@@ -348,6 +393,13 @@ mod tests {
         let map = Map {
             width: 800,
             height: 600,
+            platforms: vec![Platform {
+                x: 150.0,
+                y: 95.0,
+                end_x: 250.0,
+                end_y: 95.0,
+                ..Platform::default()
+            }],
             ladders: vec![Ladder {
                 x: 200.0,
                 top: 100.0,
@@ -371,10 +423,57 @@ mod tests {
             0.1,
         );
 
-        assert_eq!(output.position, Vec2 { x: 200.0, y: 100.0 });
+        assert_eq!(output.position, Vec2 { x: 200.0, y: 95.0 });
         assert_eq!(output.state.climbing, None);
         assert!(output.state.on_ground);
         assert_eq!(output.state.velocity_y, 0.0);
+
+        let settled = update_player(
+            &map,
+            output.position,
+            output.state,
+            PlayerInput {
+                vertical: -1.0,
+                ..PlayerInput::default()
+            },
+            0.016,
+        );
+        assert_eq!(settled.position, Vec2 { x: 200.0, y: 95.0 });
+        assert_eq!(settled.state.climbing, None);
+        assert!(settled.state.on_ground);
+    }
+
+    #[test]
+    fn upper_exit_moves_above_the_ladder_when_no_platform_is_nearby() {
+        let map = Map {
+            width: 800,
+            height: 600,
+            ladders: vec![Ladder {
+                x: 200.0,
+                top: 100.0,
+                bottom: 300.0,
+                upper_floor: true,
+                ..Ladder::default()
+            }],
+            ..Map::default()
+        };
+        let output = update_player(
+            &map,
+            Vec2 { x: 200.0, y: 101.0 },
+            MotionState {
+                climbing: Some(0),
+                ..MotionState::default()
+            },
+            PlayerInput {
+                vertical: -1.0,
+                ..PlayerInput::default()
+            },
+            0.1,
+        );
+
+        assert_eq!(output.position, Vec2 { x: 200.0, y: 95.0 });
+        assert_eq!(output.state.climbing, None);
+        assert!(!output.state.on_ground);
     }
 
     #[test]

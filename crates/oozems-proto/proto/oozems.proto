@@ -76,6 +76,8 @@ message CharacterSpriteSet {
   repeated AssetDescriptor assets = 2;
   repeated CharacterFrame walk_frames = 3;
   repeated CharacterFrame jump_frames = 4;
+  repeated CharacterFrame ladder_frames = 5;
+  repeated CharacterFrame rope_frames = 6;
 }
 
 message CharacterFrame {

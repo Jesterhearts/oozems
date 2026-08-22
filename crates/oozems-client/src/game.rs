@@ -233,7 +233,7 @@ fn update_player(
         game.facing_left = input.horizontal < 0.0;
     }
     let output = movement::update_player(&game.map, position, game.motion, input, elapsed_seconds);
-    let animation = character_animation(output.state, input);
+    let animation = character_animation(&game.map, output.state, input);
     update_character_animation(
         &mut game.character_animation,
         &mut game.character_animation_started_ms,
@@ -247,11 +247,16 @@ fn update_player(
 }
 
 fn character_animation(
+    map: &Map,
     state: MotionState,
     input: PlayerInput,
 ) -> CharacterAnimation {
-    if state.climbing.is_some() {
-        CharacterAnimation::Idle
+    if let Some(index) = state.climbing {
+        match map.ladders.get(index) {
+            Some(feature) if feature.is_ladder => CharacterAnimation::Ladder,
+            Some(_) => CharacterAnimation::Rope,
+            None => CharacterAnimation::Idle,
+        }
     } else if !state.on_ground {
         CharacterAnimation::Jump
     } else if input.horizontal != 0.0 {
@@ -363,6 +368,9 @@ fn save_if_due(
 
 #[cfg(test)]
 mod tests {
+    use oozems_proto::v1::Ladder;
+    use oozems_proto::v1::Map;
+
     use super::InputState;
     use super::character_animation;
     use super::set_key;
@@ -385,6 +393,19 @@ mod tests {
 
     #[test]
     fn movement_state_selects_the_character_animation() {
+        let map = Map {
+            ladders: vec![
+                Ladder {
+                    is_ladder: true,
+                    ..Ladder::default()
+                },
+                Ladder {
+                    is_ladder: false,
+                    ..Ladder::default()
+                },
+            ],
+            ..Map::default()
+        };
         let grounded = MotionState {
             on_ground: true,
             ..MotionState::default()
@@ -395,26 +416,38 @@ mod tests {
         };
 
         assert_eq!(
-            character_animation(grounded, PlayerInput::default()),
+            character_animation(&map, grounded, PlayerInput::default()),
             CharacterAnimation::Idle
         );
         assert_eq!(
-            character_animation(grounded, walking),
+            character_animation(&map, grounded, walking),
             CharacterAnimation::Walk
         );
         assert_eq!(
-            character_animation(MotionState::default(), walking),
+            character_animation(&map, MotionState::default(), walking),
             CharacterAnimation::Jump
         );
         assert_eq!(
             character_animation(
+                &map,
                 MotionState {
                     climbing: Some(0),
                     ..MotionState::default()
                 },
                 walking,
             ),
-            CharacterAnimation::Idle
+            CharacterAnimation::Ladder
+        );
+        assert_eq!(
+            character_animation(
+                &map,
+                MotionState {
+                    climbing: Some(1),
+                    ..MotionState::default()
+                },
+                walking,
+            ),
+            CharacterAnimation::Rope
         );
     }
 

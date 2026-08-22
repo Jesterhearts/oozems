@@ -91,6 +91,12 @@ struct CharacterParts<'a> {
     hair: &'a WzNodeArc,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HeadView {
+    Front,
+    Back,
+}
+
 impl CharacterContent {
     pub fn open_optional(directory: &Path) -> Result<Option<Self>, CharacterContentError> {
         let path = directory.join(CHARACTER_ARCHIVE);
@@ -440,12 +446,16 @@ fn build_sprite_set(
     let idle_frames = build_animation(source, parts, "stand1", &mut assets, &mut asset_ids)?;
     let walk_frames = build_animation(source, parts, "walk1", &mut assets, &mut asset_ids)?;
     let jump_frames = build_animation(source, parts, "jump", &mut assets, &mut asset_ids)?;
+    let ladder_frames = build_animation(source, parts, "ladder", &mut assets, &mut asset_ids)?;
+    let rope_frames = build_animation(source, parts, "rope", &mut assets, &mut asset_ids)?;
 
     Ok(CharacterSpriteSet {
         idle_frames,
         assets,
         walk_frames,
         jump_frames,
+        ladder_frames,
+        rope_frames,
     })
 }
 
@@ -508,21 +518,26 @@ fn build_frame(
         &mut layers,
     )?;
 
-    let head_frame = child(parts.head, "front")?.ok_or_else(|| CharacterContentError::Invalid {
-        message: "the selected head has no front frame".to_owned(),
-    })?;
+    let head_view = head_view(body_frame)?;
+    let head_frame_name = match head_view {
+        HeadView::Front => "front",
+        HeadView::Back => "back",
+    };
+    let head_frame =
+        child(parts.head, head_frame_name)?.ok_or_else(|| CharacterContentError::Invalid {
+            message: format!("the selected head has no {head_frame_name} frame"),
+        })?;
     add_direct_layers(&head_frame, &["neck"], None, &mut bones, &mut layers)?;
 
-    let face_frame =
-        child(parts.face, "default")?.ok_or_else(|| CharacterContentError::Invalid {
-            message: "the selected face has no default frame".to_owned(),
-        })?;
-    add_direct_layers(&face_frame, &["brow"], None, &mut bones, &mut layers)?;
+    if head_view == HeadView::Front {
+        let face_frame =
+            child(parts.face, "default")?.ok_or_else(|| CharacterContentError::Invalid {
+                message: "the selected face has no default frame".to_owned(),
+            })?;
+        add_direct_layers(&face_frame, &["brow"], None, &mut bones, &mut layers)?;
+    }
 
-    let hair_frame =
-        child(parts.hair, "default")?.ok_or_else(|| CharacterContentError::Invalid {
-            message: "the selected hair has no default frame".to_owned(),
-        })?;
+    let hair_frame = hair_frame(parts.hair, animation_name, frame_name, head_view)?;
     add_direct_layers(&hair_frame, &["brow"], None, &mut bones, &mut layers)?;
 
     for clothing in &source.starter_clothes {
@@ -547,6 +562,40 @@ fn build_frame(
             .and_then(|value| u32::try_from(value).ok())
             .unwrap_or(500)
             .max(1),
+    })
+}
+
+fn head_view(body_frame: &WzNodeArc) -> Result<HeadView, CharacterContentError> {
+    Ok(if int_value(body_frame, "face")?.unwrap_or(1) == 0 {
+        HeadView::Back
+    } else {
+        HeadView::Front
+    })
+}
+
+fn hair_frame(
+    hair: &WzNodeArc,
+    animation_name: &str,
+    frame_name: &str,
+    head_view: HeadView,
+) -> Result<WzNodeArc, CharacterContentError> {
+    if let Some(frame) = animation_frame(hair, animation_name, frame_name)? {
+        return Ok(frame);
+    }
+
+    let fallback_animation = match head_view {
+        HeadView::Front => "stand1",
+        HeadView::Back => "ladder",
+    };
+    if let Some(frame) = animation_frame(hair, fallback_animation, "0")? {
+        return Ok(frame);
+    }
+
+    child(hair, "default")?.ok_or_else(|| CharacterContentError::Invalid {
+        message: format!(
+            "the selected hair has no {animation_name} frame {frame_name}, {fallback_animation} \
+             fallback, or default frame"
+        ),
     })
 }
 
@@ -673,7 +722,19 @@ fn build_layer(
 
 fn z_rank(z: &str) -> u16 {
     match z {
-        "hair" | "backHair" | "backHairBelowCap" => 10,
+        "backBody" => 0,
+        "backMailChestBelowPants" => 1,
+        "backPantsBelowShoes" => 2,
+        "backShoesBelowPants" => 3,
+        "backPants" => 4,
+        "backShoes" => 5,
+        "backPantsOverShoesBelowMailChest" => 6,
+        "backMailChest" => 7,
+        "backPantsOverMailChest" => 8,
+        "backMailChestOverPants" => 9,
+        "backHead" | "hair" => 10,
+        "backHairBelowCap" => 11,
+        "backHair" => 15,
         "body" => 20,
         "pants" | "pantsBelowShoes" => 30,
         "shoes" | "shoesOverPants" => 40,
@@ -696,13 +757,22 @@ fn lock_error(context: &'static str) -> CharacterContentError {
 mod tests {
     use std::collections::HashMap;
     use std::path::Path;
+    use std::sync::Arc;
 
     use oozems_proto::v1::CharacterAppearance;
     use oozems_proto::v1::CharacterGender;
+    use wz_reader::WzNode;
+    use wz_reader::WzNodeArc;
     use wz_reader::property::Vector2D;
 
     use super::CharacterContent;
+    use super::HeadView;
     use super::attachment_translation;
+    use super::child;
+    use super::hair_frame;
+    use super::head_view;
+    use super::node_name;
+    use super::sorted_children;
     use super::z_rank;
 
     #[test]
@@ -720,6 +790,55 @@ mod tests {
     fn front_hair_is_drawn_after_the_face() {
         assert!(z_rank("hair") < z_rank("body"));
         assert!(z_rank("face") < z_rank("hairOverHead"));
+    }
+
+    #[test]
+    fn back_hair_is_drawn_between_the_back_head_and_body() {
+        assert!(z_rank("backHead") < z_rank("backHairBelowCap"));
+        assert!(z_rank("backHairBelowCap") < z_rank("backHair"));
+        assert!(z_rank("backHair") < z_rank("body"));
+    }
+
+    #[test]
+    fn back_body_is_drawn_behind_back_facing_clothes_and_head() {
+        assert!(z_rank("backBody") < z_rank("backPants"));
+        assert!(z_rank("backPants") < z_rank("backShoes"));
+        assert!(z_rank("backShoes") < z_rank("backMailChest"));
+        assert!(z_rank("backMailChest") < z_rank("backHead"));
+    }
+
+    #[test]
+    fn body_face_flag_selects_the_head_view() {
+        let front = WzNode::from_str("0", 0, None).into_lock();
+        let back = WzNode::from_str("1", 0, None).into_lock();
+        add(&back, WzNode::from_str("face", 0, Some(&back)).into_lock());
+
+        assert_eq!(head_view(&front).expect("front view"), HeadView::Front);
+        assert_eq!(head_view(&back).expect("back view"), HeadView::Back);
+    }
+
+    #[test]
+    fn hair_frame_uses_the_action_before_the_head_view_fallback() {
+        let hair = WzNode::from_str("hair", 0, None).into_lock();
+        let stand_frame = add_branch(&add_branch(&hair, "stand1"), "0");
+        let ladder_frame = add_branch(&add_branch(&hair, "ladder"), "0");
+        let rope = add_branch(&hair, "rope");
+        let rope_default_frame = add_branch(&rope, "0");
+        let rope_frame = add_branch(&rope, "1");
+
+        let selected = hair_frame(&hair, "rope", "1", HeadView::Back).expect("rope hair");
+        assert!(Arc::ptr_eq(&selected, &rope_frame));
+
+        let selected = hair_frame(&hair, "rope", "2", HeadView::Back).expect("rope fallback");
+        assert!(Arc::ptr_eq(&selected, &rope_default_frame));
+
+        let selected =
+            hair_frame(&hair, "missing", "0", HeadView::Back).expect("back hair fallback");
+        assert!(Arc::ptr_eq(&selected, &ladder_frame));
+
+        let selected =
+            hair_frame(&hair, "missing", "0", HeadView::Front).expect("front hair fallback");
+        assert!(Arc::ptr_eq(&selected, &stand_frame));
     }
 
     #[test]
@@ -754,15 +873,46 @@ mod tests {
             .expect("build sprites")
             .expect("supported appearance");
 
+        let body = content
+            .bodies
+            .get(&appearance.skin_id)
+            .expect("selected body");
+        let selected_hair = content
+            .hairs
+            .get(&appearance.hair_id)
+            .expect("selected hair");
+        for action in ["ladder", "rope"] {
+            let animation = child(body, action)
+                .expect("read action")
+                .expect("climb action");
+            for frame in sorted_children(&animation).expect("climb frames") {
+                let frame_name = node_name(&frame).expect("climb frame name");
+                assert_eq!(head_view(&frame).expect("climb head view"), HeadView::Back);
+                let hair = hair_frame(selected_hair, action, &frame_name, HeadView::Back)
+                    .expect("climb hair frame");
+                let layer_names = sorted_children(&hair)
+                    .expect("climb hair layers")
+                    .into_iter()
+                    .map(|layer| node_name(&layer).expect("climb hair layer name"))
+                    .collect::<Vec<_>>();
+                assert!(layer_names.iter().any(|name| name == "backHair"));
+                assert!(!layer_names.iter().any(|name| name == "hairOverHead"));
+            }
+        }
+
         assert!(!sprites.idle_frames.is_empty());
         assert!(!sprites.walk_frames.is_empty());
         assert!(!sprites.jump_frames.is_empty());
+        assert!(!sprites.ladder_frames.is_empty());
+        assert!(!sprites.rope_frames.is_empty());
         assert!(
             sprites
                 .idle_frames
                 .iter()
                 .chain(sprites.walk_frames.iter())
                 .chain(sprites.jump_frames.iter())
+                .chain(sprites.ladder_frames.iter())
+                .chain(sprites.rope_frames.iter())
                 .all(|frame| !frame.layers.is_empty())
         );
         assert!(!sprites.assets.is_empty());
@@ -770,6 +920,8 @@ mod tests {
             &sprites.idle_frames,
             &sprites.walk_frames,
             &sprites.jump_frames,
+            &sprites.ladder_frames,
+            &sprites.rope_frames,
         ] {
             let png = content
                 .get_asset(&frames[0].layers[0].asset_id)
@@ -778,5 +930,21 @@ mod tests {
                 .expect("decode action PNG");
             assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
         }
+    }
+
+    fn add(
+        parent: &WzNodeArc,
+        child: WzNodeArc,
+    ) {
+        parent.write().expect("parent lock").add(&child);
+    }
+
+    fn add_branch(
+        parent: &WzNodeArc,
+        name: &str,
+    ) -> WzNodeArc {
+        let child = WzNode::from_str(name, 0, Some(parent)).into_lock();
+        add(parent, Arc::clone(&child));
+        child
     }
 }

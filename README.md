@@ -11,8 +11,8 @@ The current vertical slice includes:
 - protobuf request and response bodies over HTTP;
 - server-owned map files fetched only when entered;
 - optional classic PKG1 WZ map archives parsed lazily by the server;
-- a character creation screen with idle, walk, and jump animations composed
-  from `Character.wz`;
+- a character creation screen with idle, walk, jump, ladder, and rope
+  animations composed from `Character.wz`;
 - server-owned assets fetched only when referenced by the current view; and
 - player movement, platforms, jumping, ladder and rope climbing, direct portal
   transitions, and periodic position saves.
@@ -85,10 +85,10 @@ the client bundle.
 
 Place `Character.wz` beside the map archives to enable character creation. The
 server indexes the available skin, face, and hair styles, then composes idle,
-walk, and jump frames from each sprite's WZ anchor points and z layer. The
-browser receives only frame metadata at first. It requests the individual PNG
-layers while the preview or game renderer needs them. The chosen name and
-appearance are stored with the player in SurrealKV.
+walk, jump, ladder, and rope frames from each sprite's WZ anchor points and z
+layer. The browser receives only frame metadata at first. It requests the
+individual PNG layers while the preview or game renderer needs them. The
+chosen name and appearance are stored with the player in SurrealKV.
 
 Use the left and right arrow keys, or A and D, to walk. Use Space to jump. Use
 the up and down arrow keys, or W and S, to climb. Press Up or W while standing
