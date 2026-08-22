@@ -40,6 +40,10 @@ use super::wz::wrap_archive_root;
 
 const CHARACTER_ARCHIVE: &str = "Character.wz";
 const MAXIMUM_STYLE_CHOICES: usize = 12;
+const MALE_PAJAMA_TOP_ID: u32 = 1_042_023;
+const MALE_PAJAMA_BOTTOM_ID: u32 = 1_062_025;
+const FEMALE_PAJAMA_TOP_ID: u32 = 1_041_113;
+const FEMALE_PAJAMA_BOTTOM_ID: u32 = 1_061_112;
 
 pub struct CharacterContent {
     _base: WzNodeArc,
@@ -48,6 +52,7 @@ pub struct CharacterContent {
     faces: HashMap<u32, WzNodeArc>,
     hairs: HashMap<u32, WzNodeArc>,
     equipment: HashMap<u32, WzNodeArc>,
+    pajamas: PajamaSources,
     item_assets: Vec<AssetDescriptor>,
     item_definitions: Vec<ItemDefinition>,
     options: CharacterCreationOptions,
@@ -78,6 +83,13 @@ struct AppearanceKey {
 struct CharacterKey {
     appearance: AppearanceKey,
     equipment: Vec<(i32, u32)>,
+}
+
+struct PajamaSources {
+    male_top: WzNodeArc,
+    male_bottom: WzNodeArc,
+    female_top: WzNodeArc,
+    female_bottom: WzNodeArc,
 }
 
 #[derive(Clone, Debug)]
@@ -133,6 +145,7 @@ impl CharacterContent {
         let pants = index_directory(&root, "Pants")?;
         let shoes = index_directory(&root, "Shoes")?;
         let equipment = index_supported_equipment(&coats, &pants, &shoes)?;
+        let pajamas = load_pajama_sources(&coats, &pants)?;
         let options = build_creation_options(&bodies, &heads, &faces, &hairs);
         validate_options(&options)?;
 
@@ -151,6 +164,7 @@ impl CharacterContent {
             faces,
             hairs,
             equipment,
+            pajamas,
             item_assets: Vec::new(),
             item_definitions: Vec::new(),
             options,
@@ -331,6 +345,54 @@ fn required_style(
         .ok_or_else(|| CharacterContentError::Invalid {
             message: format!("{label} {id:08} is missing"),
         })
+}
+
+fn load_pajama_sources(
+    coats: &HashMap<u32, WzNodeArc>,
+    pants: &HashMap<u32, WzNodeArc>,
+) -> Result<PajamaSources, CharacterContentError> {
+    Ok(PajamaSources {
+        male_top: required_style(coats, MALE_PAJAMA_TOP_ID, "male pajama top")?,
+        male_bottom: required_style(pants, MALE_PAJAMA_BOTTOM_ID, "male pajama bottom")?,
+        female_top: required_style(coats, FEMALE_PAJAMA_TOP_ID, "female pajama top")?,
+        female_bottom: required_style(pants, FEMALE_PAJAMA_BOTTOM_ID, "female pajama bottom")?,
+    })
+}
+
+fn character_clothing_sources(
+    content: &CharacterContent,
+    key: &CharacterKey,
+) -> Result<Vec<WzNodeArc>, CharacterContentError> {
+    let mut sources = key
+        .equipment
+        .iter()
+        .map(|(_, item_id)| required_style(&content.equipment, *item_id, "equipped item"))
+        .collect::<Result<Vec<_>, _>>()?;
+    let (pajama_top, pajama_bottom) = match key.appearance.gender {
+        CharacterGender::Male => (&content.pajamas.male_top, &content.pajamas.male_bottom),
+        CharacterGender::Female => (&content.pajamas.female_top, &content.pajamas.female_bottom),
+        CharacterGender::Unspecified => {
+            return Err(CharacterContentError::Invalid {
+                message: "a character with unspecified gender cannot select pajamas".to_owned(),
+            });
+        }
+    };
+    if !has_equipment_slot(&key.equipment, EquipmentSlot::Top) {
+        sources.push(Arc::clone(pajama_top));
+    }
+    if !has_equipment_slot(&key.equipment, EquipmentSlot::Bottom) {
+        sources.push(Arc::clone(pajama_bottom));
+    }
+    Ok(sources)
+}
+
+fn has_equipment_slot(
+    equipment: &[(i32, u32)],
+    slot: EquipmentSlot,
+) -> bool {
+    equipment
+        .iter()
+        .any(|(equipped_slot, _)| *equipped_slot == slot as i32)
 }
 
 fn index_supported_equipment(
@@ -585,11 +647,7 @@ fn build_sprite_set(
     ] {
         parse(node, format!("Character.wz {label} {}", appearance.skin_id))?;
     }
-    let equipment = key
-        .equipment
-        .iter()
-        .map(|(_, item_id)| required_style(&source.equipment, *item_id, "equipped item"))
-        .collect::<Result<Vec<_>, _>>()?;
+    let equipment = character_clothing_sources(source, &key)?;
     for node in &equipment {
         parse(node, node_path(node)?)?;
     }
@@ -1029,6 +1087,100 @@ mod tests {
             face_id: face.id,
             hair_id: hair.id,
         };
+        let appearance_key = super::AppearanceKey::parse(&appearance).expect("male appearance");
+        let naked_key = super::CharacterKey {
+            appearance: appearance_key,
+            equipment: Vec::new(),
+        };
+        let naked_clothing =
+            super::character_clothing_sources(&content, &naked_key).expect("male pajama clothing");
+        assert_eq!(naked_clothing.len(), 2);
+        assert!(
+            naked_clothing
+                .iter()
+                .any(|source| Arc::ptr_eq(source, &content.pajamas.male_top))
+        );
+        assert!(
+            naked_clothing
+                .iter()
+                .any(|source| Arc::ptr_eq(source, &content.pajamas.male_bottom))
+        );
+
+        let top_only_key = super::CharacterKey {
+            appearance: appearance_key,
+            equipment: vec![(EquipmentSlot::Top as i32, crate::items::STARTER_TOP_ID)],
+        };
+        let top_only_clothing = super::character_clothing_sources(&content, &top_only_key)
+            .expect("top and pajama bottom");
+        assert_eq!(top_only_clothing.len(), 2);
+        assert!(
+            top_only_clothing
+                .iter()
+                .any(|source| Arc::ptr_eq(source, &content.pajamas.male_bottom))
+        );
+        assert!(
+            !top_only_clothing
+                .iter()
+                .any(|source| Arc::ptr_eq(source, &content.pajamas.male_top))
+        );
+
+        let female_key = super::CharacterKey {
+            appearance: super::AppearanceKey {
+                gender: CharacterGender::Female,
+                ..appearance_key
+            },
+            equipment: Vec::new(),
+        };
+        let female_clothing = super::character_clothing_sources(&content, &female_key)
+            .expect("female pajama clothing");
+        assert_eq!(female_clothing.len(), 2);
+        assert!(
+            female_clothing
+                .iter()
+                .any(|source| Arc::ptr_eq(source, &content.pajamas.female_top))
+        );
+        assert!(
+            female_clothing
+                .iter()
+                .any(|source| Arc::ptr_eq(source, &content.pajamas.female_bottom))
+        );
+
+        let naked_sprites = content
+            .get_sprites(&appearance, &[])
+            .expect("build male pajama sprites")
+            .expect("supported male pajama appearance");
+        assert!(
+            naked_sprites
+                .idle_frames
+                .iter()
+                .all(|frame| !frame.layers.is_empty())
+        );
+        let female_face = options
+            .faces
+            .iter()
+            .find(|option| option.gender == CharacterGender::Female as i32)
+            .expect("female face");
+        let female_hair = options
+            .hairs
+            .iter()
+            .find(|option| option.gender == CharacterGender::Female as i32)
+            .expect("female hair");
+        let female_appearance = CharacterAppearance {
+            gender: CharacterGender::Female as i32,
+            skin_id: appearance.skin_id,
+            face_id: female_face.id,
+            hair_id: female_hair.id,
+        };
+        let female_naked_sprites = content
+            .get_sprites(&female_appearance, &[])
+            .expect("build female pajama sprites")
+            .expect("supported female pajama appearance");
+        assert!(
+            female_naked_sprites
+                .idle_frames
+                .iter()
+                .all(|frame| !frame.layers.is_empty())
+        );
 
         let sprites = content
             .get_sprites(&appearance, &crate::items::starter_inventory().equipment)

@@ -122,7 +122,9 @@ it back to inventory. Right-click an inventory item to drop it at the
 server-owned player position. Equipment and inventory changes are persisted in
 SurrealKV. The browser requests each equipment icon from `Character.wz` only
 when the icon is first visible. Equipping or removing an item also refreshes
-the composed character layers.
+the composed character layers. An empty top or bottom slot uses the
+gender-specific pajama layers from `Character.wz` instead of leaving the body
+unclothed.
 
 Dropped items are transient and scoped to their map. Their item ID, position,
 and server-issued expiry time are sent in the map protobuf. Expired drops are
