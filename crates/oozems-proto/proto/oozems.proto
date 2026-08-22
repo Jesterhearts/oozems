@@ -71,6 +71,34 @@ message GetCharacterSpritesResponse {
   CharacterSpriteSet sprites = 1;
 }
 
+message GetGuiRequest {}
+
+message GetGuiResponse {
+  GameGui gui = 1;
+}
+
+message GameGui {
+  GuiLayout status_bar = 1;
+  repeated AssetDescriptor assets = 2;
+}
+
+message GuiLayout {
+  float width = 1;
+  float height = 2;
+  GuiSprite background = 3;
+  repeated GuiSprite sprites = 4;
+}
+
+message GuiSprite {
+  string name = 1;
+  string asset_id = 2;
+  float x = 3;
+  float y = 4;
+  float width = 5;
+  float height = 6;
+  bool anchor_right = 7;
+}
+
 message CharacterSpriteSet {
   repeated CharacterFrame idle_frames = 1;
   repeated AssetDescriptor assets = 2;

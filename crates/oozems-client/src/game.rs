@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use oozems_proto::v1::CharacterSpriteSet;
+use oozems_proto::v1::GameGui;
 use oozems_proto::v1::Map;
 use oozems_proto::v1::PlayerState;
 use oozems_proto::v1::Vec2;
@@ -34,6 +35,7 @@ pub struct Game {
     pub context: CanvasRenderingContext2d,
     pub character_sprites: CharacterSpriteSet,
     pub facing_left: bool,
+    pub gui: GameGui,
     pub images: HashMap<String, BrowserAsset>,
     pub map: Map,
     pub player: PlayerState,
@@ -62,17 +64,28 @@ pub async fn run(
     player: PlayerState,
     character_sprites: CharacterSpriteSet,
 ) -> Result<(), String> {
-    show_status("Loading map...", false);
+    show_status("Loading map and GUI...", false);
     let map = api::get_map(player.map_id)
         .await
         .map_err(|error| error.to_string())?;
-    let game = build_game(player, map, character_sprites)?;
+    let gui_result = api::get_gui().await;
+    let gui_warning = gui_result.as_ref().err().map(ToString::to_string);
+    let gui = gui_result.unwrap_or_default();
+    let game = build_game(player, map, character_sprites, gui)?;
     let asset_count = game.borrow().images.len();
 
-    show_status(
-        &format!("Ready. Streaming {asset_count} assets as needed."),
-        false,
-    );
+    match gui_warning {
+        Some(error) => show_status(
+            &format!(
+                "Ready. Streaming {asset_count} assets as needed. Using fallback HUD: {error}"
+            ),
+            true,
+        ),
+        None => show_status(
+            &format!("Ready. Streaming {asset_count} assets as needed."),
+            false,
+        ),
+    }
     schedule_frame(game)?;
     Ok(())
 }
@@ -81,6 +94,7 @@ fn build_game(
     player: PlayerState,
     map: Map,
     character_sprites: CharacterSpriteSet,
+    gui: GameGui,
 ) -> Result<Rc<RefCell<Game>>, String> {
     let window = web_sys::window().ok_or("browser window is unavailable")?;
     let document = window.document().ok_or("browser document is unavailable")?;
@@ -99,7 +113,7 @@ fn build_game(
 
     let input = Rc::new(RefCell::new(InputState::default()));
     install_keyboard_input(&window, input.clone())?;
-    let images = prepare_game_assets(&map, &character_sprites)?;
+    let images = prepare_game_assets(&map, &character_sprites, &gui)?;
 
     Ok(Rc::new(RefCell::new(Game {
         canvas,
@@ -108,6 +122,7 @@ fn build_game(
         context,
         character_sprites,
         facing_left: false,
+        gui,
         images,
         map,
         player,
@@ -127,8 +142,14 @@ fn build_game(
 fn prepare_game_assets(
     map: &Map,
     character_sprites: &CharacterSpriteSet,
+    gui: &GameGui,
 ) -> Result<HashMap<String, BrowserAsset>, String> {
-    assets::prepare_assets(map.assets.iter().chain(character_sprites.assets.iter()))
+    assets::prepare_assets(
+        map.assets
+            .iter()
+            .chain(character_sprites.assets.iter())
+            .chain(gui.assets.iter()),
+    )
 }
 
 fn install_keyboard_input(
@@ -323,7 +344,7 @@ fn install_map(
     map: Map,
     transition: &MapTransition,
 ) -> Result<(), String> {
-    let images = prepare_game_assets(&map, &game.character_sprites)?;
+    let images = prepare_game_assets(&map, &game.character_sprites, &game.gui)?;
     let position = movement::destination_position(&map, &transition.target_portal_name)
         .unwrap_or_else(|| fallback_position(&map));
 

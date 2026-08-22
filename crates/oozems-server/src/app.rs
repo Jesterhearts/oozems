@@ -40,6 +40,7 @@ pub fn router(
             "/characters/sprites",
             post(crate::api::get_character_sprites),
         )
+        .route("/gui/get", post(crate::api::get_gui))
         .route("/maps/get", post(crate::api::get_map))
         .route("/players/save", post(crate::api::save_player))
         .layer(DefaultBodyLimit::max(64 * 1024));

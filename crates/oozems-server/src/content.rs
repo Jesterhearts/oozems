@@ -9,6 +9,7 @@ use oozems_proto::v1::CharacterAppearance;
 use oozems_proto::v1::CharacterCreationOptions;
 use oozems_proto::v1::CharacterSpriteSet;
 use oozems_proto::v1::Decoration;
+use oozems_proto::v1::GameGui;
 use oozems_proto::v1::Map;
 use oozems_proto::v1::Platform;
 use oozems_proto::v1::PlatformKind;
@@ -18,16 +19,20 @@ use sha2::Sha256;
 use thiserror::Error;
 
 mod character;
+mod gui;
 mod wz;
 
 use character::CharacterContent;
 use character::CharacterContentError;
+use gui::GuiContent;
+use gui::GuiContentError;
 pub(crate) use wz::WzAsset;
 use wz::WzContent;
 use wz::WzContentError;
 
 pub struct ContentCatalog {
     characters: Option<CharacterContent>,
+    gui: Option<GuiContent>,
     maps: HashMap<u32, Map>,
     wz: Option<WzContent>,
 }
@@ -62,6 +67,8 @@ pub enum ContentError {
     Wz(#[from] WzContentError),
     #[error(transparent)]
     Character(#[from] CharacterContentError),
+    #[error(transparent)]
+    Gui(#[from] GuiContentError),
 }
 
 #[derive(Debug, Deserialize)]
@@ -132,6 +139,7 @@ impl ContentCatalog {
 
         Ok(Self {
             characters: None,
+            gui: None,
             maps,
             wz: None,
         })
@@ -145,6 +153,7 @@ impl ContentCatalog {
         let mut catalog = Self::load(map_dir, asset_dir)?;
         catalog.wz = WzContent::open_optional(wz_dir)?;
         catalog.characters = CharacterContent::open_optional(wz_dir)?;
+        catalog.gui = GuiContent::open_optional(wz_dir)?;
         Ok(catalog)
     }
 
@@ -175,6 +184,18 @@ impl ContentCatalog {
                     .as_ref()
                     .and_then(|source| source.get_asset(asset_id))
             })
+            .or_else(|| {
+                self.gui
+                    .as_ref()
+                    .and_then(|source| source.get_asset(asset_id))
+            })
+    }
+
+    pub fn game_gui(&self) -> GameGui {
+        self.gui
+            .as_ref()
+            .map(GuiContent::game_gui)
+            .unwrap_or_default()
     }
 
     pub fn character_creation_options(&self) -> CharacterCreationOptions {

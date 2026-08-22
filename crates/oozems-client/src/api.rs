@@ -8,8 +8,11 @@ use oozems_proto::v1::CharacterSpriteSet;
 use oozems_proto::v1::CreateCharacterRequest;
 use oozems_proto::v1::CreateCharacterResponse;
 use oozems_proto::v1::ErrorResponse;
+use oozems_proto::v1::GameGui;
 use oozems_proto::v1::GetCharacterSpritesRequest;
 use oozems_proto::v1::GetCharacterSpritesResponse;
+use oozems_proto::v1::GetGuiRequest;
+use oozems_proto::v1::GetGuiResponse;
 use oozems_proto::v1::GetMapRequest;
 use oozems_proto::v1::GetMapResponse;
 use oozems_proto::v1::Map;
@@ -84,6 +87,12 @@ pub async fn get_map(map_id: u32) -> Result<Map, ClientError> {
         post_protobuf("/api/v1/maps/get", GetMapRequest { map_id }).await?;
 
     response.map.ok_or(ClientError::MissingData("map"))
+}
+
+pub async fn get_gui() -> Result<GameGui, ClientError> {
+    let response: GetGuiResponse = post_protobuf("/api/v1/gui/get", GetGuiRequest {}).await?;
+
+    response.gui.ok_or(ClientError::MissingData("game GUI"))
 }
 
 pub async fn save_player(player: PlayerState) -> Result<PlayerState, ClientError> {

@@ -14,6 +14,8 @@ use oozems_proto::v1::CreateCharacterResponse;
 use oozems_proto::v1::ErrorResponse;
 use oozems_proto::v1::GetCharacterSpritesRequest;
 use oozems_proto::v1::GetCharacterSpritesResponse;
+use oozems_proto::v1::GetGuiRequest;
+use oozems_proto::v1::GetGuiResponse;
 use oozems_proto::v1::GetMapRequest;
 use oozems_proto::v1::GetMapResponse;
 use oozems_proto::v1::SavePlayerRequest;
@@ -134,6 +136,17 @@ pub async fn get_map(
     })?;
 
     Ok(Protobuf(GetMapResponse { map: Some(map) }))
+}
+
+pub async fn get_gui(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Protobuf<GetGuiResponse>, ApiError> {
+    let _: GetGuiRequest = decode_request(&headers, body)?;
+    Ok(Protobuf(GetGuiResponse {
+        gui: Some(state.catalog.game_gui()),
+    }))
 }
 
 pub async fn save_player(
