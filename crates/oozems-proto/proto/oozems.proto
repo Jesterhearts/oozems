@@ -74,6 +74,8 @@ message GetCharacterSpritesResponse {
 message CharacterSpriteSet {
   repeated CharacterFrame idle_frames = 1;
   repeated AssetDescriptor assets = 2;
+  repeated CharacterFrame walk_frames = 3;
+  repeated CharacterFrame jump_frames = 4;
 }
 
 message CharacterFrame {

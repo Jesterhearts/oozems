@@ -14,14 +14,23 @@ pub struct CharacterPlacement {
     pub facing_left: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum CharacterAnimation {
+    #[default]
+    Idle,
+    Walk,
+    Jump,
+}
+
 pub fn draw_character(
     context: &CanvasRenderingContext2d,
     assets: &HashMap<String, BrowserAsset>,
     sprites: &CharacterSpriteSet,
+    animation: CharacterAnimation,
     timestamp_ms: f64,
     placement: CharacterPlacement,
 ) {
-    let Some(frame) = frame_at_time(&sprites.idle_frames, timestamp_ms) else {
+    let Some(frame) = frame_at_time(animation_frames(sprites, animation), timestamp_ms) else {
         return;
     };
     context.save();
@@ -44,6 +53,22 @@ pub fn draw_character(
         }
     }
     context.restore();
+}
+
+fn animation_frames(
+    sprites: &CharacterSpriteSet,
+    animation: CharacterAnimation,
+) -> &[CharacterFrame] {
+    let selected = match animation {
+        CharacterAnimation::Idle => &sprites.idle_frames,
+        CharacterAnimation::Walk => &sprites.walk_frames,
+        CharacterAnimation::Jump => &sprites.jump_frames,
+    };
+    if selected.is_empty() {
+        &sprites.idle_frames
+    } else {
+        selected
+    }
 }
 
 fn horizontal_scale(
@@ -80,7 +105,10 @@ fn frame_at_time(
 #[cfg(test)]
 mod tests {
     use oozems_proto::v1::CharacterFrame;
+    use oozems_proto::v1::CharacterSpriteSet;
 
+    use super::CharacterAnimation;
+    use super::animation_frames;
     use super::frame_at_time;
     use super::horizontal_scale;
 
@@ -88,6 +116,23 @@ mod tests {
     fn source_frame_is_mirrored_only_when_facing_right() {
         assert_eq!(horizontal_scale(2.5, true), 2.5);
         assert_eq!(horizontal_scale(2.5, false), -2.5);
+    }
+
+    #[test]
+    fn missing_action_frames_fall_back_to_idle() {
+        let sprites = CharacterSpriteSet {
+            idle_frames: vec![CharacterFrame::default()],
+            ..CharacterSpriteSet::default()
+        };
+
+        assert_eq!(
+            animation_frames(&sprites, CharacterAnimation::Walk),
+            sprites.idle_frames
+        );
+        assert_eq!(
+            animation_frames(&sprites, CharacterAnimation::Jump),
+            sprites.idle_frames
+        );
     }
 
     #[test]

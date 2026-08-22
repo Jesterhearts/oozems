@@ -24,6 +24,7 @@ use crate::api;
 use crate::assets;
 use crate::assets::BrowserAsset;
 use crate::character_render;
+use crate::character_render::CharacterAnimation;
 use crate::character_render::CharacterPlacement;
 use crate::game;
 use crate::js_error;
@@ -267,6 +268,7 @@ fn draw_preview(
         &creator.context,
         &creator.images.borrow(),
         sprites,
+        CharacterAnimation::Idle,
         timestamp_ms,
         CharacterPlacement {
             anchor_x: 90.0,

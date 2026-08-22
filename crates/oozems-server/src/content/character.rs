@@ -83,6 +83,14 @@ struct PlacedLayer {
     height: u32,
 }
 
+#[derive(Clone, Copy)]
+struct CharacterParts<'a> {
+    body: &'a WzNodeArc,
+    head: &'a WzNodeArc,
+    face: &'a WzNodeArc,
+    hair: &'a WzNodeArc,
+}
+
 impl CharacterContent {
     pub fn open_optional(directory: &Path) -> Result<Option<Self>, CharacterContentError> {
         let path = directory.join(CHARACTER_ARCHIVE);
@@ -421,13 +429,39 @@ fn build_sprite_set(
         parse(node, node_path(node)?)?;
     }
 
-    let stand = child(&body, "stand1")?.ok_or_else(|| CharacterContentError::Invalid {
-        message: format!("body {:08} does not contain stand1", appearance.skin_id),
-    })?;
-    let mut frames = Vec::new();
     let mut assets = Vec::new();
     let mut asset_ids = HashSet::new();
-    for frame in sorted_children(&stand)? {
+    let parts = CharacterParts {
+        body: &body,
+        head: &head,
+        face: &face,
+        hair: &hair,
+    };
+    let idle_frames = build_animation(source, parts, "stand1", &mut assets, &mut asset_ids)?;
+    let walk_frames = build_animation(source, parts, "walk1", &mut assets, &mut asset_ids)?;
+    let jump_frames = build_animation(source, parts, "jump", &mut assets, &mut asset_ids)?;
+
+    Ok(CharacterSpriteSet {
+        idle_frames,
+        assets,
+        walk_frames,
+        jump_frames,
+    })
+}
+
+fn build_animation(
+    source: &CharacterContent,
+    parts: CharacterParts<'_>,
+    animation_name: &str,
+    assets: &mut Vec<AssetDescriptor>,
+    asset_ids: &mut HashSet<String>,
+) -> Result<Vec<CharacterFrame>, CharacterContentError> {
+    let animation =
+        child(parts.body, animation_name)?.ok_or_else(|| CharacterContentError::Invalid {
+            message: format!("the selected body does not contain {animation_name}"),
+        })?;
+    let mut frames = Vec::new();
+    for frame in sorted_children(&animation)? {
         let frame_name = node_name(&frame)?;
         if frame_name.parse::<u32>().is_err() {
             continue;
@@ -436,33 +470,26 @@ fn build_sprite_set(
             source,
             &frame,
             &frame_name,
-            &head,
-            &face,
-            &hair,
-            &mut assets,
-            &mut asset_ids,
+            parts,
+            animation_name,
+            assets,
+            asset_ids,
         )?);
     }
     if frames.is_empty() {
         return Err(CharacterContentError::Invalid {
-            message: format!("body {:08} has no stand1 frames", appearance.skin_id),
+            message: format!("the selected body has no {animation_name} frames"),
         });
     }
-
-    Ok(CharacterSpriteSet {
-        idle_frames: frames,
-        assets,
-    })
+    Ok(frames)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn build_frame(
     source: &CharacterContent,
     body_frame: &WzNodeArc,
     frame_name: &str,
-    head: &WzNodeArc,
-    face: &WzNodeArc,
-    hair: &WzNodeArc,
+    parts: CharacterParts<'_>,
+    animation_name: &str,
     assets: &mut Vec<AssetDescriptor>,
     asset_ids: &mut HashSet<String>,
 ) -> Result<CharacterFrame, CharacterContentError> {
@@ -470,7 +497,7 @@ fn build_frame(
     let mut layers = Vec::new();
 
     let body_layer = child(body_frame, "body")?.ok_or_else(|| CharacterContentError::Invalid {
-        message: format!("stand1 frame {frame_name} has no body layer"),
+        message: format!("{animation_name} frame {frame_name} has no body layer"),
     })?;
     layers.push(place_layer(&body_layer, None, &mut bones)?);
     add_direct_layers(
@@ -481,23 +508,25 @@ fn build_frame(
         &mut layers,
     )?;
 
-    let head_frame = child(head, "front")?.ok_or_else(|| CharacterContentError::Invalid {
+    let head_frame = child(parts.head, "front")?.ok_or_else(|| CharacterContentError::Invalid {
         message: "the selected head has no front frame".to_owned(),
     })?;
     add_direct_layers(&head_frame, &["neck"], None, &mut bones, &mut layers)?;
 
-    let face_frame = child(face, "default")?.ok_or_else(|| CharacterContentError::Invalid {
-        message: "the selected face has no default frame".to_owned(),
-    })?;
+    let face_frame =
+        child(parts.face, "default")?.ok_or_else(|| CharacterContentError::Invalid {
+            message: "the selected face has no default frame".to_owned(),
+        })?;
     add_direct_layers(&face_frame, &["brow"], None, &mut bones, &mut layers)?;
 
-    let hair_frame = child(hair, "default")?.ok_or_else(|| CharacterContentError::Invalid {
-        message: "the selected hair has no default frame".to_owned(),
-    })?;
+    let hair_frame =
+        child(parts.hair, "default")?.ok_or_else(|| CharacterContentError::Invalid {
+            message: "the selected hair has no default frame".to_owned(),
+        })?;
     add_direct_layers(&hair_frame, &["brow"], None, &mut bones, &mut layers)?;
 
     for clothing in &source.starter_clothes {
-        if let Some(frame) = animation_frame(clothing, "stand1", frame_name)? {
+        if let Some(frame) = animation_frame(clothing, animation_name, frame_name)? {
             add_direct_layers(&frame, &["navel"], None, &mut bones, &mut layers)?;
         }
     }
@@ -726,18 +755,28 @@ mod tests {
             .expect("supported appearance");
 
         assert!(!sprites.idle_frames.is_empty());
+        assert!(!sprites.walk_frames.is_empty());
+        assert!(!sprites.jump_frames.is_empty());
         assert!(
             sprites
                 .idle_frames
                 .iter()
+                .chain(sprites.walk_frames.iter())
+                .chain(sprites.jump_frames.iter())
                 .all(|frame| !frame.layers.is_empty())
         );
         assert!(!sprites.assets.is_empty());
-        let png = content
-            .get_asset(&sprites.assets[0].id)
-            .expect("registered asset")
-            .png_bytes()
-            .expect("decode PNG");
-        assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+        for frames in [
+            &sprites.idle_frames,
+            &sprites.walk_frames,
+            &sprites.jump_frames,
+        ] {
+            let png = content
+                .get_asset(&frames[0].layers[0].asset_id)
+                .expect("registered action asset")
+                .png_bytes()
+                .expect("decode action PNG");
+            assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+        }
     }
 }

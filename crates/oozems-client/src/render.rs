@@ -259,7 +259,8 @@ fn draw_player(
         &game.context,
         &game.images,
         &game.character_sprites,
-        game.frame_time_ms,
+        game.character_animation,
+        game.frame_time_ms - game.character_animation_started_ms,
         CharacterPlacement {
             anchor_x: x,
             anchor_y: y,

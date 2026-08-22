@@ -16,6 +16,7 @@ use web_sys::KeyboardEvent;
 use crate::api;
 use crate::assets;
 use crate::assets::BrowserAsset;
+use crate::character_render::CharacterAnimation;
 use crate::js_error;
 use crate::movement;
 use crate::movement::MapTransition;
@@ -28,6 +29,8 @@ const SAVE_INTERVAL_MS: f64 = 2_000.0;
 
 pub struct Game {
     pub canvas: HtmlCanvasElement,
+    pub character_animation: CharacterAnimation,
+    pub character_animation_started_ms: f64,
     pub context: CanvasRenderingContext2d,
     pub character_sprites: CharacterSpriteSet,
     pub facing_left: bool,
@@ -100,6 +103,8 @@ fn build_game(
 
     Ok(Rc::new(RefCell::new(Game {
         canvas,
+        character_animation: CharacterAnimation::Idle,
+        character_animation_started_ms: 0.0,
         context,
         character_sprites,
         facing_left: false,
@@ -228,10 +233,45 @@ fn update_player(
         game.facing_left = input.horizontal < 0.0;
     }
     let output = movement::update_player(&game.map, position, game.motion, input, elapsed_seconds);
+    let animation = character_animation(output.state, input);
+    update_character_animation(
+        &mut game.character_animation,
+        &mut game.character_animation_started_ms,
+        animation,
+        game.frame_time_ms,
+    );
     game.dirty |= position != output.position;
     game.player.position = Some(output.position);
     game.motion = output.state;
     output.transition
+}
+
+fn character_animation(
+    state: MotionState,
+    input: PlayerInput,
+) -> CharacterAnimation {
+    if state.climbing.is_some() {
+        CharacterAnimation::Idle
+    } else if !state.on_ground {
+        CharacterAnimation::Jump
+    } else if input.horizontal != 0.0 {
+        CharacterAnimation::Walk
+    } else {
+        CharacterAnimation::Idle
+    }
+}
+
+fn update_character_animation(
+    current: &mut CharacterAnimation,
+    started_ms: &mut f64,
+    next: CharacterAnimation,
+    timestamp_ms: f64,
+) {
+    if *current == next {
+        return;
+    }
+    *current = next;
+    *started_ms = timestamp_ms;
 }
 
 fn read_player_input(
@@ -287,6 +327,8 @@ fn install_map(
     game.map = map;
     game.images = images;
     game.motion = MotionState::default();
+    game.character_animation = CharacterAnimation::Idle;
+    game.character_animation_started_ms = game.frame_time_ms;
     game.dirty = true;
     Ok(())
 }
@@ -322,7 +364,12 @@ fn save_if_due(
 #[cfg(test)]
 mod tests {
     use super::InputState;
+    use super::character_animation;
     use super::set_key;
+    use super::update_character_animation;
+    use crate::character_render::CharacterAnimation;
+    use crate::movement::MotionState;
+    use crate::movement::PlayerInput;
 
     #[test]
     fn up_interacts_and_space_jumps() {
@@ -334,5 +381,63 @@ mod tests {
 
         assert!(set_key(&mut input, "Space", true));
         assert!(input.jump);
+    }
+
+    #[test]
+    fn movement_state_selects_the_character_animation() {
+        let grounded = MotionState {
+            on_ground: true,
+            ..MotionState::default()
+        };
+        let walking = PlayerInput {
+            horizontal: -1.0,
+            ..PlayerInput::default()
+        };
+
+        assert_eq!(
+            character_animation(grounded, PlayerInput::default()),
+            CharacterAnimation::Idle
+        );
+        assert_eq!(
+            character_animation(grounded, walking),
+            CharacterAnimation::Walk
+        );
+        assert_eq!(
+            character_animation(MotionState::default(), walking),
+            CharacterAnimation::Jump
+        );
+        assert_eq!(
+            character_animation(
+                MotionState {
+                    climbing: Some(0),
+                    ..MotionState::default()
+                },
+                walking,
+            ),
+            CharacterAnimation::Idle
+        );
+    }
+
+    #[test]
+    fn changing_action_restarts_animation_time() {
+        let mut animation = CharacterAnimation::Idle;
+        let mut started_ms = 20.0;
+
+        update_character_animation(
+            &mut animation,
+            &mut started_ms,
+            CharacterAnimation::Idle,
+            100.0,
+        );
+        assert_eq!(started_ms, 20.0);
+
+        update_character_animation(
+            &mut animation,
+            &mut started_ms,
+            CharacterAnimation::Walk,
+            125.0,
+        );
+        assert_eq!(animation, CharacterAnimation::Walk);
+        assert_eq!(started_ms, 125.0);
     }
 }
