@@ -16,22 +16,26 @@ use tower_http::trace::TraceLayer;
 
 use crate::content::ContentCatalog;
 use crate::database::Database;
+use crate::experience::ExperienceCurves;
 
 #[derive(Clone)]
 pub struct AppState {
     pub catalog: Arc<ContentCatalog>,
     pub database: Database,
+    pub experience: Arc<ExperienceCurves>,
 }
 
 pub fn router(
     database: Database,
     catalog: ContentCatalog,
+    experience: ExperienceCurves,
     public_dir: &Path,
     asset_dir: &Path,
 ) -> Router {
     let state = AppState {
         catalog: Arc::new(catalog),
         database,
+        experience: Arc::new(experience),
     };
     let api = Router::new()
         .route("/bootstrap", post(crate::api::bootstrap))

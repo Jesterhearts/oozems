@@ -1,0 +1,16 @@
+# See README.md for configuration reference.
+
+default_curve = "default"
+
+[[curves]]
+name = "default"
+
+[[curves.ranges]]
+start   = 1
+end     = 10
+formula = "15 * Level ^ 2"
+
+[[curves.ranges]]
+start   = 11
+end     = 200
+formula = "atLevel(10) + (Level - 10) * 500"

@@ -5,10 +5,12 @@ mod app;
 mod config;
 mod content;
 mod database;
+mod experience;
 
 use anyhow::Context;
 use config::Config;
 use content::ContentCatalog;
+use experience::ExperienceCurves;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -24,10 +26,22 @@ async fn main() -> anyhow::Result<()> {
         )
     })?;
 
+    let experience = ExperienceCurves::load(&config.config_dir.join("xp-curves.toml"))?;
+    info!(
+        curve = experience.default_curve().name(),
+        max_level = experience.default_curve().max_level(),
+        "XP curve configuration ready"
+    );
     let catalog =
         ContentCatalog::load_with_wz(&config.content_dir, &config.asset_dir, &config.wz_dir)?;
     let database = database::open_surreal_kv(&config.data_dir.join("surrealkv")).await?;
-    let router = app::router(database, catalog, &config.public_dir, &config.asset_dir);
+    let router = app::router(
+        database,
+        catalog,
+        experience,
+        &config.public_dir,
+        &config.asset_dir,
+    );
     let listener = tokio::net::TcpListener::bind(config.bind).await?;
 
     info!(address = %config.bind, "oozems server ready");

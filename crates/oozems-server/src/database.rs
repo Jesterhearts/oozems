@@ -178,7 +178,10 @@ pub async fn create_player(
     name: &CharacterName,
     appearance: CharacterAppearance,
     position: Vec2,
+    experience_required: u64,
 ) -> surrealdb::Result<PlayerState> {
+    let mut stats = starter_character_stats();
+    stats.experience_required = experience_required;
     let player = PlayerState {
         id: player_id.as_str().to_owned(),
         name: name.as_str().to_owned(),
@@ -186,7 +189,7 @@ pub async fn create_player(
         map_id: STARTER_MAP_ID,
         position: Some(position),
         appearance: Some(appearance),
-        stats: Some(starter_character_stats()),
+        stats: Some(stats),
     };
     save_player(database, &player).await
 }
@@ -261,10 +264,7 @@ fn stats_from_record(record: &PlayerRecord) -> CharacterStats {
         max_hp,
         mp: record.mp.unwrap_or(defaults.mp).min(max_mp),
         max_mp,
-        experience: record
-            .experience
-            .unwrap_or(defaults.experience)
-            .min(experience_required),
+        experience: record.experience.unwrap_or(defaults.experience),
         fame: record.fame.unwrap_or(defaults.fame),
         ability_points: record.ability_points.unwrap_or(defaults.ability_points),
         strength: record.strength.unwrap_or(defaults.strength),
@@ -417,9 +417,14 @@ mod tests {
             &name,
             appearance(),
             Vec2 { x: 160.0, y: 420.0 },
+            123,
         )
         .await
         .expect("create player");
+        assert_eq!(
+            player.stats.as_ref().map(|stats| stats.experience_required),
+            Some(123)
+        );
         player.position = Some(Vec2 { x: 321.0, y: 456.0 });
 
         save_player(&database, &player).await.expect("save player");

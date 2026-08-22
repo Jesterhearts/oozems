@@ -18,6 +18,7 @@ use oozems_proto::v1::GetGuiRequest;
 use oozems_proto::v1::GetGuiResponse;
 use oozems_proto::v1::GetMapRequest;
 use oozems_proto::v1::GetMapResponse;
+use oozems_proto::v1::PlayerState;
 use oozems_proto::v1::SavePlayerRequest;
 use oozems_proto::v1::SavePlayerResponse;
 use oozems_proto::v1::Vec2;
@@ -37,7 +38,7 @@ pub async fn bootstrap(
     let request: BootstrapRequest = decode_request(&headers, body)?;
     let player_id = PlayerId::parse(&request.player_id)
         .map_err(|error| ApiError::bad_request("invalid_player_id", error.to_string()))?;
-    let player = crate::database::load_player(&state.database, &player_id)
+    let player = load_player(&state, &player_id)
         .await?
         .filter(|player| player.appearance.is_some());
 
@@ -69,7 +70,7 @@ pub async fn create_character(
             "the selected character appearance is not available",
         ));
     }
-    if crate::database::load_player(&state.database, &player_id)
+    if load_player(&state, &player_id)
         .await?
         .is_some_and(|player| player.appearance.is_some())
     {
@@ -86,9 +87,17 @@ pub async fn create_character(
         )
     })?;
     let position = starter_position(&map);
-    let player =
-        crate::database::create_player(&state.database, &player_id, &name, appearance, position)
-            .await?;
+    let experience_required =
+        crate::experience::required_for_level(state.experience.default_curve(), 1)?;
+    let player = crate::database::create_player(
+        &state.database,
+        &player_id,
+        &name,
+        appearance,
+        position,
+        experience_required,
+    )
+    .await?;
 
     Ok(Protobuf(CreateCharacterResponse {
         player: Some(player),
@@ -168,7 +177,7 @@ pub async fn save_player(
             format!("map {} does not exist", requested.map_id),
         )
     })?;
-    let current = crate::database::load_player(&state.database, &player_id)
+    let current = load_player(&state, &player_id)
         .await?
         .filter(|player| player.appearance.is_some())
         .ok_or_else(|| ApiError::not_found("player_not_found", "player does not exist"))?;
@@ -214,6 +223,19 @@ async fn load_map(
 ) -> Result<Option<oozems_proto::v1::Map>, ApiError> {
     let catalog = state.catalog.clone();
     Ok(tokio::task::spawn_blocking(move || catalog.get_map(map_id)).await??)
+}
+
+async fn load_player(
+    state: &AppState,
+    player_id: &PlayerId,
+) -> Result<Option<PlayerState>, ApiError> {
+    crate::database::load_player(&state.database, player_id)
+        .await?
+        .map(|player| {
+            crate::experience::apply_curve(player, state.experience.default_curve())
+                .map_err(ApiError::from)
+        })
+        .transpose()
 }
 
 fn starter_position(map: &oozems_proto::v1::Map) -> Vec2 {
@@ -295,6 +317,8 @@ pub enum ApiError {
     Content(#[from] crate::content::ContentError),
     #[error("content worker failed")]
     Worker(#[from] tokio::task::JoinError),
+    #[error("game rules could not be applied")]
+    GameRules(#[from] crate::experience::ExperienceRuleError),
 }
 
 impl ApiError {
@@ -362,6 +386,14 @@ impl IntoResponse for ApiError {
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "content_worker_error",
                     "the server could not load game content".to_owned(),
+                )
+            }
+            Self::GameRules(error) => {
+                tracing::error!(%error, "game rules could not be applied");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "game_rules_error",
+                    "the server could not apply its game rules".to_owned(),
                 )
             }
         };

@@ -10,6 +10,7 @@ const DEFAULT_BIND: &str = "127.0.0.1:3000";
 pub struct Config {
     pub asset_dir: PathBuf,
     pub bind: SocketAddr,
+    pub config_dir: PathBuf,
     pub content_dir: PathBuf,
     pub data_dir: PathBuf,
     pub public_dir: PathBuf,
@@ -40,6 +41,7 @@ impl Config {
         Ok(Self {
             asset_dir: env_path("OOZEMS_ASSET_DIR", manifest_dir.join("assets")),
             bind,
+            config_dir: env_path("OOZEMS_CONFIG_DIR", PathBuf::from("config")),
             content_dir: env_path("OOZEMS_CONTENT_DIR", manifest_dir.join("content/maps")),
             data_dir: env_path("OOZEMS_DATA_DIR", PathBuf::from("data")),
             public_dir: env_path("OOZEMS_PUBLIC_DIR", manifest_dir.join("public")),
