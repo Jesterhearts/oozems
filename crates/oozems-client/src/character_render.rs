@@ -25,11 +25,7 @@ pub fn draw_character(
         return;
     };
     context.save();
-    let horizontal_scale = if placement.facing_left {
-        -placement.scale
-    } else {
-        placement.scale
-    };
+    let horizontal_scale = horizontal_scale(placement.scale, placement.facing_left);
     let transformed = context
         .translate(placement.anchor_x, placement.anchor_y)
         .and_then(|()| context.scale(horizontal_scale, placement.scale));
@@ -48,6 +44,14 @@ pub fn draw_character(
         }
     }
     context.restore();
+}
+
+fn horizontal_scale(
+    scale: f64,
+    facing_left: bool,
+) -> f64 {
+    // Classic WZ character frames face left in their source orientation.
+    if facing_left { scale } else { -scale }
 }
 
 fn frame_at_time(
@@ -78,6 +82,13 @@ mod tests {
     use oozems_proto::v1::CharacterFrame;
 
     use super::frame_at_time;
+    use super::horizontal_scale;
+
+    #[test]
+    fn source_frame_is_mirrored_only_when_facing_right() {
+        assert_eq!(horizontal_scale(2.5, true), 2.5);
+        assert_eq!(horizontal_scale(2.5, false), -2.5);
+    }
 
     #[test]
     fn animation_uses_each_frame_delay() {
