@@ -27,6 +27,11 @@ use wz_reader::property::WzPngParseError;
 use wz_reader::property::png::get_image;
 use wz_reader::util::node_util::parse_node;
 
+mod features;
+
+use features::RawLadder;
+use features::RawPortal;
+
 const MAP_ARCHIVE: &str = "Map.wz";
 const STRING_ARCHIVE: &str = "String.wz";
 const PLAYER_LAYER: i32 = 4;
@@ -117,15 +122,20 @@ struct DecorationOrder {
     secondary_z: i32,
 }
 
-struct RawDecoration {
+#[derive(Clone)]
+struct RawSprite {
     source: WzNodeArc,
     source_path: String,
     x: i32,
     y: i32,
     width: u32,
     height: u32,
-    order: DecorationOrder,
     flip_x: bool,
+}
+
+struct RawDecoration {
+    sprite: RawSprite,
+    order: DecorationOrder,
 }
 
 impl WzContent {
@@ -403,11 +413,19 @@ fn build_map(
 ) -> Result<Map, WzContentError> {
     let raw_platforms = read_platforms(node)?;
     let mut raw_decorations = read_decorations(&source.root, node, map_id)?;
+    let raw_ladders = features::read_ladders(node)?;
+    let raw_portals = features::read_portals(&source.root, node)?;
     // zM associates an item with a foothold group. It does not control drawing.
     // The order key keeps the separate WZ draw-order fields comparable.
     raw_decorations.sort_by_key(|decoration| decoration.order);
     let bounds = read_bounds(node)?.unwrap_or_else(|| {
-        derive_bounds(raw_platforms.iter(), raw_decorations.iter()).unwrap_or(Bounds {
+        derive_bounds(
+            raw_platforms.iter(),
+            raw_decorations.iter(),
+            &raw_ladders,
+            &raw_portals,
+        )
+        .unwrap_or(Bounds {
             left: 0,
             top: 0,
             right: 800,
@@ -425,12 +443,16 @@ fn build_map(
     let mut asset_ids = HashSet::new();
     let mut decorations = Vec::with_capacity(raw_decorations.len());
     for decoration in raw_decorations {
-        let asset = source.register_asset(&decoration.source_path, &decoration.source)?;
+        let asset =
+            source.register_asset(&decoration.sprite.source_path, &decoration.sprite.source)?;
         if asset_ids.insert(asset.id.clone()) {
             assets.push(asset.clone());
         }
         decorations.push(build_decoration(decoration, &asset.id, bounds));
     }
+    let ladders = features::build_ladders(raw_ladders, bounds);
+    let portals =
+        features::build_portals(source, raw_portals, bounds, &mut assets, &mut asset_ids)?;
 
     Ok(Map {
         id: map_id,
@@ -444,6 +466,8 @@ fn build_map(
         platforms,
         decorations,
         assets,
+        ladders,
+        portals,
     })
 }
 
@@ -638,6 +662,18 @@ fn raw_decoration(
     order: DecorationOrder,
     flip_x: bool,
 ) -> Result<RawDecoration, WzContentError> {
+    Ok(RawDecoration {
+        sprite: raw_sprite(source, anchor_x, anchor_y, flip_x)?,
+        order,
+    })
+}
+
+fn raw_sprite(
+    source: WzNodeArc,
+    anchor_x: i32,
+    anchor_y: i32,
+    flip_x: bool,
+) -> Result<RawSprite, WzContentError> {
     let (width, height) = {
         let read = source.read().map_err(|_| lock_error("WZ PNG geometry"))?;
         let png = read
@@ -660,14 +696,13 @@ fn raw_decoration(
         anchor_x.saturating_sub(origin_x)
     };
 
-    Ok(RawDecoration {
+    Ok(RawSprite {
         source_path: node_path(&source)?,
         source,
         x,
         y: anchor_y.saturating_sub(origin_y),
         width,
         height,
-        order,
         flip_x,
     })
 }
@@ -734,17 +769,41 @@ fn read_bounds(node: &WzNodeArc) -> Result<Option<Bounds>, WzContentError> {
 fn derive_bounds<'a>(
     platforms: impl Iterator<Item = &'a RawPlatform>,
     decorations: impl Iterator<Item = &'a RawDecoration>,
+    ladders: &[RawLadder],
+    portals: &[RawPortal],
 ) -> Option<Bounds> {
     let mut points = platforms
         .flat_map(|platform| [(platform.x1, platform.y1), (platform.x2, platform.y2)])
         .chain(decorations.flat_map(|decoration| {
             [
-                (decoration.x, decoration.y),
+                (decoration.sprite.x, decoration.sprite.y),
                 (
-                    decoration.x.saturating_add(decoration.width as i32),
-                    decoration.y.saturating_add(decoration.height as i32),
+                    decoration
+                        .sprite
+                        .x
+                        .saturating_add(decoration.sprite.width as i32),
+                    decoration
+                        .sprite
+                        .y
+                        .saturating_add(decoration.sprite.height as i32),
                 ),
             ]
+        }))
+        .chain(
+            ladders
+                .iter()
+                .flat_map(|ladder| [(ladder.x, ladder.y1), (ladder.x, ladder.y2)]),
+        )
+        .chain(portals.iter().flat_map(|portal| {
+            std::iter::once((portal.x, portal.y)).chain(portal.frames.iter().flat_map(|frame| {
+                [
+                    (frame.sprite.x, frame.sprite.y),
+                    (
+                        frame.sprite.x.saturating_add(frame.sprite.width as i32),
+                        frame.sprite.y.saturating_add(frame.sprite.height as i32),
+                    ),
+                ]
+            }))
         }));
     let (first_x, first_y) = points.next()?;
     let (mut left, mut top, mut right, mut bottom) = (first_x, first_y, first_x, first_y);
@@ -801,12 +860,12 @@ fn build_decoration(
 ) -> Decoration {
     Decoration {
         asset_id: asset_id.to_owned(),
-        x: (source.x - bounds.left) as f32,
-        y: (source.y - bounds.top) as f32,
-        width: source.width as f32,
-        height: source.height as f32,
+        x: (source.sprite.x - bounds.left) as f32,
+        y: (source.sprite.y - bounds.top) as f32,
+        width: source.sprite.width as f32,
+        height: source.sprite.height as f32,
         layer: source.order.layer - PLAYER_LAYER,
-        flip_x: source.flip_x,
+        flip_x: source.sprite.flip_x,
     }
 }
 
@@ -917,7 +976,7 @@ mod tests {
         let decorations: [RawDecoration; 0] = [];
 
         assert_eq!(
-            derive_bounds(platforms.iter(), decorations.iter()),
+            derive_bounds(platforms.iter(), decorations.iter(), &[], &[]),
             Some(Bounds {
                 left: -140,
                 top: -80,

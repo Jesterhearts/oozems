@@ -243,6 +243,8 @@ fn build_map(
             })
             .collect(),
         assets,
+        ladders: Vec::new(),
+        portals: Vec::new(),
     })
 }
 
@@ -418,6 +420,13 @@ mod tests {
         assert_eq!(map.name, "Henesys");
         assert!(map.platforms.iter().any(|platform| platform.hidden));
         assert!(!map.decorations.is_empty());
+        assert!(!map.ladders.is_empty());
+        assert!(map.portals.iter().any(|portal| {
+            portal.name == "east00"
+                && portal.target_map_id == 100_010_000
+                && portal.target_name == "west00"
+                && !portal.frames.is_empty()
+        }));
         for descriptor in &map.assets {
             let asset = catalog
                 .get_wz_asset(&descriptor.id)

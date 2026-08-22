@@ -50,6 +50,8 @@ message Map {
   repeated Platform platforms = 5;
   repeated Decoration decorations = 6;
   repeated AssetDescriptor assets = 7;
+  repeated Ladder ladders = 8;
+  repeated Portal portals = 9;
 }
 
 message Platform {
@@ -76,6 +78,33 @@ message Decoration {
   float height = 5;
   int32 layer = 6;
   bool flip_x = 7;
+}
+
+message Ladder {
+  float x = 1;
+  float top = 2;
+  float bottom = 3;
+  bool is_ladder = 4;
+  bool upper_floor = 5;
+}
+
+message Portal {
+  string name = 1;
+  float x = 2;
+  float y = 3;
+  uint32 target_map_id = 4;
+  string target_name = 5;
+  uint32 kind = 6;
+  repeated PortalFrame frames = 7;
+}
+
+message PortalFrame {
+  string asset_id = 1;
+  float x = 2;
+  float y = 3;
+  float width = 4;
+  float height = 5;
+  uint32 delay_ms = 6;
 }
 
 message AssetDescriptor {

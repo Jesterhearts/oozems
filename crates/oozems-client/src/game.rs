@@ -5,6 +5,7 @@ use std::rc::Rc;
 
 use oozems_proto::v1::Map;
 use oozems_proto::v1::PlayerState;
+use oozems_proto::v1::Vec2;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
 use wasm_bindgen::closure::Closure;
@@ -15,13 +16,14 @@ use web_sys::HtmlImageElement;
 use web_sys::KeyboardEvent;
 
 use crate::api;
+use crate::movement;
+use crate::movement::MapTransition;
+use crate::movement::MotionState;
+use crate::movement::PlayerInput;
 use crate::render;
 use crate::show_status;
 
 const PLAYER_ID: &str = "local-player";
-const MOVE_SPEED: f32 = 220.0;
-const GRAVITY: f32 = 1_150.0;
-const JUMP_SPEED: f32 = 480.0;
 const SAVE_INTERVAL_MS: f64 = 2_000.0;
 
 pub struct Game {
@@ -30,14 +32,16 @@ pub struct Game {
     pub images: HashMap<String, MapImage>,
     pub map: Map,
     pub player: PlayerState,
+    pub frame_time_ms: f64,
     input: Rc<RefCell<InputState>>,
     save_in_flight: Rc<Cell<bool>>,
+    transition_in_flight: Rc<Cell<bool>>,
     dirty: bool,
     jump_consumed: bool,
+    portal_consumed: bool,
     last_frame_ms: f64,
     next_save_ms: f64,
-    on_ground: bool,
-    velocity_y: f32,
+    motion: MotionState,
 }
 
 pub struct MapImage {
@@ -46,10 +50,12 @@ pub struct MapImage {
     pub url: String,
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 struct InputState {
     left: bool,
     right: bool,
+    up: bool,
+    down: bool,
     jump: bool,
 }
 
@@ -102,14 +108,16 @@ fn build_game(
         images,
         map,
         player,
+        frame_time_ms: 0.0,
         input,
         save_in_flight: Rc::new(Cell::new(false)),
+        transition_in_flight: Rc::new(Cell::new(false)),
         dirty: false,
         jump_consumed: false,
+        portal_consumed: false,
         last_frame_ms: 0.0,
         next_save_ms: SAVE_INTERVAL_MS,
-        on_ground: false,
-        velocity_y: 0.0,
+        motion: MotionState::default(),
     })))
 }
 
@@ -166,7 +174,9 @@ fn set_key(
     match code {
         "ArrowLeft" | "KeyA" => input.left = pressed,
         "ArrowRight" | "KeyD" => input.right = pressed,
-        "ArrowUp" | "KeyW" | "Space" => input.jump = pressed,
+        "ArrowUp" | "KeyW" => input.up = pressed,
+        "ArrowDown" | "KeyS" => input.down = pressed,
+        "Space" => input.jump = pressed,
         _ => return false,
     }
     true
@@ -175,8 +185,14 @@ fn set_key(
 fn schedule_frame(game: Rc<RefCell<Game>>) -> Result<(), String> {
     let window = web_sys::window().ok_or("browser window is unavailable")?;
     let callback = Closure::once_into_js(move |timestamp_ms: f64| {
-        update(&mut game.borrow_mut(), timestamp_ms);
-        render::draw(&game.borrow());
+        let transition = update(&mut game.borrow_mut(), timestamp_ms);
+        {
+            let game = game.borrow();
+            render::draw(&game);
+        }
+        if let Some(transition) = transition {
+            begin_map_transition(game.clone(), transition);
+        }
         if let Err(error) = schedule_frame(game) {
             show_status(&format!("Animation stopped: {error}"), true);
         }
@@ -190,99 +206,106 @@ fn schedule_frame(game: Rc<RefCell<Game>>) -> Result<(), String> {
 fn update(
     game: &mut Game,
     timestamp_ms: f64,
-) {
+) -> Option<MapTransition> {
     let elapsed_seconds = if game.last_frame_ms == 0.0 {
         0.0
     } else {
         ((timestamp_ms - game.last_frame_ms) / 1_000.0).clamp(0.0, 0.05) as f32
     };
     game.last_frame_ms = timestamp_ms;
+    game.frame_time_ms = timestamp_ms;
 
-    update_player(game, elapsed_seconds);
+    let transition = if game.transition_in_flight.get() {
+        None
+    } else {
+        update_player(game, elapsed_seconds)
+    };
+    if transition.is_some() {
+        game.transition_in_flight.set(true);
+    }
     save_if_due(game, timestamp_ms);
+    transition
 }
 
 fn update_player(
     game: &mut Game,
     elapsed_seconds: f32,
+) -> Option<MapTransition> {
+    let position = game.player.position?;
+    let input = read_player_input(
+        *game.input.borrow(),
+        &mut game.jump_consumed,
+        &mut game.portal_consumed,
+    );
+    let output = movement::update_player(&game.map, position, game.motion, input, elapsed_seconds);
+    game.dirty |= position != output.position;
+    game.player.position = Some(output.position);
+    game.motion = output.state;
+    output.transition
+}
+
+fn read_player_input(
+    input: InputState,
+    jump_consumed: &mut bool,
+    portal_consumed: &mut bool,
+) -> PlayerInput {
+    let jump_pressed = input.jump && !*jump_consumed;
+    let portal_pressed = input.up && !*portal_consumed;
+    *jump_consumed = input.jump;
+    *portal_consumed = input.up;
+
+    PlayerInput {
+        horizontal: f32::from(input.right as u8) - f32::from(input.left as u8),
+        vertical: f32::from(input.down as u8) - f32::from(input.up as u8),
+        jump_pressed,
+        portal_pressed,
+    }
+}
+
+fn begin_map_transition(
+    game: Rc<RefCell<Game>>,
+    transition: MapTransition,
 ) {
-    let input = game.input.borrow();
-    let direction = f32::from(input.right as u8) - f32::from(input.left as u8);
-    let jump_requested = input.jump && !game.jump_consumed && game.on_ground;
-    if !input.jump {
-        game.jump_consumed = false;
-    }
-    drop(input);
-
-    if jump_requested {
-        game.velocity_y = -JUMP_SPEED;
-        game.on_ground = false;
-        game.jump_consumed = true;
-    }
-
-    let Some(position) = game.player.position.as_mut() else {
-        return;
-    };
-    let old_x = position.x;
-    let old_y = position.y;
-    position.x = (position.x + direction * MOVE_SPEED * elapsed_seconds)
-        .clamp(18.0, game.map.width as f32 - 18.0);
-
-    game.velocity_y += GRAVITY * elapsed_seconds;
-    let proposed_y = position.y + game.velocity_y * elapsed_seconds;
-    let landing_y = find_landing_platform(&game.map, old_x, position.x, position.y, proposed_y);
-    if let Some(landing_y) = landing_y {
-        position.y = landing_y;
-        game.velocity_y = 0.0;
-        game.on_ground = true;
-    } else {
-        position.y = proposed_y.min(game.map.height as f32);
-        game.on_ground = false;
-    }
-
-    game.dirty |= old_x != position.x || old_y != position.y;
+    let transition_in_flight = game.borrow().transition_in_flight.clone();
+    spawn_local(async move {
+        match api::get_map(transition.target_map_id).await {
+            Ok(map) => {
+                let name = map.name.clone();
+                let result = install_map(&mut game.borrow_mut(), map, &transition);
+                match result {
+                    Ok(()) => show_status(&format!("Entered {name}."), false),
+                    Err(error) => show_status(&format!("Could not enter map: {error}"), true),
+                }
+            }
+            Err(error) => show_status(&format!("Could not enter map: {error}"), true),
+        }
+        transition_in_flight.set(false);
+    });
 }
 
-fn find_landing_platform(
-    map: &Map,
-    old_x: f32,
-    new_x: f32,
-    old_y: f32,
-    new_y: f32,
-) -> Option<f32> {
-    if new_y < old_y {
-        return None;
-    }
+fn install_map(
+    game: &mut Game,
+    map: Map,
+    transition: &MapTransition,
+) -> Result<(), String> {
+    let images = begin_asset_downloads(&map)?;
+    let position = movement::destination_position(&map, &transition.target_portal_name)
+        .unwrap_or_else(|| fallback_position(&map));
 
-    map.platforms
-        .iter()
-        .filter_map(|platform| {
-            let minimum_x = platform.x.min(platform.end_x);
-            let maximum_x = platform.x.max(platform.end_x);
-            if new_x < minimum_x - 16.0 || new_x > maximum_x + 16.0 {
-                return None;
-            }
-            let old_surface = platform_y(platform, old_x.clamp(minimum_x, maximum_x))?;
-            let new_surface = platform_y(platform, new_x.clamp(minimum_x, maximum_x))?;
-            if old_y <= old_surface + 1.0 && new_y >= new_surface {
-                Some(new_surface)
-            } else {
-                None
-            }
-        })
-        .min_by(f32::total_cmp)
+    game.player.map_id = map.id;
+    game.player.position = Some(position);
+    game.map = map;
+    game.images = images;
+    game.motion = MotionState::default();
+    game.dirty = true;
+    Ok(())
 }
 
-fn platform_y(
-    platform: &oozems_proto::v1::Platform,
-    x: f32,
-) -> Option<f32> {
-    let delta_x = platform.end_x - platform.x;
-    if delta_x.abs() < f32::EPSILON {
-        return None;
+fn fallback_position(map: &Map) -> Vec2 {
+    Vec2 {
+        x: map.width as f32 / 2.0,
+        y: (map.height as f32 / 2.0).min(map.height as f32),
     }
-    let progress = (x - platform.x) / delta_x;
-    Some(platform.y + progress * (platform.end_y - platform.y))
 }
 
 fn save_if_due(
@@ -314,28 +337,18 @@ fn js_error(error: JsValue) -> String {
 
 #[cfg(test)]
 mod tests {
-    use oozems_proto::v1::Map;
-    use oozems_proto::v1::Platform;
-
-    use super::find_landing_platform;
+    use super::InputState;
+    use super::set_key;
 
     #[test]
-    fn player_lands_on_a_sloped_foothold() {
-        let map = Map {
-            platforms: vec![Platform {
-                x: 100.0,
-                y: 300.0,
-                width: 100.0,
-                end_x: 200.0,
-                end_y: 250.0,
-                ..Platform::default()
-            }],
-            ..Map::default()
-        };
+    fn up_interacts_and_space_jumps() {
+        let mut input = InputState::default();
 
-        assert_eq!(
-            find_landing_platform(&map, 140.0, 150.0, 280.0, 290.0),
-            Some(275.0)
-        );
+        assert!(set_key(&mut input, "ArrowUp", true));
+        assert!(input.up);
+        assert!(!input.jump);
+
+        assert!(set_key(&mut input, "Space", true));
+        assert!(input.jump);
     }
 }

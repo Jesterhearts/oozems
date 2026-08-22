@@ -12,7 +12,8 @@ The current vertical slice includes:
 - server-owned map files fetched only when entered;
 - optional classic PKG1 WZ map archives parsed lazily by the server;
 - server-owned assets fetched only when referenced by the current map; and
-- player movement, platforms, jumping, and periodic position saves.
+- player movement, platforms, jumping, ladder and rope climbing, direct portal
+  transitions, and periodic position saves.
 
 ## Run it
 
@@ -69,11 +70,18 @@ entries at startup, and parses each map only when it is requested. A WZ map
 overrides a JSON map with the same ID.
 
 The map response contains footholds and references to only the sprite assets
-used by that map. The client requests a sprite when one of its placements first
-enters the viewport. Each sprite stays compressed in `Map.wz` until the browser
-requests its opaque `/wz-assets/...` URL. The server then decodes that sprite,
-returns a normal PNG, and caches it for later requests. WZ files and extracted
-assets are not added to the client bundle.
+used by that map. It also contains typed ladder, rope, and portal data. Visible
+portals use the animation frames under `MapHelper.img`. The client requests a
+sprite when one of its placements first enters the viewport. Each sprite stays
+compressed in `Map.wz` until the browser requests its opaque
+`/wz-assets/...` URL. The server then decodes that sprite, returns a normal PNG,
+and caches it for later requests. WZ files and extracted assets are not added to
+the client bundle.
+
+Use the left and right arrow keys, or A and D, to walk. Use Space to jump. Use
+the up and down arrow keys, or W and S, to climb. Press Up or W while standing
+at a direct portal to enter it. Script portals remain inactive because their
+behavior belongs to a future server-side scripting system.
 
 ## Add a map
 
@@ -102,5 +110,5 @@ its database engine in the server binary.
 2. Add a protobuf WebSocket stream for authoritative movement and other
    players while retaining HTTP for bootstrap and content.
 3. Split maps into spatial chunks if maps become much wider than the viewport.
-4. Add portals, map transitions, NPCs, and inventory as separate typed
+4. Add server-side portal scripts, NPCs, and inventory as separate typed
    pipelines.

@@ -1,5 +1,6 @@
 use oozems_proto::v1::Decoration;
 use oozems_proto::v1::PlatformKind;
+use oozems_proto::v1::PortalFrame;
 
 use crate::game::Game;
 
@@ -25,6 +26,7 @@ pub fn draw(game: &Game) {
     draw_background(game, viewport_width, viewport_height, camera_x);
     draw_decorations(game, camera_x, camera_y, |layer| layer <= 0);
     draw_platforms(game, camera_x, camera_y);
+    draw_portals(game, camera_x, camera_y);
     draw_player(game, camera_x, camera_y);
     draw_decorations(game, camera_x, camera_y, |layer| layer > 0);
     draw_hud(game);
@@ -100,10 +102,35 @@ fn draw_decoration(
     camera_x: f64,
     camera_y: f64,
 ) {
-    let x = f64::from(decoration.x) - camera_x;
-    let y = f64::from(decoration.y) - camera_y;
-    let width = f64::from(decoration.width);
-    let height = f64::from(decoration.height);
+    draw_sprite(
+        game,
+        &decoration.asset_id,
+        decoration.x,
+        decoration.y,
+        decoration.width,
+        decoration.height,
+        decoration.flip_x,
+        camera_x,
+        camera_y,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_sprite(
+    game: &Game,
+    asset_id: &str,
+    map_x: f32,
+    map_y: f32,
+    map_width: f32,
+    map_height: f32,
+    flip_x: bool,
+    camera_x: f64,
+    camera_y: f64,
+) {
+    let x = f64::from(map_x) - camera_x;
+    let y = f64::from(map_y) - camera_y;
+    let width = f64::from(map_width);
+    let height = f64::from(map_height);
     if x + width < 0.0
         || x > f64::from(game.canvas.width())
         || y + height < 0.0
@@ -112,7 +139,7 @@ fn draw_decoration(
         return;
     }
 
-    let Some(asset) = game.images.get(&decoration.asset_id) else {
+    let Some(asset) = game.images.get(asset_id) else {
         return;
     };
     if !asset.requested.replace(true) {
@@ -123,7 +150,7 @@ fn draw_decoration(
         return;
     }
 
-    if decoration.flip_x {
+    if flip_x {
         game.context.save();
         let transformed = game
             .context
@@ -140,6 +167,53 @@ fn draw_decoration(
             .context
             .draw_image_with_html_image_element_and_dw_and_dh(image, x, y, width, height);
     }
+}
+
+fn draw_portals(
+    game: &Game,
+    camera_x: f64,
+    camera_y: f64,
+) {
+    for portal in &game.map.portals {
+        let Some(index) = portal_frame_index(&portal.frames, game.frame_time_ms) else {
+            continue;
+        };
+        let frame = &portal.frames[index];
+        draw_sprite(
+            game,
+            &frame.asset_id,
+            frame.x,
+            frame.y,
+            frame.width,
+            frame.height,
+            false,
+            camera_x,
+            camera_y,
+        );
+    }
+}
+
+fn portal_frame_index(
+    frames: &[PortalFrame],
+    timestamp_ms: f64,
+) -> Option<usize> {
+    let total_duration = frames
+        .iter()
+        .map(|frame| u64::from(frame.delay_ms.max(1)))
+        .sum::<u64>();
+    if total_duration == 0 {
+        return None;
+    }
+
+    let mut animation_time = timestamp_ms.max(0.0) as u64 % total_duration;
+    for (index, frame) in frames.iter().enumerate() {
+        let delay = u64::from(frame.delay_ms.max(1));
+        if animation_time < delay {
+            return Some(index);
+        }
+        animation_time -= delay;
+    }
+    Some(frames.len() - 1)
 }
 
 fn draw_platforms(
@@ -231,4 +305,30 @@ fn draw_hud(game: &Game) {
     );
     game.context.set_font("14px monospace");
     let _ = game.context.fill_text(&game.map.name, 28.0, 66.0);
+}
+
+#[cfg(test)]
+mod tests {
+    use oozems_proto::v1::PortalFrame;
+
+    use super::portal_frame_index;
+
+    #[test]
+    fn portal_animation_uses_each_frame_delay() {
+        let frames = vec![
+            PortalFrame {
+                delay_ms: 100,
+                ..PortalFrame::default()
+            },
+            PortalFrame {
+                delay_ms: 200,
+                ..PortalFrame::default()
+            },
+        ];
+
+        assert_eq!(portal_frame_index(&frames, 99.0), Some(0));
+        assert_eq!(portal_frame_index(&frames, 100.0), Some(1));
+        assert_eq!(portal_frame_index(&frames, 299.0), Some(1));
+        assert_eq!(portal_frame_index(&frames, 300.0), Some(0));
+    }
 }
