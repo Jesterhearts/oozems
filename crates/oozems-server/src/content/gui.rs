@@ -6,10 +6,6 @@ use std::sync::RwLock;
 
 use oozems_proto::v1::AssetDescriptor;
 use oozems_proto::v1::GameGui;
-use oozems_proto::v1::GuiLayout;
-use oozems_proto::v1::GuiSprite;
-use oozems_proto::v1::GuiWindow;
-use oozems_proto::v1::KeyActionDefinition;
 use oozems_proto::v1::KeySlot;
 use sha2::Digest;
 use sha2::Sha256;
@@ -23,40 +19,24 @@ use super::wz::archive_fingerprint;
 use super::wz::child;
 use super::wz::open_archive;
 use super::wz::parse;
+use super::wz::vector_value;
 use super::wz::wrap_archive_root;
+
+mod layout;
+
+use layout::compose_item_window;
+use layout::compose_key_config;
+use layout::compose_skill_window;
+use layout::compose_stat_window;
+use layout::compose_status_bar;
 
 const GUI_ARCHIVE: &str = "UI.wz";
 const STATUS_BAR_IMAGE: &str = "StatusBar.img";
 const UI_WINDOW_IMAGE: &str = "UIWindow.img";
-const GAUGE_LEFT_IN_OVERLAY: f32 = 209.0;
-const GAUGE_BOTTOM_PADDING: f32 = 1.0;
-const MENU_BUTTON_LEFT: f32 = 574.0;
-const MENU_BUTTON_GAP: f32 = 2.0;
-const MENU_BUTTON_TOP: f32 = 8.0;
-const KEY_COLUMN_CENTER: f32 = 22.0;
-const KEY_COLUMN_WIDTH: f32 = 35.0;
-const KEY_ROW_CENTER: f32 = 22.0;
-const KEY_ROW_HEIGHT: f32 = 35.0;
-const STAT_WINDOW_X: f32 = 20.0;
-const STAT_WINDOW_Y: f32 = 80.0;
-const STAT_CLOSE_RIGHT: f32 = 5.0;
-const STAT_CLOSE_TOP: f32 = 5.0;
-const STAT_JOB_LEFT: f32 = 60.0;
-const STAT_JOB_TOP: f32 = 57.0;
 const EQUIPMENT_WINDOW_X: f32 = 20.0;
 const EQUIPMENT_WINDOW_Y: f32 = 80.0;
 const INVENTORY_WINDOW_X: f32 = 205.0;
 const INVENTORY_WINDOW_Y: f32 = 80.0;
-const SKILL_WINDOW_X: f32 = 20.0;
-const SKILL_WINDOW_Y: f32 = 80.0;
-const KEY_CONFIG_WINDOW_X: f32 = 165.0;
-const KEY_CONFIG_WINDOW_Y: f32 = 60.0;
-const KEY_CONFIG_CLOSE_RIGHT: f32 = 5.0;
-const KEY_CONFIG_CLOSE_TOP: f32 = 6.0;
-const KEY_PALETTE_LEFT: f32 = 7.0;
-const KEY_PALETTE_TOP: f32 = 267.0;
-const KEY_PALETTE_STEP: f32 = 34.0;
-const KEY_PALETTE_COLUMNS: usize = 18;
 
 pub struct GuiContent {
     _base: WzNodeArc,
@@ -81,6 +61,8 @@ struct SourceSprite {
     asset_id: String,
     width: f32,
     height: f32,
+    origin_x: f32,
+    origin_y: f32,
 }
 
 struct StatusBarSources {
@@ -112,6 +94,17 @@ struct StatWindowSources {
 struct ItemWindowSources {
     background: SourceSprite,
     close: SourceSprite,
+}
+
+struct SkillWindowSources {
+    background: SourceSprite,
+    close: SourceSprite,
+    row: SourceSprite,
+    selected_row: SourceSprite,
+    point_up: SourceSprite,
+    point_up_hover: SourceSprite,
+    point_up_pressed: SourceSprite,
+    point_up_disabled: SourceSprite,
 }
 
 struct KeyConfigSources {
@@ -216,9 +209,8 @@ fn build_game_gui(
     let inventory_window =
         compose_item_window(&inventory_sources, INVENTORY_WINDOW_X, INVENTORY_WINDOW_Y)?;
     assets.extend(inventory_assets);
-    let (skill_sources, skill_assets) =
-        load_item_window_sources(content, ui_window, "skill", "Skill")?;
-    let skill_window = compose_item_window(&skill_sources, SKILL_WINDOW_X, SKILL_WINDOW_Y)?;
+    let (skill_sources, skill_assets) = load_skill_window_sources(content, ui_window)?;
+    let skill_window = compose_skill_window(&skill_sources)?;
     assets.extend(skill_assets);
     let (key_config_sources, key_config_assets) = load_key_config_sources(content, ui_window)?;
     let (key_config_window, key_actions) = compose_key_config(&key_config_sources)?;
@@ -440,6 +432,90 @@ fn load_item_window_sources(
     Ok((ItemWindowSources { background, close }, assets))
 }
 
+fn load_skill_window_sources(
+    content: &GuiContent,
+    ui_window: &WzNodeArc,
+) -> Result<(SkillWindowSources, Vec<AssetDescriptor>), GuiContentError> {
+    let mut assets = Vec::new();
+    let background = load_source(
+        content,
+        ui_window,
+        UI_WINDOW_IMAGE,
+        "skill-background",
+        &["Skill", "backgrnd"],
+        &mut assets,
+    )?;
+    let close = load_source(
+        content,
+        ui_window,
+        UI_WINDOW_IMAGE,
+        "skill-close",
+        &["BtUIClose", "normal", "0"],
+        &mut assets,
+    )?;
+    let row = load_source(
+        content,
+        ui_window,
+        UI_WINDOW_IMAGE,
+        "skill-row",
+        &["Skill", "skill0"],
+        &mut assets,
+    )?;
+    let selected_row = load_source(
+        content,
+        ui_window,
+        UI_WINDOW_IMAGE,
+        "skill-row-selected",
+        &["Skill", "skill1"],
+        &mut assets,
+    )?;
+    let point_up = load_source(
+        content,
+        ui_window,
+        UI_WINDOW_IMAGE,
+        "skill-point-up",
+        &["Skill", "BtSpUp", "normal", "0"],
+        &mut assets,
+    )?;
+    let point_up_hover = load_source(
+        content,
+        ui_window,
+        UI_WINDOW_IMAGE,
+        "skill-point-up-hover",
+        &["Skill", "BtSpUp", "mouseOver", "0"],
+        &mut assets,
+    )?;
+    let point_up_pressed = load_source(
+        content,
+        ui_window,
+        UI_WINDOW_IMAGE,
+        "skill-point-up-pressed",
+        &["Skill", "BtSpUp", "pressed", "0"],
+        &mut assets,
+    )?;
+    let point_up_disabled = load_source(
+        content,
+        ui_window,
+        UI_WINDOW_IMAGE,
+        "skill-point-up-disabled",
+        &["Skill", "BtSpUp", "disabled", "0"],
+        &mut assets,
+    )?;
+    Ok((
+        SkillWindowSources {
+            background,
+            close,
+            row,
+            selected_row,
+            point_up,
+            point_up_hover,
+            point_up_pressed,
+            point_up_disabled,
+        },
+        assets,
+    ))
+}
+
 fn load_stat_window_sources(
     content: &GuiContent,
     ui_window: &WzNodeArc,
@@ -520,237 +596,19 @@ fn load_source(
     assets: &mut Vec<AssetDescriptor>,
 ) -> Result<SourceSprite, GuiContentError> {
     let node = required_path(root, path)?;
-    let (width, height) = png_dimensions(&node, path)?;
+    let geometry = png_geometry(&node, path)?;
     let source_path = format!("{image_name}/{}", path.join("/"));
     let descriptor = content.register_asset(&source_path, &node)?;
     let source = SourceSprite {
         name: name.to_owned(),
         asset_id: descriptor.id.clone(),
-        width: width as f32,
-        height: height as f32,
+        width: geometry.width as f32,
+        height: geometry.height as f32,
+        origin_x: geometry.origin_x as f32,
+        origin_y: geometry.origin_y as f32,
     };
     assets.push(descriptor);
     Ok(source)
-}
-
-fn compose_status_bar(sources: &StatusBarSources) -> Result<GuiLayout, GuiContentError> {
-    let width = sources.background.width;
-    let height = sources.background.height.max(sources.quick_slots.height);
-    let bar_y = height - sources.background.height;
-    let background = place_sprite(&sources.background, 0.0, bar_y, false);
-    let overlay_x = 0.0;
-    let overlay_y = bar_y;
-    let quick_slots_x = width - sources.quick_slots.width;
-    let mut sprites = vec![
-        place_sprite(&sources.overlay, overlay_x, overlay_y, false),
-        place_sprite(
-            &sources.gauge,
-            overlay_x + GAUGE_LEFT_IN_OVERLAY,
-            height - sources.gauge.height - GAUGE_BOTTOM_PADDING,
-            false,
-        ),
-        place_sprite(
-            &sources.gauge_graduation,
-            overlay_x + GAUGE_LEFT_IN_OVERLAY,
-            height - sources.gauge_graduation.height - GAUGE_BOTTOM_PADDING,
-            false,
-        ),
-        place_sprite(&sources.quick_slots, quick_slots_x, 0.0, true),
-    ];
-    sprites.extend(
-        sources
-            .key_references
-            .iter()
-            .enumerate()
-            .map(|(index, source)| place_key_reference(source, quick_slots_x, index)),
-    );
-    let menu_buttons = [
-        (&sources.equip, Some(&sources.equip_pressed)),
-        (&sources.inventory, Some(&sources.inventory_pressed)),
-        (&sources.stats, Some(&sources.stats_pressed)),
-        (&sources.skills, Some(&sources.skills_pressed)),
-        (&sources.key_settings, Some(&sources.key_settings_pressed)),
-        (&sources.quick_slot_toggle, None),
-    ];
-    let mut button_x = MENU_BUTTON_LEFT;
-    for (source, pressed) in menu_buttons {
-        let x = button_x;
-        sprites.push(place_sprite(source, x, bar_y + MENU_BUTTON_TOP, false));
-        if let Some(pressed) = pressed {
-            sprites.push(place_sprite(pressed, x, bar_y + MENU_BUTTON_TOP, false));
-        }
-        button_x += source.width + MENU_BUTTON_GAP;
-    }
-    let layout = GuiLayout {
-        width,
-        height,
-        background: Some(background),
-        sprites,
-    };
-    validate_layout(&layout)?;
-    Ok(layout)
-}
-
-fn compose_key_config(
-    sources: &KeyConfigSources
-) -> Result<(GuiWindow, Vec<KeyActionDefinition>), GuiContentError> {
-    let width = sources.background.width;
-    let height = sources.background.height;
-    let mut sprites = vec![place_sprite(
-        &sources.close,
-        width - sources.close.width - KEY_CONFIG_CLOSE_RIGHT,
-        KEY_CONFIG_CLOSE_TOP,
-        false,
-    )];
-    let mut actions = Vec::with_capacity(sources.actions.len());
-    for (spec, source) in &sources.actions {
-        let column = spec.palette_index % KEY_PALETTE_COLUMNS;
-        let row = spec.palette_index / KEY_PALETTE_COLUMNS;
-        let icon = place_sprite(
-            source,
-            KEY_PALETTE_LEFT + column as f32 * KEY_PALETTE_STEP,
-            KEY_PALETTE_TOP + row as f32 * KEY_PALETTE_STEP,
-            false,
-        );
-        sprites.push(icon.clone());
-        actions.push(KeyActionDefinition {
-            action: spec.action as i32,
-            label: spec.label.to_owned(),
-            icon: Some(icon),
-        });
-    }
-    let layout = GuiLayout {
-        width,
-        height,
-        background: Some(place_sprite(&sources.background, 0.0, 0.0, false)),
-        sprites,
-    };
-    validate_layout(&layout)?;
-    Ok((
-        GuiWindow {
-            x: KEY_CONFIG_WINDOW_X,
-            y: KEY_CONFIG_WINDOW_Y,
-            layout: Some(layout),
-        },
-        actions,
-    ))
-}
-
-fn compose_item_window(
-    sources: &ItemWindowSources,
-    x: f32,
-    y: f32,
-) -> Result<GuiWindow, GuiContentError> {
-    let width = sources.background.width;
-    let height = sources.background.height;
-    let layout = GuiLayout {
-        width,
-        height,
-        background: Some(place_sprite(&sources.background, 0.0, 0.0, false)),
-        sprites: vec![place_sprite(
-            &sources.close,
-            width - sources.close.width - STAT_CLOSE_RIGHT,
-            STAT_CLOSE_TOP,
-            false,
-        )],
-    };
-    validate_layout(&layout)?;
-    Ok(GuiWindow {
-        x,
-        y,
-        layout: Some(layout),
-    })
-}
-
-fn compose_stat_window(sources: &StatWindowSources) -> Result<GuiWindow, GuiContentError> {
-    let width = sources.background.width;
-    let height = sources.background.height;
-    let background = place_sprite(&sources.background, 0.0, 0.0, false);
-    let sprites = vec![
-        place_sprite(
-            &sources.close,
-            width - sources.close.width - STAT_CLOSE_RIGHT,
-            STAT_CLOSE_TOP,
-            false,
-        ),
-        place_sprite(&sources.job, STAT_JOB_LEFT, STAT_JOB_TOP, false),
-    ];
-    let layout = GuiLayout {
-        width,
-        height,
-        background: Some(background),
-        sprites,
-    };
-    validate_layout(&layout)?;
-    Ok(GuiWindow {
-        x: STAT_WINDOW_X,
-        y: STAT_WINDOW_Y,
-        layout: Some(layout),
-    })
-}
-
-fn place_key_reference(
-    source: &SourceSprite,
-    quick_slots_x: f32,
-    index: usize,
-) -> GuiSprite {
-    let column = (index % 4) as f32;
-    let row = (index / 4) as f32;
-    let x = quick_slots_x + KEY_COLUMN_CENTER + column * KEY_COLUMN_WIDTH - source.width / 2.0;
-    let y = KEY_ROW_CENTER + row * KEY_ROW_HEIGHT - source.height / 2.0;
-    place_sprite(source, x.floor(), y.floor(), true)
-}
-
-fn place_sprite(
-    source: &SourceSprite,
-    x: f32,
-    y: f32,
-    anchor_right: bool,
-) -> GuiSprite {
-    GuiSprite {
-        name: source.name.clone(),
-        asset_id: source.asset_id.clone(),
-        x,
-        y,
-        width: source.width,
-        height: source.height,
-        anchor_right,
-    }
-}
-
-fn validate_layout(layout: &GuiLayout) -> Result<(), GuiContentError> {
-    if !layout.width.is_finite()
-        || !layout.height.is_finite()
-        || layout.width <= 0.0
-        || layout.height <= 0.0
-    {
-        return invalid("the status bar dimensions must be finite and positive");
-    }
-    let sprites = layout.background.iter().chain(layout.sprites.iter());
-    for sprite in sprites {
-        let values = [
-            sprite.x,
-            sprite.y,
-            sprite.width,
-            sprite.height,
-            sprite.x + sprite.width,
-            sprite.y + sprite.height,
-        ];
-        if !values.iter().all(|value| value.is_finite())
-            || sprite.x < 0.0
-            || sprite.y < 0.0
-            || sprite.width <= 0.0
-            || sprite.height <= 0.0
-            || sprite.x + sprite.width > layout.width
-            || sprite.y + sprite.height > layout.height
-        {
-            return invalid(format!(
-                "status bar sprite {:?} is outside the layout",
-                sprite.name
-            ));
-        }
-    }
-    Ok(())
 }
 
 fn required_path(
@@ -773,20 +631,42 @@ fn required_child(
     })
 }
 
-fn png_dimensions(
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SpriteGeometry {
+    width: u32,
+    height: u32,
+    origin_x: i32,
+    origin_y: i32,
+}
+
+fn png_geometry(
     node: &WzNodeArc,
     path: &[&str],
-) -> Result<(u32, u32), GuiContentError> {
-    let read = node
-        .read()
-        .map_err(|_| lock_error("GUI sprite dimensions"))?;
-    let png = read.try_as_png().ok_or_else(|| GuiContentError::Invalid {
-        message: format!("{} is not a PNG sprite", path.join("/")),
-    })?;
-    if png.width == 0 || png.height == 0 {
+) -> Result<SpriteGeometry, GuiContentError> {
+    let (width, height) = {
+        let read = node
+            .read()
+            .map_err(|_| lock_error("GUI sprite dimensions"))?;
+        let png = read.try_as_png().ok_or_else(|| GuiContentError::Invalid {
+            message: format!("{} is not a PNG sprite", path.join("/")),
+        })?;
+        (png.width, png.height)
+    };
+    if width == 0 || height == 0 {
         return invalid(format!("{} has an empty PNG sprite", path.join("/")));
     }
-    Ok((png.width, png.height))
+    let (origin_x, origin_y) = match child(node, "origin")? {
+        Some(origin) => vector_value(&origin)?
+            .map(|origin| (origin.0, origin.1))
+            .unwrap_or_default(),
+        None => (0, 0),
+    };
+    Ok(SpriteGeometry {
+        width,
+        height,
+        origin_x,
+        origin_y,
+    })
 }
 
 fn lock_error(context: &'static str) -> GuiContentError {
@@ -804,9 +684,11 @@ mod tests {
     use std::path::Path;
 
     use super::GuiContent;
+    use super::SkillWindowSources;
     use super::SourceSprite;
     use super::StatWindowSources;
     use super::StatusBarSources;
+    use super::compose_skill_window;
     use super::compose_stat_window;
     use super::compose_status_bar;
 
@@ -893,6 +775,40 @@ mod tests {
     }
 
     #[test]
+    fn skill_sources_form_a_component_driven_layout() {
+        let sources = SkillWindowSources {
+            background: source("skill-background", 175.0, 289.0),
+            close: source("skill-close", 10.0, 10.0),
+            row: source("skill-row", 141.0, 35.0),
+            selected_row: source("skill-row-selected", 141.0, 35.0),
+            point_up: source("skill-point-up", 12.0, 12.0),
+            point_up_hover: source("skill-point-up-hover", 12.0, 12.0),
+            point_up_pressed: source("skill-point-up-pressed", 12.0, 12.0),
+            point_up_disabled: source("skill-point-up-disabled", 12.0, 12.0),
+        };
+
+        let window = compose_skill_window(&sources).expect("valid skill window");
+        let layout = window.layout.expect("skill window layout");
+
+        assert_eq!((window.x, window.y), (20.0, 80.0));
+        assert_eq!((layout.width, layout.height), (175.0, 289.0));
+        assert_eq!(sprite_position(&layout, "skill-close"), Some((160.0, 5.0)));
+        assert_eq!(template_size(&layout, "skill-row"), Some((141.0, 35.0)));
+        assert_eq!(
+            region_geometry(&layout, "skill-list"),
+            Some((17.0, 94.0, 141.0, 140.0))
+        );
+        assert_eq!(
+            region_geometry(&layout, "skill-title"),
+            Some((17.0, 27.0, 141.0, 14.0))
+        );
+        assert_eq!(
+            region_geometry(&layout, "skill-points"),
+            Some((82.0, 265.0, 30.0, 14.0))
+        );
+    }
+
+    #[test]
     fn local_ui_archive_builds_a_native_status_bar_when_present() {
         let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
         let directory = manifest_dir.join("../../data");
@@ -923,7 +839,7 @@ mod tests {
             stat_window.layout.as_ref().map(|layout| layout.height),
             Some(347.0)
         );
-        assert_eq!(gui.assets.len(), 39);
+        assert_eq!(gui.assets.len(), 45);
         assert_eq!(gui.key_actions.len(), crate::keymap::ACTIONS.len());
         assert_eq!(gui.key_slots.len(), crate::keymap::SLOTS.len());
         assert_eq!(
@@ -954,6 +870,19 @@ mod tests {
                 .map(|layout| (layout.width, layout.height)),
             Some((175.0, 289.0))
         );
+        let skill_layout = gui
+            .skill_window
+            .as_ref()
+            .and_then(|window| window.layout.as_ref())
+            .expect("skill window layout");
+        assert_eq!(
+            template_size(skill_layout, "skill-row"),
+            Some((141.0, 35.0))
+        );
+        assert_eq!(
+            region_geometry(skill_layout, "skill-list"),
+            Some((17.0, 94.0, 141.0, 140.0))
+        );
 
         for descriptor in &gui.assets {
             let asset = content
@@ -974,7 +903,31 @@ mod tests {
             asset_id: format!("asset-{name}"),
             width,
             height,
+            origin_x: 0.0,
+            origin_y: 0.0,
         }
+    }
+
+    fn template_size(
+        layout: &oozems_proto::v1::GuiLayout,
+        name: &str,
+    ) -> Option<(f32, f32)> {
+        layout
+            .sprite_templates
+            .iter()
+            .find(|template| template.name == name)
+            .map(|template| (template.width, template.height))
+    }
+
+    fn region_geometry(
+        layout: &oozems_proto::v1::GuiLayout,
+        name: &str,
+    ) -> Option<(f32, f32, f32, f32)> {
+        layout
+            .regions
+            .iter()
+            .find(|region| region.name == name)
+            .map(|region| (region.x, region.y, region.width, region.height))
     }
 
     fn sprite_position(

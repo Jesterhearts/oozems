@@ -265,6 +265,8 @@ message GuiLayout {
   float height = 2;
   GuiSprite background = 3;
   repeated GuiSprite sprites = 4;
+  repeated GuiSpriteTemplate sprite_templates = 5;
+  repeated GuiRegion regions = 6;
 }
 
 message GuiSprite {
@@ -275,6 +277,25 @@ message GuiSprite {
   float width = 5;
   float height = 6;
   bool anchor_right = 7;
+  float origin_x = 8;
+  float origin_y = 9;
+}
+
+message GuiSpriteTemplate {
+  string name = 1;
+  string asset_id = 2;
+  float width = 3;
+  float height = 4;
+  float origin_x = 5;
+  float origin_y = 6;
+}
+
+message GuiRegion {
+  string name = 1;
+  float x = 2;
+  float y = 3;
+  float width = 4;
+  float height = 5;
 }
 
 message GuiWindow {

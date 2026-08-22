@@ -2,7 +2,9 @@ use oozems_proto::v1::CharacterStats;
 use oozems_proto::v1::EquipmentSlot;
 use oozems_proto::v1::GameGui;
 use oozems_proto::v1::GuiLayout;
+use oozems_proto::v1::GuiRegion;
 use oozems_proto::v1::GuiSprite;
+use oozems_proto::v1::GuiSpriteTemplate;
 use oozems_proto::v1::InventoryState;
 use oozems_proto::v1::KeyAction;
 use oozems_proto::v1::KeyBinding;
@@ -328,6 +330,11 @@ pub fn valid_layout(layout: &GuiLayout) -> bool {
             .sprites
             .iter()
             .all(|sprite| valid_sprite(sprite, layout.width, layout.height))
+        && layout.sprite_templates.iter().all(valid_sprite_template)
+        && layout
+            .regions
+            .iter()
+            .all(|region| valid_region(region, layout.width, layout.height))
 }
 
 fn window_action(
@@ -379,17 +386,11 @@ fn window_action(
     }
     if button == PointerButton::Left && state.skills_open {
         let window = gui.skill_window.as_ref()?;
-        for (x, action) in [
-            (80.0, GuiAction::PreviousSkillPage),
-            (139.0, GuiAction::NextSkillPage),
+        for (name, action) in [
+            ("skill-page-previous", GuiAction::PreviousSkillPage),
+            ("skill-page-next", GuiAction::NextSkillPage),
         ] {
-            let rect = CanvasRect {
-                x: window.x + x,
-                y: window.y + 64.0,
-                width: 18.0,
-                height: 20.0,
-            };
-            if rect_contains(rect, point) {
+            if window_region_rect(window, name).is_some_and(|rect| rect_contains(rect, point)) {
                 return Some(action);
             }
         }
@@ -580,6 +581,23 @@ fn window_close_rect(
     })
 }
 
+fn window_region_rect(
+    window: &oozems_proto::v1::GuiWindow,
+    name: &str,
+) -> Option<CanvasRect> {
+    let layout = window
+        .layout
+        .as_ref()
+        .filter(|layout| valid_layout(layout))?;
+    let region = named_region(layout, name)?;
+    Some(CanvasRect {
+        x: window.x + region.x,
+        y: window.y + region.y,
+        width: region.width,
+        height: region.height,
+    })
+}
+
 fn inventory_item_at(
     gui: &GameGui,
     inventory: &InventoryState,
@@ -633,13 +651,38 @@ fn named_sprite<'a>(
     layout.sprites.iter().find(|sprite| sprite.name == name)
 }
 
+pub fn named_region<'a>(
+    layout: &'a GuiLayout,
+    name: &str,
+) -> Option<&'a GuiRegion> {
+    layout.regions.iter().find(|region| region.name == name)
+}
+
+pub fn named_sprite_template<'a>(
+    layout: &'a GuiLayout,
+    name: &str,
+) -> Option<&'a GuiSpriteTemplate> {
+    layout
+        .sprite_templates
+        .iter()
+        .find(|template| template.name == name)
+}
+
 fn valid_sprite(
     sprite: &GuiSprite,
     layout_width: f32,
     layout_height: f32,
 ) -> bool {
-    let values = [sprite.x, sprite.y, sprite.width, sprite.height];
-    !sprite.asset_id.is_empty()
+    let values = [
+        sprite.x,
+        sprite.y,
+        sprite.width,
+        sprite.height,
+        sprite.origin_x,
+        sprite.origin_y,
+    ];
+    !sprite.name.is_empty()
+        && !sprite.asset_id.is_empty()
         && values.iter().all(|value| value.is_finite())
         && sprite.x >= 0.0
         && sprite.y >= 0.0
@@ -647,6 +690,36 @@ fn valid_sprite(
         && sprite.height > 0.0
         && sprite.x + sprite.width <= layout_width
         && sprite.y + sprite.height <= layout_height
+}
+
+fn valid_sprite_template(template: &GuiSpriteTemplate) -> bool {
+    let values = [
+        template.width,
+        template.height,
+        template.origin_x,
+        template.origin_y,
+    ];
+    !template.name.is_empty()
+        && !template.asset_id.is_empty()
+        && values.iter().all(|value| value.is_finite())
+        && template.width > 0.0
+        && template.height > 0.0
+}
+
+fn valid_region(
+    region: &GuiRegion,
+    layout_width: f32,
+    layout_height: f32,
+) -> bool {
+    let values = [region.x, region.y, region.width, region.height];
+    !region.name.is_empty()
+        && values.iter().all(|value| value.is_finite())
+        && region.x >= 0.0
+        && region.y >= 0.0
+        && region.width > 0.0
+        && region.height > 0.0
+        && region.x + region.width <= layout_width
+        && region.y + region.height <= layout_height
 }
 
 fn rect_contains(
@@ -666,6 +739,7 @@ mod tests {
     use oozems_proto::v1::EquippedItem;
     use oozems_proto::v1::GameGui;
     use oozems_proto::v1::GuiLayout;
+    use oozems_proto::v1::GuiRegion;
     use oozems_proto::v1::GuiSprite;
     use oozems_proto::v1::GuiWindow;
     use oozems_proto::v1::InventoryState;
@@ -962,6 +1036,7 @@ mod tests {
                     sprite("skills", 664.0, 17.0, 28.0, 20.0),
                     sprite("key-settings", 694.0, 17.0, 28.0, 20.0),
                 ],
+                ..GuiLayout::default()
             }),
             equipment_window: Some(GuiWindow {
                 x: 20.0,
@@ -971,6 +1046,7 @@ mod tests {
                     height: 304.0,
                     background: Some(sprite("equipment-background", 0.0, 0.0, 175.0, 304.0)),
                     sprites: vec![sprite("equipment-close", 138.0, 5.0, 32.0, 15.0)],
+                    ..GuiLayout::default()
                 }),
             }),
             inventory_window: Some(GuiWindow {
@@ -981,6 +1057,7 @@ mod tests {
                     height: 289.0,
                     background: Some(sprite("inventory-background", 0.0, 0.0, 175.0, 289.0)),
                     sprites: vec![sprite("inventory-close", 138.0, 5.0, 32.0, 15.0)],
+                    ..GuiLayout::default()
                 }),
             }),
             stat_window: Some(GuiWindow {
@@ -991,6 +1068,7 @@ mod tests {
                     height: 347.0,
                     background: Some(sprite("stat-background", 0.0, 0.0, 175.0, 347.0)),
                     sprites: vec![sprite("stat-close", 160.0, 5.0, 10.0, 10.0)],
+                    ..GuiLayout::default()
                 }),
             }),
             skill_window: Some(GuiWindow {
@@ -1001,6 +1079,11 @@ mod tests {
                     height: 289.0,
                     background: Some(sprite("skill-background", 0.0, 0.0, 175.0, 289.0)),
                     sprites: vec![sprite("skill-close", 160.0, 5.0, 10.0, 10.0)],
+                    regions: vec![
+                        region("skill-page-previous", 80.0, 64.0, 18.0, 19.0),
+                        region("skill-page-next", 139.0, 64.0, 18.0, 19.0),
+                    ],
+                    ..GuiLayout::default()
                 }),
             }),
             key_config_window: Some(GuiWindow {
@@ -1014,6 +1097,7 @@ mod tests {
                         sprite("key-config-close", 612.0, 6.0, 12.0, 12.0),
                         sprite("key-action-50", 7.0, 267.0, 32.0, 32.0),
                     ],
+                    ..GuiLayout::default()
                 }),
             }),
             key_actions: vec![KeyActionDefinition {
@@ -1047,6 +1131,24 @@ mod tests {
             width,
             height,
             anchor_right: false,
+            origin_x: 0.0,
+            origin_y: 0.0,
+        }
+    }
+
+    fn region(
+        name: &str,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+    ) -> GuiRegion {
+        GuiRegion {
+            name: name.to_owned(),
+            x,
+            y,
+            width,
+            height,
         }
     }
 }

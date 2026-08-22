@@ -108,6 +108,12 @@ through protobuf. The browser then requests backgrounds, gauges, quick-slot
 panels, buttons, and open windows as normal versioned PNG assets. If `UI.wz`
 is absent, the client keeps using its built-in fallback HUD.
 
+GUI sprite metadata retains the WZ dimensions and origins. Dynamic components
+are sent as named sprite templates, while named regions record destinations
+that were supplied by the original client rather than stored in the archive.
+The Skill window uses its native 141 by 35 row component to size and render the
+visible skill rows instead of duplicating that geometry in the browser.
+
 Click the KeySet status-bar button, or press K with the default bindings, to
 open the original `UIWindow.img/KeyConfig` keyboard settings window. Drag an
 action icon from the lower palette, or from an assigned key, onto another key.
