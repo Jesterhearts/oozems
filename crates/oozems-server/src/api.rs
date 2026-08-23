@@ -41,7 +41,6 @@ use thiserror::Error;
 use crate::app::AppState;
 use crate::database::CharacterName;
 use crate::database::PlayerId;
-use crate::database::STARTER_MAP_ID;
 
 pub(crate) mod combat;
 pub(crate) mod movement;
@@ -121,10 +120,11 @@ pub async fn create_character(
         ));
     }
 
-    let map = load_map(&state, STARTER_MAP_ID).await?.ok_or_else(|| {
+    let initial_map_id = state.gameplay.initial_map_id;
+    let map = load_map(&state, initial_map_id).await?.ok_or_else(|| {
         ApiError::not_found(
             "starter_map_not_found",
-            format!("starter map {STARTER_MAP_ID} does not exist"),
+            format!("starter map {initial_map_id} does not exist"),
         )
     })?;
     let position = starter_position(&map);
@@ -136,6 +136,7 @@ pub async fn create_character(
         &player_id,
         &name,
         appearance,
+        initial_map_id,
         position,
         experience_required,
         state.gameplay.initial_skill_points,

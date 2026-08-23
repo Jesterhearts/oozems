@@ -191,7 +191,7 @@ const fn slot(
 
 pub fn default_bindings() -> Vec<KeyBinding> {
     [
-        ("Space", KeyAction::Jump),
+        ("AltLeft", KeyAction::Jump),
         ("KeyZ", KeyAction::PickUp),
         ("KeyC", KeyAction::OpenCharacter),
         ("KeyE", KeyAction::OpenEquipment),
@@ -272,6 +272,9 @@ mod tests {
         assert!(bindings.iter().any(|binding| {
             binding.code == "ControlLeft" && binding.action == KeyAction::BasicAttack as i32
         }));
+        assert!(bindings.iter().any(|binding| {
+            binding.code == "AltLeft" && binding.action == KeyAction::Jump as i32
+        }));
     }
 
     #[test]
@@ -298,13 +301,18 @@ mod tests {
     }
 
     #[test]
-    fn keymaps_saved_before_basic_attack_remain_valid() {
-        let bindings = default_bindings()
+    fn keymaps_saved_before_default_changes_remain_valid() {
+        let mut bindings = default_bindings()
             .into_iter()
             .filter(|binding| binding.action != KeyAction::BasicAttack as i32)
             .collect::<Vec<_>>();
+        bindings
+            .iter_mut()
+            .find(|binding| binding.action == KeyAction::Jump as i32)
+            .expect("Jump binding")
+            .code = "Space".to_owned();
 
-        validate_bindings(&bindings).expect("pre-basic-attack keymap");
+        validate_bindings(&bindings).expect("legacy keymap");
     }
 
     #[test]

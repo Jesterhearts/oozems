@@ -198,6 +198,9 @@ facing direction, followed by their target effect.
 The HP, MP, and EXP gauges use the persisted character values for their fill
 levels and display bracketed current and maximum values over the WZ artwork.
 
+New characters start on the map selected by `characters.initial_map_id`. The
+bundled configuration selects `Mushroom Town` (map `10000`).
+
 Click the stat button in the status bar to open the `UIWindow.img` character
 stat window. Its background, close control, and job label remain unloaded until
 the window is first opened. New characters receive server-owned Beginner stats,
@@ -223,7 +226,7 @@ action, restoring the drop if the player save fails.
 
 ## Configure gameplay rules
 
-Item rules are configured in `config/gameplay.toml`:
+Gameplay rules are configured in `config/gameplay.toml`:
 
 ```toml
 # See README.md for configuration reference.
@@ -233,6 +236,9 @@ drop_despawn = "10m"
 
 [skills]
 initial_points = 3
+
+[characters]
+initial_map_id = 10000
 
 [combat]
 disengage_range = 520.0
@@ -276,6 +282,11 @@ persisted across a server restart.
 character. It is also used when an older SurrealKV player record has no skill
 point field. Learned levels and later point changes are persisted and are not
 replaced when this setting changes.
+
+`characters.initial_map_id` selects the WZ map used for newly created
+characters. The server verifies the map during startup and places each new
+character at its first spawn portal. Changing it does not move existing
+characters.
 
 Combat distances are measured in map pixels. Mobs acquire an aggro target when
 that player damages them. `disengage_range` controls how far a mob can remain
@@ -573,7 +584,7 @@ Use the left and right arrow keys to walk. Use the up and down arrow keys to
 climb. Hold Down and press the configured Jump key to drop through a platform
 when another foothold is below the character. Press Up while standing at a
 direct portal to enter it. Arrow keys stay reserved for movement and
-interaction. The default action bindings are Space for Jump, Z for Pick Up, C
+interaction. The default action bindings are left Alt for Jump, Z for Pick Up, C
 for Character, E for Equipment, I for Inventory, K for Key Settings, and S for
 Skills. Script portals remain inactive because their behavior belongs to a
 future server-side scripting system.

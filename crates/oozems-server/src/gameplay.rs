@@ -10,6 +10,7 @@ use thiserror::Error;
 pub struct GameplayConfig {
     pub item_drop_despawn: Duration,
     pub initial_skill_points: u32,
+    pub initial_map_id: u32,
     pub combat: CombatConfig,
     pub movement: MovementConfig,
 }
@@ -56,6 +57,8 @@ struct GameplayFile {
     items: ItemRulesFile,
     skills: SkillRulesFile,
     #[serde(default)]
+    characters: CharacterRulesFile,
+    #[serde(default)]
     combat: CombatRulesFile,
     #[serde(default)]
     movement: MovementRulesFile,
@@ -71,6 +74,20 @@ struct ItemRulesFile {
 #[serde(deny_unknown_fields)]
 struct SkillRulesFile {
     initial_points: u32,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct CharacterRulesFile {
+    initial_map_id: u32,
+}
+
+impl Default for CharacterRulesFile {
+    fn default() -> Self {
+        Self {
+            initial_map_id: 10_000,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -230,6 +247,7 @@ impl GameplayConfig {
         Ok(Self {
             item_drop_despawn,
             initial_skill_points: file.skills.initial_points,
+            initial_map_id: file.characters.initial_map_id,
             combat,
             movement,
         })
@@ -413,6 +431,7 @@ mod tests {
 
         assert_eq!(config.item_drop_despawn, Duration::from_secs(600));
         assert_eq!(config.initial_skill_points, 3);
+        assert_eq!(config.initial_map_id, 10_000);
         assert_eq!(config.combat.disengage_range, 520.0);
         assert_eq!(
             config.combat.player_attack_interval,
@@ -438,6 +457,28 @@ mod tests {
         .expect("write configuration");
 
         assert!(GameplayConfig::load(&path).is_err());
+    }
+
+    #[test]
+    fn loads_configured_initial_character_map() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("gameplay.toml");
+        fs::write(
+            &path,
+            concat!(
+                "[items]\n",
+                "drop_despawn = \"10m\"\n",
+                "[skills]\n",
+                "initial_points = 3\n",
+                "[characters]\n",
+                "initial_map_id = 12345\n",
+            ),
+        )
+        .expect("write configuration");
+
+        let config = GameplayConfig::load(&path).expect("valid configuration");
+
+        assert_eq!(config.initial_map_id, 12_345);
     }
 
     #[test]

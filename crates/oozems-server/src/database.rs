@@ -16,8 +16,6 @@ use surrealdb::types::RecordId;
 use surrealdb::types::SurrealValue;
 use thiserror::Error;
 
-pub const STARTER_MAP_ID: u32 = 100_000_000;
-
 pub type Database = Surreal<Db>;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -233,6 +231,7 @@ pub async fn create_player(
     player_id: &PlayerId,
     name: &CharacterName,
     appearance: CharacterAppearance,
+    map_id: u32,
     position: Vec2,
     experience_required: u64,
     initial_skill_points: u32,
@@ -243,7 +242,7 @@ pub async fn create_player(
         id: player_id.as_str().to_owned(),
         name: name.as_str().to_owned(),
         level: 1,
-        map_id: STARTER_MAP_ID,
+        map_id,
         position: Some(position),
         appearance: Some(appearance),
         stats: Some(stats),
@@ -688,12 +687,14 @@ mod tests {
             &player_id,
             &name,
             appearance(),
+            10_000,
             Vec2 { x: 160.0, y: 420.0 },
             123,
             3,
         )
         .await
         .expect("create player");
+        assert_eq!(player.map_id, 10_000);
         assert_eq!(
             player.stats.as_ref().map(|stats| stats.experience_required),
             Some(123)
@@ -732,6 +733,7 @@ mod tests {
             &player_id,
             &name,
             appearance(),
+            10_000,
             Vec2 { x: 160.0, y: 420.0 },
             123,
             3,

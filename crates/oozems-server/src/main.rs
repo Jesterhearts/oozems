@@ -51,6 +51,7 @@ async fn main() -> anyhow::Result<()> {
     info!(
         item_drop_despawn = %humantime::format_duration(gameplay.item_drop_despawn),
         initial_skill_points = gameplay.initial_skill_points,
+        initial_map_id = gameplay.initial_map_id,
         movement_snapshot_interval = %humantime::format_duration(gameplay.movement.snapshot_interval),
         movement_speed_cap = gameplay.movement.speed_cap,
         movement_jump_cap = gameplay.movement.jump_cap,
@@ -68,6 +69,12 @@ async fn main() -> anyhow::Result<()> {
         "formula profile configuration ready"
     );
     let catalog = ContentCatalog::load(&config.wz_dir, &content_config)?;
+    if catalog.get_map(gameplay.initial_map_id)?.is_none() {
+        anyhow::bail!(
+            "configured initial character map {} does not exist",
+            gameplay.initial_map_id
+        );
+    }
     let database = database::open_surreal_kv(&config.data_dir.join("surrealkv")).await?;
     let router = app::router(
         database,

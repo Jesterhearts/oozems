@@ -209,6 +209,15 @@ mod tests {
                 .expect("content configuration should be valid"),
         )
         .expect("sample WZ archives should be valid");
+        let gameplay =
+            crate::gameplay::GameplayConfig::load(&manifest_dir.join("../../config/gameplay.toml"))
+                .expect("gameplay configuration should be valid");
+        let starter_map = catalog
+            .get_map(gameplay.initial_map_id)
+            .expect("starter map lookup should succeed")
+            .expect("Mushroom Town should exist");
+        assert_eq!(starter_map.name, "Mushroom Town");
+        assert!(starter_map.portals.iter().any(|portal| portal.kind == 0));
         let map = catalog
             .get_map(100_000_000)
             .expect("WZ map lookup should succeed")
