@@ -353,8 +353,13 @@ pub(super) fn install_response(
     let position = movement::constrain_position(&game.map, position);
     let mode = MovementMode::try_from(authoritative.mode)
         .map_err(|_| "authoritative movement snapshot has an invalid mode")?;
-    let motion =
-        movement::authoritative_motion_state(&game.map, &game.movement_rules, &position, mode)?;
+    let motion = movement::authoritative_motion_state(
+        &game.map,
+        &game.movement_rules,
+        &position,
+        mode,
+        game.motion.platform_layer,
+    )?;
     reset_after_correction(&mut game.movement_sync, mode);
     game.player.position = Some(position);
     game.motion = motion;

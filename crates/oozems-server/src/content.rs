@@ -569,6 +569,11 @@ mod tests {
 
         assert_eq!(map.name, "Henesys");
         assert!(map.platforms.iter().any(|platform| platform.hidden));
+        assert!(
+            map.platforms
+                .iter()
+                .any(|platform| platform.x == platform.end_x)
+        );
         assert!(map.platforms.iter().any(|platform| platform.layer == 0));
         assert!(map.platforms.iter().any(|platform| platform.layer == 1));
         assert!(!map.decorations.is_empty());

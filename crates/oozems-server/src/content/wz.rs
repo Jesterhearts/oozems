@@ -350,11 +350,7 @@ fn build_map(
     validate_bounds(map_id, bounds)?;
     let movement_bounds = movement_bounds::build(&raw_platforms, bounds);
 
-    let platforms: Vec<Platform> = raw_platforms
-        .into_iter()
-        .filter(|platform| platform.x1 != platform.x2)
-        .map(|platform| build_platform(platform, bounds))
-        .collect();
+    let platforms = build_platforms(raw_platforms, bounds);
     let mut assets = Vec::new();
     let mut asset_ids = HashSet::new();
     let mut decorations = Vec::with_capacity(raw_decorations.len());
@@ -860,6 +856,16 @@ fn build_platform(
     }
 }
 
+fn build_platforms(
+    sources: Vec<RawPlatform>,
+    bounds: Bounds,
+) -> Vec<Platform> {
+    sources
+        .into_iter()
+        .map(|source| build_platform(source, bounds))
+        .collect()
+}
+
 fn build_decoration(
     content: &WzContent,
     source: RawDecoration,
@@ -997,6 +1003,7 @@ mod tests {
     use super::RawDecoration;
     use super::RawPlatform;
     use super::build_platform;
+    use super::build_platforms;
     use super::derive_bounds;
     use super::object_order;
     use super::read_bounds;
@@ -1046,6 +1053,31 @@ mod tests {
         );
 
         assert_eq!(platform.layer, 3);
+    }
+
+    #[test]
+    fn platform_collection_keeps_vertical_wz_footholds() {
+        let platforms = build_platforms(
+            vec![RawPlatform {
+                id: 1,
+                x1: 30,
+                y1: 20,
+                x2: 30,
+                y2: 80,
+                layer: 3,
+            }],
+            Bounds {
+                left: 0,
+                top: 0,
+                right: 100,
+                bottom: 100,
+            },
+        );
+
+        assert_eq!(platforms.len(), 1);
+        assert_eq!(platforms[0].x, platforms[0].end_x);
+        assert_eq!(platforms[0].y, 20.0);
+        assert_eq!(platforms[0].end_y, 80.0);
     }
 
     #[test]

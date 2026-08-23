@@ -5,16 +5,24 @@ use std::sync::Mutex;
 use oozems_proto::v1::Map;
 use oozems_proto::v1::MovementMode as ProtoMovementMode;
 use oozems_proto::v1::MovementSnapshot;
-use oozems_proto::v1::Platform;
 use oozems_proto::v1::PlayerState;
 use oozems_proto::v1::Vec2;
 use thiserror::Error;
 
 use crate::gameplay::MovementConfig;
 
+mod terrain;
+
+use terrain::clamp_to_movement_bounds;
+use terrain::destination_position;
+use terrain::movement_crosses_vertical_foothold;
+use terrain::platform_y;
+use terrain::platform_y_near_edge;
+use terrain::supporting_foothold;
+use terrain::supporting_platform;
+use terrain::within_map;
+
 const SCRIPT_PORTAL_TARGET: u32 = 999_999_999;
-const SPAWN_PORTAL_KIND: u32 = 0;
-const PORTAL_FLOOR_PENETRATION_LIMIT: f32 = 16.0;
 const DROP_THROUGH_MINIMUM: f32 = 1.0;
 const DROP_THROUGH_DESTINATION_CLEARANCE: f32 = 2.0;
 
@@ -36,6 +44,7 @@ struct MovementSession {
     map_id: u32,
     position: Position,
     mode: MovementMode,
+    platform_layer: i32,
     received_at_ms: u64,
     persisted_at_ms: u64,
     dirty: bool,
@@ -307,9 +316,11 @@ pub fn enter_portal(
         });
     };
     let position = clamp_to_movement_bounds(portal.target_map, position);
+    let (mode, platform_layer) = initial_motion(portal.target_map, &position, config);
     session.map_id = portal.target_map.id;
     session.position = position;
-    session.mode = initial_mode(portal.target_map, &position, config);
+    session.mode = mode;
+    session.platform_layer = platform_layer;
     session.airborne = airborne_state(session.mode, position.y, now_ms);
     session.dirty = true;
     Ok(MovementDecision {
@@ -421,12 +432,13 @@ fn initial_session(
     now_ms: u64,
 ) -> MovementSession {
     let position = clamp_to_movement_bounds(map, position);
-    let mode = initial_mode(map, &position, config);
+    let (mode, platform_layer) = initial_motion(map, &position, config);
     MovementSession {
         sequence: 0,
         map_id,
         position,
         mode,
+        platform_layer,
         received_at_ms: now_ms,
         persisted_at_ms: now_ms,
         dirty: false,
@@ -437,21 +449,20 @@ fn initial_session(
     }
 }
 
-fn initial_mode(
+fn initial_motion(
     map: &Map,
     position: &Position,
     config: MovementConfig,
-) -> MovementMode {
-    if supporting_platform(
+) -> (MovementMode, i32) {
+    supporting_foothold(
         map,
         position,
         config.ground_tolerance,
         config.platform_edge_tolerance,
-    ) {
-        MovementMode::Grounded
-    } else {
-        MovementMode::Airborne
-    }
+    )
+    .map_or((MovementMode::Airborne, 0), |platform| {
+        (MovementMode::Grounded, platform.layer)
+    })
 }
 
 fn apply_snapshot(
@@ -484,6 +495,19 @@ fn apply_snapshot(
     }
     if submitted.drop_through && !drop_through_is_valid(map, session, submitted, config) {
         return reject(session, "the drop-through transition is invalid", false);
+    }
+    let contact_layer = submitted
+        .support_contact
+        .and_then(|contact| movement_mode_layer(map, contact.position, contact.mode, config))
+        .unwrap_or(session.platform_layer);
+    if movement_crosses_vertical_foothold(
+        map,
+        session.position,
+        session.platform_layer,
+        submitted,
+        contact_layer,
+    ) {
+        return reject(session, "the movement crosses a vertical foothold", false);
     }
 
     let elapsed_seconds = elapsed_ms as f32 / 1_000.0;
@@ -539,6 +563,7 @@ fn apply_snapshot(
         return reject(session, "the climbing position is not reachable", false);
     }
 
+    let platform_layer = submitted_platform_layer(map, session, submitted, config);
     let activity = submitted.support_contact.is_some()
         || session.position != submitted.position
         || session.mode != submitted.mode;
@@ -553,6 +578,7 @@ fn apply_snapshot(
     update_airborne_state(session, submitted.mode, airborne_origin, now_ms);
     session.position = submitted.position;
     session.mode = submitted.mode;
+    session.platform_layer = platform_layer;
     accept(session, activity, now_ms, config)
 }
 
@@ -727,19 +753,42 @@ fn support_contact_is_valid(
     contact: SupportContact,
     config: MovementConfig,
 ) -> bool {
-    if !within_map(map, &contact.position) {
-        return false;
-    }
-    match contact.mode {
-        MovementMode::Grounded => supporting_platform(
+    within_map(map, &contact.position)
+        && movement_mode_layer(map, contact.position, contact.mode, config).is_some()
+}
+
+fn movement_mode_layer(
+    map: &Map,
+    position: Position,
+    mode: MovementMode,
+    config: MovementConfig,
+) -> Option<i32> {
+    match mode {
+        MovementMode::Grounded => supporting_foothold(
             map,
-            &contact.position,
+            &position,
             config.ground_tolerance,
             config.platform_edge_tolerance,
-        ),
-        MovementMode::Climbing => climbing_contact_is_valid(map, contact.position, config),
-        MovementMode::Airborne => false,
+        )
+        .map(|platform| platform.layer),
+        MovementMode::Climbing => climbing_layer(map, position, config),
+        MovementMode::Airborne => None,
     }
+}
+
+fn submitted_platform_layer(
+    map: &Map,
+    session: &MovementSession,
+    submitted: SubmittedMovement,
+    config: MovementConfig,
+) -> i32 {
+    movement_mode_layer(map, submitted.position, submitted.mode, config)
+        .or_else(|| {
+            submitted.support_contact.and_then(|contact| {
+                movement_mode_layer(map, contact.position, contact.mode, config)
+            })
+        })
+        .unwrap_or(session.platform_layer)
 }
 
 fn drop_through_is_valid(
@@ -792,11 +841,27 @@ fn climbing_contact_is_valid(
     position: Position,
     config: MovementConfig,
 ) -> bool {
-    map.ladders.iter().any(|ladder| {
-        (position.x - ladder.x).abs() <= config.ladder_reach
-            && position.y >= ladder.top - config.ladder_end_reach
-            && position.y <= ladder.bottom + config.ladder_end_reach
-    })
+    climbing_layer(map, position, config).is_some()
+}
+
+fn climbing_layer(
+    map: &Map,
+    position: Position,
+    config: MovementConfig,
+) -> Option<i32> {
+    map.ladders
+        .iter()
+        .filter(|ladder| {
+            (position.x - ladder.x).abs() <= config.ladder_reach
+                && position.y >= ladder.top - config.ladder_end_reach
+                && position.y <= ladder.bottom + config.ladder_end_reach
+        })
+        .min_by(|left, right| {
+            (position.x - left.x)
+                .abs()
+                .total_cmp(&(position.x - right.x).abs())
+        })
+        .map(|ladder| ladder.layer)
 }
 
 fn update_airborne_state(
@@ -844,124 +909,6 @@ fn modified_speed(
 ) -> f32 {
     let percentage = (100_i64 + i64::from(bonus)).clamp(0, i64::from(cap));
     base * percentage as f32 / 100.0
-}
-
-fn supporting_platform(
-    map: &Map,
-    position: &Position,
-    vertical_tolerance: f32,
-    edge_tolerance: f32,
-) -> bool {
-    supporting_foothold(map, position, vertical_tolerance, edge_tolerance).is_some()
-}
-
-fn supporting_foothold<'a>(
-    map: &'a Map,
-    position: &Position,
-    vertical_tolerance: f32,
-    edge_tolerance: f32,
-) -> Option<&'a Platform> {
-    map.platforms
-        .iter()
-        .filter_map(|platform| {
-            let surface = platform_y_near_edge(platform, position.x, edge_tolerance)?;
-            let distance = (surface - position.y).abs();
-            (distance <= vertical_tolerance).then_some((platform, distance))
-        })
-        .min_by(|left, right| left.1.total_cmp(&right.1))
-        .map(|(platform, _)| platform)
-}
-
-fn platform_y_near_edge(
-    platform: &Platform,
-    x: f32,
-    edge_tolerance: f32,
-) -> Option<f32> {
-    let minimum_x = platform.x.min(platform.end_x);
-    let maximum_x = platform.x.max(platform.end_x);
-    if x < minimum_x - edge_tolerance || x > maximum_x + edge_tolerance {
-        return None;
-    }
-    platform_y(platform, x.clamp(minimum_x, maximum_x))
-}
-
-fn platform_y(
-    platform: &Platform,
-    x: f32,
-) -> Option<f32> {
-    let minimum_x = platform.x.min(platform.end_x);
-    let maximum_x = platform.x.max(platform.end_x);
-    if !(minimum_x..=maximum_x).contains(&x) {
-        return None;
-    }
-    let delta_x = platform.end_x - platform.x;
-    if delta_x.abs() < f32::EPSILON {
-        return None;
-    }
-    let progress = (x - platform.x) / delta_x;
-    Some(platform.y + progress * (platform.end_y - platform.y))
-}
-
-fn within_map(
-    map: &Map,
-    position: &Position,
-) -> bool {
-    let (left, right) = horizontal_movement_bounds(map);
-    position.x >= left
-        && position.x <= right
-        && position.y >= 0.0
-        && position.y <= map.height as f32
-}
-
-fn clamp_to_movement_bounds(
-    map: &Map,
-    mut position: Position,
-) -> Position {
-    let (left, right) = horizontal_movement_bounds(map);
-    position.x = position.x.clamp(left, right);
-    position
-}
-
-fn horizontal_movement_bounds(map: &Map) -> (f32, f32) {
-    let map_right = map.width as f32;
-    map.movement_bounds
-        .as_ref()
-        .filter(|bounds| {
-            bounds.left.is_finite()
-                && bounds.right.is_finite()
-                && bounds.left >= 0.0
-                && bounds.right <= map_right
-                && bounds.left <= bounds.right
-        })
-        .map_or((0.0, map_right), |bounds| (bounds.left, bounds.right))
-}
-
-fn destination_position(
-    map: &Map,
-    target_portal_name: &str,
-) -> Option<Position> {
-    let target = map
-        .portals
-        .iter()
-        .find(|portal| !target_portal_name.is_empty() && portal.name == target_portal_name)
-        .or_else(|| {
-            map.portals
-                .iter()
-                .find(|portal| portal.kind == SPAWN_PORTAL_KIND)
-        })?;
-    let floor = map
-        .platforms
-        .iter()
-        .filter_map(|platform| platform_y(platform, target.x))
-        .filter(|surface| {
-            let penetration = target.y - surface;
-            (0.0..=PORTAL_FLOOR_PENETRATION_LIMIT).contains(&penetration)
-        })
-        .max_by(f32::total_cmp);
-    Some(Position {
-        x: target.x,
-        y: floor.unwrap_or(target.y),
-    })
 }
 
 fn airborne_state(
@@ -1419,6 +1366,71 @@ mod tests {
     }
 
     #[test]
+    fn snapshots_cannot_walk_through_vertical_footholds() {
+        let tracker = MovementTracker::default();
+        let step_map = map_with_step_wall();
+        let mut lower_player = player();
+        lower_player.position = Some(Vec2 { x: 250.0, y: 400.0 });
+        initialize_player(&tracker, &lower_player, &step_map, config(), 1_000).expect("initialize");
+
+        let decision = submit_movement(
+            &tracker,
+            &lower_player,
+            submitted(1, 200.0, 400.0, MovementMode::Grounded),
+            config(),
+            1_200,
+        )
+        .expect("step movement");
+
+        assert!(!decision.accepted);
+        assert_eq!(
+            decision.rejection_reason,
+            "the movement crosses a vertical foothold"
+        );
+    }
+
+    #[test]
+    fn snapshots_ignore_vertical_footholds_on_other_layers() {
+        let tracker = MovementTracker::default();
+        let layered_map = map_with_background_wall();
+        let mut foreground_player = player();
+        foreground_player.position = Some(Vec2 { x: 250.0, y: 400.0 });
+        initialize_player(&tracker, &foreground_player, &layered_map, config(), 1_000)
+            .expect("initialize");
+
+        let decision = submit_movement(
+            &tracker,
+            &foreground_player,
+            submitted(1, 206.0, 400.0, MovementMode::Grounded),
+            config(),
+            1_200,
+        )
+        .expect("foreground movement");
+
+        assert!(decision.accepted);
+    }
+
+    #[test]
+    fn snapshots_can_descend_over_vertical_foothold_tops() {
+        let tracker = MovementTracker::default();
+        let step_map = map_with_step_wall();
+        let mut upper_player = player();
+        upper_player.position = Some(Vec2 { x: 150.0, y: 300.0 });
+        initialize_player(&tracker, &upper_player, &step_map, config(), 1_000).expect("initialize");
+
+        let decision = submit_movement(
+            &tracker,
+            &upper_player,
+            submitted(1, 220.0, 400.0, MovementMode::Grounded),
+            config(),
+            1_400,
+        )
+        .expect("step descent");
+
+        assert!(decision.accepted);
+    }
+
+    #[test]
     fn legacy_positions_are_clamped_inside_new_map_walls() {
         let tracker = MovementTracker::default();
         let mut bounded_map = map();
@@ -1707,6 +1719,65 @@ mod tests {
             end_x: 800.0,
             end_y: 300.0,
             ..Platform::default()
+        }
+    }
+
+    fn map_with_step_wall() -> Map {
+        Map {
+            id: 1,
+            width: 800,
+            height: 600,
+            platforms: vec![
+                Platform {
+                    x: 0.0,
+                    y: 300.0,
+                    end_x: 200.0,
+                    end_y: 300.0,
+                    ..Platform::default()
+                },
+                Platform {
+                    x: 200.0,
+                    y: 300.0,
+                    end_x: 200.0,
+                    end_y: 400.0,
+                    ..Platform::default()
+                },
+                Platform {
+                    x: 200.0,
+                    y: 400.0,
+                    end_x: 800.0,
+                    end_y: 400.0,
+                    ..Platform::default()
+                },
+            ],
+            ..Map::default()
+        }
+    }
+
+    fn map_with_background_wall() -> Map {
+        Map {
+            id: 1,
+            width: 800,
+            height: 600,
+            platforms: vec![
+                Platform {
+                    x: 0.0,
+                    y: 400.0,
+                    end_x: 800.0,
+                    end_y: 400.0,
+                    layer: 1,
+                    ..Platform::default()
+                },
+                Platform {
+                    x: 200.0,
+                    y: 300.0,
+                    end_x: 200.0,
+                    end_y: 400.0,
+                    layer: 0,
+                    ..Platform::default()
+                },
+            ],
+            ..Map::default()
         }
     }
 

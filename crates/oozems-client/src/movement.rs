@@ -87,6 +87,7 @@ pub fn authoritative_motion_state(
     rules: &MovementRules,
     position: &Vec2,
     mode: MovementMode,
+    airborne_platform_layer: i32,
 ) -> Result<MotionState, String> {
     match mode {
         MovementMode::Grounded => Ok(grounded_motion_state(
@@ -94,7 +95,10 @@ pub fn authoritative_motion_state(
             position,
             rules.platform_edge_tolerance,
         )),
-        MovementMode::Airborne => Ok(MotionState::default()),
+        MovementMode::Airborne => Ok(MotionState {
+            platform_layer: airborne_platform_layer,
+            ..MotionState::default()
+        }),
         MovementMode::Climbing => {
             let climbing = map
                 .ladders
@@ -126,6 +130,13 @@ pub fn authoritative_motion_state(
 struct GroundContact {
     y: f32,
     layer: i32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct VerticalWall {
+    x: f32,
+    top: f32,
+    bottom: f32,
 }
 
 pub fn initial_motion_state(
@@ -189,6 +200,13 @@ pub fn update_player(
             input.vertical,
             rules.ladder_reach,
             rules.ladder_end_reach,
+        )
+        && horizontal_movement_is_clear(
+            map,
+            position.x,
+            map.ladders[index].x,
+            position.y,
+            state.platform_layer,
         )
     {
         state.climbing = Some(index);
@@ -254,8 +272,9 @@ fn move_with_gravity(
     let old_y = position.y;
     let (left_edge, right_edge) = horizontal_movement_limits(map);
     let move_speed = modified_speed(rules.walk_speed, input.speed_bonus, rules.speed_cap);
-    position.x =
+    let proposed_x =
         (position.x + input.horizontal * move_speed * elapsed_seconds).clamp(left_edge, right_edge);
+    position.x = constrain_horizontal_movement(map, old_x, proposed_x, old_y, state.platform_layer);
 
     state.velocity_y += rules.gravity * elapsed_seconds;
     let proposed_y = position.y + state.velocity_y * elapsed_seconds;
@@ -282,6 +301,70 @@ fn move_with_gravity(
         transition: None,
         dropped_through: false,
     }
+}
+
+fn horizontal_movement_is_clear(
+    map: &Map,
+    old_x: f32,
+    proposed_x: f32,
+    y: f32,
+    platform_layer: i32,
+) -> bool {
+    constrain_horizontal_movement(map, old_x, proposed_x, y, platform_layer) == proposed_x
+}
+
+fn constrain_horizontal_movement(
+    map: &Map,
+    old_x: f32,
+    proposed_x: f32,
+    y: f32,
+    platform_layer: i32,
+) -> f32 {
+    if proposed_x > old_x {
+        return map
+            .platforms
+            .iter()
+            .filter(|platform| platform.layer == platform_layer)
+            .filter_map(vertical_wall)
+            .filter(|wall| vertical_wall_blocks(*wall, y))
+            .filter(|wall| old_x < wall.x && proposed_x > wall.x - PLAYER_HALF_WIDTH)
+            .map(|wall| wall.x - PLAYER_HALF_WIDTH)
+            .min_by(f32::total_cmp)
+            .map_or(proposed_x, |stop| proposed_x.min(stop));
+    }
+    if proposed_x < old_x {
+        return map
+            .platforms
+            .iter()
+            .filter(|platform| platform.layer == platform_layer)
+            .filter_map(vertical_wall)
+            .filter(|wall| vertical_wall_blocks(*wall, y))
+            .filter(|wall| old_x > wall.x && proposed_x < wall.x + PLAYER_HALF_WIDTH)
+            .map(|wall| wall.x + PLAYER_HALF_WIDTH)
+            .max_by(f32::total_cmp)
+            .map_or(proposed_x, |stop| proposed_x.max(stop));
+    }
+    proposed_x
+}
+
+fn vertical_wall(platform: &Platform) -> Option<VerticalWall> {
+    if (platform.end_x - platform.x).abs() >= f32::EPSILON {
+        return None;
+    }
+    let top = platform.y.min(platform.end_y);
+    let bottom = platform.y.max(platform.end_y);
+    (top < bottom).then_some(VerticalWall {
+        x: platform.x,
+        top,
+        bottom,
+    })
+}
+
+fn vertical_wall_blocks(
+    wall: VerticalWall,
+    y: f32,
+) -> bool {
+    y > wall.top && y <= wall.bottom
 }
 
 fn horizontal_movement_limits(map: &Map) -> (f32, f32) {
@@ -635,6 +718,99 @@ mod tests {
     }
 
     #[test]
+    fn walking_into_a_vertical_foothold_stops_at_the_step() {
+        let map = map_with_step_wall();
+
+        let output = update_player(
+            &map,
+            &rules(),
+            Vec2 { x: 250.0, y: 400.0 },
+            MotionState {
+                on_ground: true,
+                ..MotionState::default()
+            },
+            PlayerInput {
+                horizontal: -1.0,
+                ..PlayerInput::default()
+            },
+            1.0,
+        );
+
+        assert_eq!(output.position, Vec2 { x: 218.0, y: 400.0 });
+        assert!(output.state.on_ground);
+    }
+
+    #[test]
+    fn vertical_footholds_on_other_layers_do_not_stop_walking() {
+        let map = Map {
+            width: 800,
+            height: 600,
+            platforms: vec![
+                Platform {
+                    x: 0.0,
+                    y: 400.0,
+                    end_x: 500.0,
+                    end_y: 400.0,
+                    layer: 1,
+                    ..Platform::default()
+                },
+                Platform {
+                    x: 200.0,
+                    y: 300.0,
+                    end_x: 200.0,
+                    end_y: 400.0,
+                    layer: 0,
+                    ..Platform::default()
+                },
+            ],
+            ..Map::default()
+        };
+
+        let output = update_player(
+            &map,
+            &rules(),
+            Vec2 { x: 250.0, y: 400.0 },
+            MotionState {
+                on_ground: true,
+                platform_layer: 1,
+                ..MotionState::default()
+            },
+            PlayerInput {
+                horizontal: -1.0,
+                ..PlayerInput::default()
+            },
+            0.2,
+        );
+
+        assert_eq!(output.position, Vec2 { x: 206.0, y: 400.0 });
+        assert!(output.state.on_ground);
+        assert_eq!(output.state.platform_layer, 1);
+    }
+
+    #[test]
+    fn walking_over_the_top_of_a_vertical_foothold_remains_possible() {
+        let map = map_with_step_wall();
+
+        let output = update_player(
+            &map,
+            &rules(),
+            Vec2 { x: 150.0, y: 300.0 },
+            MotionState {
+                on_ground: true,
+                ..MotionState::default()
+            },
+            PlayerInput {
+                horizontal: 1.0,
+                ..PlayerInput::default()
+            },
+            0.4,
+        );
+
+        assert_eq!(output.position, Vec2 { x: 238.0, y: 400.0 });
+        assert!(output.state.on_ground);
+    }
+
+    #[test]
     fn jumping_cannot_cross_the_wz_map_wall() {
         let map = map_with_inset_walls();
 
@@ -853,11 +1029,27 @@ mod tests {
             &rules(),
             &Vec2 { x: 218.0, y: 300.0 },
             MovementMode::Grounded,
+            0,
         )
         .expect("authoritative state");
 
         assert!(state.on_ground);
         assert_eq!(state.platform_layer, 2);
+    }
+
+    #[test]
+    fn authoritative_airborne_state_preserves_the_current_platform_layer() {
+        let state = authoritative_motion_state(
+            &Map::default(),
+            &rules(),
+            &Vec2 { x: 218.0, y: 260.0 },
+            MovementMode::Airborne,
+            3,
+        )
+        .expect("authoritative state");
+
+        assert!(!state.on_ground);
+        assert_eq!(state.platform_layer, 3);
     }
 
     #[test]
@@ -1085,6 +1277,37 @@ mod tests {
                 left: 118.0,
                 right: 682.0,
             }),
+            ..Map::default()
+        }
+    }
+
+    fn map_with_step_wall() -> Map {
+        Map {
+            width: 800,
+            height: 600,
+            platforms: vec![
+                Platform {
+                    x: 0.0,
+                    y: 300.0,
+                    end_x: 200.0,
+                    end_y: 300.0,
+                    ..Platform::default()
+                },
+                Platform {
+                    x: 200.0,
+                    y: 300.0,
+                    end_x: 200.0,
+                    end_y: 400.0,
+                    ..Platform::default()
+                },
+                Platform {
+                    x: 200.0,
+                    y: 400.0,
+                    end_x: 500.0,
+                    end_y: 400.0,
+                    ..Platform::default()
+                },
+            ],
             ..Map::default()
         }
     }
