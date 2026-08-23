@@ -36,9 +36,19 @@ struct SkillInfo {
 }
 
 struct TooltipLine {
+    spans: Vec<TooltipSpan>,
+    font: &'static str,
+}
+
+struct TooltipSpan {
     text: String,
     color: &'static str,
-    font: &'static str,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct WzTextFragment {
+    text: String,
+    highlighted: bool,
 }
 
 pub(super) fn draw_active_buffs(game: &Game) {
@@ -280,14 +290,16 @@ fn draw_tooltip(
         1.0,
     );
     for (index, line) in lines.iter().enumerate() {
-        game.context.set_fill_style_str(line.color);
         game.context.set_font(line.font);
         let baseline = y + TOOLTIP_PADDING + (index + 1) as f32 * TOOLTIP_LINE_HEIGHT - 3.0;
-        let _ = game.context.fill_text(
-            &line.text,
-            f64::from(x + TOOLTIP_PADDING),
-            f64::from(baseline),
-        );
+        let mut text_x = x + TOOLTIP_PADDING;
+        for span in &line.spans {
+            game.context.set_fill_style_str(span.color);
+            let _ = game
+                .context
+                .fill_text(&span.text, f64::from(text_x), f64::from(baseline));
+            text_x += measured_width(&game.context, &span.text);
+        }
     }
 }
 
@@ -297,19 +309,21 @@ fn tooltip_lines(
     width: f32,
 ) -> Vec<TooltipLine> {
     let mut lines = Vec::new();
-    push_wrapped(
+    push_wz_wrapped(
         &mut lines,
         context,
         &info.title,
         width,
         "#ffffff",
+        "#ffffff",
         "bold 12px Arial",
     );
-    push_wrapped(
+    push_wz_wrapped(
         &mut lines,
         context,
         &info.level,
         width,
+        "#aebdca",
         "#aebdca",
         "10px Arial",
     );
@@ -320,51 +334,213 @@ fn tooltip_lines(
         (info.remaining.as_deref(), "#7ed9ff"),
     ] {
         if let Some(text) = text {
-            push_wrapped(&mut lines, context, text, width, color, "10px Arial");
+            push_wz_wrapped(
+                &mut lines,
+                context,
+                text,
+                width,
+                color,
+                "#ffcc66",
+                "10px Arial",
+            );
         }
     }
     lines
 }
 
-fn push_wrapped(
+fn push_wz_wrapped(
     lines: &mut Vec<TooltipLine>,
     context: &CanvasRenderingContext2d,
     text: &str,
     width: f32,
-    color: &'static str,
+    base_color: &'static str,
+    highlight_color: &'static str,
     font: &'static str,
 ) {
     context.set_font(font);
-    for paragraph in text.lines() {
-        let mut line = String::new();
-        for word in paragraph.split_whitespace() {
-            let candidate = if line.is_empty() {
-                word.to_owned()
-            } else {
-                format!("{line} {word}")
-            };
-            let fits = context
-                .measure_text(&candidate)
-                .map_or(true, |metrics| metrics.width() <= f64::from(width));
-            if !fits && !line.is_empty() {
-                lines.push(TooltipLine {
-                    text: line,
-                    color,
-                    font,
-                });
-                line = word.to_owned();
-            } else {
-                line = candidate;
-            }
-        }
-        if !line.is_empty() {
-            lines.push(TooltipLine {
-                text: line,
+    let mut line = StyledLine::default();
+    let mut pending_space = false;
+    for fragment in parse_wz_text(text) {
+        let color = if fragment.highlighted {
+            highlight_color
+        } else {
+            base_color
+        };
+        push_styled_fragment(
+            lines,
+            context,
+            &mut line,
+            &mut pending_space,
+            &fragment.text,
+            color,
+            font,
+            width,
+        );
+    }
+    finish_styled_line(lines, &mut line, font);
+}
+
+#[derive(Default)]
+struct StyledLine {
+    spans: Vec<TooltipSpan>,
+    width: f32,
+}
+
+fn push_styled_fragment(
+    lines: &mut Vec<TooltipLine>,
+    context: &CanvasRenderingContext2d,
+    line: &mut StyledLine,
+    pending_space: &mut bool,
+    text: &str,
+    color: &'static str,
+    font: &'static str,
+    maximum_width: f32,
+) {
+    let mut piece = String::new();
+    for character in text.chars() {
+        if character == '\n' {
+            push_styled_piece(
+                lines,
+                context,
+                line,
+                pending_space,
+                &mut piece,
                 color,
                 font,
-            });
+                maximum_width,
+            );
+            finish_styled_line(lines, line, font);
+            *pending_space = false;
+        } else if character.is_whitespace() {
+            push_styled_piece(
+                lines,
+                context,
+                line,
+                pending_space,
+                &mut piece,
+                color,
+                font,
+                maximum_width,
+            );
+            *pending_space = true;
+        } else {
+            piece.push(character);
         }
     }
+    push_styled_piece(
+        lines,
+        context,
+        line,
+        pending_space,
+        &mut piece,
+        color,
+        font,
+        maximum_width,
+    );
+}
+
+fn push_styled_piece(
+    lines: &mut Vec<TooltipLine>,
+    context: &CanvasRenderingContext2d,
+    line: &mut StyledLine,
+    pending_space: &mut bool,
+    piece: &mut String,
+    color: &'static str,
+    font: &'static str,
+    maximum_width: f32,
+) {
+    if piece.is_empty() {
+        return;
+    }
+    let separator = *pending_space && !line.spans.is_empty();
+    let separator_width = if separator {
+        measured_width(context, " ")
+    } else {
+        0.0
+    };
+    let piece_width = measured_width(context, piece);
+    if !line.spans.is_empty() && line.width + separator_width + piece_width > maximum_width {
+        finish_styled_line(lines, line, font);
+    }
+    let prefix = if separator && !line.spans.is_empty() {
+        " "
+    } else {
+        ""
+    };
+    append_span(&mut line.spans, color, &format!("{prefix}{piece}"));
+    line.width += measured_width(context, prefix) + piece_width;
+    piece.clear();
+    *pending_space = false;
+}
+
+fn append_span(
+    spans: &mut Vec<TooltipSpan>,
+    color: &'static str,
+    text: &str,
+) {
+    if let Some(last) = spans.last_mut().filter(|span| span.color == color) {
+        last.text.push_str(text);
+    } else {
+        spans.push(TooltipSpan {
+            text: text.to_owned(),
+            color,
+        });
+    }
+}
+
+fn finish_styled_line(
+    lines: &mut Vec<TooltipLine>,
+    line: &mut StyledLine,
+    font: &'static str,
+) {
+    if !line.spans.is_empty() {
+        lines.push(TooltipLine {
+            spans: std::mem::take(&mut line.spans),
+            font,
+        });
+    }
+    line.width = 0.0;
+}
+
+fn measured_width(
+    context: &CanvasRenderingContext2d,
+    text: &str,
+) -> f32 {
+    context.measure_text(text).map_or_else(
+        |_| text.chars().count() as f32 * 6.0,
+        |metrics| metrics.width() as f32,
+    )
+}
+
+fn parse_wz_text(text: &str) -> Vec<WzTextFragment> {
+    let mut fragments = Vec::new();
+    let mut buffer = String::new();
+    let mut highlighted = false;
+    let mut chars = text.chars().peekable();
+    while let Some(character) = chars.next() {
+        if character != '#' {
+            buffer.push(character);
+            continue;
+        }
+        push_wz_fragment(&mut fragments, &mut buffer, highlighted);
+        highlighted = chars.next_if_eq(&'c').is_some();
+    }
+    push_wz_fragment(&mut fragments, &mut buffer, highlighted);
+    fragments
+}
+
+fn push_wz_fragment(
+    fragments: &mut Vec<WzTextFragment>,
+    buffer: &mut String,
+    highlighted: bool,
+) {
+    if buffer.is_empty() {
+        return;
+    }
+    fragments.push(WzTextFragment {
+        text: std::mem::take(buffer),
+        highlighted,
+    });
 }
 
 fn tooltip_position(
@@ -481,5 +657,44 @@ mod tests {
         );
 
         assert_eq!(position, (526.0, 458.0));
+    }
+
+    #[test]
+    fn wz_color_markers_become_highlighted_text_fragments() {
+        let fragments = parse_wz_text("Enables recovery.\n#cTerms between skills: 10 min.#");
+
+        assert_eq!(
+            fragments,
+            vec![
+                WzTextFragment {
+                    text: "Enables recovery.\n".to_owned(),
+                    highlighted: false,
+                },
+                WzTextFragment {
+                    text: "Terms between skills: 10 min.".to_owned(),
+                    highlighted: true,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn unterminated_wz_color_marker_highlights_to_the_end() {
+        let fragments = parse_wz_text("Required Skill: #cLevel 5");
+
+        assert_eq!(fragments[0].text, "Required Skill: ");
+        assert!(!fragments[0].highlighted);
+        assert_eq!(fragments[1].text, "Level 5");
+        assert!(fragments[1].highlighted);
+    }
+
+    #[test]
+    fn punctuation_after_a_wz_marker_remains_outside_the_highlight() {
+        let fragments = parse_wz_text("Use when #cthe energy is charged#.");
+
+        assert_eq!(fragments[1].text, "the energy is charged");
+        assert!(fragments[1].highlighted);
+        assert_eq!(fragments[2].text, ".");
+        assert!(!fragments[2].highlighted);
     }
 }
