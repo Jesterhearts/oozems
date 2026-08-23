@@ -195,6 +195,7 @@ message MovementUpdateResponse {
   repeated CombatEvent combat_events = 7;
   uint64 simulation_sequence = 8;
   ActiveBuffState active_buffs = 9;
+  repeated DroppedItem dropped_items = 10;
 }
 
 message CreateCharacterRequest {
@@ -258,6 +259,7 @@ message UseSkillResponse {
   repeated CombatEvent combat_events = 6;
   uint64 simulation_sequence = 7;
   ActiveBuffState active_buffs = 8;
+  repeated DroppedItem dropped_items = 9;
 }
 
 message BasicAttackRequest {
@@ -271,6 +273,7 @@ message BasicAttackResponse {
   repeated MobProjectile mob_projectiles = 3;
   repeated CombatEvent combat_events = 4;
   uint64 simulation_sequence = 5;
+  repeated DroppedItem dropped_items = 6;
 }
 
 message ActiveBuffState {

@@ -10,6 +10,7 @@ use super::components::Position;
 use super::components::TargetCache;
 use super::components::Terrain;
 use super::components::Tick;
+use crate::random::next_u64;
 
 const MOB_GRAVITY: f32 = 900.0;
 const MOB_JUMP_SPEED: f32 = 330.0;
@@ -113,7 +114,7 @@ fn choose_aggro_behavior(
 }
 
 fn choose_random_behavior(motion: &mut MobMotion) {
-    let choice = next_random(&mut motion.random_state) % 5;
+    let choice = next_u64(&mut motion.random_state) % 5;
     let direction = if !motion.can_move || motion.move_speed <= 0.0 {
         0
     } else {
@@ -129,7 +130,7 @@ fn choose_random_behavior(motion: &mut MobMotion) {
     } else {
         MobMovementMode::Walking
     };
-    let duration_fraction = next_random(&mut motion.random_state) as f64 / u64::MAX as f64;
+    let duration_fraction = next_u64(&mut motion.random_state) as f64 / u64::MAX as f64;
     motion.decision_seconds =
         MIN_DECISION_SECONDS + duration_fraction as f32 * DECISION_RANGE_SECONDS;
 }
@@ -397,13 +398,4 @@ fn reverse_direction(motion: &mut MobMotion) {
     let direction = -motion.direction;
     set_direction(motion, direction);
     motion.decision_seconds = motion.decision_seconds.max(MIN_DECISION_SECONDS / 2.0);
-}
-
-pub(super) fn next_random(state: &mut u64) -> u64 {
-    let mut value = *state;
-    value ^= value << 13;
-    value ^= value >> 7;
-    value ^= value << 17;
-    *state = value;
-    value
 }

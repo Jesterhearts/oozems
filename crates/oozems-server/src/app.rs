@@ -17,6 +17,7 @@ use crate::experience::ExperienceCurves;
 use crate::gameplay::GameplayConfig;
 use crate::interactions::InteractionCatalog;
 use crate::items::DropStore;
+use crate::loot::LootCatalog;
 use crate::mobs::MobStore;
 use crate::movement::MovementTracker;
 use crate::player_lock::PlayerLocks;
@@ -47,21 +48,28 @@ pub fn router(
     database: Database,
     catalog: ContentCatalog,
     interactions: InteractionCatalog,
+    loot: LootCatalog,
     experience: ExperienceCurves,
     gameplay: GameplayConfig,
     formulas: FormulaCatalog,
     public_dir: &Path,
 ) -> Router {
     let formulas = Arc::new(formulas);
+    let drops = Arc::new(DropStore::new(gameplay.item_drop_despawn));
     let state = AppState {
         catalog: Arc::new(catalog),
         database,
         experience: Arc::new(experience),
-        drops: Arc::new(DropStore::new(gameplay.item_drop_despawn)),
+        drops: drops.clone(),
         gameplay,
         interactions: Arc::new(interactions),
         movement: Arc::new(MovementTracker::default()),
-        mobs: Arc::new(MobStore::new(gameplay.combat, formulas.clone())),
+        mobs: Arc::new(MobStore::new(
+            gameplay.combat,
+            formulas.clone(),
+            Arc::new(loot),
+            drops,
+        )),
         player_locks: Arc::new(PlayerLocks::default()),
         recovery_timers: Arc::new(RecoveryTimers::default()),
         basic_attack_cooldowns: Arc::new(BasicAttackCooldowns::default()),

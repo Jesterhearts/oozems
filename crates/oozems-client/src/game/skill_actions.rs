@@ -119,6 +119,7 @@ fn install_use(
         std::mem::take(&mut response.mobs),
         std::mem::take(&mut response.mob_projectiles),
         std::mem::take(&mut response.combat_events),
+        std::mem::take(&mut response.dropped_items),
     )?;
     super::buffs::install(
         &mut game.active_buffs,
@@ -143,6 +144,7 @@ fn install_basic_attack(
         response.mobs,
         response.mob_projectiles,
         response.combat_events,
+        response.dropped_items,
     )?;
     Ok(actual_damage.map_or_else(
         || "Basic attack did not hit a target.".to_owned(),
@@ -157,6 +159,7 @@ fn install_combat_update(
     mobs: Vec<oozems_proto::v1::Mob>,
     mob_projectiles: Vec<oozems_proto::v1::MobProjectile>,
     combat_events: Vec<oozems_proto::v1::CombatEvent>,
+    dropped_items: Vec<oozems_proto::v1::DroppedItem>,
 ) -> Result<(Option<u64>, Option<oozems_proto::v1::Vec2>), String> {
     validate_combat_map(game.map.id, player.map_id)?;
     let hit = combat_events
@@ -180,6 +183,7 @@ fn install_combat_update(
             game.frame_time_ms,
             game.movement_rules.snapshot_interval_ms,
         );
+        game.map.dropped_items = dropped_items;
     }
     crate::mob_render::install_combat_events(
         &mut game.mob_render,

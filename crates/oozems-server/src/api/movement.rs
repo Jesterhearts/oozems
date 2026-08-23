@@ -212,6 +212,7 @@ async fn movement_response(
     let active_buffs =
         crate::skills::active_skill_buffs(&state.skill_buffs, &updated_player.id, unix_time_ms()?)
             .map_err(skill_rule_error)?;
+    let dropped_items = crate::items::map_drops(&state.drops, map_id)?;
     Ok(MovementUpdateResponse {
         authoritative: Some(decision.authoritative),
         accepted: decision.accepted,
@@ -222,6 +223,7 @@ async fn movement_response(
         combat_events: simulation.combat_events,
         simulation_sequence: simulation.sequence,
         active_buffs: Some(active_buffs),
+        dropped_items,
     })
 }
 

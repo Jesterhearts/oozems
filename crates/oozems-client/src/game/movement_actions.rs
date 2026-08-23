@@ -353,6 +353,7 @@ pub(super) fn install_response(
             game.frame_time_ms,
             game.movement_rules.snapshot_interval_ms,
         );
+        game.map.dropped_items = std::mem::take(&mut response.dropped_items);
         crate::mob_render::install_combat_events(
             &mut game.mob_render,
             std::mem::take(&mut response.combat_events),

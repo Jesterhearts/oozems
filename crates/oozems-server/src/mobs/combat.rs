@@ -7,7 +7,6 @@ use shipyard::UniqueViewMut;
 use shipyard::View;
 use shipyard::ViewMut;
 
-use super::ai::next_random;
 use super::ai::reset_mob;
 use super::components::CombatFormulas;
 use super::components::CombatRules;
@@ -24,6 +23,7 @@ use super::components::ProjectileSpawns;
 use super::components::SimulationErrors;
 use super::components::TargetCache;
 use super::components::Tick;
+use crate::random::next_u64;
 use crate::skill_formula::FormulaCatalog;
 use crate::skill_formula::FormulaEvaluationError;
 use crate::skill_formula::evaluate_damage_profile;
@@ -385,7 +385,7 @@ fn calculate_mob_damage(
     let minimum = final_damage(range.minimum);
     let maximum = final_damage(range.maximum).max(minimum);
     let width = maximum.saturating_sub(minimum).saturating_add(1);
-    Ok(minimum.saturating_add(next_random(random_state) % width))
+    Ok(minimum.saturating_add(next_u64(random_state) % width))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -419,7 +419,7 @@ pub(super) fn calculate_player_damage(
     };
     let maximum = maximum.max(minimum);
     let width = maximum.saturating_sub(minimum).saturating_add(1);
-    Ok(minimum.saturating_add(next_random(random_state) % width))
+    Ok(minimum.saturating_add(next_u64(random_state) % width))
 }
 
 fn final_damage(value: f64) -> u64 {

@@ -321,9 +321,12 @@ pub async fn pick_up_item(
     let player = match crate::database::save_player(&state.database, &picked.player).await {
         Ok(player) => player,
         Err(error) => {
-            if let Err(restore_error) =
-                crate::items::restore_drop(&state.drops, map_id, picked.drop.clone())
-            {
+            if let Err(restore_error) = crate::items::restore_drop(
+                &state.drops,
+                map_id,
+                picked.drop.clone(),
+                picked.owner_player_id.clone(),
+            ) {
                 tracing::error!(%restore_error, "failed to restore an item after a player save error");
             }
             return Err(error.into());
@@ -470,6 +473,7 @@ pub async fn use_skill(
         },
     )?;
     player = save_simulation_player_damage(&state, player, &simulation).await?;
+    let dropped_items = crate::items::map_drops(&state.drops, map.id)?;
     record_recovery_activity(&state, player_id.as_str(), now_ms);
     let active_buffs = crate::skills::record_skill_buff(
         &state.skill_buffs,
@@ -488,6 +492,7 @@ pub async fn use_skill(
         combat_events: simulation.combat_events,
         simulation_sequence: simulation.sequence,
         active_buffs: Some(active_buffs),
+        dropped_items,
     }))
 }
 

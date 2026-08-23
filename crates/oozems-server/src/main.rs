@@ -11,10 +11,12 @@ mod gameplay;
 mod interactions;
 mod items;
 mod keymap;
+mod loot;
 mod mobs;
 mod movement;
 mod player_lock;
 mod quests;
+mod random;
 mod recovery;
 mod skill_formula;
 mod skills;
@@ -26,6 +28,7 @@ use content::ContentConfig;
 use experience::ExperienceCurves;
 use gameplay::GameplayConfig;
 use interactions::InteractionCatalog;
+use loot::LootCatalog;
 use skill_formula::FormulaCatalog;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
@@ -80,11 +83,17 @@ async fn main() -> anyhow::Result<()> {
     }
     let interactions =
         InteractionCatalog::load(&config.config_dir.join("interactions.toml"), &catalog)?;
+    let loot = LootCatalog::load(
+        &config.config_dir.join("loot.toml"),
+        &catalog.item_definitions(),
+    )?;
+    info!(table_count = loot.len(), "mob loot configuration ready");
     let database = database::open_surreal_kv(&config.data_dir.join("surrealkv")).await?;
     let router = app::router(
         database,
         catalog,
         interactions,
+        loot,
         experience,
         gameplay,
         formulas,

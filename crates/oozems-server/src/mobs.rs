@@ -22,6 +22,8 @@ use shipyard::World;
 use thiserror::Error;
 
 use crate::gameplay::CombatConfig;
+use crate::items::DropStore;
+use crate::loot::LootCatalog;
 use crate::skill_formula::FormulaCatalog;
 
 mod ai;
@@ -52,6 +54,8 @@ pub struct MobStore {
     maps: Mutex<HashMap<u32, MobMapState>>,
     rules: CombatConfig,
     formulas: Arc<FormulaCatalog>,
+    loot: Arc<LootCatalog>,
+    drops: Arc<DropStore>,
 }
 
 struct MobMapState {
@@ -107,17 +111,23 @@ pub enum MobStoreError {
     Borrow { message: String },
     #[error("a combat formula failed: {message}")]
     Formula { message: String },
+    #[error(transparent)]
+    Drops(#[from] crate::items::DropStoreError),
 }
 
 impl MobStore {
     pub fn new(
         rules: CombatConfig,
         formulas: Arc<FormulaCatalog>,
+        loot: Arc<LootCatalog>,
+        drops: Arc<DropStore>,
     ) -> Self {
         Self {
             maps: Mutex::new(HashMap::new()),
             rules,
             formulas,
+            loot,
+            drops,
         }
     }
 }
@@ -214,6 +224,7 @@ fn use_player_attack_at(
     if attack.maximum_damage > 0 {
         apply_player_attack(
             state,
+            map.id,
             &player.id,
             PlayerAttack {
                 target_mob_id: attack.target_mob_id,
@@ -224,6 +235,8 @@ fn use_player_attack_at(
             },
             store.rules,
             &store.formulas,
+            &store.loot,
+            &store.drops,
         )?;
         state.snapshot_sequence = state.snapshot_sequence.saturating_add(1);
     }
@@ -401,10 +414,13 @@ fn mark_player_seen(
 
 fn apply_player_attack(
     state: &mut MobMapState,
+    map_id: u32,
     player_id: &str,
     attack: PlayerAttack<'_>,
     rules: CombatConfig,
     formulas: &FormulaCatalog,
+    loot: &LootCatalog,
+    drops: &DropStore,
 ) -> Result<(), MobStoreError> {
     let Some(player_entity) = state.player_entities.get(player_id).copied() else {
         return Ok(());
@@ -456,6 +472,12 @@ fn apply_player_attack(
         .map_err(|error| MobStoreError::Formula {
             message: format!("damage against mob {} failed: {error}", identity.public_id),
         })?;
+        let died = damage >= combat.current_hp;
+        if died {
+            let item_ids =
+                crate::loot::roll_items(loot, identity.definition_id, &mut motion.random_state);
+            crate::items::create_mob_drops(drops, map_id, position.vector(), &item_ids, player_id)?;
+        }
         combat.current_hp = combat.current_hp.saturating_sub(damage);
         combat.aggro_target = Some(player_id.to_owned());
         if combat.current_hp == 0 {
@@ -463,12 +485,7 @@ fn apply_player_attack(
             combat.aggro_target = None;
             motion.mode = MobMovementMode::Idle;
         }
-        (
-            **position,
-            identity.public_id.clone(),
-            damage,
-            combat.current_hp == 0,
-        )
+        (**position, identity.public_id.clone(), damage, died)
     };
     let source_id = player_id.to_owned();
     state.world.run(|mut events: UniqueViewMut<PendingEvents>| {
@@ -759,12 +776,14 @@ fn borrow_error(message: String) -> MobStoreError {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::path::Path;
     use std::sync::Arc;
     use std::time::Duration;
     use std::time::Instant;
 
     use oozems_proto::v1::CharacterStats;
+    use oozems_proto::v1::ItemDefinition;
     use oozems_proto::v1::Map;
     use oozems_proto::v1::MobAnimation;
     use oozems_proto::v1::MobDefinition;
@@ -781,6 +800,10 @@ mod tests {
     use super::restore_player_events;
     use super::use_player_attack_at;
     use crate::gameplay::CombatConfig;
+    use crate::items::DropStore;
+    use crate::items::SPARE_TOP_ID;
+    use crate::items::map_drops;
+    use crate::loot::LootCatalog;
     use crate::skill_formula::FormulaCatalog;
 
     #[test]
@@ -1009,6 +1032,49 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_mob_death_creates_its_loot_exactly_once() {
+        let store = store_with_guaranteed_loot();
+        let map = map();
+        let player = player(90.0, 100.0);
+        let now = Instant::now();
+
+        let killed = use_player_attack_at(
+            &store,
+            &map,
+            &player,
+            PlayerAttack {
+                target_mob_id: "1:1:0",
+                facing_left: false,
+                minimum_damage: 100,
+                maximum_damage: 100,
+                fixed_damage: true,
+            },
+            now,
+        )
+        .expect("lethal attack");
+        assert_eq!(killed.mobs[0].current_hp, 0);
+
+        use_player_attack_at(
+            &store,
+            &map,
+            &player,
+            PlayerAttack {
+                target_mob_id: "1:1:0",
+                facing_left: false,
+                minimum_damage: 100,
+                maximum_damage: 100,
+                fixed_damage: true,
+            },
+            now + Duration::from_millis(1),
+        )
+        .expect("attack against dead mob");
+
+        let drops = map_drops(&store.drops, map.id).expect("map drops");
+        assert_eq!(drops.len(), 1);
+        assert_eq!(drops[0].item_id, SPARE_TOP_ID);
+    }
+
     fn store() -> MobStore {
         let formulas = FormulaCatalog::load(Path::new("../../config/skill-formulas.toml"))
             .expect("formula catalog");
@@ -1028,7 +1094,33 @@ mod tests {
                 default_respawn: Duration::from_secs(7),
             },
             Arc::new(formulas),
+            Arc::new(LootCatalog::default()),
+            Arc::new(DropStore::new(Duration::from_secs(600))),
         )
+    }
+
+    fn store_with_guaranteed_loot() -> MobStore {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("loot.toml");
+        fs::write(
+            &path,
+            format!(
+                "[[mobs]]\nmob_id = 100\n[[mobs.drops]]\nitem_id = \
+                 {SPARE_TOP_ID}\nchance_per_million = 1000000\n"
+            ),
+        )
+        .expect("write loot configuration");
+        let loot = LootCatalog::load(
+            &path,
+            &[ItemDefinition {
+                item_id: SPARE_TOP_ID,
+                ..ItemDefinition::default()
+            }],
+        )
+        .expect("loot catalog");
+        let mut store = store();
+        store.loot = Arc::new(loot);
+        store
     }
 
     fn player(

@@ -33,6 +33,7 @@ pub struct DropStore {
 struct MapDrop {
     map_id: u32,
     item: DroppedItem,
+    owner_player_id: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -46,6 +47,7 @@ pub struct RemovedItem {
 #[derive(Clone, Debug)]
 pub struct PickedUpItem {
     pub drop: DroppedItem,
+    pub owner_player_id: Option<String>,
     pub player: PlayerState,
 }
 
@@ -272,25 +274,69 @@ fn create_drop_at(
     removed: &RemovedItem,
     now_ms: u64,
 ) -> Result<DroppedItem, DropStoreError> {
-    let lifespan_ms =
-        u64::try_from(store.lifespan.as_millis()).map_err(|_| DropStoreError::ExpiryOverflow)?;
-    let despawn_at_unix_ms = now_ms
-        .checked_add(lifespan_ms)
-        .ok_or(DropStoreError::ExpiryOverflow)?;
-    let sequence = store.next_id.fetch_add(1, Ordering::Relaxed);
-    let item = DroppedItem {
-        id: format!("drop-{now_ms:x}-{sequence:x}"),
-        item_id: removed.item_id,
-        position: Some(removed.position),
+    let despawn_at_unix_ms = drop_expiry(store, now_ms)?;
+    let item = new_drop(
+        store,
+        removed.item_id,
+        removed.position,
+        now_ms,
         despawn_at_unix_ms,
-    };
+    );
     let mut drops = store.drops.lock().map_err(|_| DropStoreError::Lock)?;
     retain_active_drops(&mut drops, now_ms);
     drops.push(MapDrop {
         map_id: removed.map_id,
         item: item.clone(),
+        owner_player_id: None,
     });
     Ok(item)
+}
+
+pub fn create_mob_drops(
+    store: &DropStore,
+    map_id: u32,
+    position: Vec2,
+    item_ids: &[u32],
+    owner_player_id: &str,
+) -> Result<Vec<DroppedItem>, DropStoreError> {
+    if item_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let now_ms = unix_time_ms()?;
+    create_mob_drops_at(store, map_id, position, item_ids, owner_player_id, now_ms)
+}
+
+fn create_mob_drops_at(
+    store: &DropStore,
+    map_id: u32,
+    position: Vec2,
+    item_ids: &[u32],
+    owner_player_id: &str,
+    now_ms: u64,
+) -> Result<Vec<DroppedItem>, DropStoreError> {
+    let despawn_at_unix_ms = drop_expiry(store, now_ms)?;
+    let items = item_ids
+        .iter()
+        .enumerate()
+        .map(|(index, item_id)| {
+            new_drop(
+                store,
+                *item_id,
+                spread_position(position, index, item_ids.len()),
+                now_ms,
+                despawn_at_unix_ms,
+            )
+        })
+        .collect::<Vec<_>>();
+    let owner_player_id = owner_player_id.to_owned();
+    let mut drops = store.drops.lock().map_err(|_| DropStoreError::Lock)?;
+    retain_active_drops(&mut drops, now_ms);
+    drops.extend(items.iter().cloned().map(|item| MapDrop {
+        map_id,
+        item,
+        owner_player_id: Some(owner_player_id.clone()),
+    }));
+    Ok(items)
 }
 
 pub fn map_drops(
@@ -309,6 +355,7 @@ pub fn pick_up_nearest(
     if !position.x.is_finite() || !position.y.is_finite() {
         return Err(ItemRuleError::MissingPosition.into());
     }
+    let player_id = player.id.clone();
     let inventory = player
         .inventory
         .as_mut()
@@ -324,6 +371,11 @@ pub fn pick_up_nearest(
         .iter()
         .enumerate()
         .filter(|(_, drop)| drop.map_id == player.map_id)
+        .filter(|(_, drop)| {
+            drop.owner_player_id
+                .as_deref()
+                .is_none_or(|owner| owner == player_id)
+        })
         .filter_map(|(index, drop)| {
             let drop_position = drop.item.position.as_ref()?;
             let dx = drop_position.x - position.x;
@@ -334,20 +386,30 @@ pub fn pick_up_nearest(
         .min_by(|(_, left), (_, right)| left.total_cmp(right))
         .map(|(index, _)| index)
         .ok_or(ItemRuleError::NoNearbyDrop)?;
-    let drop = drops.remove(index).item;
+    let removed = drops.remove(index);
+    let drop = removed.item;
     inventory.item_ids.push(drop.item_id);
     player.position = Some(position);
-    Ok(PickedUpItem { drop, player })
+    Ok(PickedUpItem {
+        drop,
+        owner_player_id: removed.owner_player_id,
+        player,
+    })
 }
 
 pub fn restore_drop(
     store: &DropStore,
     map_id: u32,
     item: DroppedItem,
+    owner_player_id: Option<String>,
 ) -> Result<(), DropStoreError> {
     let mut drops = store.drops.lock().map_err(|_| DropStoreError::Lock)?;
     if !drops.iter().any(|drop| drop.item.id == item.id) {
-        drops.push(MapDrop { map_id, item });
+        drops.push(MapDrop {
+            map_id,
+            item,
+            owner_player_id,
+        });
     }
     Ok(())
 }
@@ -376,6 +438,47 @@ fn valid_inventory_index(
             index: inventory_index,
         },
     )
+}
+
+fn drop_expiry(
+    store: &DropStore,
+    now_ms: u64,
+) -> Result<u64, DropStoreError> {
+    let lifespan_ms =
+        u64::try_from(store.lifespan.as_millis()).map_err(|_| DropStoreError::ExpiryOverflow)?;
+    now_ms
+        .checked_add(lifespan_ms)
+        .ok_or(DropStoreError::ExpiryOverflow)
+}
+
+fn new_drop(
+    store: &DropStore,
+    item_id: u32,
+    position: Vec2,
+    now_ms: u64,
+    despawn_at_unix_ms: u64,
+) -> DroppedItem {
+    let sequence = store.next_id.fetch_add(1, Ordering::Relaxed);
+    DroppedItem {
+        id: format!("drop-{now_ms:x}-{sequence:x}"),
+        item_id,
+        position: Some(position),
+        despawn_at_unix_ms,
+    }
+}
+
+fn spread_position(
+    center: Vec2,
+    index: usize,
+    count: usize,
+) -> Vec2 {
+    const SPACING: f32 = 28.0;
+
+    let center_index = count.saturating_sub(1) as f32 / 2.0;
+    Vec2 {
+        x: center.x + (index as f32 - center_index) * SPACING,
+        y: center.y,
+    }
 }
 
 fn find_definition(
@@ -412,11 +515,14 @@ mod tests {
     use oozems_proto::v1::Vec2;
 
     use super::DropStore;
+    use super::ItemRuleError;
+    use super::PickUpError;
     use super::SPARE_TOP_ID;
     use super::STARTER_TOP_ID;
     use super::buy_shop_item;
     use super::create_drop;
     use super::create_drop_at;
+    use super::create_mob_drops;
     use super::equip_inventory_item;
     use super::map_drops;
     use super::map_drops_at;
@@ -520,6 +626,27 @@ mod tests {
                 .expect("expired drops")
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn mob_drops_can_only_be_picked_up_by_the_final_attacker() {
+        let store = DropStore::new(Duration::from_secs(600));
+        let position = Vec2 { x: 20.0, y: 30.0 };
+        let drops = create_mob_drops(&store, 100, position, &[SPARE_TOP_ID], "owner")
+            .expect("create mob drop");
+        let mut stranger = player();
+        stranger.id = "stranger".to_owned();
+
+        assert!(matches!(
+            pick_up_nearest(&store, stranger, position),
+            Err(PickUpError::Rule(ItemRuleError::NoNearbyDrop))
+        ));
+        let mut owner = player();
+        owner.id = "owner".to_owned();
+        let picked = pick_up_nearest(&store, owner, position).expect("owner pickup");
+
+        assert_eq!(picked.drop.id, drops[0].id);
+        assert_eq!(picked.owner_player_id.as_deref(), Some("owner"));
     }
 
     fn player() -> PlayerState {

@@ -8,8 +8,8 @@ use. It does not include MapleStory code or assets.
 The current version of the server is not yet ready for general use. Combat is
 still limited to basic player attacks, player skills, mob contact attacks, and
 basic mob projectiles.
-Features such as player death handling and mob loot are not implemented. Quest
-support currently covers an explicitly enabled typed subset of `Quest.wz`.
+Player death handling is not implemented. Quest support currently covers a
+typed subset of `Quest.wz`.
 
 When it is ready, a release tag will be posted for a version 0.1. That will
 indicate general usage availability, although polish and bug fixes will
@@ -65,6 +65,7 @@ server
   -> config/gameplay.toml         validated item, skill, and movement rules
   -> config/content.toml          WZ content inclusion rules
   -> config/interactions.toml     authored shop stock and taxi routes
+  -> config/loot.toml             authored mob item drop rates
   -> config/skill-formulas.toml   validated combat formulas
   -> data/Map.wz                  required, lazy WZ map source
   -> data/Npc.wz                  optional NPC placement animation source
@@ -218,6 +219,14 @@ uses the configured bare-hands damage profile. Its result follows the same
 server-owned mob HP, defense, aggro, and death pipeline as a damaging skill.
 The character plays the composed `swingO1` WZ animation for its configured
 frame duration when the attack begins.
+
+Each living-to-dead mob transition rolls the independent item entries in
+`config/loot.toml`. The local WZ archives provide some mob-to-item associations
+but not ordinary drop probabilities, so the bundled rates are project-authored.
+A rate is expressed per million; `1000000` is guaranteed. Generated items are
+temporary, belong to the final attacker, and use the existing server-authorized
+pickup and inventory pipeline. Combat and movement responses synchronize the
+current map drops so other clients see item creation, pickup, and expiry.
 
 Skill use is server-owned. The server confirms the learned level, reads that
 level's WZ properties, checks and spends HP and MP, enforces WZ cooldowns,

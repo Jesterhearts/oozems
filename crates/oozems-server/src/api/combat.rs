@@ -66,6 +66,7 @@ pub async fn use_basic_attack(
         }
     };
     let player = save_simulation_player_damage(&state, player, &simulation).await?;
+    let dropped_items = crate::items::map_drops(&state.drops, map.id)?;
     record_recovery_activity(&state, player_id.as_str(), now_ms);
 
     Ok(Protobuf(BasicAttackResponse {
@@ -74,6 +75,7 @@ pub async fn use_basic_attack(
         mob_projectiles: simulation.mob_projectiles,
         combat_events: simulation.combat_events,
         simulation_sequence: simulation.sequence,
+        dropped_items,
     }))
 }
 
