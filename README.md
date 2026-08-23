@@ -3,31 +3,14 @@
 Oozems is an original old-school side-scrolling RPG foundation for personal
 use. It does not include MapleStory code or assets.
 
-The current vertical slice includes:
+## Not Ready For General Use
 
-- a Rust server using Axum;
-- embedded SurrealDB persistence backed by SurrealKV;
-- a small Rust WASM client rendered with the browser canvas;
-- protobuf request and response bodies over HTTP;
-- server-owned map files fetched only when entered;
-- optional classic PKG1 WZ map archives parsed lazily by the server;
-- a character creation screen with idle, walk, jump, ladder, and rope
-  animations composed from `Character.wz`;
-- optional in-game status, character-stat, equipment, inventory, and keyboard
-  settings windows composed from `UI.wz` sprites;
-- persisted equipment and inventory state with WZ item icons and transient
-  map drops that characters can pick up;
-- server-owned mob instances created from `Map.wz` spawn points, with stats and
-  streamed animations loaded from `Mob.wz`;
-- persisted, drag-and-drop keyboard bindings for every supported action;
-- WZ skill books with persisted skill levels, resource costs, cooldowns, and
-  draggable skill bindings, plus streamed skill animations and sounds;
-- server-owned natural HP and MP recovery after ten seconds of inactivity;
-- validated TOML game rules with named, formula-based XP curves;
-- validated TOML combat formulas based on the classic Ayumilove compilation;
-- server-owned assets fetched only when referenced by the current view; and
-- client-rendered movement with server-owned reachability checks for speed,
-  jumping, airborne time, footholds, ladders, ropes, and portal transitions.
+The current version of the server is not yet ready for general use as it does
+not support a number of features like mob ai, damage, etc.
+
+When it is ready, a release tag will be posted for a version 0.1. That will
+indicate general usage availability, although polish and bug fixes will
+likely be needed after such a release.
 
 ## Run it
 
@@ -43,15 +26,15 @@ server's generated `public` directory before starting the server.
 The default data directory is `./data`. It is ignored by Git. These environment
 variables override the defaults:
 
-| Variable | Default |
-| --- | --- |
-| `OOZEMS_BIND` | `127.0.0.1:3000` |
-| `OOZEMS_DATA_DIR` | `./data` |
-| `OOZEMS_CONFIG_DIR` | `./config` |
-| `OOZEMS_ASSET_DIR` | `crates/oozems-server/assets` |
+| Variable             | Default                             |
+| -------------------- | ----------------------------------- |
+| `OOZEMS_BIND`        | `127.0.0.1:3000`                    |
+| `OOZEMS_DATA_DIR`    | `./data`                            |
+| `OOZEMS_CONFIG_DIR`  | `./config`                          |
+| `OOZEMS_ASSET_DIR`   | `crates/oozems-server/assets`       |
 | `OOZEMS_CONTENT_DIR` | `crates/oozems-server/content/maps` |
-| `OOZEMS_PUBLIC_DIR` | `crates/oozems-server/public` |
-| `OOZEMS_WZ_DIR` | `./data` |
+| `OOZEMS_PUBLIC_DIR`  | `crates/oozems-server/public`       |
+| `OOZEMS_WZ_DIR`      | `./data`                            |
 
 ## Data flow
 
@@ -76,7 +59,6 @@ server
   -> config/xp-curves.toml        validated game progression rules
   -> config/gameplay.toml         validated item, skill, and movement rules
   -> config/skill-formulas.toml   validated combat formulas
-  -> content/maps/*.json          immutable map source
   -> data/Map.wz                  optional, lazy WZ map source
   -> data/Mob.wz                  optional mob stats and animation source
   -> data/Character.wz            optional character sprite source
@@ -98,8 +80,7 @@ version, so changing one file invalidates only that cached file.
 
 Place `Map.wz` in `./data`. Place the matching `String.wz` beside it to use the
 original map names. The server detects the archive version, indexes map image
-entries at startup, and parses each map only when it is requested. A WZ map
-overrides a JSON map with the same ID.
+entries at startup, and parses each map only when it is requested.
 
 The map response contains footholds and references to only the sprite assets
 used by that map. It also contains typed ladder, rope, and portal data. Visible
@@ -335,16 +316,16 @@ Wrath of the Octopi, skill `5220002`, to the `standard` summon profile.
 
 The supported profile and selector table pairs are:
 
-| Profile table | Selector table | Selector key |
-| --- | --- | --- |
-| `weapon_profiles` | `weapons` | Lowercase identifier such as `one_handed_sword` or `bare_hands` |
-| `skill_profiles` | `skills` | Quoted numeric WZ skill ID |
-| `summon_profiles` | `summon` | Quoted numeric WZ skill ID |
-| `defense_profiles` | `defenses` | Lowercase identifier |
-| `accuracy_profiles` | `accuracy` | Lowercase identifier |
-| `experience_profiles` | `experience` | Lowercase identifier |
-| `stat_profiles` | `stats` | Lowercase identifier |
-| `recovery_profiles` | `recovery` | Lowercase identifier |
+| Profile table         | Selector table | Selector key                                                    |
+| --------------------- | -------------- | --------------------------------------------------------------- |
+| `weapon_profiles`     | `weapons`      | Lowercase identifier such as `one_handed_sword` or `bare_hands` |
+| `skill_profiles`      | `skills`       | Quoted numeric WZ skill ID                                      |
+| `summon_profiles`     | `summon`       | Quoted numeric WZ skill ID                                      |
+| `defense_profiles`    | `defenses`     | Lowercase identifier                                            |
+| `accuracy_profiles`   | `accuracy`     | Lowercase identifier                                            |
+| `experience_profiles` | `experience`   | Lowercase identifier                                            |
+| `stat_profiles`       | `stats`        | Lowercase identifier                                            |
+| `recovery_profiles`   | `recovery`     | Lowercase identifier                                            |
 
 Profile names, property names, and identifier selector keys must contain only
 lowercase ASCII letters, digits, and underscores. Every profile must contain at
@@ -398,29 +379,29 @@ Every selected recovery profile must define both `hp` and `mp`.
 
 Profile formulas use decimal arithmetic and support these elements:
 
-| Syntax | Meaning |
-| --- | --- |
-| `^` | Exponentiation. It is right-associative. |
-| `*`, `/` | Multiplication and division. |
-| `+`, `-` | Addition and subtraction, including unary signs. |
-| `( ... )` | Explicit grouping. |
-| `floor(value)` | Round down to an integer value. |
-| `trunc(value)` | Discard the fractional part. |
-| `min(left, right)` | Select the smaller value. |
-| `max(left, right)` | Select the larger value. |
+| Syntax             | Meaning                                          |
+| ------------------ | ------------------------------------------------ |
+| `^`                | Exponentiation. It is right-associative.         |
+| `*`, `/`           | Multiplication and division.                     |
+| `+`, `-`           | Addition and subtraction, including unary signs. |
+| `( ... )`          | Explicit grouping.                               |
+| `floor(value)`     | Round down to an integer value.                  |
+| `trunc(value)`     | Discard the fractional part.                     |
+| `min(left, right)` | Select the smaller value.                        |
+| `max(left, right)` | Select the larger value.                         |
 
 Identifiers are case-sensitive. The accepted variables are grouped below.
 Each calculation supplies only the variables relevant to that formula. Using a
 variable that is not supplied produces an explicit formula evaluation error.
 
-| Group | Variables |
-| --- | --- |
-| Player | `CharacterLevel`, `PlayerLevel`, `Strength`, `Dexterity`, `Intelligence`, `Luck`, `Accuracy`, `Avoidability`, `Magic` |
-| Attack | `PrimaryStat`, `SecondaryStat`, `WeaponAttack`, `BasicAttack`, `AttackRate`, `Mastery`, `SkillDamage`, `SkillLevel`, `SpellAttack`, `JobMultiplier` |
-| Target | `MonsterLevel`, `MonsterHealth`, `MonsterExperience`, `WeaponDefense`, `MagicDefense`, `DamageBeforeDefense`, `TargetCount`, `TargetMultiplier` |
-| Multi-hit and modifiers | `HitNumber`, `TotalHits`, `Orbs`, `ComboLevel`, `AdvancedComboDamage`, `ChargeLevel`, `AmpBulletDamage` |
-| Accuracy and recovery | `AccuracyRatio`, `HealLevel`, `BattleshipLevel` |
-| Economy and parties | `Mesos`, `DamageDealt`, `TotalPartyLevel`, `PartyExperiencePortion`, `PartyBonus` |
+| Group                   | Variables                                                                                                                                           |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Player                  | `CharacterLevel`, `PlayerLevel`, `Strength`, `Dexterity`, `Intelligence`, `Luck`, `Accuracy`, `Avoidability`, `Magic`                               |
+| Attack                  | `PrimaryStat`, `SecondaryStat`, `WeaponAttack`, `BasicAttack`, `AttackRate`, `Mastery`, `SkillDamage`, `SkillLevel`, `SpellAttack`, `JobMultiplier` |
+| Target                  | `MonsterLevel`, `MonsterHealth`, `MonsterExperience`, `WeaponDefense`, `MagicDefense`, `DamageBeforeDefense`, `TargetCount`, `TargetMultiplier`     |
+| Multi-hit and modifiers | `HitNumber`, `TotalHits`, `Orbs`, `ComboLevel`, `AdvancedComboDamage`, `ChargeLevel`, `AmpBulletDamage`                                             |
+| Accuracy and recovery   | `AccuracyRatio`, `HealLevel`, `BattleshipLevel`                                                                                                     |
+| Economy and parties     | `Mesos`, `DamageDealt`, `TotalPartyLevel`, `PartyExperiencePortion`, `PartyBonus`                                                                   |
 
 The current skill and recovery profile pipelines supply `CharacterLevel`,
 `PlayerLevel`, `Strength`, `Dexterity`, `Intelligence`, `Luck`, `SkillDamage`,
@@ -483,14 +464,14 @@ selected curve is treated as a server configuration error.
 
 Formulas contain integer literals and these elements:
 
-| Syntax | Meaning |
-| --- | --- |
-| `Level` | The level currently being evaluated. It is case-sensitive. |
-| `atLevel(10)` | The XP requirement produced by this curve for level 10. |
-| `^` | Exponentiation. It is right-associative. |
-| `*`, `/` | Multiplication and division. |
-| `+`, `-` | Addition and subtraction, including unary signs. |
-| `( ... )` | Explicit grouping. |
+| Syntax        | Meaning                                                    |
+| ------------- | ---------------------------------------------------------- |
+| `Level`       | The level currently being evaluated. It is case-sensitive. |
+| `atLevel(10)` | The XP requirement produced by this curve for level 10.    |
+| `^`           | Exponentiation. It is right-associative.                   |
+| `*`, `/`      | Multiplication and division.                               |
+| `+`, `-`      | Addition and subtraction, including unary signs.           |
+| `( ... )`     | Explicit grouping.                                         |
 
 Exponentiation is evaluated before unary signs, then multiplication and
 division, then addition and subtraction. Division truncates toward zero.
@@ -513,17 +494,6 @@ for Jump, Z for Pick Up, C for Character, E for Equipment, I for Inventory,
 K for Key Settings, and S for Skills. Script portals remain inactive because
 their behavior belongs to a future server-side scripting system.
 
-## Add a map
-
-Add a JSON file under `crates/oozems-server/content/maps`. The server validates
-map dimensions, platform geometry, decoration references, duplicate asset IDs,
-and asset paths during startup. A bad map stops the restartable server pipeline
-before it can serve inconsistent content.
-
-Assets belong under `crates/oozems-server/assets`. Refer to them with paths
-relative to that directory. The client receives no map or game asset in its
-WASM bundle.
-
 ## Verify it
 
 ```sh
@@ -532,13 +502,3 @@ make check
 
 The first server build is relatively large because embedded SurrealDB includes
 its database engine in the server binary.
-
-## Suggested next slices
-
-1. Add account sessions and make the server derive player identity from the
-   session instead of a fixed local ID.
-2. Add a protobuf WebSocket stream for authoritative movement and other
-   players while retaining HTTP for bootstrap and content.
-3. Split maps into spatial chunks if maps become much wider than the viewport.
-4. Add server-side portal scripts, NPCs, consumable items, and combat as
-   separate typed pipelines.
