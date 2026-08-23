@@ -32,6 +32,7 @@ web-sys                  = { version = "0.3.104", features = [
   "MouseEvent",
   "Performance",
   "Response",
+  "TextMetrics",
   "Window",
   "console"
 ] }

@@ -292,6 +292,11 @@ pub(super) fn portal_authoritative(
         return Ok(None);
     }
     game.movement_sync.last_response_sequence = authoritative.sequence;
+    super::buffs::install(
+        &mut game.active_buffs,
+        response.active_buffs.clone().unwrap_or_default(),
+        js_sys::Date::now().max(0.0) as u64,
+    );
     Ok(Some(authoritative))
 }
 
@@ -306,6 +311,11 @@ pub(super) fn install_response(
         return Ok(None);
     }
     game.movement_sync.last_response_sequence = authoritative.sequence;
+    super::buffs::install(
+        &mut game.active_buffs,
+        response.active_buffs.take().unwrap_or_default(),
+        js_sys::Date::now().max(0.0) as u64,
+    );
     if authoritative.map_id == game.map.id
         && crate::mob_render::accept_simulation_snapshot(
             &mut game.mob_render,

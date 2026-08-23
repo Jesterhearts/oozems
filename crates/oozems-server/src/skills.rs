@@ -15,6 +15,12 @@ use crate::skill_formula::FormulaCatalog;
 use crate::skill_formula::evaluate_damage_profile;
 use crate::skill_formula::evaluate_profile_property;
 
+mod buffs;
+
+pub use buffs::SkillBuffs;
+pub use buffs::active_skill_buffs;
+pub use buffs::record_skill_buff;
+
 const MAX_DAMAGE: u32 = 99_999;
 const BEGINNER_RECOVERY_SKILL_ID: u32 = 1_001;
 
@@ -85,6 +91,8 @@ pub enum SkillRuleError {
     Cooldown { skill_id: u32, remaining_ms: u64 },
     #[error("the skill cooldown store is unavailable")]
     CooldownStore,
+    #[error("the active buff store is unavailable")]
+    BuffStore,
     #[error("a configured formula failed: {message}")]
     Formula { message: String },
 }

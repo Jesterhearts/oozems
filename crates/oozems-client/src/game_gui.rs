@@ -573,6 +573,15 @@ fn skill_at_point(
         .flatten()
 }
 
+pub fn hovered_skill<'a>(
+    state: GuiState,
+    gui: &GameGui,
+    book: &'a SkillBook,
+    point: CanvasPoint,
+) -> Option<&'a oozems_proto::v1::PlayerSkill> {
+    skill_row_at(state, gui, book, point).map(|(skill, _)| skill)
+}
+
 fn skill_row_at<'a>(
     state: GuiState,
     gui: &GameGui,

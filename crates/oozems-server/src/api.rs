@@ -358,9 +358,13 @@ pub async fn get_skill_book(
     let skill_book = load_skill_book(&state, job_id).await?;
     let skill_book =
         crate::skills::personalize_skill_book(skill_book, &player).map_err(skill_rule_error)?;
+    let active_buffs =
+        crate::skills::active_skill_buffs(&state.skill_buffs, player_id.as_str(), unix_time_ms()?)
+            .map_err(skill_rule_error)?;
 
     Ok(Protobuf(GetSkillBookResponse {
         skill_book: Some(skill_book),
+        active_buffs: Some(active_buffs),
     }))
 }
 
@@ -482,6 +486,13 @@ pub async fn use_skill(
         };
     }
     record_recovery_activity(&state, player_id.as_str(), now_ms);
+    let active_buffs = crate::skills::record_skill_buff(
+        &state.skill_buffs,
+        player_id.as_str(),
+        &prepared.result,
+        now_ms,
+    )
+    .map_err(skill_rule_error)?;
 
     Ok(Protobuf(UseSkillResponse {
         player: Some(player),
@@ -491,6 +502,7 @@ pub async fn use_skill(
         mob_projectiles: simulation.mob_projectiles,
         combat_events: simulation.combat_events,
         simulation_sequence: simulation.sequence,
+        active_buffs: Some(active_buffs),
     }))
 }
 
@@ -694,6 +706,7 @@ fn pick_up_error(error: crate::items::PickUpError) -> ApiError {
 fn skill_rule_error(error: crate::skills::SkillRuleError) -> ApiError {
     match error {
         crate::skills::SkillRuleError::CooldownStore
+        | crate::skills::SkillRuleError::BuffStore
         | crate::skills::SkillRuleError::Formula { .. } => ApiError::SkillRules(error),
         _ => ApiError::bad_request("invalid_skill_action", error.to_string()),
     }

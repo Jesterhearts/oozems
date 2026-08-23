@@ -24,6 +24,7 @@ use crate::movement::MovementTracker;
 use crate::player_lock::PlayerLocks;
 use crate::recovery::RecoveryTimers;
 use crate::skill_formula::FormulaCatalog;
+use crate::skills::SkillBuffs;
 use crate::skills::SkillCooldowns;
 
 #[derive(Clone)]
@@ -38,6 +39,7 @@ pub struct AppState {
     pub player_locks: Arc<PlayerLocks>,
     pub recovery_timers: Arc<RecoveryTimers>,
     pub skill_cooldowns: Arc<SkillCooldowns>,
+    pub skill_buffs: Arc<SkillBuffs>,
     pub formulas: Arc<FormulaCatalog>,
 }
 
@@ -62,6 +64,7 @@ pub fn router(
         player_locks: Arc::new(PlayerLocks::default()),
         recovery_timers: Arc::new(RecoveryTimers::default()),
         skill_cooldowns: Arc::new(SkillCooldowns::default()),
+        skill_buffs: Arc::new(SkillBuffs::default()),
         formulas,
     };
     let api = Router::new()

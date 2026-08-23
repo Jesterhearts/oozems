@@ -3,6 +3,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use oozems_proto::v1::ActiveBuffState;
 use oozems_proto::v1::CharacterSpriteSet;
 use oozems_proto::v1::GameGui;
 use oozems_proto::v1::ItemActionResponse;
@@ -26,6 +27,7 @@ use crate::assets;
 use crate::assets::BrowserAsset;
 use crate::character_render::CharacterAnimation;
 use crate::game_gui;
+use crate::game_gui::CanvasPoint;
 use crate::game_gui::GuiAction;
 use crate::game_gui::GuiState;
 use crate::game_gui::KeyDrag;
@@ -43,6 +45,7 @@ use crate::show_status;
 use crate::skill_effects;
 use crate::skill_effects::SkillEffectState;
 
+mod buffs;
 mod movement_actions;
 mod recovery_actions;
 mod skill_actions;
@@ -60,12 +63,14 @@ pub struct Game {
     pub images: HashMap<String, BrowserAsset>,
     pub key_bindings: Rc<RefCell<Vec<KeyBinding>>>,
     pub key_drag: Option<KeyDrag>,
+    pub pointer: Option<CanvasPoint>,
     pub map: Map,
     pub mob_render: MobRenderState,
     pub movement_rules: MovementRules,
     pub motion: MotionState,
     pub player: PlayerState,
     pub skill_book: SkillBook,
+    pub(crate) active_buffs: buffs::TrackedBuffs,
     pub(crate) skill_effect_state: SkillEffectState,
     pub frame_time_ms: f64,
     pub world_layers: Vec<i32>,
@@ -81,7 +86,6 @@ pub struct Game {
     next_save_ms: f64,
     movement_sync: movement_actions::MovementSyncState,
     recovery_state: recovery_actions::RecoveryState,
-    active_skill_effects: Vec<ActiveSkillEffect>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -89,14 +93,6 @@ pub struct CharacterAnimationState {
     pub animation: CharacterAnimation,
     started_ms: f64,
     paused_at_ms: Option<f64>,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct ActiveSkillEffect {
-    skill_id: u32,
-    speed_bonus: i32,
-    jump_bonus: i32,
-    expires_at_ms: f64,
 }
 
 pub async fn run(
@@ -116,10 +112,13 @@ pub async fn run(
     let gui = gui_result.unwrap_or_default();
     let skill_result = api::get_skill_book(&player.id).await;
     let skill_warning = skill_result.as_ref().err().map(ToString::to_string);
-    let skill_book = skill_result.unwrap_or_else(|_| SkillBook {
-        job_id: player.stats.as_ref().map_or(0, |stats| stats.job_id),
-        name: "Skills".to_owned(),
-        ..SkillBook::default()
+    let loaded_skills = skill_result.unwrap_or_else(|_| api::LoadedSkillBook {
+        skill_book: SkillBook {
+            job_id: player.stats.as_ref().map_or(0, |stats| stats.job_id),
+            name: "Skills".to_owned(),
+            ..SkillBook::default()
+        },
+        active_buffs: ActiveBuffState::default(),
     });
     let game = build_game(
         player,
@@ -127,7 +126,8 @@ pub async fn run(
         movement_rules,
         character_sprites,
         gui,
-        skill_book,
+        loaded_skills.skill_book,
+        loaded_skills.active_buffs,
     )?;
     let asset_count = game.borrow().images.len();
 
@@ -163,6 +163,7 @@ fn build_game(
     character_sprites: CharacterSpriteSet,
     gui: GameGui,
     skill_book: SkillBook,
+    active_buffs: ActiveBuffState,
 ) -> Result<Rc<RefCell<Game>>, String> {
     if let Some(position) = player.position {
         player.position = Some(movement::constrain_position(&map, position));
@@ -207,12 +208,14 @@ fn build_game(
         images,
         key_bindings,
         key_drag: None,
+        pointer: None,
         map,
         mob_render: crate::mob_render::new_map_state(simulation_sequence),
         movement_rules,
         motion,
         player,
         skill_book,
+        active_buffs: buffs::from_state(active_buffs, js_sys::Date::now().max(0.0) as u64),
         skill_effect_state: SkillEffectState::default(),
         frame_time_ms: 0.0,
         world_layers,
@@ -228,7 +231,6 @@ fn build_game(
         next_save_ms: SAVE_INTERVAL_MS,
         movement_sync: movement_actions::MovementSyncState::default(),
         recovery_state: recovery_actions::RecoveryState::default(),
-        active_skill_effects: Vec::new(),
     }));
     install_canvas_input(&canvas, game.clone())?;
     Ok(game)
@@ -333,11 +335,11 @@ fn install_canvas_input(
             return;
         };
         let mut game = move_game.borrow_mut();
-        let Some(drag) = game.key_drag.as_mut() else {
-            return;
-        };
-        game_gui::move_key_drag(drag, point);
-        event.prevent_default();
+        game.pointer = Some(point);
+        if let Some(drag) = game.key_drag.as_mut() {
+            game_gui::move_key_drag(drag, point);
+            event.prevent_default();
+        }
     });
     canvas
         .add_event_listener_with_callback("mousemove", mouse_move.as_ref().unchecked_ref())
@@ -346,7 +348,9 @@ fn install_canvas_input(
 
     let leave_game = game.clone();
     let mouse_leave = Closure::<dyn FnMut(MouseEvent)>::new(move |_event: MouseEvent| {
-        leave_game.borrow_mut().key_drag = None;
+        let mut game = leave_game.borrow_mut();
+        game.key_drag = None;
+        game.pointer = None;
     });
     canvas
         .add_event_listener_with_callback("mouseleave", mouse_leave.as_ref().unchecked_ref())
@@ -746,7 +750,7 @@ fn update(
             .retain(|action| *action == KeyAction::OpenKeyConfig);
     }
     let pick_up = apply_key_actions(&mut game.gui_state.borrow_mut(), &game.gui, &input.actions);
-    apply_active_skill_effects(game, &mut input.player, timestamp_ms);
+    buffs::apply(&mut game.active_buffs, &mut input.player, now_ms);
 
     let transition = if game.transition_in_flight.get() {
         None
@@ -793,25 +797,6 @@ fn update(
         recover,
         skill_id,
     }
-}
-
-fn apply_active_skill_effects(
-    game: &mut Game,
-    input: &mut PlayerInput,
-    timestamp_ms: f64,
-) {
-    game.active_skill_effects
-        .retain(|effect| effect.expires_at_ms > timestamp_ms);
-    input.speed_bonus = game
-        .active_skill_effects
-        .iter()
-        .map(|effect| effect.speed_bonus)
-        .fold(0, i32::saturating_add);
-    input.jump_bonus = game
-        .active_skill_effects
-        .iter()
-        .map(|effect| effect.jump_bonus)
-        .fold(0, i32::saturating_add);
 }
 
 fn apply_key_actions(

@@ -5,7 +5,6 @@ use oozems_proto::v1::CombatEventKind;
 use oozems_proto::v1::SkillUseResult;
 use wasm_bindgen_futures::spawn_local;
 
-use super::ActiveSkillEffect;
 use super::Game;
 use crate::api;
 use crate::game_gui::GuiAction;
@@ -115,7 +114,11 @@ fn install_use(
         response.combat_events,
         game.frame_time_ms,
     );
-    install_active_effect(game, &result);
+    super::buffs::install(
+        &mut game.active_buffs,
+        response.active_buffs.unwrap_or_default(),
+        js_sys::Date::now().max(0.0) as u64,
+    );
     skill_effects::install(game, response.effect.unwrap_or_default(), target_position);
     Ok(use_message(game, &result, actual_damage))
 }
@@ -139,23 +142,6 @@ fn select_target(game: &Game) -> Option<String> {
         })
         .min_by(|left, right| left.1.total_cmp(&right.1))
         .map(|(mob_id, _)| mob_id)
-}
-
-fn install_active_effect(
-    game: &mut Game,
-    result: &SkillUseResult,
-) {
-    game.active_skill_effects
-        .retain(|effect| effect.skill_id != result.skill_id);
-    if result.duration_ms == 0 || (result.speed_bonus == 0 && result.jump_bonus == 0) {
-        return;
-    }
-    game.active_skill_effects.push(ActiveSkillEffect {
-        skill_id: result.skill_id,
-        speed_bonus: result.speed_bonus,
-        jump_bonus: result.jump_bonus,
-        expires_at_ms: game.frame_time_ms + result.duration_ms as f64,
-    });
 }
 
 fn use_message(

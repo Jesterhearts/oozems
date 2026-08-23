@@ -1,6 +1,7 @@
 use gloo_net::http::Request;
 use js_sys::Uint8Array;
 use oozems_proto::PROTOBUF_CONTENT_TYPE;
+use oozems_proto::v1::ActiveBuffState;
 use oozems_proto::v1::AllocateSkillPointRequest;
 use oozems_proto::v1::AllocateSkillPointResponse;
 use oozems_proto::v1::BootstrapRequest;
@@ -58,6 +59,11 @@ pub enum ClientError {
     InvalidResponse(String),
     #[error("response did not contain {0}")]
     MissingData(&'static str),
+}
+
+pub struct LoadedSkillBook {
+    pub skill_book: SkillBook,
+    pub active_buffs: ActiveBuffState,
 }
 
 pub async fn bootstrap(player_id: &str) -> Result<BootstrapResponse, ClientError> {
@@ -218,7 +224,7 @@ pub async fn get_gui() -> Result<GameGui, ClientError> {
     response.gui.ok_or(ClientError::MissingData("game GUI"))
 }
 
-pub async fn get_skill_book(player_id: &str) -> Result<SkillBook, ClientError> {
+pub async fn get_skill_book(player_id: &str) -> Result<LoadedSkillBook, ClientError> {
     let response: GetSkillBookResponse = post_protobuf(
         "/api/v1/skills/book",
         GetSkillBookRequest {
@@ -227,9 +233,13 @@ pub async fn get_skill_book(player_id: &str) -> Result<SkillBook, ClientError> {
     )
     .await?;
 
-    response
+    let skill_book = response
         .skill_book
-        .ok_or(ClientError::MissingData("skill book"))
+        .ok_or(ClientError::MissingData("skill book"))?;
+    Ok(LoadedSkillBook {
+        skill_book,
+        active_buffs: response.active_buffs.unwrap_or_default(),
+    })
 }
 
 pub async fn allocate_skill_point(

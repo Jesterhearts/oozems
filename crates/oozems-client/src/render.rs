@@ -17,6 +17,7 @@ use crate::game::character_animation_elapsed_ms;
 use crate::game_gui;
 
 mod mob;
+mod skill_info;
 mod skillbook;
 
 const GAUGE_HEADER_HEIGHT: f64 = 15.0;
@@ -425,6 +426,7 @@ fn draw_hud(game: &Game) {
     if !draw_wz_hud(game) {
         draw_fallback_hud(game);
     }
+    skill_info::draw_active_buffs(game);
     if game.gui_state.borrow().stats_open {
         draw_stat_window(game);
     }
@@ -440,6 +442,7 @@ fn draw_hud(game: &Game) {
     if game.gui_state.borrow().key_config_open {
         draw_key_config_window(game);
     }
+    skill_info::draw_hovered_skill(game);
 }
 
 fn draw_key_config_window(game: &Game) {

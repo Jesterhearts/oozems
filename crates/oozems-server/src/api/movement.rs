@@ -17,6 +17,7 @@ use super::lock_player;
 use super::parse_player_id;
 use super::record_recovery_activity;
 use super::require_player;
+use super::skill_rule_error;
 use super::unix_time_ms;
 use crate::app::AppState;
 use crate::database::PlayerId;
@@ -208,6 +209,9 @@ async fn movement_response(
         };
         record_recovery_activity(state, &updated_player.id, unix_time_ms()?);
     }
+    let active_buffs =
+        crate::skills::active_skill_buffs(&state.skill_buffs, &updated_player.id, unix_time_ms()?)
+            .map_err(skill_rule_error)?;
     Ok(MovementUpdateResponse {
         authoritative: Some(decision.authoritative),
         accepted: decision.accepted,
@@ -217,6 +221,7 @@ async fn movement_response(
         mob_projectiles: simulation.mob_projectiles,
         combat_events: simulation.combat_events,
         simulation_sequence: simulation.sequence,
+        active_buffs: Some(active_buffs),
     })
 }
 
