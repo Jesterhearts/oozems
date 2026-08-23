@@ -13,6 +13,7 @@ use crate::assets::ready_image;
 use crate::character_render;
 use crate::character_render::CharacterPlacement;
 use crate::game::Game;
+use crate::game::character_animation_elapsed_ms;
 use crate::game_gui;
 
 mod mob;
@@ -402,8 +403,8 @@ fn draw_player(
         &game.context,
         &game.images,
         &game.character_sprites,
-        game.character_animation,
-        game.frame_time_ms - game.character_animation_started_ms,
+        game.character_animation.animation,
+        character_animation_elapsed_ms(game.character_animation, game.frame_time_ms),
         CharacterPlacement {
             anchor_x: x,
             anchor_y: y,

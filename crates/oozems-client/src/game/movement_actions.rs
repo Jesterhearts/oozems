@@ -167,8 +167,8 @@ fn install_map(
     game.images = images;
     game.motion = motion;
     game.world_layers = world_layers;
-    game.character_animation = CharacterAnimation::Idle;
-    game.character_animation_started_ms = game.frame_time_ms;
+    game.character_animation =
+        super::new_character_animation_state(CharacterAnimation::Idle, true, game.frame_time_ms);
     Ok(())
 }
 
@@ -284,9 +284,13 @@ pub(super) fn install_response(
     reset_after_correction(&mut game.movement_sync, mode);
     game.player.position = Some(position);
     game.motion = motion;
+    let animation = super::character_animation(&game.map, motion, movement::PlayerInput::default());
+    let plays = !matches!(
+        animation,
+        CharacterAnimation::Ladder | CharacterAnimation::Rope
+    );
     game.character_animation =
-        super::character_animation(&game.map, motion, movement::PlayerInput::default());
-    game.character_animation_started_ms = game.frame_time_ms;
+        super::new_character_animation_state(animation, plays, game.frame_time_ms);
     Ok(Some(response.rejection_reason))
 }
 

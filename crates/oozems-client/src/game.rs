@@ -12,6 +12,7 @@ use oozems_proto::v1::Map;
 use oozems_proto::v1::MovementRules;
 use oozems_proto::v1::PlayerState;
 use oozems_proto::v1::SkillBook;
+use oozems_proto::v1::Vec2;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen_futures::spawn_local;
@@ -49,8 +50,7 @@ const SAVE_INTERVAL_MS: f64 = 2_000.0;
 
 pub struct Game {
     pub canvas: HtmlCanvasElement,
-    pub character_animation: CharacterAnimation,
-    pub character_animation_started_ms: f64,
+    pub character_animation: CharacterAnimationState,
     pub context: CanvasRenderingContext2d,
     pub character_sprites: CharacterSpriteSet,
     pub facing_left: bool,
@@ -80,6 +80,13 @@ pub struct Game {
     movement_sync: movement_actions::MovementSyncState,
     recovery_state: recovery_actions::RecoveryState,
     active_skill_effects: Vec<ActiveSkillEffect>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CharacterAnimationState {
+    pub animation: CharacterAnimation,
+    started_ms: f64,
+    paused_at_ms: Option<f64>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -188,8 +195,7 @@ fn build_game(
 
     let game = Rc::new(RefCell::new(Game {
         canvas: canvas.clone(),
-        character_animation: CharacterAnimation::Idle,
-        character_animation_started_ms: 0.0,
+        character_animation: new_character_animation_state(CharacterAnimation::Idle, true, 0.0),
         context,
         character_sprites,
         facing_left: false,
@@ -630,7 +636,7 @@ fn install_item_action_update(
     if let (Some(sprites), Some(images)) = (update.sprites, update.images) {
         game.character_sprites = sprites;
         game.images = images;
-        game.character_animation_started_ms = game.frame_time_ms;
+        restart_character_animation(&mut game.character_animation, game.frame_time_ms);
     }
     if let Some(drop) = update.dropped_item
         && update.player.map_id == game.map.id
@@ -761,7 +767,7 @@ fn update(
         .stats
         .as_ref()
         .is_some_and(|stats| stats.hp < stats.max_hp || stats.mp < stats.max_mp);
-    let can_poll_recovery = game.character_animation == CharacterAnimation::Idle
+    let can_poll_recovery = game.character_animation.animation == CharacterAnimation::Idle
         && !pick_up
         && skill_id.is_none()
         && transition.is_none()
@@ -851,10 +857,11 @@ fn update_player(
         elapsed_seconds,
     );
     let animation = character_animation(&game.map, output.state, input);
+    let animation_plays = character_animation_plays(animation, position, output.position);
     update_character_animation(
         &mut game.character_animation,
-        &mut game.character_animation_started_ms,
         animation,
+        animation_plays,
         game.frame_time_ms,
     );
     game.player.position = Some(output.position);
@@ -882,17 +889,62 @@ fn character_animation(
     }
 }
 
+fn new_character_animation_state(
+    animation: CharacterAnimation,
+    plays: bool,
+    timestamp_ms: f64,
+) -> CharacterAnimationState {
+    CharacterAnimationState {
+        animation,
+        started_ms: timestamp_ms,
+        paused_at_ms: (!plays).then_some(timestamp_ms),
+    }
+}
+
+fn character_animation_plays(
+    animation: CharacterAnimation,
+    previous_position: Vec2,
+    next_position: Vec2,
+) -> bool {
+    !matches!(
+        animation,
+        CharacterAnimation::Ladder | CharacterAnimation::Rope
+    ) || previous_position.y != next_position.y
+}
+
 fn update_character_animation(
-    current: &mut CharacterAnimation,
-    started_ms: &mut f64,
+    state: &mut CharacterAnimationState,
     next: CharacterAnimation,
+    plays: bool,
     timestamp_ms: f64,
 ) {
-    if *current == next {
+    if state.animation != next {
+        *state = new_character_animation_state(next, plays, timestamp_ms);
         return;
     }
-    *current = next;
-    *started_ms = timestamp_ms;
+    match (state.paused_at_ms, plays) {
+        (Some(paused_at_ms), true) => {
+            state.started_ms += (timestamp_ms - paused_at_ms).max(0.0);
+            state.paused_at_ms = None;
+        }
+        (None, false) => state.paused_at_ms = Some(timestamp_ms),
+        _ => {}
+    }
+}
+
+fn restart_character_animation(
+    state: &mut CharacterAnimationState,
+    timestamp_ms: f64,
+) {
+    state.started_ms = timestamp_ms;
+    state.paused_at_ms = state.paused_at_ms.map(|_| timestamp_ms);
+}
+
+pub(crate) fn character_animation_elapsed_ms(
+    state: CharacterAnimationState,
+    timestamp_ms: f64,
+) -> f64 {
+    (state.paused_at_ms.unwrap_or(timestamp_ms) - state.started_ms).max(0.0)
 }
 
 fn save_if_due(
@@ -926,8 +978,12 @@ fn save_if_due(
 mod tests {
     use oozems_proto::v1::Ladder;
     use oozems_proto::v1::Map;
+    use oozems_proto::v1::Vec2;
 
     use super::character_animation;
+    use super::character_animation_elapsed_ms;
+    use super::character_animation_plays;
+    use super::new_character_animation_state;
     use super::update_character_animation;
     use crate::character_render::CharacterAnimation;
     use crate::movement::MotionState;
@@ -995,24 +1051,52 @@ mod tests {
 
     #[test]
     fn changing_action_restarts_animation_time() {
-        let mut animation = CharacterAnimation::Idle;
-        let mut started_ms = 20.0;
+        let mut animation = new_character_animation_state(CharacterAnimation::Idle, true, 20.0);
 
-        update_character_animation(
-            &mut animation,
-            &mut started_ms,
+        update_character_animation(&mut animation, CharacterAnimation::Idle, true, 100.0);
+        assert_eq!(character_animation_elapsed_ms(animation, 100.0), 80.0);
+
+        update_character_animation(&mut animation, CharacterAnimation::Walk, true, 125.0);
+        assert_eq!(animation.animation, CharacterAnimation::Walk);
+        assert_eq!(character_animation_elapsed_ms(animation, 125.0), 0.0);
+    }
+
+    #[test]
+    fn stationary_climbing_pauses_and_resumes_animation_time() {
+        let mut animation = new_character_animation_state(CharacterAnimation::Ladder, true, 100.0);
+
+        update_character_animation(&mut animation, CharacterAnimation::Ladder, false, 300.0);
+        assert_eq!(character_animation_elapsed_ms(animation, 900.0), 200.0);
+
+        update_character_animation(&mut animation, CharacterAnimation::Ladder, true, 1_000.0);
+        assert_eq!(character_animation_elapsed_ms(animation, 1_000.0), 200.0);
+        assert_eq!(character_animation_elapsed_ms(animation, 1_100.0), 300.0);
+    }
+
+    #[test]
+    fn climbing_animation_runs_only_during_vertical_displacement() {
+        let position = Vec2 { x: 200.0, y: 300.0 };
+        let climbed = Vec2 { x: 200.0, y: 290.0 };
+
+        assert!(!character_animation_plays(
+            CharacterAnimation::Ladder,
+            position,
+            position,
+        ));
+        assert!(!character_animation_plays(
+            CharacterAnimation::Rope,
+            position,
+            position,
+        ));
+        assert!(character_animation_plays(
+            CharacterAnimation::Ladder,
+            position,
+            climbed,
+        ));
+        assert!(character_animation_plays(
             CharacterAnimation::Idle,
-            100.0,
-        );
-        assert_eq!(started_ms, 20.0);
-
-        update_character_animation(
-            &mut animation,
-            &mut started_ms,
-            CharacterAnimation::Walk,
-            125.0,
-        );
-        assert_eq!(animation, CharacterAnimation::Walk);
-        assert_eq!(started_ms, 125.0);
+            position,
+            position,
+        ));
     }
 }
