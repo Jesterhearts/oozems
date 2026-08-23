@@ -6,7 +6,7 @@ use. It does not include MapleStory code or assets.
 ## Not Ready For General Use
 
 The current version of the server is not yet ready for general use as it does
-not support a number of features like mob ai, damage, etc.
+not support a number of features like mob combat, damage, quests, etc.
 
 When it is ready, a release tag will be posted for a version 0.1. That will
 indicate general usage availability, although polish and bug fixes will
@@ -46,7 +46,7 @@ browser
   -> POST /api/v1/gui/get         current GUI layout and asset metadata
   -> POST /api/v1/maps/get        current map protobuf
   -> POST /api/v1/movement/rules server-configured movement constants and caps
-  -> POST /api/v1/movement/submit ordered movement snapshot and correction
+  -> POST /api/v1/movement/submit movement correction and current mob snapshot
   -> POST /api/v1/movement/portal server-authorized portal transition
   -> POST /api/v1/items/...       equip, unequip, drop, or pick up an item
   -> POST /api/v1/skills/...      allocate a skill point or use a skill
@@ -96,7 +96,11 @@ spawn points, snaps each initial position to its supporting foothold, and
 creates the live instances. It loads each distinct mob definition once for the
 requested map, including combat stats and all available animation metadata.
 The browser requests only the animation frames that it renders. Mob state is
-owned by the server and resets when the server restarts.
+owned by the server and resets when the server restarts. Mobs randomly idle or
+move within the roaming range recorded by the map. They turn at unsafe edges.
+A mob with a nonempty WZ `jump` animation can jump toward a nearby higher
+foothold that its jump arc can reach. The existing movement heartbeat returns
+authoritative mob snapshots, which the client interpolates between updates.
 
 Place `Character.wz` beside the map archives to enable character creation. The
 server indexes the available skin, face, and hair styles, then composes idle,

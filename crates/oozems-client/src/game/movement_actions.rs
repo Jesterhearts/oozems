@@ -164,6 +164,7 @@ fn install_map(
     game.player.map_id = map.id;
     game.player.position = Some(position);
     game.map = map;
+    game.mob_render = crate::mob_render::MobRenderState::default();
     game.images = images;
     game.motion = motion;
     game.world_layers = world_layers;
@@ -252,7 +253,7 @@ pub(super) fn portal_authoritative(
 
 pub(super) fn install_response(
     game: &mut Game,
-    response: MovementUpdateResponse,
+    mut response: MovementUpdateResponse,
 ) -> Result<Option<String>, String> {
     let authoritative = response
         .authoritative
@@ -261,6 +262,15 @@ pub(super) fn install_response(
         return Ok(None);
     }
     game.movement_sync.last_response_sequence = authoritative.sequence;
+    if authoritative.map_id == game.map.id {
+        crate::mob_render::install_snapshot(
+            &mut game.mob_render,
+            &mut game.map.mobs,
+            std::mem::take(&mut response.mobs),
+            game.frame_time_ms,
+            game.movement_rules.snapshot_interval_ms,
+        );
+    }
     if response.accepted {
         return Ok(None);
     }

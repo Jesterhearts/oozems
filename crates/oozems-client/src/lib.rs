@@ -7,6 +7,7 @@ mod character_render;
 mod game;
 mod game_gui;
 mod keymap;
+mod mob_render;
 mod movement;
 mod render;
 mod skill_effects;

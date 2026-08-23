@@ -1,6 +1,7 @@
 use oozems_proto::v1::MobAnimation;
 use oozems_proto::v1::MobDefinition;
 use oozems_proto::v1::MobFrame;
+use oozems_proto::v1::MobMovementMode;
 
 use crate::game::Game;
 
@@ -14,13 +15,15 @@ pub(super) fn draw(
         if mob.layer != layer {
             continue;
         }
-        let Some(position) = mob.position.as_ref() else {
+        let Some(position) = crate::mob_render::position(&game.mob_render, mob, game.frame_time_ms)
+        else {
             continue;
         };
         let Some(definition) = definition(game, mob.definition_id) else {
             continue;
         };
-        let Some(animation) = idle_animation(definition) else {
+        let mode = MobMovementMode::try_from(mob.movement_mode).unwrap_or(MobMovementMode::Idle);
+        let Some(animation) = movement_animation(definition, mode) else {
             continue;
         };
         let Some(frame) = animation_frame(animation, game.frame_time_ms) else {
@@ -51,8 +54,16 @@ fn definition(
         .find(|definition| definition.id == definition_id)
 }
 
-fn idle_animation(definition: &MobDefinition) -> Option<&MobAnimation> {
-    ["stand", "move", "fly"]
+fn movement_animation(
+    definition: &MobDefinition,
+    mode: MobMovementMode,
+) -> Option<&MobAnimation> {
+    let names = match mode {
+        MobMovementMode::Walking => ["move", "fly", "stand"],
+        MobMovementMode::Jumping => ["jump", "move", "fly"],
+        MobMovementMode::Unspecified | MobMovementMode::Idle => ["stand", "move", "fly"],
+    };
+    names
         .into_iter()
         .find_map(|name| {
             definition
@@ -96,10 +107,11 @@ mod tests {
     use oozems_proto::v1::MobAnimation;
     use oozems_proto::v1::MobDefinition;
     use oozems_proto::v1::MobFrame;
+    use oozems_proto::v1::MobMovementMode;
 
     use super::animation_frame;
     use super::frame_x;
-    use super::idle_animation;
+    use super::movement_animation;
 
     #[test]
     fn stand_animation_is_preferred_for_idle_mobs() {
@@ -109,8 +121,35 @@ mod tests {
         };
 
         assert_eq!(
-            idle_animation(&definition).expect("animation").name,
+            movement_animation(&definition, MobMovementMode::Idle)
+                .expect("animation")
+                .name,
             "stand"
+        );
+    }
+
+    #[test]
+    fn movement_mode_selects_walk_and_jump_animations() {
+        let definition = MobDefinition {
+            animations: vec![
+                animation("stand", 100),
+                animation("move", 100),
+                animation("jump", 100),
+            ],
+            ..MobDefinition::default()
+        };
+
+        assert_eq!(
+            movement_animation(&definition, MobMovementMode::Walking)
+                .expect("walk animation")
+                .name,
+            "move"
+        );
+        assert_eq!(
+            movement_animation(&definition, MobMovementMode::Jumping)
+                .expect("jump animation")
+                .name,
+            "jump"
         );
     }
 

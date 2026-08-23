@@ -55,7 +55,7 @@ pub async fn submit_movement(
     let now_ms = unix_time_ms()?;
     let decision = submit_with_lazy_map(&state, &current, submitted, now_ms).await?;
     apply_movement_side_effects(&state, &player_id, &current, &decision, now_ms).await?;
-    Ok(Protobuf(movement_response(decision)))
+    Ok(Protobuf(movement_response(&state, decision).await?))
 }
 
 async fn submit_with_lazy_map(
@@ -137,7 +137,7 @@ pub async fn enter_portal(
         now_ms,
     )?;
     apply_movement_side_effects(&state, &player_id, &current, &decision, now_ms).await?;
-    Ok(Protobuf(movement_response(decision)))
+    Ok(Protobuf(movement_response(&state, decision).await?))
 }
 
 fn movement_request_error(error: crate::movement::MovementError) -> ApiError {
@@ -170,12 +170,26 @@ async fn apply_movement_side_effects(
     Ok(())
 }
 
-fn movement_response(decision: crate::movement::MovementDecision) -> MovementUpdateResponse {
-    MovementUpdateResponse {
+async fn movement_response(
+    state: &AppState,
+    decision: crate::movement::MovementDecision,
+) -> Result<MovementUpdateResponse, ApiError> {
+    let map_id = decision.authoritative.map_id;
+    let mobs = match crate::mobs::current_mobs(&state.mobs, map_id)? {
+        Some(mobs) => mobs,
+        None => {
+            let map = load_map(state, map_id).await?.ok_or_else(|| {
+                ApiError::not_found("map_not_found", format!("map {map_id} does not exist"))
+            })?;
+            crate::mobs::map_mobs(&state.mobs, &map)?
+        }
+    };
+    Ok(MovementUpdateResponse {
         authoritative: Some(decision.authoritative),
         accepted: decision.accepted,
         rejection_reason: decision.rejection_reason,
-    }
+        mobs,
+    })
 }
 
 fn movement_rules_response(config: crate::gameplay::MovementConfig) -> MovementRules {

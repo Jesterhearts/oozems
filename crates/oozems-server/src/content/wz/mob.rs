@@ -310,6 +310,7 @@ fn build_definition(
 ) -> Result<LoadedMobDefinition, WzContentError> {
     let mut assets = Vec::new();
     let animations = read_animations(content, node, &mut assets)?;
+    let can_jump = has_jump_animation(&animations);
     let info = child(node, "info")?;
     let definition = match info {
         Some(info) => MobDefinition {
@@ -329,15 +330,23 @@ fn build_definition(
             boss: flag_value(&info, "boss")?,
             undead: flag_value(&info, "undead")?,
             animations,
+            can_jump,
         },
         None => MobDefinition {
             id: mob_id,
             max_hp: 1,
             animations,
+            can_jump,
             ..MobDefinition::default()
         },
     };
     Ok(LoadedMobDefinition { definition, assets })
+}
+
+fn has_jump_animation(animations: &[MobAnimation]) -> bool {
+    animations
+        .iter()
+        .any(|animation| animation.name == "jump" && !animation.frames.is_empty())
 }
 
 fn read_animations(
@@ -456,11 +465,14 @@ fn bounded_i32(value: Option<i64>) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    use oozems_proto::v1::MobAnimation;
+    use oozems_proto::v1::MobFrame;
     use oozems_proto::v1::Platform;
 
     use super::Bounds;
     use super::RawMobSpawn;
     use super::build_spawn_points;
+    use super::has_jump_animation;
 
     #[test]
     fn spawn_points_snap_to_their_attached_foothold() {
@@ -513,5 +525,20 @@ mod tests {
         assert_eq!(points[0].layer, 5);
         assert_eq!(points[0].roam_left, 20.0);
         assert_eq!(points[0].roam_right, 180.0);
+    }
+
+    #[test]
+    fn a_nonempty_jump_animation_marks_a_mob_as_jump_capable() {
+        let jump = MobAnimation {
+            name: "jump".to_owned(),
+            frames: vec![MobFrame::default()],
+        };
+        let empty_jump = MobAnimation {
+            name: "jump".to_owned(),
+            frames: Vec::new(),
+        };
+
+        assert!(has_jump_animation(&[jump]));
+        assert!(!has_jump_animation(&[empty_jump]));
     }
 }

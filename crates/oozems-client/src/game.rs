@@ -33,6 +33,7 @@ use crate::game_gui::PointerButton;
 use crate::js_error;
 use crate::keymap;
 use crate::keymap::KeyboardState;
+use crate::mob_render::MobRenderState;
 use crate::movement;
 use crate::movement::MapTransition;
 use crate::movement::MotionState;
@@ -60,6 +61,7 @@ pub struct Game {
     pub key_bindings: Rc<RefCell<Vec<KeyBinding>>>,
     pub key_drag: Option<KeyDrag>,
     pub map: Map,
+    pub mob_render: MobRenderState,
     pub movement_rules: MovementRules,
     pub motion: MotionState,
     pub player: PlayerState,
@@ -205,6 +207,7 @@ fn build_game(
         key_bindings,
         key_drag: None,
         map,
+        mob_render: MobRenderState::default(),
         movement_rules,
         motion,
         player,
