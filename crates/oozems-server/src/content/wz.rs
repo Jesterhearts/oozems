@@ -364,7 +364,11 @@ fn build_map(
         })
     });
     validate_bounds(map_id, bounds)?;
-    let movement_bounds = movement_bounds::build(&raw_platforms, bounds);
+    let portal_xs = raw_portals
+        .iter()
+        .map(|portal| portal.x)
+        .collect::<Vec<_>>();
+    let movement_bounds = movement_bounds::build(&raw_platforms, &portal_xs, bounds);
 
     let platforms = build_platforms(raw_platforms, bounds);
     let mut assets = Vec::new();

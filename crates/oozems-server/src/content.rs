@@ -218,6 +218,21 @@ mod tests {
             .expect("Mushroom Town should exist");
         assert_eq!(starter_map.name, "Mushroom Town");
         assert!(starter_map.portals.iter().any(|portal| portal.kind == 0));
+        let snail_garden = catalog
+            .get_map(20_000)
+            .expect("adjacent map lookup should succeed")
+            .expect("Snail Garden should exist");
+        let entrance = snail_garden
+            .portals
+            .iter()
+            .find(|portal| portal.name == "in00")
+            .expect("Mushroom Town entrance portal");
+        let movement_bounds = snail_garden
+            .movement_bounds
+            .as_ref()
+            .expect("Snail Garden movement bounds");
+        assert!(movement_bounds.left <= entrance.x);
+        assert!(entrance.x <= movement_bounds.right);
         let map = catalog
             .get_map(100_000_000)
             .expect("WZ map lookup should succeed")
