@@ -2,6 +2,7 @@
 
 mod api;
 mod app;
+mod attacks;
 mod config;
 mod content;
 mod database;
@@ -55,6 +56,7 @@ async fn main() -> anyhow::Result<()> {
         movement_jump_cap = gameplay.movement.jump_cap,
         combat_disengage_range = gameplay.combat.disengage_range,
         combat_attack_range = gameplay.combat.player_attack_range,
+        combat_player_attack_interval = %humantime::format_duration(gameplay.combat.player_attack_interval),
         combat_respawn = %humantime::format_duration(gameplay.combat.default_respawn),
         "gameplay configuration ready"
     );

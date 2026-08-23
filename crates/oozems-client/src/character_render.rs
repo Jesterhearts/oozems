@@ -23,6 +23,7 @@ pub enum CharacterAnimation {
     Jump,
     Ladder,
     Rope,
+    Attack,
 }
 
 pub fn draw_character(
@@ -95,6 +96,17 @@ fn all_frames(sprites: &CharacterSpriteSet) -> impl Iterator<Item = &CharacterFr
         .chain(&sprites.jump_frames)
         .chain(&sprites.ladder_frames)
         .chain(&sprites.rope_frames)
+        .chain(&sprites.attack_frames)
+}
+
+pub fn animation_duration_ms(
+    sprites: &CharacterSpriteSet,
+    animation: CharacterAnimation,
+) -> u64 {
+    animation_frames(sprites, animation)
+        .iter()
+        .map(|frame| u64::from(frame.delay_ms.max(1)))
+        .sum()
 }
 
 fn animation_frames(
@@ -107,6 +119,7 @@ fn animation_frames(
         CharacterAnimation::Jump => &sprites.jump_frames,
         CharacterAnimation::Ladder => &sprites.ladder_frames,
         CharacterAnimation::Rope => &sprites.rope_frames,
+        CharacterAnimation::Attack => &sprites.attack_frames,
     };
     if selected.is_empty() {
         &sprites.idle_frames
@@ -152,6 +165,7 @@ mod tests {
     use oozems_proto::v1::CharacterSpriteSet;
 
     use super::CharacterAnimation;
+    use super::animation_duration_ms;
     use super::animation_frames;
     use super::frame_at_time;
     use super::horizontal_scale;
@@ -185,6 +199,10 @@ mod tests {
             animation_frames(&sprites, CharacterAnimation::Rope),
             sprites.idle_frames
         );
+        assert_eq!(
+            animation_frames(&sprites, CharacterAnimation::Attack),
+            sprites.idle_frames
+        );
     }
 
     #[test]
@@ -204,5 +222,27 @@ mod tests {
         assert_eq!(frame_at_time(&frames, 100.0), Some(&frames[1]));
         assert_eq!(frame_at_time(&frames, 299.0), Some(&frames[1]));
         assert_eq!(frame_at_time(&frames, 300.0), Some(&frames[0]));
+    }
+
+    #[test]
+    fn attack_duration_comes_from_its_wz_frames() {
+        let sprites = CharacterSpriteSet {
+            attack_frames: vec![
+                CharacterFrame {
+                    delay_ms: 100,
+                    ..CharacterFrame::default()
+                },
+                CharacterFrame {
+                    delay_ms: 200,
+                    ..CharacterFrame::default()
+                },
+            ],
+            ..CharacterSpriteSet::default()
+        };
+
+        assert_eq!(
+            animation_duration_ms(&sprites, CharacterAnimation::Attack),
+            300
+        );
     }
 }

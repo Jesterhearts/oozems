@@ -6,7 +6,8 @@ use. It does not include MapleStory code or assets.
 ## Not Ready For General Use
 
 The current version of the server is not yet ready for general use. Combat is
-still limited to player skills, mob contact attacks, and basic mob projectiles.
+still limited to basic player attacks, player skills, mob contact attacks, and
+basic mob projectiles.
 Features such as player death handling, loot, and quests are not implemented.
 
 When it is ready, a release tag will be posted for a version 0.1. That will
@@ -49,6 +50,7 @@ browser
   -> POST /api/v1/movement/submit movement correction, combat, and world snapshot
   -> POST /api/v1/movement/portal server-authorized portal transition
   -> POST /api/v1/items/...       equip, unequip, drop, or pick up an item
+  -> POST /api/v1/combat/...      use a server-authoritative basic attack
   -> POST /api/v1/skills/...      allocate a skill point or use a skill
   -> POST /api/v1/players/recover apply one rate-limited natural recovery tick
   -> GET /wz-assets/...           requested WZ PNG and skill audio assets
@@ -158,8 +160,9 @@ open the original `UIWindow.img/KeyConfig` keyboard settings window. Drag an
 action icon from the lower palette, or from an assigned key, onto another key.
 Each action has one assignment, so moving an action removes its previous
 assignment and replaces any action already on the target key. The supported
-palette contains Jump, Pick Up, Character, Equipment, Inventory, Key Settings,
-and Skills. Changes are stored with the player in SurrealKV.
+palette contains Basic Attack, Jump, Pick Up, Character, Equipment, Inventory,
+Key Settings, and Skills. Basic Attack is assigned to left Control for new
+characters. Changes are stored with the player in SurrealKV.
 
 Place `Skill.wz` and its matching `String.wz` beside the other archives to use
 the original skill books. New characters receive the configured initial skill
@@ -168,6 +171,12 @@ spend one point. Click a learned skill icon to use it directly. To bind a
 learned skill, leave the Skills window open, open Key Settings, and drag the
 skill icon onto a key. A skill can have one key assignment, like each built-in
 action.
+
+A basic attack selects the nearest living mob in front of the character and
+uses the configured bare-hands damage profile. Its result follows the same
+server-owned mob HP, defense, aggro, and death pipeline as a damaging skill.
+The character plays the composed `swingO1` WZ animation for its configured
+frame duration when the attack begins.
 
 Skill use is server-owned. The server confirms the learned level, reads that
 level's WZ properties, checks and spends HP and MP, enforces WZ cooldowns,
@@ -229,6 +238,7 @@ initial_points = 3
 disengage_range = 520.0
 player_attack_range = 220.0
 attack_vertical_reach = 90.0
+player_attack_interval = "600ms"
 touch_horizontal_reach = 28.0
 touch_vertical_reach = 48.0
 projectile_range = 420.0
@@ -270,8 +280,9 @@ replaced when this setting changes.
 Combat distances are measured in map pixels. Mobs acquire an aggro target when
 that player damages them. `disengage_range` controls how far a mob can remain
 interested in that target. `player_attack_range` and `attack_vertical_reach` are
-the server-authoritative skill target envelope. The two touch reach values form
-the mob contact box.
+the server-authoritative basic attack and skill target envelope.
+`player_attack_interval` limits how often each player can use Basic Attack. The
+two touch reach values form the mob contact box.
 
 `projectile_range` controls when a magic-attacking mob can launch a projectile.
 `projectile_speed` is measured in map pixels per second, and
@@ -403,17 +414,19 @@ constants are useful for properties such as `primary_modifier`,
 `swing_modifier`, and `stab_modifier`; they use the same evaluation path as
 expressions.
 
-The current skill damage pipeline reads `minimum` and `maximum` from a selected
-skill profile. It applies the skill level's WZ `damage` percentage afterward
-and truncates the final values. When the attack reaches a mob, non-fixed damage
-then passes through `defenses.physical` using the mob's WZ physical defense and
-the player and mob levels. WZ fixed damage bypasses defense. The current
-equipment model does not include
-weapons, so `WeaponAttack` is read from the `attack` property of the profile
-selected by `weapons.bare_hands`. This provides one clear input point for real
-weapon stats when weapon equipment is added later. Other profile categories
-are parsed, validated, and routed now so their combat pipelines can consume the
-same configuration model later.
+Basic attacks read `attack`, `minimum`, and `maximum` from the profile selected
+by `weapons.bare_hands`. Non-Pirate jobs use a standard `JobMultiplier` of 4.0;
+Pirate jobs retain their existing job-specific multipliers. The skill damage
+pipeline reads `minimum` and `maximum` from a selected skill profile, applies
+the skill level's WZ `damage` percentage, and truncates the final values. When
+either attack reaches a mob, non-fixed damage passes through
+`defenses.physical` using the mob's WZ physical defense and the player and mob
+levels. WZ fixed damage bypasses defense. The current equipment model does not
+include weapons, so `WeaponAttack` is read from the `attack` property of the
+profile selected by `weapons.bare_hands`. This provides one clear input point
+for real weapon stats when weapon equipment is added later. Other profile
+categories are parsed, validated, and routed now so their combat pipelines can
+consume the same configuration model later.
 
 Natural recovery uses the same profile pipeline:
 
@@ -471,13 +484,14 @@ variable that is not supplied produces an explicit formula evaluation error.
 | Accuracy and recovery   | `AccuracyRatio`, `HealLevel`, `BattleshipLevel`                                                                                                     |
 | Economy and parties     | `Mesos`, `DamageDealt`, `TotalPartyLevel`, `PartyExperiencePortion`, `PartyBonus`                                                                   |
 
-The current skill and recovery profile pipelines supply `CharacterLevel`,
-`PlayerLevel`, `Strength`, `Dexterity`, `Intelligence`, `Luck`, `SkillDamage`,
-`SkillLevel`, and `WeaponAttack`. It also supplies `JobMultiplier` for Pirate
-jobs. The other accepted variables belong to formula pipelines that will be
-connected as their combat inputs are implemented. Selecting a profile that
-needs an unavailable variable returns an explicit skill-use error instead of
-substituting a value.
+The current basic attack, skill, and recovery profile pipelines supply
+`CharacterLevel`, `PlayerLevel`, `Strength`, `Dexterity`, `Intelligence`,
+`Luck`, and `WeaponAttack` as needed. Skills also supply `SkillDamage` and
+`SkillLevel`. Basic attacks supply `JobMultiplier` for every job, while skills
+supply it for Pirate jobs. The other accepted variables belong to formula
+pipelines that will be connected as their combat inputs are implemented.
+Selecting a profile that needs an unavailable variable returns an explicit
+request error instead of substituting a value.
 
 The server parses every configured formula and rejects unknown identifiers,
 unknown functions, invalid syntax, non-ASCII text, invalid numeric IDs, invalid

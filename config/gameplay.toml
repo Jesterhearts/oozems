@@ -15,6 +15,7 @@ touch_vertical_reach   = 48.0
 projectile_range       = 420.0
 projectile_speed       = 240.0
 projectile_hit_reach   = 18.0
+player_attack_interval = "600ms"
 mob_attack_interval    = "1500ms"
 player_invulnerability = "1s"
 default_respawn        = "7s"

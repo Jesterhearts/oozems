@@ -4,6 +4,8 @@ use oozems_proto::PROTOBUF_CONTENT_TYPE;
 use oozems_proto::v1::ActiveBuffState;
 use oozems_proto::v1::AllocateSkillPointRequest;
 use oozems_proto::v1::AllocateSkillPointResponse;
+use oozems_proto::v1::BasicAttackRequest;
+use oozems_proto::v1::BasicAttackResponse;
 use oozems_proto::v1::BootstrapRequest;
 use oozems_proto::v1::BootstrapResponse;
 use oozems_proto::v1::CharacterAppearance;
@@ -268,6 +270,20 @@ pub async fn use_skill(
             player_id: player_id.to_owned(),
             skill_id,
             target_mob_id: target_mob_id.to_owned(),
+            facing_left,
+        },
+    )
+    .await
+}
+
+pub async fn use_basic_attack(
+    player_id: &str,
+    facing_left: bool,
+) -> Result<BasicAttackResponse, ClientError> {
+    post_protobuf(
+        "/api/v1/combat/basic-attack",
+        BasicAttackRequest {
+            player_id: player_id.to_owned(),
             facing_left,
         },
     )

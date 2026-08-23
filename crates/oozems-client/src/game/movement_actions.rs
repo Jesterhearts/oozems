@@ -376,8 +376,12 @@ pub(super) fn install_response(
         animation,
         CharacterAnimation::Ladder | CharacterAnimation::Rope
     );
-    game.character_animation =
-        super::new_character_animation_state(animation, plays, game.frame_time_ms);
+    super::update_character_animation(
+        &mut game.character_animation,
+        animation,
+        plays,
+        game.frame_time_ms,
+    );
     Ok(Some(response.rejection_reason))
 }
 

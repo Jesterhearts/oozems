@@ -10,6 +10,7 @@ use tower_http::services::ServeDir;
 use tower_http::services::ServeFile;
 use tower_http::trace::TraceLayer;
 
+use crate::attacks::BasicAttackCooldowns;
 use crate::content::ContentCatalog;
 use crate::database::Database;
 use crate::experience::ExperienceCurves;
@@ -34,6 +35,7 @@ pub struct AppState {
     pub mobs: Arc<MobStore>,
     pub player_locks: Arc<PlayerLocks>,
     pub recovery_timers: Arc<RecoveryTimers>,
+    pub basic_attack_cooldowns: Arc<BasicAttackCooldowns>,
     pub skill_cooldowns: Arc<SkillCooldowns>,
     pub skill_buffs: Arc<SkillBuffs>,
     pub formulas: Arc<FormulaCatalog>,
@@ -58,6 +60,7 @@ pub fn router(
         mobs: Arc::new(MobStore::new(gameplay.combat, formulas.clone())),
         player_locks: Arc::new(PlayerLocks::default()),
         recovery_timers: Arc::new(RecoveryTimers::default()),
+        basic_attack_cooldowns: Arc::new(BasicAttackCooldowns::default()),
         skill_cooldowns: Arc::new(SkillCooldowns::default()),
         skill_buffs: Arc::new(SkillBuffs::default()),
         formulas,
@@ -82,6 +85,10 @@ pub fn router(
         .route("/skills/book", post(crate::api::get_skill_book))
         .route("/skills/allocate", post(crate::api::allocate_skill_point))
         .route("/skills/use", post(crate::api::use_skill))
+        .route(
+            "/combat/basic-attack",
+            post(crate::api::combat::use_basic_attack),
+        )
         .route("/players/recover", post(crate::api::recover_player))
         .route("/maps/get", post(crate::api::get_map))
         .route("/items/equip", post(crate::api::equip_item))

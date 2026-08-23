@@ -839,7 +839,7 @@ mod tests {
             stat_window.layout.as_ref().map(|layout| layout.height),
             Some(347.0)
         );
-        assert_eq!(gui.assets.len(), 45);
+        assert_eq!(gui.assets.len(), 46);
         assert_eq!(gui.key_actions.len(), crate::keymap::ACTIONS.len());
         assert_eq!(gui.key_slots.len(), crate::keymap::SLOTS.len());
         assert_eq!(

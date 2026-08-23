@@ -666,6 +666,7 @@ fn build_sprite_set(
     let jump_frames = build_animation(source, parts, "jump", &mut assets, &mut asset_ids)?;
     let ladder_frames = build_animation(source, parts, "ladder", &mut assets, &mut asset_ids)?;
     let rope_frames = build_animation(source, parts, "rope", &mut assets, &mut asset_ids)?;
+    let attack_frames = build_animation(source, parts, "swingO1", &mut assets, &mut asset_ids)?;
 
     Ok(CharacterSpriteSet {
         idle_frames,
@@ -674,6 +675,7 @@ fn build_sprite_set(
         jump_frames,
         ladder_frames,
         rope_frames,
+        attack_frames,
     })
 }
 
@@ -1219,6 +1221,7 @@ mod tests {
         assert!(!sprites.jump_frames.is_empty());
         assert!(!sprites.ladder_frames.is_empty());
         assert!(!sprites.rope_frames.is_empty());
+        assert!(!sprites.attack_frames.is_empty());
         assert!(
             sprites
                 .idle_frames
@@ -1227,6 +1230,7 @@ mod tests {
                 .chain(sprites.jump_frames.iter())
                 .chain(sprites.ladder_frames.iter())
                 .chain(sprites.rope_frames.iter())
+                .chain(sprites.attack_frames.iter())
                 .all(|frame| !frame.layers.is_empty())
         );
         assert!(!sprites.assets.is_empty());
@@ -1276,6 +1280,7 @@ mod tests {
             &sprites.jump_frames,
             &sprites.ladder_frames,
             &sprites.rope_frames,
+            &sprites.attack_frames,
         ] {
             let png = content
                 .get_asset(&frames[0].layers[0].asset_id)

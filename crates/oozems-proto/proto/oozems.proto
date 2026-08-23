@@ -44,6 +44,7 @@ enum KeyAction {
   KEY_ACTION_OPEN_INVENTORY = 5;
   KEY_ACTION_OPEN_KEY_CONFIG = 6;
   KEY_ACTION_OPEN_SKILLS = 7;
+  KEY_ACTION_BASIC_ATTACK = 8;
 }
 
 message InventoryState {
@@ -244,6 +245,19 @@ message UseSkillResponse {
   repeated CombatEvent combat_events = 6;
   uint64 simulation_sequence = 7;
   ActiveBuffState active_buffs = 8;
+}
+
+message BasicAttackRequest {
+  string player_id = 1;
+  bool facing_left = 2;
+}
+
+message BasicAttackResponse {
+  PlayerState player = 1;
+  repeated Mob mobs = 2;
+  repeated MobProjectile mob_projectiles = 3;
+  repeated CombatEvent combat_events = 4;
+  uint64 simulation_sequence = 5;
 }
 
 message ActiveBuffState {
@@ -487,6 +501,7 @@ message CharacterSpriteSet {
   repeated CharacterFrame jump_frames = 4;
   repeated CharacterFrame ladder_frames = 5;
   repeated CharacterFrame rope_frames = 6;
+  repeated CharacterFrame attack_frames = 7;
 }
 
 message CharacterFrame {

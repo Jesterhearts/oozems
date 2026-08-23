@@ -24,6 +24,7 @@ pub struct CombatConfig {
     pub projectile_range: f32,
     pub projectile_speed: f32,
     pub projectile_hit_reach: f32,
+    pub player_attack_interval: Duration,
     pub mob_attack_interval: Duration,
     pub player_invulnerability: Duration,
     pub default_respawn: Duration,
@@ -83,6 +84,7 @@ struct CombatRulesFile {
     projectile_range: f32,
     projectile_speed: f32,
     projectile_hit_reach: f32,
+    player_attack_interval: String,
     mob_attack_interval: String,
     player_invulnerability: String,
     default_respawn: String,
@@ -99,6 +101,7 @@ impl Default for CombatRulesFile {
             projectile_range: 420.0,
             projectile_speed: 240.0,
             projectile_hit_reach: 18.0,
+            player_attack_interval: "600ms".to_owned(),
             mob_attack_interval: "1500ms".to_owned(),
             player_invulnerability: "1s".to_owned(),
             default_respawn: "7s".to_owned(),
@@ -263,11 +266,14 @@ fn parse_combat_config(
             }
         })
     };
+    let player_attack_interval =
+        parse_duration("player_attack_interval", &file.player_attack_interval)?;
     let mob_attack_interval = parse_duration("mob_attack_interval", &file.mob_attack_interval)?;
     let player_invulnerability =
         parse_duration("player_invulnerability", &file.player_invulnerability)?;
     let default_respawn = parse_duration("default_respawn", &file.default_respawn)?;
     for (field, duration) in [
+        ("player_attack_interval", player_attack_interval),
         ("mob_attack_interval", mob_attack_interval),
         ("player_invulnerability", player_invulnerability),
         ("default_respawn", default_respawn),
@@ -288,6 +294,7 @@ fn parse_combat_config(
         projectile_range: file.projectile_range,
         projectile_speed: file.projectile_speed,
         projectile_hit_reach: file.projectile_hit_reach,
+        player_attack_interval,
         mob_attack_interval,
         player_invulnerability,
         default_respawn,
@@ -407,6 +414,10 @@ mod tests {
         assert_eq!(config.item_drop_despawn, Duration::from_secs(600));
         assert_eq!(config.initial_skill_points, 3);
         assert_eq!(config.combat.disengage_range, 520.0);
+        assert_eq!(
+            config.combat.player_attack_interval,
+            Duration::from_millis(600)
+        );
         assert_eq!(config.combat.default_respawn, Duration::from_secs(7));
         assert_eq!(config.movement.speed_cap, 200);
         assert_eq!(config.movement.jump_cap, 200);
@@ -427,6 +438,30 @@ mod tests {
         .expect("write configuration");
 
         assert!(GameplayConfig::load(&path).is_err());
+    }
+
+    #[test]
+    fn rejects_zero_player_attack_interval() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("gameplay.toml");
+        fs::write(
+            &path,
+            concat!(
+                "[items]\n",
+                "drop_despawn = \"10m\"\n",
+                "[skills]\n",
+                "initial_points = 3\n",
+                "[combat]\n",
+                "player_attack_interval = \"0s\"\n",
+            ),
+        )
+        .expect("write configuration");
+
+        let error = GameplayConfig::load(&path)
+            .expect_err("zero attack interval must fail")
+            .to_string();
+
+        assert!(error.contains("combat.player_attack_interval"));
     }
 
     #[test]

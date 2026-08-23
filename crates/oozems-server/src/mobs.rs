@@ -71,7 +71,7 @@ pub struct MobUpdate {
 }
 
 #[derive(Clone, Copy)]
-pub struct PlayerSkillAttack<'a> {
+pub struct PlayerAttack<'a> {
     pub target_mob_id: &'a str,
     pub facing_left: bool,
     pub minimum_damage: u32,
@@ -137,13 +137,13 @@ pub fn observe_player(
     observe_player_at(store, map, player, Instant::now())
 }
 
-pub fn use_player_skill(
+pub fn use_player_attack(
     store: &MobStore,
     map: &Map,
     player: &PlayerState,
-    attack: PlayerSkillAttack<'_>,
+    attack: PlayerAttack<'_>,
 ) -> Result<MobUpdate, MobStoreError> {
-    use_player_skill_at(store, map, player, attack, Instant::now())
+    use_player_attack_at(store, map, player, attack, Instant::now())
 }
 
 pub fn restore_player_events(
@@ -197,11 +197,11 @@ fn observe_player_at(
     snapshot(state, Some(&player.id))
 }
 
-fn use_player_skill_at(
+fn use_player_attack_at(
     store: &MobStore,
     map: &Map,
     player: &PlayerState,
-    attack: PlayerSkillAttack<'_>,
+    attack: PlayerAttack<'_>,
     now: Instant,
 ) -> Result<MobUpdate, MobStoreError> {
     let mut maps = store.maps.lock().map_err(|_| MobStoreError::Lock)?;
@@ -215,7 +215,7 @@ fn use_player_skill_at(
         apply_player_attack(
             state,
             &player.id,
-            PlayerSkillAttack {
+            PlayerAttack {
                 target_mob_id: attack.target_mob_id,
                 facing_left: attack.facing_left,
                 minimum_damage: attack.minimum_damage.max(1),
@@ -402,7 +402,7 @@ fn mark_player_seen(
 fn apply_player_attack(
     state: &mut MobMapState,
     player_id: &str,
-    attack: PlayerSkillAttack<'_>,
+    attack: PlayerAttack<'_>,
     rules: CombatConfig,
     formulas: &FormulaCatalog,
 ) -> Result<(), MobStoreError> {
@@ -775,28 +775,28 @@ mod tests {
     use oozems_proto::v1::Vec2;
 
     use super::MobStore;
-    use super::PlayerSkillAttack;
+    use super::PlayerAttack;
     use super::map_snapshot_at;
     use super::observe_player_at;
     use super::restore_player_events;
-    use super::use_player_skill_at;
+    use super::use_player_attack_at;
     use crate::gameplay::CombatConfig;
     use crate::skill_formula::FormulaCatalog;
 
     #[test]
-    fn skill_damage_is_applied_to_an_in_range_mob_and_sets_aggro() {
+    fn an_untargeted_player_attack_hits_an_in_range_mob_and_sets_aggro() {
         let store = store();
         let map = map();
         let player = player(90.0, 100.0);
         let now = Instant::now();
 
         map_snapshot_at(&store, &map, now).expect("initialize map");
-        let update = use_player_skill_at(
+        let update = use_player_attack_at(
             &store,
             &map,
             &player,
-            PlayerSkillAttack {
-                target_mob_id: "1:1:0",
+            PlayerAttack {
+                target_mob_id: "",
                 facing_left: false,
                 minimum_damage: 10,
                 maximum_damage: 10,
@@ -804,7 +804,7 @@ mod tests {
             },
             now + Duration::from_millis(1),
         )
-        .expect("use skill");
+        .expect("use attack");
 
         assert_eq!(update.mobs[0].current_hp, 90);
         assert!(update.combat_events.iter().any(|event| event.damage == 10));
@@ -816,11 +816,11 @@ mod tests {
         let map = map();
         let player = player(140.0, 100.0);
 
-        let update = use_player_skill_at(
+        let update = use_player_attack_at(
             &store,
             &map,
             &player,
-            PlayerSkillAttack {
+            PlayerAttack {
                 target_mob_id: "1:1:0",
                 facing_left: false,
                 minimum_damage: 10,
@@ -879,11 +879,11 @@ mod tests {
         let player = player(250.0, 100.0);
         let now = Instant::now();
 
-        use_player_skill_at(
+        use_player_attack_at(
             &store,
             &map,
             &player,
-            PlayerSkillAttack {
+            PlayerAttack {
                 target_mob_id: "1:1:0",
                 facing_left: true,
                 minimum_damage: 1,
@@ -925,11 +925,11 @@ mod tests {
         let player = player(300.0, 100.0);
         let now = Instant::now();
 
-        use_player_skill_at(
+        use_player_attack_at(
             &store,
             &map,
             &player,
-            PlayerSkillAttack {
+            PlayerAttack {
                 target_mob_id: "1:1:0",
                 facing_left: true,
                 minimum_damage: 1,
@@ -966,11 +966,11 @@ mod tests {
         let player = player(250.0, 100.0);
         let now = Instant::now();
 
-        use_player_skill_at(
+        use_player_attack_at(
             &store,
             &map,
             &player,
-            PlayerSkillAttack {
+            PlayerAttack {
                 target_mob_id: "1:1:0",
                 facing_left: true,
                 minimum_damage: 1,
@@ -984,11 +984,11 @@ mod tests {
             .expect("mob movement");
         assert!(moved.mobs[0].position.expect("moved position").x > 100.0);
 
-        let killed = use_player_skill_at(
+        let killed = use_player_attack_at(
             &store,
             &map,
             &player,
-            PlayerSkillAttack {
+            PlayerAttack {
                 target_mob_id: "1:1:0",
                 facing_left: true,
                 minimum_damage: 100,
@@ -1022,6 +1022,7 @@ mod tests {
                 projectile_range: 420.0,
                 projectile_speed: 240.0,
                 projectile_hit_reach: 18.0,
+                player_attack_interval: Duration::from_millis(600),
                 mob_attack_interval: Duration::from_millis(1_500),
                 player_invulnerability: Duration::from_secs(1),
                 default_respawn: Duration::from_secs(7),

@@ -80,6 +80,12 @@ pub const ACTIONS: &[KeyActionSpec] = &[
         icon_id: "3",
         palette_index: 6,
     },
+    KeyActionSpec {
+        action: KeyAction::BasicAttack,
+        label: "Basic Attack",
+        icon_id: "52",
+        palette_index: 7,
+    },
 ];
 
 pub const SLOTS: &[KeySlotSpec] = &[
@@ -192,6 +198,7 @@ pub fn default_bindings() -> Vec<KeyBinding> {
         ("KeyI", KeyAction::OpenInventory),
         ("KeyK", KeyAction::OpenKeyConfig),
         ("KeyS", KeyAction::OpenSkills),
+        ("ControlLeft", KeyAction::BasicAttack),
     ]
     .into_iter()
     .map(|(code, action)| KeyBinding {
@@ -262,6 +269,9 @@ mod tests {
 
         validate_bindings(&bindings).expect("valid default bindings");
         assert_eq!(bindings.len(), super::ACTIONS.len());
+        assert!(bindings.iter().any(|binding| {
+            binding.code == "ControlLeft" && binding.action == KeyAction::BasicAttack as i32
+        }));
     }
 
     #[test]
@@ -285,6 +295,16 @@ mod tests {
                 action: KeyAction::Jump
             })
         );
+    }
+
+    #[test]
+    fn keymaps_saved_before_basic_attack_remain_valid() {
+        let bindings = default_bindings()
+            .into_iter()
+            .filter(|binding| binding.action != KeyAction::BasicAttack as i32)
+            .collect::<Vec<_>>();
+
+        validate_bindings(&bindings).expect("pre-basic-attack keymap");
     }
 
     #[test]

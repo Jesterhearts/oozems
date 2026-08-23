@@ -171,6 +171,19 @@ mod tests {
     }
 
     #[test]
+    fn basic_attack_is_edge_triggered() {
+        let bindings = vec![binding("ControlLeft", KeyAction::BasicAttack)];
+        let mut state = KeyboardState::default();
+
+        assert!(set_key(&mut state, &bindings, "ControlLeft", true));
+        assert_eq!(
+            drain_frame_input(&mut state, &bindings).actions,
+            vec![KeyAction::BasicAttack]
+        );
+        assert!(drain_frame_input(&mut state, &bindings).actions.is_empty());
+    }
+
+    #[test]
     fn arrows_drive_movement_and_up_interaction() {
         let mut state = KeyboardState::default();
 

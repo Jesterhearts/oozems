@@ -43,6 +43,7 @@ use crate::database::CharacterName;
 use crate::database::PlayerId;
 use crate::database::STARTER_MAP_ID;
 
+pub(crate) mod combat;
 pub(crate) mod movement;
 
 pub async fn bootstrap(
@@ -454,11 +455,11 @@ pub async fn use_skill(
             format!("map {} does not exist", player.map_id),
         )
     })?;
-    let simulation = crate::mobs::use_player_skill(
+    let simulation = crate::mobs::use_player_attack(
         &state.mobs,
         &map,
         &player,
-        crate::mobs::PlayerSkillAttack {
+        crate::mobs::PlayerAttack {
             target_mob_id: &request.target_mob_id,
             facing_left: request.facing_left,
             minimum_damage: prepared.result.minimum_damage,
@@ -466,25 +467,7 @@ pub async fn use_skill(
             fixed_damage: prepared.result.fixed_damage,
         },
     )?;
-    let player_damage = simulation.player_damage();
-    if player_damage > 0 {
-        let stats = player.stats.get_or_insert_default();
-        stats.hp = stats
-            .hp
-            .saturating_sub(u32::try_from(player_damage).unwrap_or(u32::MAX));
-        player = match crate::database::save_player(&state.database, &player).await {
-            Ok(player) => player,
-            Err(error) => {
-                crate::mobs::restore_player_events(
-                    &state.mobs,
-                    player.map_id,
-                    &player.id,
-                    simulation.combat_events.clone(),
-                )?;
-                return Err(error.into());
-            }
-        };
-    }
+    player = save_simulation_player_damage(&state, player, &simulation).await?;
     record_recovery_activity(&state, player_id.as_str(), now_ms);
     let active_buffs = crate::skills::record_skill_buff(
         &state.skill_buffs,
@@ -712,6 +695,33 @@ fn skill_rule_error(error: crate::skills::SkillRuleError) -> ApiError {
     }
 }
 
+async fn save_simulation_player_damage(
+    state: &AppState,
+    mut player: PlayerState,
+    simulation: &crate::mobs::MobUpdate,
+) -> Result<PlayerState, ApiError> {
+    let player_damage = simulation.player_damage();
+    if player_damage == 0 {
+        return Ok(player);
+    }
+    let stats = player.stats.get_or_insert_default();
+    stats.hp = stats
+        .hp
+        .saturating_sub(u32::try_from(player_damage).unwrap_or(u32::MAX));
+    match crate::database::save_player(&state.database, &player).await {
+        Ok(player) => Ok(player),
+        Err(error) => {
+            crate::mobs::restore_player_events(
+                &state.mobs,
+                player.map_id,
+                &player.id,
+                simulation.combat_events.clone(),
+            )?;
+            Err(error.into())
+        }
+    }
+}
+
 fn unix_time_ms() -> Result<u64, ApiError> {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -811,6 +821,8 @@ pub enum ApiError {
     Worker(#[from] tokio::task::JoinError),
     #[error("game rules could not be applied")]
     GameRules(#[from] crate::experience::ExperienceRuleError),
+    #[error("attack rules could not be applied")]
+    AttackRules(#[from] crate::attacks::AttackRuleError),
     #[error("dropped-item operation failed")]
     Drops(#[from] crate::items::DropStoreError),
     #[error("mob spawning failed")]
@@ -900,6 +912,14 @@ impl IntoResponse for ApiError {
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "game_rules_error",
                     "the server could not apply its game rules".to_owned(),
+                )
+            }
+            Self::AttackRules(error) => {
+                tracing::error!(%error, "attack rules could not be applied");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "attack_rules_error",
+                    "the server could not apply its attack rules".to_owned(),
                 )
             }
             Self::Drops(error) => {

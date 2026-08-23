@@ -93,6 +93,7 @@ pub struct CharacterAnimationState {
     pub animation: CharacterAnimation,
     started_ms: f64,
     paused_at_ms: Option<f64>,
+    one_shot_until_ms: Option<f64>,
 }
 
 pub async fn run(
@@ -682,6 +683,9 @@ fn schedule_frame(game: Rc<RefCell<Game>>) -> Result<(), String> {
         if update.movement_snapshot {
             movement_actions::begin(game.clone());
         }
+        if update.basic_attack {
+            skill_actions::begin_basic_attack(game.clone());
+        }
         if let Some(skill_id) = update.skill_id {
             skill_actions::begin(game.clone(), GuiAction::UseSkill { skill_id });
         }
@@ -703,6 +707,7 @@ fn schedule_frame(game: Rc<RefCell<Game>>) -> Result<(), String> {
 
 struct FrameUpdate {
     transition: Option<MapTransition>,
+    basic_attack: bool,
     pick_up: bool,
     movement_snapshot: bool,
     recover: bool,
@@ -741,6 +746,7 @@ fn update(
             .actions
             .retain(|action| *action == KeyAction::OpenKeyConfig);
     }
+    let basic_attack_requested = input.actions.contains(&KeyAction::BasicAttack);
     let pick_up = apply_key_actions(&mut game.gui_state.borrow_mut(), &game.gui, &input.actions);
     buffs::apply(&mut game.active_buffs, &mut input.player, now_ms);
 
@@ -752,6 +758,8 @@ fn update(
     if transition.is_some() {
         game.transition_in_flight.set(true);
     }
+    let basic_attack =
+        basic_attack_requested && transition.is_none() && !game.transition_in_flight.get();
     let skill_id = input.skills.into_iter().next();
     let movement_observation =
         movement_actions::observation(game.map.id, game.player.position, game.motion);
@@ -769,6 +777,7 @@ fn update(
         .is_some_and(|stats| stats.hp < stats.max_hp || stats.mp < stats.max_mp);
     let can_poll_recovery = game.character_animation.animation == CharacterAnimation::Idle
         && !pick_up
+        && !basic_attack
         && skill_id.is_none()
         && transition.is_none()
         && !game.item_action_in_flight.get()
@@ -784,6 +793,7 @@ fn update(
     save_if_due(game, timestamp_ms);
     FrameUpdate {
         transition,
+        basic_attack,
         pick_up,
         movement_snapshot,
         recover,
@@ -800,6 +810,7 @@ fn apply_key_actions(
     for action in actions {
         let gui_action = match action {
             KeyAction::Jump => continue,
+            KeyAction::BasicAttack => continue,
             KeyAction::PickUp => {
                 pick_up = true;
                 continue;
@@ -889,6 +900,7 @@ fn new_character_animation_state(
         animation,
         started_ms: timestamp_ms,
         paused_at_ms: (!plays).then_some(timestamp_ms),
+        one_shot_until_ms: None,
     }
 }
 
@@ -909,6 +921,13 @@ fn update_character_animation(
     plays: bool,
     timestamp_ms: f64,
 ) {
+    if state
+        .one_shot_until_ms
+        .is_some_and(|deadline_ms| timestamp_ms < deadline_ms)
+    {
+        return;
+    }
+    state.one_shot_until_ms = None;
     if state.animation != next {
         *state = new_character_animation_state(next, plays, timestamp_ms);
         return;
@@ -923,10 +942,28 @@ fn update_character_animation(
     }
 }
 
+fn start_character_attack_animation(game: &mut Game) {
+    let duration_ms = crate::character_render::animation_duration_ms(
+        &game.character_sprites,
+        CharacterAnimation::Attack,
+    );
+    game.character_animation =
+        new_character_animation_state(CharacterAnimation::Attack, true, game.frame_time_ms);
+    game.character_animation.one_shot_until_ms =
+        Some(game.frame_time_ms + duration_ms.max(1) as f64);
+}
+
 fn restart_character_animation(
     state: &mut CharacterAnimationState,
     timestamp_ms: f64,
 ) {
+    if state
+        .one_shot_until_ms
+        .is_some_and(|deadline_ms| timestamp_ms < deadline_ms)
+    {
+        return;
+    }
+    state.one_shot_until_ms = None;
     state.started_ms = timestamp_ms;
     state.paused_at_ms = state.paused_at_ms.map(|_| timestamp_ms);
 }
@@ -975,6 +1012,7 @@ mod tests {
     use super::character_animation_elapsed_ms;
     use super::character_animation_plays;
     use super::new_character_animation_state;
+    use super::restart_character_animation;
     use super::update_character_animation;
     use crate::character_render::CharacterAnimation;
     use crate::movement::MotionState;
@@ -1050,6 +1088,31 @@ mod tests {
         update_character_animation(&mut animation, CharacterAnimation::Walk, true, 125.0);
         assert_eq!(animation.animation, CharacterAnimation::Walk);
         assert_eq!(character_animation_elapsed_ms(animation, 125.0), 0.0);
+    }
+
+    #[test]
+    fn one_shot_attack_finishes_before_movement_animation_resumes() {
+        let mut animation = new_character_animation_state(CharacterAnimation::Attack, true, 100.0);
+        animation.one_shot_until_ms = Some(400.0);
+
+        update_character_animation(&mut animation, CharacterAnimation::Walk, true, 399.0);
+        assert_eq!(animation.animation, CharacterAnimation::Attack);
+
+        update_character_animation(&mut animation, CharacterAnimation::Walk, true, 400.0);
+        assert_eq!(animation.animation, CharacterAnimation::Walk);
+        assert_eq!(character_animation_elapsed_ms(animation, 400.0), 0.0);
+    }
+
+    #[test]
+    fn sprite_refresh_preserves_an_active_one_shot_animation() {
+        let mut animation = new_character_animation_state(CharacterAnimation::Attack, true, 100.0);
+        animation.one_shot_until_ms = Some(400.0);
+
+        restart_character_animation(&mut animation, 200.0);
+
+        assert_eq!(animation.animation, CharacterAnimation::Attack);
+        assert_eq!(character_animation_elapsed_ms(animation, 200.0), 100.0);
+        assert_eq!(animation.one_shot_until_ms, Some(400.0));
     }
 
     #[test]
