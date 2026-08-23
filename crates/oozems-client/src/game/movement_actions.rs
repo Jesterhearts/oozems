@@ -121,7 +121,7 @@ async fn request_map_transition(
     source: MovementSnapshot,
     transition: &MapTransition,
 ) -> Result<String, String> {
-    let response = api::enter_portal(
+    let mut response = api::enter_portal(
         player_id,
         source,
         transition.target_map_id,
@@ -143,7 +143,17 @@ async fn request_map_transition(
         .await
         .map_err(|error| error.to_string())?;
     let name = map.name.clone();
-    install_map(&mut game.borrow_mut(), map, position)?;
+    let mut game = game.borrow_mut();
+    install_map(&mut game, map, position)?;
+    if let Some(stats) = response.player_stats {
+        game.player.stats = Some(stats);
+    }
+    let timestamp_ms = game.frame_time_ms;
+    crate::mob_render::install_combat_events(
+        &mut game.mob_render,
+        std::mem::take(&mut response.combat_events),
+        timestamp_ms,
+    );
     Ok(name)
 }
 
@@ -163,8 +173,8 @@ fn install_map(
 
     game.player.map_id = map.id;
     game.player.position = Some(position);
+    game.mob_render = crate::mob_render::new_map_state(map.simulation_sequence);
     game.map = map;
-    game.mob_render = crate::mob_render::MobRenderState::default();
     game.images = images;
     game.motion = motion;
     game.world_layers = world_layers;
@@ -262,7 +272,12 @@ pub(super) fn install_response(
         return Ok(None);
     }
     game.movement_sync.last_response_sequence = authoritative.sequence;
-    if authoritative.map_id == game.map.id {
+    if authoritative.map_id == game.map.id
+        && crate::mob_render::accept_simulation_snapshot(
+            &mut game.mob_render,
+            response.simulation_sequence,
+        )
+    {
         crate::mob_render::install_snapshot(
             &mut game.mob_render,
             &mut game.map.mobs,
@@ -270,6 +285,21 @@ pub(super) fn install_response(
             game.frame_time_ms,
             game.movement_rules.snapshot_interval_ms,
         );
+        crate::mob_render::install_projectile_snapshot(
+            &mut game.mob_render,
+            &mut game.map.mob_projectiles,
+            std::mem::take(&mut response.mob_projectiles),
+            game.frame_time_ms,
+            game.movement_rules.snapshot_interval_ms,
+        );
+        crate::mob_render::install_combat_events(
+            &mut game.mob_render,
+            std::mem::take(&mut response.combat_events),
+            game.frame_time_ms,
+        );
+        if let Some(stats) = response.player_stats {
+            game.player.stats = Some(stats);
+        }
     }
     if response.accepted {
         return Ok(None);

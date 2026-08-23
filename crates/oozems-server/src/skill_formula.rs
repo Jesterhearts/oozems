@@ -285,6 +285,13 @@ impl FormulaCatalog {
         selected_profile(&self.recovery, identifier)
     }
 
+    pub fn defense_profile(
+        &self,
+        identifier: &str,
+    ) -> Option<&FormulaProfile> {
+        selected_profile(&self.defenses, identifier)
+    }
+
     // Summon effects are not applied yet, but the validated route is part of
     // this configuration boundary so the later effect pipeline cannot bypass it.
     #[allow(dead_code)]

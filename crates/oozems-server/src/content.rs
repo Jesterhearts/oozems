@@ -389,6 +389,8 @@ fn build_map(
         mob_spawn_points: Vec::new(),
         mob_definitions: Vec::new(),
         mobs: Vec::new(),
+        mob_projectiles: Vec::new(),
+        simulation_sequence: 0,
         movement_bounds: Some(MapMovementBounds {
             left: PLAYER_HALF_WIDTH.min(width as f32 / 2.0),
             right: (width as f32 - PLAYER_HALF_WIDTH).max(width as f32 / 2.0),

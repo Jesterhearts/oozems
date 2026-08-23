@@ -1,150 +1,623 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
 use std::time::Instant;
 
+use oozems_proto::v1::CombatEvent;
+use oozems_proto::v1::CombatEventKind;
 use oozems_proto::v1::Map;
 use oozems_proto::v1::Mob;
 use oozems_proto::v1::MobDefinition;
 use oozems_proto::v1::MobMovementMode;
+use oozems_proto::v1::MobProjectile;
 use oozems_proto::v1::MobSpawnPoint;
-use oozems_proto::v1::Platform;
+use oozems_proto::v1::PlayerState;
 use oozems_proto::v1::Vec2;
+use shipyard::IntoIter;
+use shipyard::UniqueViewMut;
+use shipyard::View;
+use shipyard::Workload;
+use shipyard::World;
 use thiserror::Error;
 
-const BASE_MOVE_SPEED: f32 = 80.0;
-const MOB_GRAVITY: f32 = 900.0;
-const MOB_JUMP_SPEED: f32 = 330.0;
-const MAX_JUMP_RISE: f32 = MOB_JUMP_SPEED * MOB_JUMP_SPEED / (2.0 * MOB_GRAVITY);
-const JUMP_LEDGE_LOOKAHEAD: f32 = 48.0;
-const WALKABLE_HEIGHT_CHANGE: f32 = 12.0;
-const PHYSICS_STEP_SECONDS: f32 = 1.0 / 60.0;
-const MAX_CATCH_UP: Duration = Duration::from_secs(1);
-const MIN_DECISION_SECONDS: f32 = 0.75;
-const DECISION_RANGE_SECONDS: f32 = 1.75;
+use crate::gameplay::CombatConfig;
+use crate::skill_formula::FormulaCatalog;
 
-#[derive(Default)]
+mod ai;
+mod combat;
+mod components;
+
+use components::CombatFormulas;
+use components::CombatRules;
+use components::MobCombat;
+use components::MobIdentity;
+use components::MobMotion;
+use components::PendingEvents;
+use components::PlayerPresence;
+use components::Position;
+use components::Projectile;
+use components::ProjectileSpawns;
+use components::SimulationErrors;
+use components::TargetCache;
+use components::Terrain;
+use components::Tick;
+
+const BASE_MOVE_SPEED: f32 = 80.0;
+const MAX_CATCH_UP: Duration = Duration::from_secs(1);
+const PLAYER_PRESENCE_TIMEOUT_MS: u64 = 5_000;
+const MOB_TICK_WORKLOAD: &str = "mob simulation tick";
+
 pub struct MobStore {
     maps: Mutex<HashMap<u32, MobMapState>>,
+    rules: CombatConfig,
+    formulas: Arc<FormulaCatalog>,
 }
 
 struct MobMapState {
-    terrain: MobTerrain,
-    agents: Vec<MobAgent>,
+    world: World,
+    player_entities: HashMap<String, shipyard::EntityId>,
     updated_at: Instant,
+    clock_ms: u64,
+    snapshot_sequence: u64,
 }
 
-struct MobTerrain {
-    platforms: Vec<Platform>,
-    height: f32,
+#[derive(Default)]
+pub struct MobUpdate {
+    pub mobs: Vec<Mob>,
+    pub mob_projectiles: Vec<MobProjectile>,
+    pub combat_events: Vec<CombatEvent>,
+    pub sequence: u64,
 }
 
-#[derive(Clone, Debug)]
-struct MobAgent {
-    mob: Mob,
-    spawn_position: Vec2,
-    spawn_support: Option<usize>,
-    support: Option<usize>,
-    roam_left: f32,
-    roam_right: f32,
-    move_speed: f32,
-    can_move: bool,
-    can_jump: bool,
-    flies: bool,
-    direction: i8,
-    velocity_y: f32,
-    decision_seconds: f32,
-    random_state: u64,
+#[derive(Clone, Copy)]
+pub struct PlayerSkillAttack<'a> {
+    pub target_mob_id: &'a str,
+    pub facing_left: bool,
+    pub minimum_damage: u32,
+    pub maximum_damage: u32,
+    pub fixed_damage: bool,
+}
+
+impl MobUpdate {
+    pub fn player_damage(&self) -> u64 {
+        self.combat_events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    CombatEventKind::try_from(event.kind),
+                    Ok(CombatEventKind::MobTouchedPlayer)
+                        | Ok(CombatEventKind::MobProjectileHitPlayer)
+                )
+            })
+            .map(|event| event.damage)
+            .fold(0, u64::saturating_add)
+    }
 }
 
 #[derive(Debug, Error)]
 pub enum MobStoreError {
     #[error("the mob store lock was poisoned")]
     Lock,
+    #[error("the Shipyard simulation could not be built: {message}")]
+    Build { message: String },
+    #[error("the Shipyard simulation workload failed: {message}")]
+    Workload { message: String },
+    #[error("the Shipyard simulation borrow failed: {message}")]
+    Borrow { message: String },
+    #[error("a combat formula failed: {message}")]
+    Formula { message: String },
 }
 
-pub fn map_mobs(
+impl MobStore {
+    pub fn new(
+        rules: CombatConfig,
+        formulas: Arc<FormulaCatalog>,
+    ) -> Self {
+        Self {
+            maps: Mutex::new(HashMap::new()),
+            rules,
+            formulas,
+        }
+    }
+}
+
+pub fn map_snapshot(
     store: &MobStore,
     map: &Map,
-) -> Result<Vec<Mob>, MobStoreError> {
-    map_mobs_at(store, map, Instant::now())
+) -> Result<MobUpdate, MobStoreError> {
+    map_snapshot_at(store, map, Instant::now())
 }
 
-pub fn current_mobs(
-    store: &MobStore,
-    map_id: u32,
-) -> Result<Option<Vec<Mob>>, MobStoreError> {
-    current_mobs_at(store, map_id, Instant::now())
-}
-
-#[cfg(test)]
-pub fn spawn_mobs(map: &Map) -> Vec<Mob> {
-    spawn_agents(map)
-        .into_iter()
-        .map(|agent| agent.mob)
-        .collect()
-}
-
-fn map_mobs_at(
+pub fn observe_player(
     store: &MobStore,
     map: &Map,
-    now: Instant,
-) -> Result<Vec<Mob>, MobStoreError> {
-    let mut maps = store.maps.lock().map_err(|_| MobStoreError::Lock)?;
-    let state = maps
-        .entry(map.id)
-        .or_insert_with(|| build_map_state(map, now));
-    advance_map_to(state, now);
-    Ok(mob_snapshot(state))
+    player: &PlayerState,
+) -> Result<MobUpdate, MobStoreError> {
+    observe_player_at(store, map, player, Instant::now())
 }
 
-fn current_mobs_at(
+pub fn use_player_skill(
+    store: &MobStore,
+    map: &Map,
+    player: &PlayerState,
+    attack: PlayerSkillAttack<'_>,
+) -> Result<MobUpdate, MobStoreError> {
+    use_player_skill_at(store, map, player, attack, Instant::now())
+}
+
+pub fn restore_player_events(
     store: &MobStore,
     map_id: u32,
-    now: Instant,
-) -> Result<Option<Vec<Mob>>, MobStoreError> {
-    let mut maps = store.maps.lock().map_err(|_| MobStoreError::Lock)?;
-    let Some(state) = maps.get_mut(&map_id) else {
-        return Ok(None);
+    player_id: &str,
+    mut combat_events: Vec<CombatEvent>,
+) -> Result<(), MobStoreError> {
+    if combat_events.is_empty() {
+        return Ok(());
+    }
+    let maps = store.maps.lock().map_err(|_| MobStoreError::Lock)?;
+    let Some(state) = maps.get(&map_id) else {
+        return Ok(());
     };
-    advance_map_to(state, now);
-    Ok(Some(mob_snapshot(state)))
+    state
+        .world
+        .run(|mut pending: UniqueViewMut<PendingEvents>| {
+            let queued = pending.by_player.entry(player_id.to_owned()).or_default();
+            combat_events.append(queued);
+            *queued = combat_events;
+        });
+    Ok(())
+}
+
+fn map_snapshot_at(
+    store: &MobStore,
+    map: &Map,
+    now: Instant,
+) -> Result<MobUpdate, MobStoreError> {
+    let mut maps = store.maps.lock().map_err(|_| MobStoreError::Lock)?;
+    let state = ensure_map(&mut maps, map, store, now)?;
+    advance_map_to(state, now)?;
+    prune_stale_players(state)?;
+    snapshot(state, None)
+}
+
+fn observe_player_at(
+    store: &MobStore,
+    map: &Map,
+    player: &PlayerState,
+    now: Instant,
+) -> Result<MobUpdate, MobStoreError> {
+    let mut maps = store.maps.lock().map_err(|_| MobStoreError::Lock)?;
+    remove_player_from_other_maps(&mut maps, map.id, &player.id);
+    let state = ensure_map(&mut maps, map, store, now)?;
+    sync_player(state, player)?;
+    advance_map_to(state, now)?;
+    mark_player_seen(state, &player.id)?;
+    prune_stale_players(state)?;
+    snapshot(state, Some(&player.id))
+}
+
+fn use_player_skill_at(
+    store: &MobStore,
+    map: &Map,
+    player: &PlayerState,
+    attack: PlayerSkillAttack<'_>,
+    now: Instant,
+) -> Result<MobUpdate, MobStoreError> {
+    let mut maps = store.maps.lock().map_err(|_| MobStoreError::Lock)?;
+    remove_player_from_other_maps(&mut maps, map.id, &player.id);
+    let state = ensure_map(&mut maps, map, store, now)?;
+    sync_player(state, player)?;
+    advance_map_to(state, now)?;
+    mark_player_seen(state, &player.id)?;
+    prune_stale_players(state)?;
+    if attack.maximum_damage > 0 {
+        apply_player_attack(
+            state,
+            &player.id,
+            PlayerSkillAttack {
+                target_mob_id: attack.target_mob_id,
+                facing_left: attack.facing_left,
+                minimum_damage: attack.minimum_damage.max(1),
+                maximum_damage: attack.maximum_damage.max(attack.minimum_damage).max(1),
+                fixed_damage: attack.fixed_damage,
+            },
+            store.rules,
+            &store.formulas,
+        )?;
+        state.snapshot_sequence = state.snapshot_sequence.saturating_add(1);
+    }
+    snapshot(state, Some(&player.id))
+}
+
+fn ensure_map<'a>(
+    maps: &'a mut HashMap<u32, MobMapState>,
+    map: &Map,
+    store: &MobStore,
+    now: Instant,
+) -> Result<&'a mut MobMapState, MobStoreError> {
+    if let std::collections::hash_map::Entry::Vacant(entry) = maps.entry(map.id) {
+        entry.insert(build_map_state(
+            map,
+            store.rules,
+            store.formulas.clone(),
+            now,
+        )?);
+    }
+    Ok(maps.get_mut(&map.id).expect("map was inserted"))
 }
 
 fn build_map_state(
     map: &Map,
+    rules: CombatConfig,
+    formulas: Arc<FormulaCatalog>,
     now: Instant,
-) -> MobMapState {
-    MobMapState {
-        terrain: MobTerrain {
-            platforms: map.platforms.clone(),
-            height: map.height as f32,
-        },
-        agents: spawn_agents(map),
-        updated_at: now,
+) -> Result<MobMapState, MobStoreError> {
+    let mut world = World::new();
+    world.add_unique(Terrain {
+        platforms: map.platforms.clone(),
+        height: map.height as f32,
+    });
+    world.add_unique(Tick {
+        elapsed_seconds: 0.0,
+        now_ms: 0,
+    });
+    world.add_unique(CombatRules(rules));
+    world.add_unique(CombatFormulas(formulas));
+    world.add_unique(TargetCache::default());
+    world.add_unique(ProjectileSpawns::default());
+    world.add_unique(PendingEvents::default());
+    world.add_unique(SimulationErrors::default());
+    install_tick_workload(&world)?;
+    for (identity, position, motion, combat) in spawn_mob_components(map, rules.default_respawn) {
+        world.add_entity((identity, position, motion, combat));
     }
+    Ok(MobMapState {
+        world,
+        player_entities: HashMap::new(),
+        updated_at: now,
+        clock_ms: 0,
+        snapshot_sequence: 0,
+    })
+}
+
+fn install_tick_workload(world: &World) -> Result<(), MobStoreError> {
+    Workload::new(MOB_TICK_WORKLOAD)
+        .with_system(combat::respawn_mobs)
+        .with_barrier()
+        .with_system(combat::collect_player_targets)
+        .with_system(combat::retain_aggro)
+        .with_barrier()
+        .with_system(ai::advance_mobs)
+        .with_barrier()
+        .with_system(combat::apply_touch_damage)
+        .with_system(combat::queue_projectile_attacks)
+        .with_barrier()
+        .with_system(combat::spawn_projectiles)
+        .with_barrier()
+        .with_system(combat::advance_projectiles)
+        .add_to_world(world)
+        .map_err(|error| MobStoreError::Build {
+            message: error.to_string(),
+        })?;
+    Ok(())
 }
 
 fn advance_map_to(
     state: &mut MobMapState,
     now: Instant,
-) {
-    // Inactive maps resume near their last state instead of simulating an
-    // unbounded backlog and sending large position jumps to the first client.
-    let elapsed = now
+) -> Result<(), MobStoreError> {
+    let wall_elapsed = now
         .checked_duration_since(state.updated_at)
-        .unwrap_or_default()
-        .min(MAX_CATCH_UP)
-        .as_secs_f32();
+        .unwrap_or_default();
+    let elapsed = wall_elapsed.min(MAX_CATCH_UP);
     state.updated_at = now;
-    advance_agents(&state.terrain, &mut state.agents, elapsed);
+    let elapsed_ms = u64::try_from(wall_elapsed.as_millis()).unwrap_or(u64::MAX);
+    state.clock_ms = state.clock_ms.saturating_add(elapsed_ms);
+    state.world.run(
+        |mut tick: UniqueViewMut<Tick>,
+         mut errors: UniqueViewMut<SimulationErrors>,
+         mut spawns: UniqueViewMut<ProjectileSpawns>| {
+            tick.elapsed_seconds = elapsed.as_secs_f32();
+            tick.now_ms = state.clock_ms;
+            errors.0.clear();
+            spawns.0.clear();
+        },
+    );
+    state
+        .world
+        .run_workload(MOB_TICK_WORKLOAD)
+        .map_err(|error| MobStoreError::Workload {
+            message: error.to_string(),
+        })?;
+    remove_impacted_projectiles(state)?;
+    let errors = state
+        .world
+        .run(|errors: shipyard::UniqueView<SimulationErrors>| errors.0.clone());
+    if let Some(message) = errors.into_iter().next() {
+        return Err(MobStoreError::Formula { message });
+    }
+    state.snapshot_sequence = state.snapshot_sequence.saturating_add(1);
+    Ok(())
 }
 
-fn mob_snapshot(state: &MobMapState) -> Vec<Mob> {
-    state.agents.iter().map(|agent| agent.mob.clone()).collect()
+fn sync_player(
+    state: &mut MobMapState,
+    player: &PlayerState,
+) -> Result<(), MobStoreError> {
+    let Some(position) = player.position.filter(finite_position) else {
+        return Ok(());
+    };
+    let stats = player.stats.unwrap_or_default();
+    let layer = state.world.run(|terrain: shipyard::UniqueView<Terrain>| {
+        ai::nearest_platform(&terrain.platforms, position.x, position.y, None)
+            .and_then(|index| terrain.platforms.get(index))
+            .map_or(0, |platform| platform.layer)
+    });
+    let simulation_position = Position {
+        x: position.x,
+        y: position.y,
+        layer,
+    };
+    if let Some(entity) = state.player_entities.get(&player.id).copied()
+        && let Ok((mut stored_position, mut presence)) = state
+            .world
+            .get::<(&mut Position, &mut PlayerPresence)>(entity)
+    {
+        **stored_position = simulation_position;
+        presence.level = player.level;
+        presence.current_hp = stats.hp;
+        presence.last_seen_ms = state.clock_ms;
+        return Ok(());
+    }
+    let entity = state.world.add_entity((
+        simulation_position,
+        PlayerPresence {
+            id: player.id.clone(),
+            level: player.level,
+            current_hp: stats.hp,
+            last_seen_ms: state.clock_ms,
+            invulnerable_until_ms: 0,
+        },
+    ));
+    state.player_entities.insert(player.id.clone(), entity);
+    Ok(())
 }
 
-fn spawn_agents(map: &Map) -> Vec<MobAgent> {
+fn mark_player_seen(
+    state: &mut MobMapState,
+    player_id: &str,
+) -> Result<(), MobStoreError> {
+    let Some(entity) = state.player_entities.get(player_id).copied() else {
+        return Ok(());
+    };
+    let mut presence = state
+        .world
+        .get::<&mut PlayerPresence>(entity)
+        .map_err(|error| borrow_error(error.to_string()))?;
+    presence.last_seen_ms = state.clock_ms;
+    Ok(())
+}
+
+fn apply_player_attack(
+    state: &mut MobMapState,
+    player_id: &str,
+    attack: PlayerSkillAttack<'_>,
+    rules: CombatConfig,
+    formulas: &FormulaCatalog,
+) -> Result<(), MobStoreError> {
+    let Some(player_entity) = state.player_entities.get(player_id).copied() else {
+        return Ok(());
+    };
+    let (player_position, player_level) = state
+        .world
+        .get::<(&Position, &PlayerPresence)>(player_entity)
+        .map(|(position, presence)| (**position, presence.level))
+        .map_err(|error| borrow_error(error.to_string()))?;
+    let target = state.world.run(
+        |positions: View<Position>, identities: View<MobIdentity>, combats: View<MobCombat>| {
+            let candidates = (&positions, &identities, &combats).iter().with_id().filter(
+                |(_, (position, identity, combat))| {
+                    combat.current_hp > 0
+                        && valid_attack_target(
+                            player_position,
+                            **position,
+                            attack.facing_left,
+                            rules,
+                        )
+                        && (attack.target_mob_id.is_empty()
+                            || identity.public_id == attack.target_mob_id)
+                },
+            );
+            candidates
+                .map(|(entity, (position, _, _))| (entity, (position.x - player_position.x).abs()))
+                .min_by(|left, right| left.1.total_cmp(&right.1))
+                .map(|(entity, _)| entity)
+        },
+    );
+    let Some(target) = target else {
+        return Ok(());
+    };
+    let (position, target_id, damage, died) = {
+        let (position, identity, mut motion, mut combat) = state
+            .world
+            .get::<(&Position, &MobIdentity, &mut MobMotion, &mut MobCombat)>(target)
+            .map_err(|error| borrow_error(error.to_string()))?;
+        let damage = combat::calculate_player_damage(
+            formulas,
+            combat.physical_defense,
+            combat.level,
+            player_level,
+            attack.minimum_damage,
+            attack.maximum_damage,
+            attack.fixed_damage,
+            &mut motion.random_state,
+        )
+        .map_err(|error| MobStoreError::Formula {
+            message: format!("damage against mob {} failed: {error}", identity.public_id),
+        })?;
+        combat.current_hp = combat.current_hp.saturating_sub(damage);
+        combat.aggro_target = Some(player_id.to_owned());
+        if combat.current_hp == 0 {
+            combat.dead_until_ms = Some(state.clock_ms.saturating_add(combat.respawn_delay_ms));
+            combat.aggro_target = None;
+            motion.mode = MobMovementMode::Idle;
+        }
+        (
+            **position,
+            identity.public_id.clone(),
+            damage,
+            combat.current_hp == 0,
+        )
+    };
+    let source_id = player_id.to_owned();
+    state.world.run(|mut events: UniqueViewMut<PendingEvents>| {
+        combat::queue_event(
+            &mut events,
+            player_id,
+            CombatEventKind::PlayerHitMob,
+            &source_id,
+            &target_id,
+            damage,
+            position,
+        );
+        if died {
+            combat::queue_event(
+                &mut events,
+                player_id,
+                CombatEventKind::MobDied,
+                &source_id,
+                &target_id,
+                0,
+                position,
+            );
+        }
+    });
+    Ok(())
+}
+
+fn valid_attack_target(
+    player: Position,
+    target: Position,
+    facing_left: bool,
+    rules: CombatConfig,
+) -> bool {
+    if player.layer != target.layer || (player.y - target.y).abs() > rules.attack_vertical_reach {
+        return false;
+    }
+    let delta_x = target.x - player.x;
+    delta_x.abs() <= rules.player_attack_range
+        && if facing_left {
+            delta_x <= 0.0
+        } else {
+            delta_x >= 0.0
+        }
+}
+
+fn snapshot(
+    state: &MobMapState,
+    player_id: Option<&str>,
+) -> Result<MobUpdate, MobStoreError> {
+    let mobs = state.world.run(
+        |positions: View<Position>,
+         identities: View<MobIdentity>,
+         motions: View<MobMotion>,
+         combats: View<MobCombat>| {
+            (&positions, &identities, &motions, &combats)
+                .iter()
+                .map(|(position, identity, motion, combat)| Mob {
+                    id: identity.public_id.clone(),
+                    definition_id: identity.definition_id,
+                    position: Some(position.vector()),
+                    flip_x: motion.flip_x,
+                    layer: position.layer,
+                    current_hp: combat.current_hp,
+                    spawn_id: identity.spawn_id,
+                    movement_mode: motion.mode as i32,
+                })
+                .collect()
+        },
+    );
+    let mob_projectiles =
+        state
+            .world
+            .run(|positions: View<Position>, projectiles: View<Projectile>| {
+                (&positions, &projectiles)
+                    .iter()
+                    .filter(|(_, projectile)| !projectile.impacted)
+                    .map(|(position, projectile)| MobProjectile {
+                        id: projectile.public_id.clone(),
+                        source_mob_id: projectile.source_mob_id.clone(),
+                        target_player_id: projectile.target_player_id.clone(),
+                        position: Some(position.vector()),
+                        layer: position.layer,
+                    })
+                    .collect()
+            });
+    let combat_events = player_id.map_or_else(Vec::new, |player_id| {
+        state.world.run(|mut events: UniqueViewMut<PendingEvents>| {
+            events.by_player.remove(player_id).unwrap_or_default()
+        })
+    });
+    Ok(MobUpdate {
+        mobs,
+        mob_projectiles,
+        combat_events,
+        sequence: state.snapshot_sequence,
+    })
+}
+
+fn remove_impacted_projectiles(state: &mut MobMapState) -> Result<(), MobStoreError> {
+    let impacted = state.world.run(|projectiles: View<Projectile>| {
+        projectiles
+            .iter()
+            .with_id()
+            .filter(|(_, projectile)| projectile.impacted)
+            .map(|(entity, _)| entity)
+            .collect::<Vec<_>>()
+    });
+    for entity in impacted {
+        state.world.delete_entity(entity);
+    }
+    Ok(())
+}
+
+fn prune_stale_players(state: &mut MobMapState) -> Result<(), MobStoreError> {
+    let stale_before = state.clock_ms.saturating_sub(PLAYER_PRESENCE_TIMEOUT_MS);
+    let stale = state.world.run(|players: View<PlayerPresence>| {
+        players
+            .iter()
+            .with_id()
+            .filter(|(_, player)| player.last_seen_ms < stale_before)
+            .map(|(entity, player)| (entity, player.id.clone()))
+            .collect::<Vec<_>>()
+    });
+    for (entity, player_id) in stale {
+        state.world.delete_entity(entity);
+        state.player_entities.remove(&player_id);
+    }
+    Ok(())
+}
+
+fn remove_player_from_other_maps(
+    maps: &mut HashMap<u32, MobMapState>,
+    current_map_id: u32,
+    player_id: &str,
+) {
+    for (map_id, state) in maps {
+        if *map_id == current_map_id {
+            continue;
+        }
+        if let Some(entity) = state.player_entities.remove(player_id) {
+            state.world.delete_entity(entity);
+        }
+    }
+}
+
+fn spawn_mob_components(
+    map: &Map,
+    default_respawn: Duration,
+) -> Vec<(MobIdentity, Position, MobMotion, MobCombat)> {
     let definitions = map
         .mob_definitions
         .iter()
@@ -152,53 +625,90 @@ fn spawn_agents(map: &Map) -> Vec<MobAgent> {
         .collect::<HashMap<_, _>>();
     map.mob_spawn_points
         .iter()
-        .filter_map(|spawn| spawn_agent(map, spawn, definitions.get(&spawn.mob_id).copied()))
+        .filter_map(|spawn| {
+            spawn_mob(
+                map,
+                spawn,
+                definitions.get(&spawn.mob_id).copied(),
+                default_respawn,
+            )
+        })
         .collect()
 }
 
-fn spawn_agent(
+fn spawn_mob(
     map: &Map,
     spawn: &MobSpawnPoint,
     definition: Option<&MobDefinition>,
-) -> Option<MobAgent> {
+    default_respawn: Duration,
+) -> Option<(MobIdentity, Position, MobMotion, MobCombat)> {
     let definition = definition.filter(|definition| {
         definition
             .animations
             .iter()
             .any(|animation| !animation.frames.is_empty())
     })?;
-    let position = spawn
-        .position
-        .filter(|position| position.x.is_finite() && position.y.is_finite())?;
+    let source_position = spawn.position.filter(finite_position)?;
+    let position = Position {
+        x: source_position.x,
+        y: source_position.y,
+        layer: spawn.layer,
+    };
     let (roam_left, roam_right) = roam_bounds(map, spawn, position.x);
-    let spawn_support = spawn_support(map, spawn, position);
+    let spawn_support = map
+        .platforms
+        .iter()
+        .position(|platform| spawn.foothold_id != 0 && platform.id == spawn.foothold_id)
+        .or_else(|| {
+            ai::nearest_platform(&map.platforms, position.x, position.y, Some(position.layer))
+        });
     let flies = has_animation(definition, "fly");
     let can_move = has_animation(definition, "move") || flies;
-    Some(MobAgent {
-        mob: Mob {
-            id: format!("{}:{}:0", map.id, spawn.spawn_id),
+    let respawn_delay_ms = if spawn.respawn_seconds == 0 {
+        u64::try_from(default_respawn.as_millis()).unwrap_or(u64::MAX)
+    } else {
+        u64::from(spawn.respawn_seconds).saturating_mul(1_000)
+    };
+    Some((
+        MobIdentity {
+            public_id: format!("{}:{}:0", map.id, spawn.spawn_id),
             definition_id: definition.id,
-            position: Some(position),
-            flip_x: spawn.flip_x,
-            layer: spawn.layer,
-            current_hp: definition.max_hp.max(1),
             spawn_id: spawn.spawn_id,
-            movement_mode: MobMovementMode::Idle as i32,
         },
-        spawn_position: position,
-        spawn_support,
-        support: spawn_support,
-        roam_left,
-        roam_right,
-        move_speed: movement_speed(definition.speed),
-        can_move,
-        can_jump: definition.can_jump,
-        flies,
-        direction: 0,
-        velocity_y: 0.0,
-        decision_seconds: 0.0,
-        random_state: random_seed(map.id, spawn.spawn_id),
-    })
+        position,
+        MobMotion {
+            spawn_position: position,
+            spawn_support,
+            support: spawn_support,
+            roam_left,
+            roam_right,
+            move_speed: movement_speed(definition.speed),
+            can_move,
+            can_jump: definition.can_jump,
+            flies,
+            flip_x: spawn.flip_x,
+            direction: 0,
+            velocity_y: 0.0,
+            decision_seconds: 0.0,
+            random_state: random_seed(map.id, spawn.spawn_id),
+            mode: MobMovementMode::Idle,
+        },
+        MobCombat {
+            level: definition.level,
+            maximum_hp: definition.max_hp.max(1),
+            current_hp: definition.max_hp.max(1),
+            physical_attack: definition.physical_attack,
+            physical_defense: definition.physical_defense,
+            magic_attack: definition.magic_attack,
+            body_attack: definition.body_attack,
+            aggro_target: None,
+            next_attack_ms: 0,
+            attack_until_ms: 0,
+            movement_resume_ms: 0,
+            dead_until_ms: None,
+            respawn_delay_ms,
+        },
+    ))
 }
 
 fn roam_bounds(
@@ -216,17 +726,6 @@ fn roam_bounds(
     (left.clamp(0.0, map_right), right.clamp(0.0, map_right))
 }
 
-fn spawn_support(
-    map: &Map,
-    spawn: &MobSpawnPoint,
-    position: Vec2,
-) -> Option<usize> {
-    map.platforms
-        .iter()
-        .position(|platform| spawn.foothold_id != 0 && platform.id == spawn.foothold_id)
-        .or_else(|| nearest_platform(&map.platforms, position.x, position.y, None))
-}
-
 fn movement_speed(wz_speed: i32) -> f32 {
     let percentage = (100_i64 + i64::from(wz_speed)).clamp(0, 200) as f32;
     BASE_MOVE_SPEED * percentage / 100.0
@@ -242,346 +741,8 @@ fn has_animation(
         .any(|animation| animation.name == name && !animation.frames.is_empty())
 }
 
-fn advance_agents(
-    terrain: &MobTerrain,
-    agents: &mut [MobAgent],
-    elapsed_seconds: f32,
-) {
-    let mut remaining = elapsed_seconds.max(0.0);
-    while remaining > 0.0 {
-        let step = remaining.min(PHYSICS_STEP_SECONDS);
-        for agent in &mut *agents {
-            advance_agent(terrain, agent, step);
-        }
-        remaining -= step;
-    }
-}
-
-fn advance_agent(
-    terrain: &MobTerrain,
-    agent: &mut MobAgent,
-    elapsed_seconds: f32,
-) {
-    if agent.mob.current_hp == 0 {
-        set_mode(agent, MobMovementMode::Idle);
-        return;
-    }
-    if movement_mode(agent) == MobMovementMode::Jumping {
-        advance_jump(terrain, agent, elapsed_seconds);
-        return;
-    }
-    agent.decision_seconds -= elapsed_seconds;
-    if agent.decision_seconds <= 0.0 {
-        choose_behavior(agent);
-    }
-    if agent.flies {
-        advance_flying(agent, elapsed_seconds);
-    } else {
-        advance_grounded(terrain, agent, elapsed_seconds);
-    }
-}
-
-fn choose_behavior(agent: &mut MobAgent) {
-    let choice = next_random(&mut agent.random_state) % 5;
-    let direction = if !agent.can_move || agent.move_speed <= 0.0 {
-        0
-    } else {
-        match choice {
-            0 => 0,
-            1 | 2 => -1,
-            _ => 1,
-        }
-    };
-    set_direction(agent, direction);
-    set_mode(
-        agent,
-        if direction == 0 {
-            MobMovementMode::Idle
-        } else {
-            MobMovementMode::Walking
-        },
-    );
-    let duration_fraction = next_random(&mut agent.random_state) as f64 / u64::MAX as f64;
-    agent.decision_seconds =
-        MIN_DECISION_SECONDS + duration_fraction as f32 * DECISION_RANGE_SECONDS;
-}
-
-fn advance_flying(
-    agent: &mut MobAgent,
-    elapsed_seconds: f32,
-) {
-    let Some(mut position) = agent.mob.position else {
-        return;
-    };
-    let proposed_x = position.x + f32::from(agent.direction) * agent.move_speed * elapsed_seconds;
-    position.x = proposed_x.clamp(agent.roam_left, agent.roam_right);
-    if proposed_x != position.x {
-        reverse_direction(agent);
-    }
-    agent.mob.position = Some(position);
-}
-
-fn advance_grounded(
-    terrain: &MobTerrain,
-    agent: &mut MobAgent,
-    elapsed_seconds: f32,
-) {
-    let Some(position) = agent.mob.position else {
-        return;
-    };
-    let Some(support) = valid_support(terrain, agent.support, position).or_else(|| {
-        nearest_platform(
-            &terrain.platforms,
-            position.x,
-            position.y,
-            Some(agent.mob.layer),
-        )
-    }) else {
-        set_direction(agent, 0);
-        set_mode(agent, MobMovementMode::Idle);
-        return;
-    };
-    agent.support = Some(support);
-    if agent.direction == 0 {
-        snap_to_platform(terrain, agent, support, position.x);
-        return;
-    }
-
-    let proposed_x = (position.x + f32::from(agent.direction) * agent.move_speed * elapsed_seconds)
-        .clamp(agent.roam_left, agent.roam_right);
-    if let Some(next_support) = walkable_support(terrain, agent, support, proposed_x) {
-        snap_to_platform(terrain, agent, next_support, proposed_x);
-        if proposed_x == agent.roam_left || proposed_x == agent.roam_right {
-            reverse_direction(agent);
-        }
-        return;
-    }
-    if agent.can_jump && has_reachable_ledge(terrain, agent, position) {
-        agent.velocity_y = -MOB_JUMP_SPEED;
-        set_mode(agent, MobMovementMode::Jumping);
-        advance_jump(terrain, agent, elapsed_seconds);
-        return;
-    }
-    stop_at_platform_edge(terrain, agent, support);
-}
-
-fn valid_support(
-    terrain: &MobTerrain,
-    support: Option<usize>,
-    position: Vec2,
-) -> Option<usize> {
-    let support = support?;
-    platform_surface_at_x(terrain.platforms.get(support)?, position.x).map(|_| support)
-}
-
-fn walkable_support(
-    terrain: &MobTerrain,
-    agent: &MobAgent,
-    current_support: usize,
-    x: f32,
-) -> Option<usize> {
-    let current = terrain.platforms.get(current_support)?;
-    let current_y = agent.mob.position?.y;
-    if platform_surface_at_x(current, x).is_some() {
-        return Some(current_support);
-    }
-    nearest_platform(&terrain.platforms, x, current_y, Some(current.layer)).filter(|index| {
-        platform_surface_at_x(&terrain.platforms[*index], x)
-            .is_some_and(|surface| (surface - current_y).abs() <= WALKABLE_HEIGHT_CHANGE)
-    })
-}
-
-fn has_reachable_ledge(
-    terrain: &MobTerrain,
-    agent: &MobAgent,
-    position: Vec2,
-) -> bool {
-    let direction = f32::from(agent.direction);
-    terrain.platforms.iter().any(|platform| {
-        let edge_x = if direction > 0.0 {
-            platform.x.min(platform.end_x)
-        } else {
-            platform.x.max(platform.end_x)
-        };
-        let distance = (edge_x - position.x) * direction;
-        if !(0.0..=JUMP_LEDGE_LOOKAHEAD).contains(&distance)
-            || edge_x < agent.roam_left
-            || edge_x > agent.roam_right
-        {
-            return false;
-        }
-        let sample_x = (edge_x + direction).clamp(agent.roam_left, agent.roam_right);
-        platform_surface_at_x(platform, sample_x).is_some_and(|surface| {
-            let rise = position.y - surface;
-            rise > WALKABLE_HEIGHT_CHANGE && rise <= MAX_JUMP_RISE
-        })
-    })
-}
-
-fn stop_at_platform_edge(
-    terrain: &MobTerrain,
-    agent: &mut MobAgent,
-    support: usize,
-) {
-    let Some(platform) = terrain.platforms.get(support) else {
-        return;
-    };
-    let edge_x = if agent.direction > 0 {
-        platform.x.max(platform.end_x)
-    } else {
-        platform.x.min(platform.end_x)
-    }
-    .clamp(agent.roam_left, agent.roam_right);
-    snap_to_platform(terrain, agent, support, edge_x);
-    reverse_direction(agent);
-}
-
-fn snap_to_platform(
-    terrain: &MobTerrain,
-    agent: &mut MobAgent,
-    support: usize,
-    x: f32,
-) {
-    let Some(platform) = terrain.platforms.get(support) else {
-        return;
-    };
-    let Some(y) = platform_surface_at_x(platform, x) else {
-        return;
-    };
-    agent.mob.position = Some(Vec2 { x, y });
-    agent.mob.layer = platform.layer;
-    agent.support = Some(support);
-    agent.velocity_y = 0.0;
-    set_mode(
-        agent,
-        if agent.direction == 0 {
-            MobMovementMode::Idle
-        } else {
-            MobMovementMode::Walking
-        },
-    );
-}
-
-fn advance_jump(
-    terrain: &MobTerrain,
-    agent: &mut MobAgent,
-    elapsed_seconds: f32,
-) {
-    let Some(position) = agent.mob.position else {
-        return;
-    };
-    let next_velocity_y = agent.velocity_y + MOB_GRAVITY * elapsed_seconds;
-    let next_x = (position.x + f32::from(agent.direction) * agent.move_speed * elapsed_seconds)
-        .clamp(agent.roam_left, agent.roam_right);
-    let next_y = position.y + (agent.velocity_y + next_velocity_y) * 0.5 * elapsed_seconds;
-    if next_velocity_y >= 0.0
-        && let Some(support) = landing_support(terrain, position.y, next_x, next_y)
-    {
-        snap_to_platform(terrain, agent, support, next_x);
-        return;
-    }
-    agent.mob.position = Some(Vec2 {
-        x: next_x,
-        y: next_y,
-    });
-    agent.velocity_y = next_velocity_y;
-    if (next_x == agent.roam_left && agent.direction < 0)
-        || (next_x == agent.roam_right && agent.direction > 0)
-    {
-        reverse_direction(agent);
-    }
-    if next_y > terrain.height + 100.0 {
-        reset_agent(agent);
-    }
-}
-
-fn landing_support(
-    terrain: &MobTerrain,
-    previous_y: f32,
-    x: f32,
-    next_y: f32,
-) -> Option<usize> {
-    terrain
-        .platforms
-        .iter()
-        .enumerate()
-        .filter_map(|(index, platform)| {
-            let surface = platform_surface_at_x(platform, x)?;
-            (surface >= previous_y && surface <= next_y).then_some((index, surface))
-        })
-        .min_by(|left, right| left.1.total_cmp(&right.1))
-        .map(|(index, _)| index)
-}
-
-fn reset_agent(agent: &mut MobAgent) {
-    agent.mob.position = Some(agent.spawn_position);
-    agent.support = agent.spawn_support;
-    agent.velocity_y = 0.0;
-    agent.decision_seconds = 0.0;
-    set_direction(agent, 0);
-    set_mode(agent, MobMovementMode::Idle);
-}
-
-fn nearest_platform(
-    platforms: &[Platform],
-    x: f32,
-    reference_y: f32,
-    layer: Option<i32>,
-) -> Option<usize> {
-    platforms
-        .iter()
-        .enumerate()
-        .filter(|(_, platform)| layer.is_none_or(|layer| platform.layer == layer))
-        .filter_map(|(index, platform)| {
-            let surface = platform_surface_at_x(platform, x)?;
-            Some((index, (surface - reference_y).abs()))
-        })
-        .min_by(|left, right| left.1.total_cmp(&right.1))
-        .map(|(index, _)| index)
-}
-
-fn platform_surface_at_x(
-    platform: &Platform,
-    x: f32,
-) -> Option<f32> {
-    let minimum_x = platform.x.min(platform.end_x);
-    let maximum_x = platform.x.max(platform.end_x);
-    if !(minimum_x..=maximum_x).contains(&x) {
-        return None;
-    }
-    let delta_x = platform.end_x - platform.x;
-    if delta_x.abs() < f32::EPSILON {
-        return None;
-    }
-    let progress = (x - platform.x) / delta_x;
-    Some(platform.y + progress * (platform.end_y - platform.y))
-}
-
-fn movement_mode(agent: &MobAgent) -> MobMovementMode {
-    MobMovementMode::try_from(agent.mob.movement_mode).unwrap_or(MobMovementMode::Idle)
-}
-
-fn set_mode(
-    agent: &mut MobAgent,
-    mode: MobMovementMode,
-) {
-    agent.mob.movement_mode = mode as i32;
-}
-
-fn set_direction(
-    agent: &mut MobAgent,
-    direction: i8,
-) {
-    agent.direction = direction.clamp(-1, 1);
-    if direction != 0 {
-        // Classic WZ mob frames face left before the map flip flag is applied.
-        agent.mob.flip_x = direction > 0;
-    }
-}
-
-fn reverse_direction(agent: &mut MobAgent) {
-    set_direction(agent, -agent.direction);
-    agent.decision_seconds = agent.decision_seconds.max(MIN_DECISION_SECONDS / 2.0);
+fn finite_position(position: &Vec2) -> bool {
+    position.x.is_finite() && position.y.is_finite()
 }
 
 fn random_seed(
@@ -592,234 +753,337 @@ fn random_seed(
     seed ^ 0x9e37_79b9_7f4a_7c15
 }
 
-fn next_random(state: &mut u64) -> u64 {
-    let mut value = *state;
-    value ^= value << 13;
-    value ^= value >> 7;
-    value ^= value << 17;
-    *state = value;
-    value
+fn borrow_error(message: String) -> MobStoreError {
+    MobStoreError::Borrow { message }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+    use std::sync::Arc;
     use std::time::Duration;
     use std::time::Instant;
 
+    use oozems_proto::v1::CharacterStats;
     use oozems_proto::v1::Map;
     use oozems_proto::v1::MobAnimation;
     use oozems_proto::v1::MobDefinition;
     use oozems_proto::v1::MobFrame;
-    use oozems_proto::v1::MobMovementMode;
     use oozems_proto::v1::MobSpawnPoint;
     use oozems_proto::v1::Platform;
+    use oozems_proto::v1::PlayerState;
     use oozems_proto::v1::Vec2;
 
     use super::MobStore;
-    use super::advance_agents;
-    use super::build_map_state;
-    use super::current_mobs_at;
-    use super::map_mobs_at;
-    use super::spawn_agents;
-    use super::spawn_mobs;
+    use super::PlayerSkillAttack;
+    use super::map_snapshot_at;
+    use super::observe_player_at;
+    use super::restore_player_events;
+    use super::use_player_skill_at;
+    use crate::gameplay::CombatConfig;
+    use crate::skill_formula::FormulaCatalog;
 
     #[test]
-    fn spawn_points_become_idle_mobs_with_full_health() {
-        let map = map(false);
+    fn skill_damage_is_applied_to_an_in_range_mob_and_sets_aggro() {
+        let store = store();
+        let map = map();
+        let player = player(90.0, 100.0);
+        let now = Instant::now();
 
-        let mobs = spawn_mobs(&map);
+        map_snapshot_at(&store, &map, now).expect("initialize map");
+        let update = use_player_skill_at(
+            &store,
+            &map,
+            &player,
+            PlayerSkillAttack {
+                target_mob_id: "1:1:0",
+                facing_left: false,
+                minimum_damage: 10,
+                maximum_damage: 10,
+                fixed_damage: false,
+            },
+            now + Duration::from_millis(1),
+        )
+        .expect("use skill");
 
-        assert_eq!(mobs.len(), 1);
-        assert_eq!(mobs[0].id, "100010000:3:0");
-        assert_eq!(mobs[0].definition_id, 100_101);
-        assert_eq!(mobs[0].current_hp, 15);
-        assert_eq!(mobs[0].position, Some(Vec2 { x: 50.0, y: 300.0 }));
+        assert_eq!(update.mobs[0].current_hp, 90);
+        assert!(update.combat_events.iter().any(|event| event.damage == 10));
+    }
+
+    #[test]
+    fn attacks_cannot_damage_a_mob_behind_the_player() {
+        let store = store();
+        let map = map();
+        let player = player(140.0, 100.0);
+
+        let update = use_player_skill_at(
+            &store,
+            &map,
+            &player,
+            PlayerSkillAttack {
+                target_mob_id: "1:1:0",
+                facing_left: false,
+                minimum_damage: 10,
+                maximum_damage: 10,
+                fixed_damage: false,
+            },
+            Instant::now(),
+        )
+        .expect("use skill");
+
+        assert_eq!(update.mobs[0].current_hp, 100);
+        assert!(update.combat_events.is_empty());
+    }
+
+    #[test]
+    fn body_contact_damages_a_player_once_during_invulnerability() {
+        let store = store();
+        let map = map();
+        let player = player(100.0, 100.0);
+        let now = Instant::now();
+
+        let first = observe_player_at(&store, &map, &player, now).expect("first observation");
+        let second = observe_player_at(&store, &map, &player, now + Duration::from_millis(100))
+            .expect("invulnerable observation");
+
+        assert!(first.player_damage() > 0);
+        assert_eq!(second.player_damage(), 0);
+    }
+
+    #[test]
+    fn combat_events_can_be_restored_after_a_persistence_failure() {
+        let store = store();
+        let map = map();
+        let player = player(100.0, 100.0);
+        let now = Instant::now();
+
+        let first = observe_player_at(&store, &map, &player, now).expect("first observation");
+        let expected_damage = first.player_damage();
+        restore_player_events(&store, map.id, &player.id, first.combat_events)
+            .expect("restore events");
+        let retried = observe_player_at(&store, &map, &player, now + Duration::from_millis(100))
+            .expect("retry observation");
+
+        assert!(expected_damage > 0);
+        assert_eq!(retried.player_damage(), expected_damage);
+    }
+
+    #[test]
+    fn aggroed_mobs_chase_a_nearby_player() {
+        let store = store();
+        let mut map = map();
+        map.mob_definitions[0].animations.push(MobAnimation {
+            name: "move".to_owned(),
+            frames: vec![MobFrame::default()],
+        });
+        let player = player(250.0, 100.0);
+        let now = Instant::now();
+
+        use_player_skill_at(
+            &store,
+            &map,
+            &player,
+            PlayerSkillAttack {
+                target_mob_id: "1:1:0",
+                facing_left: true,
+                minimum_damage: 1,
+                maximum_damage: 1,
+                fixed_damage: true,
+            },
+            now,
+        )
+        .expect("provoking attack");
+        let update = observe_player_at(&store, &map, &player, now + Duration::from_millis(500))
+            .expect("aggro observation");
+
+        assert!(update.mobs[0].position.expect("mob position").x > 100.0);
+    }
+
+    #[test]
+    fn nearby_magic_mobs_do_not_attack_unprovoked() {
+        let store = store();
+        let mut map = map();
+        map.mob_definitions[0].body_attack = false;
+        map.mob_definitions[0].magic_attack = 20;
+        let player = player(300.0, 100.0);
+        let now = Instant::now();
+
+        observe_player_at(&store, &map, &player, now).expect("first observation");
+        let update = observe_player_at(&store, &map, &player, now + Duration::from_secs(2))
+            .expect("nearby observation");
+
+        assert!(update.mob_projectiles.is_empty());
+        assert_eq!(update.player_damage(), 0);
+    }
+
+    #[test]
+    fn magic_mobs_launch_projectiles_that_damage_their_target() {
+        let store = store();
+        let mut map = map();
+        map.mob_definitions[0].body_attack = false;
+        map.mob_definitions[0].magic_attack = 20;
+        let player = player(300.0, 100.0);
+        let now = Instant::now();
+
+        use_player_skill_at(
+            &store,
+            &map,
+            &player,
+            PlayerSkillAttack {
+                target_mob_id: "1:1:0",
+                facing_left: true,
+                minimum_damage: 1,
+                maximum_damage: 1,
+                fixed_damage: true,
+            },
+            now,
+        )
+        .expect("provoking attack");
+        let damage = (1..=10)
+            .map(|step| {
+                observe_player_at(
+                    &store,
+                    &map,
+                    &player,
+                    now + Duration::from_millis(step * 100),
+                )
+                .expect("projectile observation")
+                .player_damage()
+            })
+            .find(|damage| *damage > 0);
+
+        assert!(damage.is_some());
+    }
+
+    #[test]
+    fn dead_mobs_return_after_their_respawn_deadline() {
+        let store = store();
+        let mut map = map();
+        map.mob_definitions[0].animations.push(MobAnimation {
+            name: "move".to_owned(),
+            frames: vec![MobFrame::default()],
+        });
+        let player = player(250.0, 100.0);
+        let now = Instant::now();
+
+        use_player_skill_at(
+            &store,
+            &map,
+            &player,
+            PlayerSkillAttack {
+                target_mob_id: "1:1:0",
+                facing_left: true,
+                minimum_damage: 1,
+                maximum_damage: 1,
+                fixed_damage: true,
+            },
+            now,
+        )
+        .expect("provoking attack");
+        let moved = observe_player_at(&store, &map, &player, now + Duration::from_millis(500))
+            .expect("mob movement");
+        assert!(moved.mobs[0].position.expect("moved position").x > 100.0);
+
+        let killed = use_player_skill_at(
+            &store,
+            &map,
+            &player,
+            PlayerSkillAttack {
+                target_mob_id: "1:1:0",
+                facing_left: true,
+                minimum_damage: 100,
+                maximum_damage: 100,
+                fixed_damage: true,
+            },
+            now + Duration::from_millis(501),
+        )
+        .expect("lethal skill");
+        assert_eq!(killed.mobs[0].current_hp, 0);
+
+        let respawned = observe_player_at(&store, &map, &player, now + Duration::from_secs(8))
+            .expect("respawn observation");
+        assert_eq!(respawned.mobs[0].current_hp, 100);
         assert_eq!(
-            MobMovementMode::try_from(mobs[0].movement_mode),
-            Ok(MobMovementMode::Idle)
+            respawned.mobs[0].position,
+            Some(Vec2 { x: 100.0, y: 100.0 })
         );
     }
 
-    #[test]
-    fn store_advances_a_registered_map_once_for_elapsed_time() {
-        let store = MobStore::default();
-        let map = map(false);
-        let started_at = Instant::now();
-
-        let first = map_mobs_at(&store, &map, started_at).expect("first lookup");
-        let second = current_mobs_at(&store, map.id, started_at + Duration::from_secs(1))
-            .expect("second lookup")
-            .expect("registered map");
-        let third = current_mobs_at(&store, map.id, started_at + Duration::from_secs(1))
-            .expect("third lookup")
-            .expect("registered map");
-
-        assert_ne!(first[0].position, second[0].position);
-        assert_eq!(second, third);
+    fn store() -> MobStore {
+        let formulas = FormulaCatalog::load(Path::new("../../config/skill-formulas.toml"))
+            .expect("formula catalog");
+        MobStore::new(
+            CombatConfig {
+                disengage_range: 520.0,
+                player_attack_range: 220.0,
+                attack_vertical_reach: 90.0,
+                touch_horizontal_reach: 28.0,
+                touch_vertical_reach: 48.0,
+                projectile_range: 420.0,
+                projectile_speed: 240.0,
+                projectile_hit_reach: 18.0,
+                mob_attack_interval: Duration::from_millis(1_500),
+                player_invulnerability: Duration::from_secs(1),
+                default_respawn: Duration::from_secs(7),
+            },
+            Arc::new(formulas),
+        )
     }
 
-    #[test]
-    fn current_lookup_does_not_create_an_unknown_map() {
-        let store = MobStore::default();
-
-        assert_eq!(
-            current_mobs_at(&store, 123, Instant::now()).expect("lookup"),
-            None
-        );
+    fn player(
+        x: f32,
+        y: f32,
+    ) -> PlayerState {
+        PlayerState {
+            id: "player".to_owned(),
+            level: 10,
+            map_id: 1,
+            position: Some(Vec2 { x, y }),
+            stats: Some(CharacterStats {
+                hp: 50,
+                max_hp: 50,
+                ..CharacterStats::default()
+            }),
+            ..PlayerState::default()
+        }
     }
 
-    #[test]
-    fn non_jumping_mob_turns_at_a_raised_ledge() {
-        let map = ledge_map(false);
-        let mut agents = spawn_agents(&map);
-        agents[0].direction = 1;
-        agents[0].decision_seconds = 10.0;
-
-        advance_agents(
-            &build_map_state(&map, Instant::now()).terrain,
-            &mut agents,
-            0.25,
-        );
-
-        let position = agents[0].mob.position.expect("position");
-        assert!(position.x < 100.0);
-        assert_eq!(position.y, 300.0);
-        assert_eq!(agents[0].direction, -1);
-        assert_ne!(
-            MobMovementMode::try_from(agents[0].mob.movement_mode),
-            Ok(MobMovementMode::Jumping)
-        );
-    }
-
-    #[test]
-    fn jumping_mob_climbs_a_reachable_ledge() {
-        let map = ledge_map(true);
-        let state = build_map_state(&map, Instant::now());
-        let mut agents = spawn_agents(&map);
-        agents[0].direction = 1;
-        agents[0].decision_seconds = 10.0;
-
-        advance_agents(&state.terrain, &mut agents, 0.25);
-
-        assert_eq!(
-            MobMovementMode::try_from(agents[0].mob.movement_mode),
-            Ok(MobMovementMode::Jumping)
-        );
-        assert!(agents[0].mob.position.expect("airborne").y < 300.0);
-
-        advance_agents(&state.terrain, &mut agents, 0.8);
-
-        let position = agents[0].mob.position.expect("landed");
-        assert_eq!(position.y, 250.0);
-        assert!(position.x >= 100.0);
-        assert_eq!(agents[0].mob.layer, 2);
-        assert_eq!(
-            MobMovementMode::try_from(agents[0].mob.movement_mode),
-            Ok(MobMovementMode::Walking)
-        );
-    }
-
-    #[test]
-    fn jumping_mob_turns_when_a_ledge_is_too_high() {
-        let mut map = ledge_map(true);
-        map.platforms[1].y = 200.0;
-        map.platforms[1].end_y = 200.0;
-        let state = build_map_state(&map, Instant::now());
-        let mut agents = spawn_agents(&map);
-        agents[0].direction = 1;
-        agents[0].decision_seconds = 10.0;
-
-        advance_agents(&state.terrain, &mut agents, 0.25);
-
-        assert_eq!(agents[0].direction, -1);
-        assert_ne!(
-            MobMovementMode::try_from(agents[0].mob.movement_mode),
-            Ok(MobMovementMode::Jumping)
-        );
-    }
-
-    #[test]
-    fn definitions_without_visuals_do_not_spawn() {
-        let mut map = map(false);
-        map.mob_definitions[0].animations.clear();
-
-        assert!(spawn_mobs(&map).is_empty());
-    }
-
-    fn map(can_jump: bool) -> Map {
+    fn map() -> Map {
         Map {
-            id: 100_010_000,
-            width: 800,
-            height: 600,
-            platforms: vec![platform(1, 0.0, 300.0, 800.0, 300.0, 2)],
+            id: 1,
+            width: 500,
+            height: 300,
+            platforms: vec![Platform {
+                id: 1,
+                x: 0.0,
+                y: 100.0,
+                end_x: 500.0,
+                end_y: 100.0,
+                layer: 0,
+                ..Platform::default()
+            }],
             mob_spawn_points: vec![MobSpawnPoint {
-                spawn_id: 3,
-                mob_id: 100_101,
-                position: Some(Vec2 { x: 50.0, y: 300.0 }),
+                spawn_id: 1,
+                mob_id: 100,
+                position: Some(Vec2 { x: 100.0, y: 100.0 }),
                 roam_left: 0.0,
-                roam_right: 800.0,
-                layer: 2,
+                roam_right: 500.0,
                 foothold_id: 1,
                 ..MobSpawnPoint::default()
             }],
-            mob_definitions: vec![definition(can_jump)],
-            ..Map::default()
-        }
-    }
-
-    fn ledge_map(can_jump: bool) -> Map {
-        let mut map = map(can_jump);
-        map.platforms = vec![
-            platform(1, 0.0, 300.0, 100.0, 300.0, 1),
-            platform(2, 100.0, 250.0, 300.0, 250.0, 2),
-        ];
-        map.mob_spawn_points[0].position = Some(Vec2 { x: 90.0, y: 300.0 });
-        map.mob_spawn_points[0].roam_right = 300.0;
-        map.mob_spawn_points[0].layer = 1;
-        map
-    }
-
-    fn definition(can_jump: bool) -> MobDefinition {
-        let mut animations = vec![animation("move")];
-        if can_jump {
-            animations.push(animation("jump"));
-        }
-        MobDefinition {
-            id: 100_101,
-            max_hp: 15,
-            speed: 0,
-            animations,
-            can_jump,
-            ..MobDefinition::default()
-        }
-    }
-
-    fn animation(name: &str) -> MobAnimation {
-        MobAnimation {
-            name: name.to_owned(),
-            frames: vec![MobFrame {
-                asset_id: name.to_owned(),
-                ..MobFrame::default()
+            mob_definitions: vec![MobDefinition {
+                id: 100,
+                level: 10,
+                max_hp: 100,
+                physical_attack: 20,
+                body_attack: true,
+                animations: vec![MobAnimation {
+                    name: "stand".to_owned(),
+                    frames: vec![MobFrame::default()],
+                }],
+                ..MobDefinition::default()
             }],
-        }
-    }
-
-    fn platform(
-        id: u32,
-        x: f32,
-        y: f32,
-        end_x: f32,
-        end_y: f32,
-        layer: i32,
-    ) -> Platform {
-        Platform {
-            id,
-            x,
-            y,
-            end_x,
-            end_y,
-            layer,
-            ..Platform::default()
+            ..Map::default()
         }
     }
 }

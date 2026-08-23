@@ -50,6 +50,7 @@ pub fn router(
     public_dir: &Path,
     asset_dir: &Path,
 ) -> Router {
+    let formulas = Arc::new(formulas);
     let state = AppState {
         catalog: Arc::new(catalog),
         database,
@@ -57,11 +58,11 @@ pub fn router(
         drops: Arc::new(DropStore::new(gameplay.item_drop_despawn)),
         gameplay,
         movement: Arc::new(MovementTracker::default()),
-        mobs: Arc::new(MobStore::default()),
+        mobs: Arc::new(MobStore::new(gameplay.combat, formulas.clone())),
         player_locks: Arc::new(PlayerLocks::default()),
         recovery_timers: Arc::new(RecoveryTimers::default()),
         skill_cooldowns: Arc::new(SkillCooldowns::default()),
-        formulas: Arc::new(formulas),
+        formulas,
     };
     let api = Router::new()
         .route("/bootstrap", post(crate::api::bootstrap))

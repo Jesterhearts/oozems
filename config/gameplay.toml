@@ -6,6 +6,19 @@ drop_despawn = "10m"
 [skills]
 initial_points = 3
 
+[combat]
+disengage_range        = 520.0
+player_attack_range    = 220.0
+attack_vertical_reach  = 90.0
+touch_horizontal_reach = 28.0
+touch_vertical_reach   = 48.0
+projectile_range       = 420.0
+projectile_speed       = 240.0
+projectile_hit_reach   = 18.0
+mob_attack_interval    = "1500ms"
+player_invulnerability = "1s"
+default_respawn        = "7s"
+
 [movement]
 walk_speed              = 220.0
 climb_speed             = 135.0

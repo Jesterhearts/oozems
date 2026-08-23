@@ -249,12 +249,16 @@ pub async fn allocate_skill_point(
 pub async fn use_skill(
     player_id: &str,
     skill_id: u32,
+    target_mob_id: &str,
+    facing_left: bool,
 ) -> Result<UseSkillResponse, ClientError> {
     post_protobuf(
         "/api/v1/skills/use",
         UseSkillRequest {
             player_id: player_id.to_owned(),
             skill_id,
+            target_mob_id: target_mob_id.to_owned(),
+            facing_left,
         },
     )
     .await

@@ -320,6 +320,7 @@ pub fn prepare_skill_use(
             jump_bonus,
             duration_ms: u64::from(duration_seconds).saturating_mul(1_000),
             mp_restored,
+            fixed_damage: fixed_damage.is_some(),
         },
         cooldown_ms: u64::from(cooldown_seconds).saturating_mul(1_000),
     })

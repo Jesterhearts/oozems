@@ -82,6 +82,7 @@ pub fn draw(game: &Game) {
             }
         }
     }
+    mob::draw_combat_texts(game, camera_x, camera_y);
     draw_hud(game);
 }
 
@@ -92,6 +93,7 @@ pub(crate) fn world_layers(map: &Map) -> Vec<i32> {
             + map.ladders.len()
             + map.portals.len()
             + map.mobs.len()
+            + map.mob_projectiles.len()
             + 1,
     );
     layers.push(0);
@@ -100,6 +102,11 @@ pub(crate) fn world_layers(map: &Map) -> Vec<i32> {
     layers.extend(map.ladders.iter().map(|ladder| ladder.layer));
     layers.extend(map.portals.iter().map(|portal| portal.layer));
     layers.extend(map.mobs.iter().map(|mob| mob.layer));
+    layers.extend(
+        map.mob_projectiles
+            .iter()
+            .map(|projectile| projectile.layer),
+    );
     layers.sort_unstable();
     layers.dedup();
     layers

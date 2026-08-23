@@ -200,7 +200,10 @@ pub async fn get_map(
         )
     })?;
     map.dropped_items = crate::items::map_drops(&state.drops, map.id)?;
-    map.mobs = crate::mobs::map_mobs(&state.mobs, &map)?;
+    let simulation = crate::mobs::map_snapshot(&state.mobs, &map)?;
+    map.mobs = simulation.mobs;
+    map.mob_projectiles = simulation.mob_projectiles;
+    map.simulation_sequence = simulation.sequence;
 
     Ok(Protobuf(GetMapResponse { map: Some(map) }))
 }
@@ -416,7 +419,7 @@ pub async fn use_skill(
         prepared.cooldown_ms,
     )
     .map_err(skill_rule_error)?;
-    let player = match crate::database::save_player(&state.database, &prepared.player).await {
+    let mut player = match crate::database::save_player(&state.database, &prepared.player).await {
         Ok(player) => player,
         Err(error) => {
             if let Err(release_error) = crate::skills::release_skill_cooldown(
@@ -441,12 +444,53 @@ pub async fn use_skill(
         ),
         now_ms,
     )?;
+    let map = load_map(&state, player.map_id).await?.ok_or_else(|| {
+        ApiError::not_found(
+            "map_not_found",
+            format!("map {} does not exist", player.map_id),
+        )
+    })?;
+    let simulation = crate::mobs::use_player_skill(
+        &state.mobs,
+        &map,
+        &player,
+        crate::mobs::PlayerSkillAttack {
+            target_mob_id: &request.target_mob_id,
+            facing_left: request.facing_left,
+            minimum_damage: prepared.result.minimum_damage,
+            maximum_damage: prepared.result.maximum_damage,
+            fixed_damage: prepared.result.fixed_damage,
+        },
+    )?;
+    let player_damage = simulation.player_damage();
+    if player_damage > 0 {
+        let stats = player.stats.get_or_insert_default();
+        stats.hp = stats
+            .hp
+            .saturating_sub(u32::try_from(player_damage).unwrap_or(u32::MAX));
+        player = match crate::database::save_player(&state.database, &player).await {
+            Ok(player) => player,
+            Err(error) => {
+                crate::mobs::restore_player_events(
+                    &state.mobs,
+                    player.map_id,
+                    &player.id,
+                    simulation.combat_events.clone(),
+                )?;
+                return Err(error.into());
+            }
+        };
+    }
     record_recovery_activity(&state, player_id.as_str(), now_ms);
 
     Ok(Protobuf(UseSkillResponse {
         player: Some(player),
         result: Some(prepared.result),
         effect: Some(effect),
+        mobs: simulation.mobs,
+        mob_projectiles: simulation.mob_projectiles,
+        combat_events: simulation.combat_events,
+        simulation_sequence: simulation.sequence,
     }))
 }
 

@@ -194,6 +194,7 @@ fn build_game(
             movement::initial_motion_state(&map, position)
         });
     let world_layers = render::world_layers(&map);
+    let simulation_sequence = map.simulation_sequence;
 
     let game = Rc::new(RefCell::new(Game {
         canvas: canvas.clone(),
@@ -207,7 +208,7 @@ fn build_game(
         key_bindings,
         key_drag: None,
         map,
-        mob_render: MobRenderState::default(),
+        mob_render: crate::mob_render::new_map_state(simulation_sequence),
         movement_rules,
         motion,
         player,

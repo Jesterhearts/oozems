@@ -55,7 +55,9 @@ pub async fn submit_movement(
     let now_ms = unix_time_ms()?;
     let decision = submit_with_lazy_map(&state, &current, submitted, now_ms).await?;
     apply_movement_side_effects(&state, &player_id, &current, &decision, now_ms).await?;
-    Ok(Protobuf(movement_response(&state, decision).await?))
+    Ok(Protobuf(
+        movement_response(&state, &current, decision).await?,
+    ))
 }
 
 async fn submit_with_lazy_map(
@@ -137,7 +139,9 @@ pub async fn enter_portal(
         now_ms,
     )?;
     apply_movement_side_effects(&state, &player_id, &current, &decision, now_ms).await?;
-    Ok(Protobuf(movement_response(&state, decision).await?))
+    Ok(Protobuf(
+        movement_response(&state, &current, decision).await?,
+    ))
 }
 
 fn movement_request_error(error: crate::movement::MovementError) -> ApiError {
@@ -172,23 +176,47 @@ async fn apply_movement_side_effects(
 
 async fn movement_response(
     state: &AppState,
+    current: &PlayerState,
     decision: crate::movement::MovementDecision,
 ) -> Result<MovementUpdateResponse, ApiError> {
     let map_id = decision.authoritative.map_id;
-    let mobs = match crate::mobs::current_mobs(&state.mobs, map_id)? {
-        Some(mobs) => mobs,
-        None => {
-            let map = load_map(state, map_id).await?.ok_or_else(|| {
-                ApiError::not_found("map_not_found", format!("map {map_id} does not exist"))
-            })?;
-            crate::mobs::map_mobs(&state.mobs, &map)?
-        }
-    };
+    let map = load_map(state, map_id).await?.ok_or_else(|| {
+        ApiError::not_found("map_not_found", format!("map {map_id} does not exist"))
+    })?;
+    let authoritative_player =
+        crate::movement::synchronize_player(&state.movement, current.clone())?;
+    let simulation = crate::mobs::observe_player(&state.mobs, &map, &authoritative_player)?;
+    let player_damage = simulation.player_damage();
+    let mut updated_player = authoritative_player;
+    if player_damage > 0 {
+        let stats = updated_player.stats.get_or_insert_default();
+        stats.hp = stats
+            .hp
+            .saturating_sub(u32::try_from(player_damage).unwrap_or(u32::MAX));
+        updated_player = match crate::database::save_player(&state.database, &updated_player).await
+        {
+            Ok(player) => player,
+            Err(error) => {
+                crate::mobs::restore_player_events(
+                    &state.mobs,
+                    map_id,
+                    &updated_player.id,
+                    simulation.combat_events.clone(),
+                )?;
+                return Err(error.into());
+            }
+        };
+        record_recovery_activity(state, &updated_player.id, unix_time_ms()?);
+    }
     Ok(MovementUpdateResponse {
         authoritative: Some(decision.authoritative),
         accepted: decision.accepted,
         rejection_reason: decision.rejection_reason,
-        mobs,
+        mobs: simulation.mobs,
+        player_stats: updated_player.stats,
+        mob_projectiles: simulation.mob_projectiles,
+        combat_events: simulation.combat_events,
+        simulation_sequence: simulation.sequence,
     })
 }
 

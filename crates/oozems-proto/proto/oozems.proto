@@ -175,6 +175,10 @@ message MovementUpdateResponse {
   bool accepted = 2;
   string rejection_reason = 3;
   repeated Mob mobs = 4;
+  CharacterStats player_stats = 5;
+  repeated MobProjectile mob_projectiles = 6;
+  repeated CombatEvent combat_events = 7;
+  uint64 simulation_sequence = 8;
 }
 
 message CreateCharacterRequest {
@@ -224,12 +228,18 @@ message AllocateSkillPointResponse {
 message UseSkillRequest {
   string player_id = 1;
   uint32 skill_id = 2;
+  string target_mob_id = 3;
+  bool facing_left = 4;
 }
 
 message UseSkillResponse {
   PlayerState player = 1;
   SkillUseResult result = 2;
   SkillEffect effect = 3;
+  repeated Mob mobs = 4;
+  repeated MobProjectile mob_projectiles = 5;
+  repeated CombatEvent combat_events = 6;
+  uint64 simulation_sequence = 7;
 }
 
 message RecoverPlayerRequest {
@@ -256,6 +266,7 @@ message SkillUseResult {
   sint32 jump_bonus = 10;
   uint64 duration_ms = 11;
   uint32 mp_restored = 12;
+  bool fixed_damage = 13;
 }
 
 message SkillEffect {
@@ -530,6 +541,8 @@ message Map {
   repeated MobDefinition mob_definitions = 12;
   repeated Mob mobs = 13;
   MapMovementBounds movement_bounds = 14;
+  repeated MobProjectile mob_projectiles = 15;
+  uint64 simulation_sequence = 16;
 }
 
 message MapMovementBounds {
@@ -595,11 +608,38 @@ message Mob {
   MobMovementMode movement_mode = 8;
 }
 
+message MobProjectile {
+  string id = 1;
+  string source_mob_id = 2;
+  string target_player_id = 3;
+  Vec2 position = 4;
+  int32 layer = 5;
+}
+
+message CombatEvent {
+  string id = 1;
+  CombatEventKind kind = 2;
+  string source_id = 3;
+  string target_id = 4;
+  uint64 damage = 5;
+  Vec2 position = 6;
+}
+
+enum CombatEventKind {
+  COMBAT_EVENT_KIND_UNSPECIFIED = 0;
+  COMBAT_EVENT_KIND_PLAYER_HIT_MOB = 1;
+  COMBAT_EVENT_KIND_MOB_TOUCHED_PLAYER = 2;
+  COMBAT_EVENT_KIND_MOB_PROJECTILE_HIT_PLAYER = 3;
+  COMBAT_EVENT_KIND_MOB_DIED = 4;
+  COMBAT_EVENT_KIND_MOB_RESPAWNED = 5;
+}
+
 enum MobMovementMode {
   MOB_MOVEMENT_MODE_UNSPECIFIED = 0;
   MOB_MOVEMENT_MODE_IDLE = 1;
   MOB_MOVEMENT_MODE_WALKING = 2;
   MOB_MOVEMENT_MODE_JUMPING = 3;
+  MOB_MOVEMENT_MODE_ATTACKING = 4;
 }
 
 message DroppedItem {

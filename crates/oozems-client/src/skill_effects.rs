@@ -4,6 +4,7 @@ use oozems_proto::v1::SkillAnimation;
 use oozems_proto::v1::SkillAnimationFrame;
 use oozems_proto::v1::SkillAnimationPlacement;
 use oozems_proto::v1::SkillEffect;
+use oozems_proto::v1::Vec2;
 use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::JsFuture;
 use wasm_bindgen_futures::spawn_local;
@@ -32,6 +33,7 @@ struct ActiveVisual {
     origin_x: f32,
     origin_y: f32,
     facing_left: bool,
+    target: Option<Vec2>,
     sound_url: Option<String>,
 }
 
@@ -43,6 +45,7 @@ struct ActiveSound {
 pub(crate) fn install(
     game: &mut Game,
     effect: SkillEffect,
+    target: Option<Vec2>,
 ) {
     if let Err(error) = assets::insert_assets(&mut game.images, effect.assets.iter()) {
         warn(&format!(
@@ -71,6 +74,7 @@ pub(crate) fn install(
         origin_x: position.x,
         origin_y: position.y,
         facing_left: game.facing_left,
+        target,
         sound_url,
     });
 }
@@ -213,15 +217,16 @@ fn effect_anchor(
     progress: f32,
 ) -> (f32, f32) {
     let direction = if visual.facing_left { -1.0 } else { 1.0 };
+    let target = visual.target.unwrap_or(Vec2 {
+        x: visual.origin_x + direction * PROJECTILE_DISTANCE,
+        y: visual.origin_y,
+    });
     match placement {
         SkillAnimationPlacement::Projectile => (
-            visual.origin_x + direction * PROJECTILE_DISTANCE * progress,
-            visual.origin_y - PROJECTILE_HEIGHT,
+            visual.origin_x + (target.x - visual.origin_x) * progress,
+            visual.origin_y - PROJECTILE_HEIGHT + (target.y - visual.origin_y) * progress,
         ),
-        SkillAnimationPlacement::Target => (
-            visual.origin_x + direction * PROJECTILE_DISTANCE,
-            visual.origin_y,
-        ),
+        SkillAnimationPlacement::Target => (target.x, target.y),
         SkillAnimationPlacement::Caster | SkillAnimationPlacement::Unspecified => {
             (visual.origin_x, visual.origin_y)
         }
@@ -326,6 +331,7 @@ mod tests {
             origin_x: 300.0,
             origin_y: 200.0,
             facing_left: true,
+            target: None,
             sound_url: None,
         };
 

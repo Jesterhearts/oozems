@@ -10,7 +10,23 @@ use thiserror::Error;
 pub struct GameplayConfig {
     pub item_drop_despawn: Duration,
     pub initial_skill_points: u32,
+    pub combat: CombatConfig,
     pub movement: MovementConfig,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CombatConfig {
+    pub disengage_range: f32,
+    pub player_attack_range: f32,
+    pub attack_vertical_reach: f32,
+    pub touch_horizontal_reach: f32,
+    pub touch_vertical_reach: f32,
+    pub projectile_range: f32,
+    pub projectile_speed: f32,
+    pub projectile_hit_reach: f32,
+    pub mob_attack_interval: Duration,
+    pub player_invulnerability: Duration,
+    pub default_respawn: Duration,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -39,6 +55,8 @@ struct GameplayFile {
     items: ItemRulesFile,
     skills: SkillRulesFile,
     #[serde(default)]
+    combat: CombatRulesFile,
+    #[serde(default)]
     movement: MovementRulesFile,
 }
 
@@ -52,6 +70,40 @@ struct ItemRulesFile {
 #[serde(deny_unknown_fields)]
 struct SkillRulesFile {
     initial_points: u32,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct CombatRulesFile {
+    disengage_range: f32,
+    player_attack_range: f32,
+    attack_vertical_reach: f32,
+    touch_horizontal_reach: f32,
+    touch_vertical_reach: f32,
+    projectile_range: f32,
+    projectile_speed: f32,
+    projectile_hit_reach: f32,
+    mob_attack_interval: String,
+    player_invulnerability: String,
+    default_respawn: String,
+}
+
+impl Default for CombatRulesFile {
+    fn default() -> Self {
+        Self {
+            disengage_range: 520.0,
+            player_attack_range: 220.0,
+            attack_vertical_reach: 90.0,
+            touch_horizontal_reach: 28.0,
+            touch_vertical_reach: 48.0,
+            projectile_range: 420.0,
+            projectile_speed: 240.0,
+            projectile_hit_reach: 18.0,
+            mob_attack_interval: "1500ms".to_owned(),
+            player_invulnerability: "1s".to_owned(),
+            default_respawn: "7s".to_owned(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -129,6 +181,15 @@ pub enum GameplayConfigError {
     },
     #[error("movement.{field} in {path} must be a finite value greater than zero")]
     InvalidMovementValue { path: PathBuf, field: &'static str },
+    #[error("combat.{field} in {path} is invalid")]
+    InvalidCombatDuration {
+        path: PathBuf,
+        field: &'static str,
+        #[source]
+        source: humantime::DurationError,
+    },
+    #[error("combat.{field} in {path} must be a finite value greater than zero")]
+    InvalidCombatValue { path: PathBuf, field: &'static str },
     #[error(
         "movement.maximum_snapshot_gap in {path} must not be shorter than \
          movement.snapshot_interval"
@@ -161,13 +222,76 @@ impl GameplayConfig {
             });
         }
 
+        let combat = parse_combat_config(file.combat, path)?;
         let movement = parse_movement_config(file.movement, path)?;
         Ok(Self {
             item_drop_despawn,
             initial_skill_points: file.skills.initial_points,
+            combat,
             movement,
         })
     }
+}
+
+fn parse_combat_config(
+    file: CombatRulesFile,
+    path: &Path,
+) -> Result<CombatConfig, GameplayConfigError> {
+    for (field, value) in [
+        ("disengage_range", file.disengage_range),
+        ("player_attack_range", file.player_attack_range),
+        ("attack_vertical_reach", file.attack_vertical_reach),
+        ("touch_horizontal_reach", file.touch_horizontal_reach),
+        ("touch_vertical_reach", file.touch_vertical_reach),
+        ("projectile_range", file.projectile_range),
+        ("projectile_speed", file.projectile_speed),
+        ("projectile_hit_reach", file.projectile_hit_reach),
+    ] {
+        if !value.is_finite() || value <= 0.0 {
+            return Err(GameplayConfigError::InvalidCombatValue {
+                path: path.to_owned(),
+                field,
+            });
+        }
+    }
+    let parse_duration = |field, value: &str| {
+        humantime::parse_duration(value).map_err(|source| {
+            GameplayConfigError::InvalidCombatDuration {
+                path: path.to_owned(),
+                field,
+                source,
+            }
+        })
+    };
+    let mob_attack_interval = parse_duration("mob_attack_interval", &file.mob_attack_interval)?;
+    let player_invulnerability =
+        parse_duration("player_invulnerability", &file.player_invulnerability)?;
+    let default_respawn = parse_duration("default_respawn", &file.default_respawn)?;
+    for (field, duration) in [
+        ("mob_attack_interval", mob_attack_interval),
+        ("player_invulnerability", player_invulnerability),
+        ("default_respawn", default_respawn),
+    ] {
+        if duration.is_zero() {
+            return Err(GameplayConfigError::InvalidCombatValue {
+                path: path.to_owned(),
+                field,
+            });
+        }
+    }
+    Ok(CombatConfig {
+        disengage_range: file.disengage_range,
+        player_attack_range: file.player_attack_range,
+        attack_vertical_reach: file.attack_vertical_reach,
+        touch_horizontal_reach: file.touch_horizontal_reach,
+        touch_vertical_reach: file.touch_vertical_reach,
+        projectile_range: file.projectile_range,
+        projectile_speed: file.projectile_speed,
+        projectile_hit_reach: file.projectile_hit_reach,
+        mob_attack_interval,
+        player_invulnerability,
+        default_respawn,
+    })
 }
 
 fn parse_movement_config(
@@ -282,6 +406,8 @@ mod tests {
 
         assert_eq!(config.item_drop_despawn, Duration::from_secs(600));
         assert_eq!(config.initial_skill_points, 3);
+        assert_eq!(config.combat.disengage_range, 520.0);
+        assert_eq!(config.combat.default_respawn, Duration::from_secs(7));
         assert_eq!(config.movement.speed_cap, 200);
         assert_eq!(config.movement.jump_cap, 200);
         assert_eq!(

@@ -402,6 +402,8 @@ fn build_map(
         mob_spawn_points,
         mob_definitions,
         mobs: Vec::new(),
+        mob_projectiles: Vec::new(),
+        simulation_sequence: 0,
         movement_bounds: Some(movement_bounds),
     })
 }

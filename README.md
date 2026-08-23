@@ -5,8 +5,9 @@ use. It does not include MapleStory code or assets.
 
 ## Not Ready For General Use
 
-The current version of the server is not yet ready for general use as it does
-not support a number of features like mob combat, damage, quests, etc.
+The current version of the server is not yet ready for general use. Combat is
+still limited to player skills, mob contact attacks, and basic mob projectiles.
+Features such as player death handling, loot, and quests are not implemented.
 
 When it is ready, a release tag will be posted for a version 0.1. That will
 indicate general usage availability, although polish and bug fixes will
@@ -46,7 +47,7 @@ browser
   -> POST /api/v1/gui/get         current GUI layout and asset metadata
   -> POST /api/v1/maps/get        current map protobuf
   -> POST /api/v1/movement/rules server-configured movement constants and caps
-  -> POST /api/v1/movement/submit movement correction and current mob snapshot
+  -> POST /api/v1/movement/submit movement correction, combat, and world snapshot
   -> POST /api/v1/movement/portal server-authorized portal transition
   -> POST /api/v1/items/...       equip, unequip, drop, or pick up an item
   -> POST /api/v1/skills/...      allocate a skill point or use a skill
@@ -95,11 +96,18 @@ spawn points, snaps each initial position to its supporting foothold, and
 creates the live instances. It loads each distinct mob definition once for the
 requested map, including combat stats and all available animation metadata.
 The browser requests only the animation frames that it renders. Mob state is
-owned by the server and resets when the server restarts. Mobs randomly idle or
-move within the roaming range recorded by the map. They turn at unsafe edges.
+owned by the server and resets when the server restarts. Each map uses a
+Shipyard ECS world with separate movement, combat, player-presence, and
+projectile components. An ordered workload runs respawn, targeting, aggro,
+movement, contact damage, and projectile systems. Mobs randomly idle or move
+within the roaming range recorded by the map. They turn at unsafe edges.
 A mob with a nonempty WZ `jump` animation can jump toward a nearby higher
 foothold that its jump arc can reach. The existing movement heartbeat returns
-authoritative mob snapshots, which the client interpolates between updates.
+authoritative mob and projectile snapshots, which the client interpolates
+between updates. Mobs remain passive until attacked. Damage makes a mob target
+and chase the attacking player. Mobs with WZ body attack data deal contact
+damage, while mobs with positive magic attack launch projectiles after they are
+provoked.
 
 Place `Character.wz` beside the map archives to enable character creation. The
 server indexes the available skin, face, and hair styles, then composes idle,
@@ -139,9 +147,11 @@ action.
 Skill use is server-owned. The server confirms the learned level, reads that
 level's WZ properties, checks and spends HP and MP, enforces WZ cooldowns,
 applies immediate HP recovery, and returns temporary speed and jump effects to
-the client. Fixed-damage skills return their exact damage range. No monsters
-exist yet, so calculated damage is displayed as status information rather than
-being applied to a target.
+the client. A damaging skill targets the nearest living mob in front of the
+character. The server verifies the target map, foothold layer, facing direction,
+horizontal reach, and vertical reach before choosing damage from the calculated
+range. It owns mob HP, death, aggro, and respawn state. The client displays the
+resulting damage, mob HP bar, attack animation, and projectile state.
 
 When `Sound.wz` is present, a successful use also returns the matching
 `Skill.img/<skill ID>/Use` sound. The server reads caster `effect`, projectile
@@ -190,6 +200,19 @@ drop_despawn = "10m"
 [skills]
 initial_points = 3
 
+[combat]
+disengage_range = 520.0
+player_attack_range = 220.0
+attack_vertical_reach = 90.0
+touch_horizontal_reach = 28.0
+touch_vertical_reach = 48.0
+projectile_range = 420.0
+projectile_speed = 240.0
+projectile_hit_reach = 18.0
+mob_attack_interval = "1500ms"
+player_invulnerability = "1s"
+default_respawn = "7s"
+
 [movement]
 walk_speed = 220.0
 climb_speed = 135.0
@@ -218,6 +241,21 @@ persisted across a server restart.
 character. It is also used when an older SurrealKV player record has no skill
 point field. Learned levels and later point changes are persisted and are not
 replaced when this setting changes.
+
+Combat distances are measured in map pixels. Mobs acquire an aggro target when
+that player damages them. `disengage_range` controls how far a mob can remain
+interested in that target. `player_attack_range` and `attack_vertical_reach` are
+the server-authoritative skill target envelope. The two touch reach values form
+the mob contact box.
+
+`projectile_range` controls when a magic-attacking mob can launch a projectile.
+`projectile_speed` is measured in map pixels per second, and
+`projectile_hit_reach` is its collision radius. `mob_attack_interval` controls
+how often a mob can launch one. `player_invulnerability` prevents overlapping
+contact and projectile hits from applying on every movement heartbeat.
+`default_respawn` applies when a WZ spawn point does not define `mobTime`. All
+combat numbers must be finite and positive. Combat durations accept the same
+human-readable syntax as item despawn durations.
 
 Movement speeds are measured in map pixels per second, and gravity is measured
 in map pixels per second squared. `speed_cap` and `jump_cap` are percentage
@@ -341,7 +379,10 @@ expressions.
 
 The current skill damage pipeline reads `minimum` and `maximum` from a selected
 skill profile. It applies the skill level's WZ `damage` percentage afterward
-and truncates the final values. The current equipment model does not include
+and truncates the final values. When the attack reaches a mob, non-fixed damage
+then passes through `defenses.physical` using the mob's WZ physical defense and
+the player and mob levels. WZ fixed damage bypasses defense. The current
+equipment model does not include
 weapons, so `WeaponAttack` is read from the `attack` property of the profile
 selected by `weapons.bare_hands`. This provides one clear input point for real
 weapon stats when weapon equipment is added later. Other profile categories

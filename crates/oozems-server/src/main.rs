@@ -51,6 +51,9 @@ async fn main() -> anyhow::Result<()> {
         movement_snapshot_interval = %humantime::format_duration(gameplay.movement.snapshot_interval),
         movement_speed_cap = gameplay.movement.speed_cap,
         movement_jump_cap = gameplay.movement.jump_cap,
+        combat_disengage_range = gameplay.combat.disengage_range,
+        combat_attack_range = gameplay.combat.player_attack_range,
+        combat_respawn = %humantime::format_duration(gameplay.combat.default_respawn),
         "gameplay configuration ready"
     );
     info!(
