@@ -85,12 +85,13 @@ each map only when it is requested.
 
 The map response contains footholds and references to only the sprite assets
 used by that map. It also contains typed ladder, rope, and portal data. Visible
-portals use the animation frames under `MapHelper.img`. The client requests a
-sprite when one of its placements first enters the viewport. Each sprite stays
-compressed in `Map.wz` until the browser requests its opaque
-`/wz-assets/...` URL. The server then decodes that sprite, returns a normal PNG,
-and caches it for later requests. WZ files and extracted assets are not added to
-the client bundle.
+portals use the animation frames under `MapHelper.img`. When an animated
+placement enters the viewport, the client requests all its frames together and
+keeps displaying a ready frame while the others load. Each sprite stays
+compressed in `Map.wz` until the browser requests its opaque `/wz-assets/...`
+URL. The server then decodes that sprite, returns a normal PNG, and caches it
+for later requests. WZ files and extracted assets are not added to the client
+bundle.
 
 Place `Mob.wz` beside `Map.wz` to enable mobs. The server reads map-local mob
 spawn points, snaps each initial position to its supporting foothold, and
@@ -115,7 +116,7 @@ server loads each referenced NPC's standing animation when the map is first
 requested, places the NPC on its supporting foothold and WZ layer, and includes
 only those frame assets in the map response. The client preserves the WZ frame
 timing, origin, and facing direction while rendering NPCs. Their PNG data stays
-compressed until a frame first enters the viewport.
+compressed until the NPC first enters the viewport.
 
 NPC inclusion is controlled by `config/content.toml`:
 

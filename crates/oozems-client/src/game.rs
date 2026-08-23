@@ -491,7 +491,7 @@ fn begin_item_action(
     spawn_local(async move {
         let result = request_item_action(&player_id, action).await;
         match result {
-            Ok(response) => match prepare_item_action_update(&game, action, response).await {
+            Ok(response) => match prepare_item_action_update(action, response).await {
                 Ok(update) => {
                     let warning = update.warning.clone();
                     install_item_action_update(&mut game.borrow_mut(), update);
@@ -582,7 +582,6 @@ struct ItemActionUpdate {
 }
 
 async fn prepare_item_action_update(
-    game: &Rc<RefCell<Game>>,
     action: GuiAction,
     response: ItemActionResponse,
 ) -> Result<ItemActionUpdate, String> {
@@ -602,24 +601,17 @@ async fn prepare_item_action_update(
             .map(|inventory| inventory.equipment.as_slice())
             .unwrap_or_default();
         match api::get_character_sprites(appearance, Some(equipment)).await {
-            Ok(next_sprites) => {
-                let prepared = {
-                    let game = game.borrow();
-                    prepare_game_assets(&game.map, &next_sprites, &game.gui, &game.skill_book)
-                };
-                match prepared {
-                    Ok(next_images) => {
-                        sprites = Some(next_sprites);
-                        images = Some(next_images);
-                    }
-                    Err(error) => {
-                        warning = Some(format!(
-                            "Item change was saved, but character assets could not refresh: \
-                             {error}"
-                        ));
-                    }
+            Ok(next_sprites) => match assets::prepare_assets(next_sprites.assets.iter()) {
+                Ok(next_images) => {
+                    sprites = Some(next_sprites);
+                    images = Some(next_images);
                 }
-            }
+                Err(error) => {
+                    warning = Some(format!(
+                        "Item change was saved, but character assets could not refresh: {error}"
+                    ));
+                }
+            },
             Err(error) => {
                 warning = Some(format!(
                     "Item change was saved, but character sprites could not refresh: {error}"
@@ -642,8 +634,8 @@ fn install_item_action_update(
 ) {
     game.player.inventory = update.player.inventory;
     if let (Some(sprites), Some(images)) = (update.sprites, update.images) {
+        assets::merge_assets(&mut game.images, images);
         game.character_sprites = sprites;
-        game.images = images;
         restart_character_animation(&mut game.character_animation, game.frame_time_ms);
     }
     if let Some(drop) = update.dropped_item

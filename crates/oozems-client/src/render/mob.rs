@@ -3,6 +3,7 @@ use oozems_proto::v1::MobDefinition;
 use oozems_proto::v1::MobFrame;
 use oozems_proto::v1::MobMovementMode;
 
+use crate::assets;
 use crate::game::Game;
 
 const HEALTH_BAR_HEIGHT: f32 = 5.0;
@@ -29,7 +30,21 @@ pub(super) fn draw(
         let Some(animation) = movement_animation(definition, mode) else {
             continue;
         };
-        let Some(frame) = animation_frame(animation, game.frame_time_ms) else {
+        let Some(preferred) = animation_frame(animation, game.frame_time_ms) else {
+            continue;
+        };
+        if !super::sprite_is_visible(
+            game,
+            frame_x(position.x, preferred, mob.flip_x),
+            position.y - preferred.origin_y,
+            preferred.width,
+            preferred.height,
+            camera_x,
+            camera_y,
+        ) {
+            continue;
+        }
+        let Some(frame) = drawable_frame(game, definition, preferred) else {
             continue;
         };
         let x = frame_x(position.x, frame, mob.flip_x);
@@ -189,6 +204,32 @@ fn animation_frame(
         timestamp_ms,
     )?;
     animation.frames.get(index)
+}
+
+fn drawable_frame<'a>(
+    game: &Game,
+    definition: &'a MobDefinition,
+    preferred: &MobFrame,
+) -> Option<&'a MobFrame> {
+    let preferred_index = definition
+        .animations
+        .iter()
+        .flat_map(|animation| &animation.frames)
+        .position(|frame| std::ptr::eq(frame, preferred))?;
+    let index = assets::ready_or_fallback_index(
+        &game.images,
+        definition
+            .animations
+            .iter()
+            .flat_map(|animation| &animation.frames)
+            .map(|frame| frame.asset_id.as_str()),
+        preferred_index,
+    )?;
+    definition
+        .animations
+        .iter()
+        .flat_map(|animation| &animation.frames)
+        .nth(index)
 }
 
 fn frame_x(

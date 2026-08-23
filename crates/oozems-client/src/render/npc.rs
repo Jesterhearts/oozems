@@ -1,5 +1,6 @@
 use oozems_proto::v1::NpcFrame;
 
+use crate::assets;
 use crate::game::Game;
 
 pub(super) fn draw(
@@ -15,9 +16,29 @@ pub(super) fn draw(
         let Some(position) = &npc.position else {
             continue;
         };
-        let Some(frame) = animation_frame(&npc.frames, game.frame_time_ms) else {
+        let Some(preferred_index) = animation_frame_index(&npc.frames, game.frame_time_ms) else {
             continue;
         };
+        let preferred = &npc.frames[preferred_index];
+        if !super::sprite_is_visible(
+            game,
+            frame_x(position.x, preferred, npc.flip_x),
+            position.y - preferred.origin_y,
+            preferred.width,
+            preferred.height,
+            camera_x,
+            camera_y,
+        ) {
+            continue;
+        }
+        let Some(index) = assets::ready_or_fallback_index(
+            &game.images,
+            npc.frames.iter().map(|frame| frame.asset_id.as_str()),
+            preferred_index,
+        ) else {
+            continue;
+        };
+        let frame = &npc.frames[index];
         super::draw_sprite(
             game,
             &frame.asset_id,
@@ -32,12 +53,11 @@ pub(super) fn draw(
     }
 }
 
-fn animation_frame(
+fn animation_frame_index(
     frames: &[NpcFrame],
     timestamp_ms: f64,
-) -> Option<&NpcFrame> {
-    let index = super::timed_frame_index(frames.iter().map(|frame| frame.delay_ms), timestamp_ms)?;
-    frames.get(index)
+) -> Option<usize> {
+    super::timed_frame_index(frames.iter().map(|frame| frame.delay_ms), timestamp_ms)
 }
 
 fn frame_x(
@@ -56,7 +76,7 @@ fn frame_x(
 mod tests {
     use oozems_proto::v1::NpcFrame;
 
-    use super::animation_frame;
+    use super::animation_frame_index;
     use super::frame_x;
 
     #[test]
@@ -75,15 +95,15 @@ mod tests {
         ];
 
         assert_eq!(
-            animation_frame(&frames, 99.0).expect("frame").asset_id,
+            frames[animation_frame_index(&frames, 99.0).expect("frame")].asset_id,
             "first"
         );
         assert_eq!(
-            animation_frame(&frames, 100.0).expect("frame").asset_id,
+            frames[animation_frame_index(&frames, 100.0).expect("frame")].asset_id,
             "second"
         );
         assert_eq!(
-            animation_frame(&frames, 300.0).expect("frame").asset_id,
+            frames[animation_frame_index(&frames, 300.0).expect("frame")].asset_id,
             "first"
         );
     }

@@ -215,7 +215,7 @@ fn request_preview(creator: &Rc<Creator>) {
             Ok(sprites) if pending_creator.preview_generation.get() == generation => {
                 match assets::prepare_assets(sprites.assets.iter()) {
                     Ok(images) => {
-                        *pending_creator.images.borrow_mut() = images;
+                        assets::merge_assets(&mut pending_creator.images.borrow_mut(), images);
                         *pending_creator.sprites.borrow_mut() = Some(sprites);
                         show_create_error("");
                     }

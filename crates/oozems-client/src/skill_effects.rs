@@ -27,6 +27,7 @@ pub(crate) struct SkillEffectState {
 
 struct ActiveVisual {
     animations: Vec<SkillAnimation>,
+    discarded: bool,
     queued_at_ms: f64,
     started_at_ms: Option<f64>,
     duration_ms: f64,
@@ -68,6 +69,7 @@ pub(crate) fn install(
     }
     game.skill_effect_state.visuals.push(ActiveVisual {
         animations: effect.animations,
+        discarded: false,
         queued_at_ms: game.frame_time_ms,
         started_at_ms: None,
         duration_ms: f64::from(duration_ms),
@@ -92,27 +94,56 @@ pub(crate) fn update(
         if visual.started_at_ms.is_some() {
             continue;
         }
-        let mut ready = true;
-        for frame in visual
-            .animations
-            .iter()
-            .flat_map(|animation| animation.frames.iter())
-        {
-            ready &= assets::ready_image(images, &frame.asset_id).is_some();
-        }
-        if ready || timestamp_ms - visual.queued_at_ms >= ASSET_READY_TIMEOUT_MS {
-            visual.started_at_ms = Some(timestamp_ms);
-            sounds_to_play.extend(visual.sound_url.take());
+        let ready = assets::images_ready(
+            images,
+            visual
+                .animations
+                .iter()
+                .flat_map(|animation| animation.frames.iter())
+                .map(|frame| frame.asset_id.as_str()),
+        );
+        match asset_load_decision(ready, timestamp_ms - visual.queued_at_ms) {
+            AssetLoadDecision::Wait => {}
+            AssetLoadDecision::Start => {
+                visual.started_at_ms = Some(timestamp_ms);
+                sounds_to_play.extend(visual.sound_url.take());
+            }
+            AssetLoadDecision::Discard => {
+                visual.discarded = true;
+                sounds_to_play.extend(visual.sound_url.take());
+                warn("Discarded a skill animation because its assets did not load");
+            }
         }
     }
     for url in sounds_to_play {
         play_sound(state, &url, timestamp_ms);
     }
     state.visuals.retain(|visual| {
-        visual
-            .started_at_ms
-            .is_none_or(|started_at_ms| timestamp_ms - started_at_ms < visual.duration_ms)
+        !visual.discarded
+            && visual
+                .started_at_ms
+                .is_none_or(|started_at_ms| timestamp_ms - started_at_ms < visual.duration_ms)
     });
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AssetLoadDecision {
+    Wait,
+    Start,
+    Discard,
+}
+
+fn asset_load_decision(
+    ready: bool,
+    elapsed_ms: f64,
+) -> AssetLoadDecision {
+    if ready {
+        AssetLoadDecision::Start
+    } else if elapsed_ms >= ASSET_READY_TIMEOUT_MS {
+        AssetLoadDecision::Discard
+    } else {
+        AssetLoadDecision::Wait
+    }
 }
 
 pub(crate) fn clear(state: &mut SkillEffectState) {
@@ -280,6 +311,8 @@ mod tests {
     use oozems_proto::v1::SkillAnimationPlacement;
 
     use super::ActiveVisual;
+    use super::AssetLoadDecision;
+    use super::asset_load_decision;
     use super::effect_anchor;
     use super::effect_duration_ms;
     use super::frame_at_time;
@@ -322,9 +355,20 @@ mod tests {
     }
 
     #[test]
+    fn incomplete_assets_never_start_an_effect() {
+        assert_eq!(asset_load_decision(false, 4_999.0), AssetLoadDecision::Wait);
+        assert_eq!(
+            asset_load_decision(false, 5_000.0),
+            AssetLoadDecision::Discard
+        );
+        assert_eq!(asset_load_decision(true, 5_000.0), AssetLoadDecision::Start);
+    }
+
+    #[test]
     fn projectiles_follow_the_captured_facing_direction() {
         let mut visual = ActiveVisual {
             animations: Vec::new(),
+            discarded: false,
             queued_at_ms: 0.0,
             started_at_ms: Some(0.0),
             duration_ms: 100.0,

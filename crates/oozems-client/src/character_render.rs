@@ -4,6 +4,7 @@ use oozems_proto::v1::CharacterFrame;
 use oozems_proto::v1::CharacterSpriteSet;
 use web_sys::CanvasRenderingContext2d;
 
+use crate::assets;
 use crate::assets::BrowserAsset;
 use crate::assets::ready_image;
 
@@ -32,7 +33,10 @@ pub fn draw_character(
     timestamp_ms: f64,
     placement: CharacterPlacement,
 ) {
-    let Some(frame) = frame_at_time(animation_frames(sprites, animation), timestamp_ms) else {
+    let Some(preferred) = frame_at_time(animation_frames(sprites, animation), timestamp_ms) else {
+        return;
+    };
+    let Some(frame) = drawable_frame(assets, sprites, preferred) else {
         return;
     };
     context.save();
@@ -55,6 +59,42 @@ pub fn draw_character(
         }
     }
     context.restore();
+}
+
+fn drawable_frame<'a>(
+    browser_assets: &HashMap<String, BrowserAsset>,
+    sprites: &'a CharacterSpriteSet,
+    preferred: &'a CharacterFrame,
+) -> Option<&'a CharacterFrame> {
+    let mut preferred_ready = false;
+    let mut fallback = None;
+    for frame in all_frames(sprites) {
+        let ready = !frame.layers.is_empty()
+            && assets::images_ready(
+                browser_assets,
+                frame.layers.iter().map(|layer| layer.asset_id.as_str()),
+            );
+        if !ready {
+            continue;
+        }
+        fallback.get_or_insert(frame);
+        preferred_ready |= std::ptr::eq(frame, preferred);
+    }
+    if preferred_ready {
+        Some(preferred)
+    } else {
+        fallback
+    }
+}
+
+fn all_frames(sprites: &CharacterSpriteSet) -> impl Iterator<Item = &CharacterFrame> {
+    sprites
+        .idle_frames
+        .iter()
+        .chain(&sprites.walk_frames)
+        .chain(&sprites.jump_frames)
+        .chain(&sprites.ladder_frames)
+        .chain(&sprites.rope_frames)
 }
 
 fn animation_frames(

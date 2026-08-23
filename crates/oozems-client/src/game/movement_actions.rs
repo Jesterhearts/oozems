@@ -183,8 +183,7 @@ fn install_map(
     position: Vec2,
 ) -> Result<(), String> {
     let position = movement::constrain_position(&map, position);
-    let images =
-        super::prepare_game_assets(&map, &game.character_sprites, &game.gui, &game.skill_book)?;
+    crate::assets::insert_assets(&mut game.images, map.assets.iter())?;
     let motion = movement::initial_motion_state(&map, &position);
     let world_layers = render::world_layers(&map);
     skill_effects::clear(&mut game.skill_effect_state);
@@ -195,7 +194,6 @@ fn install_map(
     game.player.position = Some(position);
     game.mob_render = crate::mob_render::new_map_state(map.simulation_sequence);
     game.map = map;
-    game.images = images;
     game.motion = motion;
     game.world_layers = world_layers;
     game.character_animation =

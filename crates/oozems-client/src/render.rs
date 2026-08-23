@@ -8,6 +8,7 @@ use oozems_proto::v1::Map;
 use oozems_proto::v1::PortalFrame;
 use web_sys::HtmlImageElement;
 
+use crate::assets;
 use crate::assets::ready_image;
 use crate::character_render;
 use crate::character_render::CharacterPlacement;
@@ -191,7 +192,29 @@ fn draw_decoration(
     camera_x: f64,
     camera_y: f64,
 ) {
-    if let Some(index) = decoration_frame_index(&decoration.frames, game.frame_time_ms) {
+    if let Some(preferred_index) = decoration_frame_index(&decoration.frames, game.frame_time_ms) {
+        let preferred = &decoration.frames[preferred_index];
+        if !sprite_is_visible(
+            game,
+            preferred.x,
+            preferred.y,
+            preferred.width,
+            preferred.height,
+            camera_x,
+            camera_y,
+        ) {
+            return;
+        }
+        let Some(index) = assets::ready_or_fallback_index(
+            &game.images,
+            decoration
+                .frames
+                .iter()
+                .map(|frame| frame.asset_id.as_str()),
+            preferred_index,
+        ) else {
+            return;
+        };
         let frame = &decoration.frames[index];
         draw_sprite(
             game,
@@ -231,17 +254,15 @@ pub(crate) fn draw_sprite(
     camera_x: f64,
     camera_y: f64,
 ) {
+    if !sprite_is_visible(
+        game, map_x, map_y, map_width, map_height, camera_x, camera_y,
+    ) {
+        return;
+    }
     let x = f64::from(map_x) - camera_x;
     let y = f64::from(map_y) - camera_y;
     let width = f64::from(map_width);
     let height = f64::from(map_height);
-    if x + width < 0.0
-        || x > f64::from(game.canvas.width())
-        || y + height < 0.0
-        || y > f64::from(game.canvas.height())
-    {
-        return;
-    }
 
     let Some(image) = ready_image(&game.images, asset_id) else {
         return;
@@ -266,6 +287,26 @@ pub(crate) fn draw_sprite(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn sprite_is_visible(
+    game: &Game,
+    map_x: f32,
+    map_y: f32,
+    map_width: f32,
+    map_height: f32,
+    camera_x: f64,
+    camera_y: f64,
+) -> bool {
+    let x = f64::from(map_x) - camera_x;
+    let y = f64::from(map_y) - camera_y;
+    let width = f64::from(map_width);
+    let height = f64::from(map_height);
+    x + width >= 0.0
+        && x <= f64::from(game.canvas.width())
+        && y + height >= 0.0
+        && y <= f64::from(game.canvas.height())
+}
+
 fn draw_portals(
     game: &Game,
     camera_x: f64,
@@ -276,7 +317,26 @@ fn draw_portals(
         if portal.layer != layer {
             continue;
         }
-        let Some(index) = portal_frame_index(&portal.frames, game.frame_time_ms) else {
+        let Some(preferred_index) = portal_frame_index(&portal.frames, game.frame_time_ms) else {
+            continue;
+        };
+        let preferred = &portal.frames[preferred_index];
+        if !sprite_is_visible(
+            game,
+            preferred.x,
+            preferred.y,
+            preferred.width,
+            preferred.height,
+            camera_x,
+            camera_y,
+        ) {
+            continue;
+        }
+        let Some(index) = assets::ready_or_fallback_index(
+            &game.images,
+            portal.frames.iter().map(|frame| frame.asset_id.as_str()),
+            preferred_index,
+        ) else {
             continue;
         };
         let frame = &portal.frames[index];
