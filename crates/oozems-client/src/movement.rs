@@ -10,6 +10,7 @@ const PLAYER_HALF_WIDTH: f32 = 18.0;
 const LADDER_TOP_EXIT_OFFSET: f32 = 5.0;
 const LADDER_TOP_PLATFORM_REACH: f32 = 24.0;
 const PLATFORM_CONTACT_TOLERANCE: f32 = 1.0;
+const PLATFORM_DROP_OFFSET: f32 = PLATFORM_CONTACT_TOLERANCE + 1.0;
 const SCRIPT_PORTAL_TARGET: u32 = 999_999_999;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -41,6 +42,7 @@ pub struct MotionOutput {
     pub position: Vec2,
     pub state: MotionState,
     pub transition: Option<MapTransition>,
+    pub dropped_through: bool,
 }
 
 pub fn validate_rules(rules: &MovementRules) -> Result<(), String> {
@@ -167,11 +169,18 @@ pub fn update_player(
                 target_map_id: portal.target_map_id,
                 target_portal_name: portal.target_name.clone(),
             }),
+            dropped_through: false,
         };
     }
 
     let mut position = position;
     let mut state = state;
+    if input.jump_pressed && input.vertical > 0.0 && state.on_ground {
+        if has_foothold_below(map, &position, rules.ground_tolerance) {
+            return drop_through_platform(map, rules, position, state, input, elapsed_seconds);
+        }
+        return move_with_gravity(map, rules, position, state, input, elapsed_seconds);
+    }
     if state.climbing.is_none()
         && input.vertical != 0.0
         && let Some(index) = find_climbable_ladder(
@@ -217,6 +226,22 @@ pub fn update_player(
     move_with_gravity(map, rules, position, state, input, elapsed_seconds)
 }
 
+fn drop_through_platform(
+    map: &Map,
+    rules: &MovementRules,
+    mut position: Vec2,
+    mut state: MotionState,
+    input: PlayerInput,
+    elapsed_seconds: f32,
+) -> MotionOutput {
+    position.y += PLATFORM_DROP_OFFSET;
+    state.velocity_y = 0.0;
+    state.on_ground = false;
+    let mut output = move_with_gravity(map, rules, position, state, input, elapsed_seconds);
+    output.dropped_through = true;
+    output
+}
+
 fn move_with_gravity(
     map: &Map,
     rules: &MovementRules,
@@ -255,6 +280,7 @@ fn move_with_gravity(
         position,
         state,
         transition: None,
+        dropped_through: false,
     }
 }
 
@@ -336,6 +362,7 @@ fn move_on_ladder(
         position,
         state,
         transition: None,
+        dropped_through: false,
     }
 }
 
@@ -493,6 +520,22 @@ fn platform_y(
     }
     let progress = (x - platform.x) / delta_x;
     Some(platform.y + progress * (platform.end_y - platform.y))
+}
+
+fn has_foothold_below(
+    map: &Map,
+    position: &Vec2,
+    ground_tolerance: f32,
+) -> bool {
+    let clearance = ground_tolerance.max(PLATFORM_DROP_OFFSET);
+    map.platforms.iter().any(|platform| {
+        let minimum_x = platform.x.min(platform.end_x);
+        let maximum_x = platform.x.max(platform.end_x);
+        if !(minimum_x..=maximum_x).contains(&position.x) {
+            return false;
+        }
+        platform_y(platform, position.x).is_some_and(|surface| surface > position.y + clearance)
+    })
 }
 
 #[cfg(test)]
@@ -659,6 +702,116 @@ mod tests {
 
         assert!(!output.state.on_ground);
         assert_eq!(output.state.platform_layer, 3);
+    }
+
+    #[test]
+    fn down_and_jump_moves_below_the_supporting_platform() {
+        let map = Map {
+            width: 800,
+            height: 600,
+            platforms: vec![
+                Platform {
+                    x: 100.0,
+                    y: 300.0,
+                    end_x: 200.0,
+                    end_y: 300.0,
+                    layer: 2,
+                    ..Platform::default()
+                },
+                Platform {
+                    x: 100.0,
+                    y: 400.0,
+                    end_x: 200.0,
+                    end_y: 400.0,
+                    layer: 1,
+                    ..Platform::default()
+                },
+            ],
+            ..Map::default()
+        };
+
+        let output = update_player(
+            &map,
+            &rules(),
+            Vec2 { x: 150.0, y: 300.0 },
+            MotionState {
+                on_ground: true,
+                platform_layer: 2,
+                ..MotionState::default()
+            },
+            PlayerInput {
+                vertical: 1.0,
+                jump_pressed: true,
+                ..PlayerInput::default()
+            },
+            0.0,
+        );
+
+        assert_eq!(output.position, Vec2 { x: 150.0, y: 302.0 });
+        assert!(!output.state.on_ground);
+        assert_eq!(output.state.velocity_y, 0.0);
+        assert_eq!(output.state.platform_layer, 2);
+        assert!(output.dropped_through);
+
+        let falling = update_player(
+            &map,
+            &rules(),
+            output.position,
+            output.state,
+            PlayerInput::default(),
+            0.1,
+        );
+        assert!(falling.position.y > output.position.y);
+        assert!(!falling.state.on_ground);
+        assert!(!falling.dropped_through);
+    }
+
+    #[test]
+    fn down_and_jump_does_not_cross_the_bottom_foothold() {
+        let map = Map {
+            width: 800,
+            height: 600,
+            platforms: vec![
+                Platform {
+                    x: 100.0,
+                    y: 300.0,
+                    end_x: 200.0,
+                    end_y: 300.0,
+                    layer: 2,
+                    ..Platform::default()
+                },
+                Platform {
+                    x: 300.0,
+                    y: 400.0,
+                    end_x: 400.0,
+                    end_y: 400.0,
+                    layer: 1,
+                    ..Platform::default()
+                },
+            ],
+            ..Map::default()
+        };
+
+        let output = update_player(
+            &map,
+            &rules(),
+            Vec2 { x: 150.0, y: 300.0 },
+            MotionState {
+                on_ground: true,
+                platform_layer: 2,
+                ..MotionState::default()
+            },
+            PlayerInput {
+                vertical: 1.0,
+                jump_pressed: true,
+                ..PlayerInput::default()
+            },
+            0.0,
+        );
+
+        assert_eq!(output.position, Vec2 { x: 150.0, y: 300.0 });
+        assert!(output.state.on_ground);
+        assert!(!output.dropped_through);
     }
 
     #[test]

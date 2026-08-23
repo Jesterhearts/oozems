@@ -849,6 +849,7 @@ fn update_player(
     input: PlayerInput,
 ) -> Option<MapTransition> {
     let position = game.player.position?;
+    let previous_motion = game.motion;
     if input.horizontal != 0.0 {
         game.facing_left = input.horizontal < 0.0;
     }
@@ -860,6 +861,15 @@ fn update_player(
         input,
         elapsed_seconds,
     );
+    if output.dropped_through {
+        let map_id = game.map.id;
+        movement_actions::record_drop_through(
+            &mut game.movement_sync,
+            map_id,
+            position,
+            previous_motion,
+        );
+    }
     let animation = character_animation(&game.map, output.state, input);
     let animation_plays = character_animation_plays(animation, position, output.position);
     update_character_animation(

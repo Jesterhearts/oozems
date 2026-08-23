@@ -15,6 +15,8 @@ use crate::gameplay::MovementConfig;
 const SCRIPT_PORTAL_TARGET: u32 = 999_999_999;
 const SPAWN_PORTAL_KIND: u32 = 0;
 const PORTAL_FLOOR_PENETRATION_LIMIT: f32 = 16.0;
+const DROP_THROUGH_MINIMUM: f32 = 1.0;
+const DROP_THROUGH_DESTINATION_CLEARANCE: f32 = 2.0;
 
 #[derive(Default)]
 pub struct MovementTracker {
@@ -76,6 +78,7 @@ pub struct SubmittedMovement {
     pub position: Position,
     pub mode: MovementMode,
     pub support_contact: Option<SupportContact>,
+    pub drop_through: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -159,6 +162,7 @@ pub fn parse_snapshot(snapshot: MovementSnapshot) -> Result<SubmittedMovement, M
         },
         mode,
         support_contact,
+        drop_through: snapshot.drop_through,
     })
 }
 
@@ -478,6 +482,9 @@ fn apply_snapshot(
     {
         return reject(session, "the reported support contact is invalid", false);
     }
+    if submitted.drop_through && !drop_through_is_valid(map, session, submitted, config) {
+        return reject(session, "the drop-through transition is invalid", false);
+    }
 
     let elapsed_seconds = elapsed_ms as f32 / 1_000.0;
     let walk_speed = modified_speed(config.walk_speed, modifiers.speed, config.speed_cap);
@@ -735,6 +742,51 @@ fn support_contact_is_valid(
     }
 }
 
+fn drop_through_is_valid(
+    map: &Map,
+    session: &MovementSession,
+    submitted: SubmittedMovement,
+    config: MovementConfig,
+) -> bool {
+    let Some(origin) = submitted.support_contact else {
+        return false;
+    };
+    if session.mode != MovementMode::Grounded
+        || origin.mode != MovementMode::Grounded
+        || submitted.mode == MovementMode::Climbing
+        || submitted.position.y <= origin.position.y + DROP_THROUGH_MINIMUM
+    {
+        return false;
+    }
+    let Some(platform) = supporting_foothold(
+        map,
+        &session.position,
+        config.ground_tolerance,
+        config.platform_edge_tolerance,
+    ) else {
+        return false;
+    };
+    platform_y_near_edge(platform, origin.position.x, config.platform_edge_tolerance)
+        .is_some_and(|surface| (surface - origin.position.y).abs() <= config.ground_tolerance)
+        && has_foothold_below(
+            map,
+            origin.position,
+            config
+                .ground_tolerance
+                .max(DROP_THROUGH_DESTINATION_CLEARANCE),
+        )
+}
+
+fn has_foothold_below(
+    map: &Map,
+    position: Position,
+    clearance: f32,
+) -> bool {
+    map.platforms.iter().any(|platform| {
+        platform_y(platform, position.x).is_some_and(|surface| surface > position.y + clearance)
+    })
+}
+
 fn climbing_contact_is_valid(
     map: &Map,
     position: Position,
@@ -800,10 +852,24 @@ fn supporting_platform(
     vertical_tolerance: f32,
     edge_tolerance: f32,
 ) -> bool {
-    map.platforms.iter().any(|platform| {
-        platform_y_near_edge(platform, position.x, edge_tolerance)
-            .is_some_and(|surface| (surface - position.y).abs() <= vertical_tolerance)
-    })
+    supporting_foothold(map, position, vertical_tolerance, edge_tolerance).is_some()
+}
+
+fn supporting_foothold<'a>(
+    map: &'a Map,
+    position: &Position,
+    vertical_tolerance: f32,
+    edge_tolerance: f32,
+) -> Option<&'a Platform> {
+    map.platforms
+        .iter()
+        .filter_map(|platform| {
+            let surface = platform_y_near_edge(platform, position.x, edge_tolerance)?;
+            let distance = (surface - position.y).abs();
+            (distance <= vertical_tolerance).then_some((platform, distance))
+        })
+        .min_by(|left, right| left.1.total_cmp(&right.1))
+        .map(|(platform, _)| platform)
 }
 
 fn platform_y_near_edge(
@@ -950,6 +1016,7 @@ fn snapshot(session: &MovementSession) -> MovementSnapshot {
         }),
         mode: proto_mode(session.mode) as i32,
         support_contact: None,
+        drop_through: false,
     }
 }
 
@@ -1254,6 +1321,78 @@ mod tests {
         .expect("edge movement");
 
         assert!(decision.accepted);
+    }
+
+    #[test]
+    fn grounded_players_can_drop_through_their_supporting_foothold() {
+        let tracker = MovementTracker::default();
+        let mut stacked_map = map();
+        stacked_map.platforms.push(Platform {
+            y: 400.0,
+            end_y: 400.0,
+            ..platform()
+        });
+        initialize_player(&tracker, &player(), &stacked_map, config(), 1_000).expect("initialize");
+        let mut movement = submitted(1, 100.0, 302.0, MovementMode::Airborne);
+        movement.support_contact = Some(SupportContact {
+            position: Position { x: 100.0, y: 300.0 },
+            mode: MovementMode::Grounded,
+        });
+        movement.drop_through = true;
+
+        let decision = submit_movement(&tracker, &player(), movement, config(), 1_200)
+            .expect("drop-through movement");
+
+        assert!(decision.accepted);
+        assert_eq!(
+            decision.authoritative.position,
+            Some(Vec2 { x: 100.0, y: 302.0 })
+        );
+    }
+
+    #[test]
+    fn bottom_footholds_cannot_be_dropped_through() {
+        let tracker = MovementTracker::default();
+        let mut offset_map = map();
+        offset_map.platforms.push(Platform {
+            x: 300.0,
+            y: 400.0,
+            end_x: 800.0,
+            end_y: 400.0,
+            ..Platform::default()
+        });
+        initialize_player(&tracker, &player(), &offset_map, config(), 1_000).expect("initialize");
+        let mut movement = submitted(1, 100.0, 302.0, MovementMode::Airborne);
+        movement.support_contact = Some(SupportContact {
+            position: Position { x: 100.0, y: 300.0 },
+            mode: MovementMode::Grounded,
+        });
+        movement.drop_through = true;
+
+        let decision = submit_movement(&tracker, &player(), movement, config(), 1_200)
+            .expect("bottom drop-through movement");
+
+        assert!(!decision.accepted);
+        assert_eq!(
+            decision.rejection_reason,
+            "the drop-through transition is invalid"
+        );
+    }
+
+    #[test]
+    fn drop_through_requires_a_grounded_origin_contact() {
+        let tracker = initialized_tracker();
+        let mut movement = submitted(1, 100.0, 302.0, MovementMode::Airborne);
+        movement.drop_through = true;
+
+        let decision = submit_movement(&tracker, &player(), movement, config(), 1_200)
+            .expect("invalid drop-through movement");
+
+        assert!(!decision.accepted);
+        assert_eq!(
+            decision.rejection_reason,
+            "the drop-through transition is invalid"
+        );
     }
 
     #[test]
@@ -1583,6 +1722,7 @@ mod tests {
             position: Position { x, y },
             mode,
             support_contact: None,
+            drop_through: false,
         }
     }
 

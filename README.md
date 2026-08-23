@@ -271,10 +271,11 @@ calculation, so an absent client cannot accumulate an unlimited movement
 budget. `persistence_interval` controls partial SurrealKV position writes;
 these writes cannot overwrite character stats, skills, or inventory.
 
-If the character lands or grabs a ladder between heartbeats, the next snapshot
-includes that brief support contact without replacing the current position.
-The server verifies the foothold, ladder, and full path through the contact
-before it resets airborne time.
+If the character lands, grabs a ladder, or drops through a platform between
+heartbeats, the next snapshot includes that brief support contact without
+replacing the current position. The server verifies the foothold, ladder, and
+full path through the contact before it resets airborne time or accepts a
+drop-through transition.
 
 `position_tolerance` provides latency and floating-point tolerance around the
 physical envelope. `ground_tolerance` controls how close a grounded snapshot
@@ -530,11 +531,13 @@ accumulated XP. It replaces only the requirement for advancing from the
 character's current level.
 
 Use the left and right arrow keys to walk. Use the up and down arrow keys to
-climb. Press Up while standing at a direct portal to enter it. Arrow keys stay
-reserved for movement and interaction. The default action bindings are Space
-for Jump, Z for Pick Up, C for Character, E for Equipment, I for Inventory,
-K for Key Settings, and S for Skills. Script portals remain inactive because
-their behavior belongs to a future server-side scripting system.
+climb. Hold Down and press the configured Jump key to drop through a platform
+when another foothold is below the character. Press Up while standing at a
+direct portal to enter it. Arrow keys stay reserved for movement and
+interaction. The default action bindings are Space for Jump, Z for Pick Up, C
+for Character, E for Equipment, I for Inventory, K for Key Settings, and S for
+Skills. Script portals remain inactive because their behavior belongs to a
+future server-side scripting system.
 
 ## Verify it
 

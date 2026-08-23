@@ -151,6 +151,7 @@ message MovementSnapshot {
   Vec2 position = 3;
   MovementMode mode = 4;
   MovementContact support_contact = 5;
+  bool drop_through = 6;
 }
 
 message MovementContact {

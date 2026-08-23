@@ -185,6 +185,19 @@ mod tests {
     }
 
     #[test]
+    fn down_can_be_combined_with_the_configured_jump_action() {
+        let bindings = vec![binding("Space", KeyAction::Jump)];
+        let mut state = KeyboardState::default();
+
+        assert!(set_key(&mut state, &bindings, "ArrowDown", true));
+        assert!(set_key(&mut state, &bindings, "Space", true));
+        let input = drain_frame_input(&mut state, &bindings).player;
+
+        assert_eq!(input.vertical, 1.0);
+        assert!(input.jump_pressed);
+    }
+
+    #[test]
     fn assigning_moves_an_action_and_replaces_the_target() {
         let bindings = vec![
             binding("Space", KeyAction::Jump),

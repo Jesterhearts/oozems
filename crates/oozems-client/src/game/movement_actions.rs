@@ -33,6 +33,7 @@ pub(super) struct MovementSyncState {
     last_response_sequence: u64,
     last_observed_mode: Option<MovementMode>,
     pending_support: Option<MovementObservation>,
+    pending_drop_through: Option<MovementObservation>,
 }
 
 pub(super) fn observation(
@@ -89,6 +90,25 @@ pub(super) fn begin(game: Rc<RefCell<Game>>) {
         }
         in_flight.set(false);
     });
+}
+
+pub(super) fn record_drop_through(
+    state: &mut MovementSyncState,
+    map_id: u32,
+    position: Vec2,
+    motion: movement::MotionState,
+) {
+    let origin = MovementObservation {
+        map_id,
+        position,
+        mode: movement::motion_mode(motion),
+    };
+    if origin.mode != MovementMode::Grounded {
+        return;
+    }
+    state.pending_drop_through = Some(origin);
+    state.pending_support = None;
+    state.next_snapshot_ms = Some(0.0);
 }
 
 pub(super) fn begin_portal(
@@ -185,22 +205,33 @@ fn install_map(
 
 fn next_movement_snapshot(game: &mut Game) -> Option<MovementSnapshot> {
     let current = current_observation(game)?;
-    let support = game.movement_sync.pending_support.take();
+    let (support, drop_through) = take_pending_contact(&mut game.movement_sync);
     Some(snapshot_from_observation(
         &mut game.movement_sync,
         current,
         support,
+        drop_through,
     ))
 }
 
 fn current_movement_snapshot(game: &mut Game) -> Option<MovementSnapshot> {
     let observation = current_observation(game)?;
     game.movement_sync.pending_support = None;
+    game.movement_sync.pending_drop_through = None;
     Some(snapshot_from_observation(
         &mut game.movement_sync,
         observation,
         None,
+        false,
     ))
+}
+
+fn take_pending_contact(state: &mut MovementSyncState) -> (Option<MovementObservation>, bool) {
+    if let Some(origin) = state.pending_drop_through.take() {
+        state.pending_support = None;
+        return (Some(origin), true);
+    }
+    (state.pending_support.take(), false)
 }
 
 fn current_observation(game: &Game) -> Option<MovementObservation> {
@@ -211,6 +242,7 @@ fn snapshot_from_observation(
     state: &mut MovementSyncState,
     observation: MovementObservation,
     support: Option<MovementObservation>,
+    drop_through: bool,
 ) -> MovementSnapshot {
     state.next_sequence = state.next_sequence.saturating_add(1);
     MovementSnapshot {
@@ -222,6 +254,7 @@ fn snapshot_from_observation(
             position: Some(support.position),
             mode: support.mode as i32,
         }),
+        drop_through,
     }
 }
 
@@ -244,6 +277,7 @@ fn reset_after_correction(
     mode: MovementMode,
 ) {
     state.pending_support = None;
+    state.pending_drop_through = None;
     state.last_observed_mode = Some(mode);
 }
 
@@ -340,6 +374,7 @@ pub(super) fn reset_schedule(
 ) {
     state.next_snapshot_ms = Some(timestamp_ms);
     state.pending_support = None;
+    state.pending_drop_through = None;
     state.last_observed_mode = None;
 }
 
@@ -350,8 +385,11 @@ mod tests {
 
     use super::MovementObservation;
     use super::MovementSyncState;
+    use super::record_drop_through;
     use super::snapshot_from_observation;
+    use super::take_pending_contact;
     use super::update;
+    use crate::movement::MotionState;
 
     #[test]
     fn snapshots_start_immediately_then_follow_the_server_interval() {
@@ -461,7 +499,7 @@ mod tests {
             mode: MovementMode::Grounded,
         };
 
-        let snapshot = snapshot_from_observation(&mut state, current, Some(support));
+        let snapshot = snapshot_from_observation(&mut state, current, Some(support), false);
 
         assert_eq!(snapshot.position, Some(current.position));
         assert_eq!(
@@ -470,6 +508,38 @@ mod tests {
                 .and_then(|contact| contact.position),
             Some(support.position),
         );
+    }
+
+    #[test]
+    fn drop_through_origin_is_sent_once_with_the_next_snapshot() {
+        let mut state = MovementSyncState::default();
+        record_drop_through(
+            &mut state,
+            1,
+            Vec2 { x: 100.0, y: 300.0 },
+            MotionState {
+                on_ground: true,
+                ..MotionState::default()
+            },
+        );
+
+        let current = MovementObservation {
+            map_id: 1,
+            position: Vec2 { x: 100.0, y: 302.0 },
+            mode: MovementMode::Airborne,
+        };
+        let (support, drop_through) = take_pending_contact(&mut state);
+        let snapshot = snapshot_from_observation(&mut state, current, support, drop_through);
+
+        assert_eq!(state.next_snapshot_ms, Some(0.0));
+        assert!(snapshot.drop_through);
+        assert_eq!(
+            snapshot
+                .support_contact
+                .and_then(|contact| contact.position),
+            Some(Vec2 { x: 100.0, y: 300.0 }),
+        );
+        assert_eq!(take_pending_contact(&mut state), (None, false));
     }
 
     fn observation(mode: MovementMode) -> MovementObservation {
