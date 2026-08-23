@@ -15,6 +15,7 @@ use crate::content::ContentCatalog;
 use crate::database::Database;
 use crate::experience::ExperienceCurves;
 use crate::gameplay::GameplayConfig;
+use crate::interactions::InteractionCatalog;
 use crate::items::DropStore;
 use crate::mobs::MobStore;
 use crate::movement::MovementTracker;
@@ -31,6 +32,7 @@ pub struct AppState {
     pub experience: Arc<ExperienceCurves>,
     pub drops: Arc<DropStore>,
     pub gameplay: GameplayConfig,
+    pub interactions: Arc<InteractionCatalog>,
     pub movement: Arc<MovementTracker>,
     pub mobs: Arc<MobStore>,
     pub player_locks: Arc<PlayerLocks>,
@@ -44,6 +46,7 @@ pub struct AppState {
 pub fn router(
     database: Database,
     catalog: ContentCatalog,
+    interactions: InteractionCatalog,
     experience: ExperienceCurves,
     gameplay: GameplayConfig,
     formulas: FormulaCatalog,
@@ -56,6 +59,7 @@ pub fn router(
         experience: Arc::new(experience),
         drops: Arc::new(DropStore::new(gameplay.item_drop_despawn)),
         gameplay,
+        interactions: Arc::new(interactions),
         movement: Arc::new(MovementTracker::default()),
         mobs: Arc::new(MobStore::new(gameplay.combat, formulas.clone())),
         player_locks: Arc::new(PlayerLocks::default()),
@@ -95,6 +99,7 @@ pub fn router(
         .route("/items/unequip", post(crate::api::unequip_item))
         .route("/items/drop", post(crate::api::drop_item))
         .route("/items/pick-up", post(crate::api::pick_up_item))
+        .route("/npcs/interact", post(crate::api::interactions::interact))
         .route("/players/save", post(crate::api::save_player))
         .layer(DefaultBodyLimit::max(64 * 1024));
     let public = ServeDir::new(public_dir)

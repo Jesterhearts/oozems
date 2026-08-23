@@ -8,7 +8,8 @@ use. It does not include MapleStory code or assets.
 The current version of the server is not yet ready for general use. Combat is
 still limited to basic player attacks, player skills, mob contact attacks, and
 basic mob projectiles.
-Features such as player death handling, loot, and quests are not implemented.
+Features such as player death handling and mob loot are not implemented. Quest
+support currently covers an explicitly enabled typed subset of `Quest.wz`.
 
 When it is ready, a release tag will be posted for a version 0.1. That will
 indicate general usage availability, although polish and bug fixes will
@@ -16,8 +17,10 @@ likely be needed after such a release.
 
 ## Run it
 
-Install Rust, the `wasm32-unknown-unknown` target, and Trunk. Place `Map.wz` in
-`./data`, then run:
+Install Rust, the `wasm32-unknown-unknown` target, and Trunk. The bundled
+interaction configuration requires matching `Map.wz`, `Npc.wz`, and
+`Character.wz` archives in `./data`. `Quest.wz` is optional. Add `UI.wz` to
+display the configured native interaction windows, then run:
 
 ```sh
 make run
@@ -50,6 +53,7 @@ browser
   -> POST /api/v1/movement/submit movement correction, combat, and world snapshot
   -> POST /api/v1/movement/portal server-authorized portal transition
   -> POST /api/v1/items/...       equip, unequip, drop, or pick up an item
+  -> POST /api/v1/npcs/interact   open or act on an authoritative NPC interaction
   -> POST /api/v1/combat/...      use a server-authoritative basic attack
   -> POST /api/v1/skills/...      allocate a skill point or use a skill
   -> POST /api/v1/players/recover apply one rate-limited natural recovery tick
@@ -60,15 +64,17 @@ server
   -> config/xp-curves.toml        validated game progression rules
   -> config/gameplay.toml         validated item, skill, and movement rules
   -> config/content.toml          WZ content inclusion rules
+  -> config/interactions.toml     authored shop stock and taxi routes
   -> config/skill-formulas.toml   validated combat formulas
   -> data/Map.wz                  required, lazy WZ map source
   -> data/Npc.wz                  optional NPC placement animation source
+  -> data/Quest.wz                enabled quest conditions, dialog, and rewards
   -> data/Mob.wz                  optional mob stats and animation source
   -> data/Character.wz            optional character sprite source
   -> data/UI.wz                   optional GUI sprite source
   -> data/Skill.wz                optional skill data, icons, and effects
   -> data/Sound.wz                optional skill sounds
-  -> data/String.wz               optional WZ map names and skill text
+  -> data/String.wz               optional map, NPC, and skill text
   -> SurrealDB -> SurrealKV       mutable player state
 ```
 
@@ -118,7 +124,9 @@ server loads each referenced NPC's standing animation when the map is first
 requested, places the NPC on its supporting foothold and WZ layer, and includes
 only those frame assets in the map response. The client preserves the WZ frame
 timing, origin, and facing direction while rendering NPCs. Their PNG data stays
-compressed until the NPC first enters the viewport.
+compressed until the NPC first enters the viewport. A matching `String.wz`
+adds NPC names, functions, and the ambient lines selected by
+`Npc.wz/info/speak`.
 
 NPC inclusion is controlled by `config/content.toml`:
 
@@ -135,6 +143,39 @@ only those event scopes, or to an empty list to exclude all limited NPCs. Omit
 those IDs, or to an empty list to render no NPCs. Both allowlists apply when
 both settings are present. If `content.toml` is absent, NPC loading remains
 unrestricted. Restart the server after changing these settings.
+
+Double-click a nearby NPC to interact. The server resolves the map-local spawn
+ID, checks the authoritative player position, and returns either WZ dialog, a
+quest prompt, a shop, or a taxi list. The client uses
+`UIWindow.img/UtilDlgEx` and `UIWindow.img/Shop`, so `UI.wz` is required for NPC
+interaction windows. Movement, attacks, item pickup, and recovery pause while
+one of these modal windows is open, but movement heartbeats continue.
+
+When `Quest.wz` is present, every quest compatible with the implemented typed
+mechanics is enabled automatically. Unsupported definitions are skipped and
+counted in the startup log. An optional strict allowlist can narrow loading:
+
+```toml
+[quests]
+allowed_ids = [1009]
+```
+
+When an allowlist is present, startup fails if one of its quests is absent or
+uses data outside the supported subset. Rain's real `Quest.wz` quiz in Amherst
+is one compatible quest. It exercises job and NPC conditions, accept and
+decline dialog, list answers, persistent started/completed state, EXP rewards,
+and retained next-quest metadata. Quest chains are not advanced automatically
+yet. Mesos and quest state are stored with the player; existing records receive
+zero mesos and an empty quest log.
+
+The local archives contain NPC script names but not their executable bodies.
+Shop stock, buy prices, taxi destinations, and fares therefore come from
+`config/interactions.toml`. The bundled definitions add Sam's armor shop in
+Henesys Weapon Store and the Henesys Regular Cab route to Lith Harbor. Buy
+prices and fares are project-authored. Sell prices come from each supported
+equipment item's WZ `info/price`; an absent or zero price makes an item
+unsellable. Buying and selling one item, paying a taxi fare, changing maps, and
+claiming a quest reward are all validated and persisted by the server.
 
 Place `Character.wz` beside the map archives to enable character creation. The
 server indexes the available skin, face, and hair styles, then composes idle,
@@ -587,7 +628,7 @@ direct portal to enter it. Arrow keys stay reserved for movement and
 interaction. The default action bindings are left Alt for Jump, Z for Pick Up, C
 for Character, E for Equipment, I for Inventory, K for Key Settings, and S for
 Skills. Script portals remain inactive because their behavior belongs to a
-future server-side scripting system.
+future server-side scripting system. Double-click an NPC to open its dialog.
 
 ## Verify it
 

@@ -14,6 +14,7 @@ use thiserror::Error;
 mod character;
 mod config;
 mod gui;
+mod quest;
 mod skill;
 mod wz;
 
@@ -22,6 +23,13 @@ use character::CharacterContentError;
 pub use config::ContentConfig;
 use gui::GuiContent;
 use gui::GuiContentError;
+#[cfg(test)]
+pub(crate) use quest::QuestChoice;
+use quest::QuestContent;
+use quest::QuestContentError;
+pub(crate) use quest::QuestDefinition;
+#[cfg(test)]
+pub(crate) use quest::QuestQuestion;
 use skill::SkillContent;
 use skill::SkillContentError;
 pub(crate) use wz::WzAsset;
@@ -33,6 +41,7 @@ const PLAYER_HALF_WIDTH: f32 = 18.0;
 pub struct ContentCatalog {
     characters: Option<CharacterContent>,
     gui: Option<GuiContent>,
+    quests: Option<QuestContent>,
     skills: Option<SkillContent>,
     wz: WzContent,
 }
@@ -46,6 +55,8 @@ pub enum ContentError {
     #[error(transparent)]
     Gui(#[from] GuiContentError),
     #[error(transparent)]
+    Quest(#[from] QuestContentError),
+    #[error(transparent)]
     Skill(#[from] SkillContentError),
 }
 
@@ -58,6 +69,7 @@ impl ContentCatalog {
         Ok(Self {
             characters: CharacterContent::open_optional(wz_dir)?,
             gui: GuiContent::open_optional(wz_dir)?,
+            quests: QuestContent::open_optional(wz_dir, config.quest_ids.as_ref())?,
             skills: SkillContent::open_optional(wz_dir)?,
             wz,
         })
@@ -155,6 +167,30 @@ impl ContentCatalog {
             .unwrap_or_default()
     }
 
+    pub(crate) fn quest(
+        &self,
+        quest_id: u32,
+    ) -> Option<&QuestDefinition> {
+        self.quests.as_ref()?.get(quest_id)
+    }
+
+    pub(crate) fn quests_for_npc(
+        &self,
+        npc_id: u32,
+    ) -> Vec<&QuestDefinition> {
+        self.quests
+            .as_ref()
+            .map(|quests| {
+                quests
+                    .definitions()
+                    .filter(|quest| {
+                        quest.start_npc_id == npc_id || quest.completion_npc_id == npc_id
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     pub fn supports_character(
         &self,
         appearance: &CharacterAppearance,
@@ -216,6 +252,15 @@ mod tests {
             .get_map(gameplay.initial_map_id)
             .expect("starter map lookup should succeed")
             .expect("Mushroom Town should exist");
+        if wz_dir.join("Quest.wz").exists() {
+            let quiz = catalog.quest(1_009).expect("Rain's compatible quiz");
+            assert_eq!(
+                quiz.question
+                    .as_ref()
+                    .map(|question| question.choices.len()),
+                Some(4)
+            );
+        }
         assert_eq!(starter_map.name, "Mushroom Town");
         assert!(starter_map.portals.iter().any(|portal| portal.kind == 0));
         let snail_garden = catalog

@@ -8,11 +8,13 @@ mod content;
 mod database;
 mod experience;
 mod gameplay;
+mod interactions;
 mod items;
 mod keymap;
 mod mobs;
 mod movement;
 mod player_lock;
+mod quests;
 mod recovery;
 mod skill_formula;
 mod skills;
@@ -23,6 +25,7 @@ use content::ContentCatalog;
 use content::ContentConfig;
 use experience::ExperienceCurves;
 use gameplay::GameplayConfig;
+use interactions::InteractionCatalog;
 use skill_formula::FormulaCatalog;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
@@ -75,10 +78,13 @@ async fn main() -> anyhow::Result<()> {
             gameplay.initial_map_id
         );
     }
+    let interactions =
+        InteractionCatalog::load(&config.config_dir.join("interactions.toml"), &catalog)?;
     let database = database::open_surreal_kv(&config.data_dir.join("surrealkv")).await?;
     let router = app::router(
         database,
         catalog,
+        interactions,
         experience,
         gameplay,
         formulas,

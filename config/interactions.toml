@@ -1,0 +1,36 @@
+# Prices and fares here are project-authored because the local WZ archives do
+# not include the original NPC script bodies.
+
+[[shops]]
+map_id = 100000101
+npc_spawn_id = 1
+
+[[shops.offers]]
+item_id = 1040002
+buy_price = 100
+
+[[shops.offers]]
+item_id = 1040003
+buy_price = 9000
+
+[[shops.offers]]
+item_id = 1060002
+buy_price = 100
+
+[[shops.offers]]
+item_id = 1072000
+buy_price = 70000
+
+[[shops.offers]]
+item_id = 1072001
+buy_price = 100
+
+[[taxis]]
+map_id = 100000000
+npc_spawn_id = 2
+
+[[taxis.destinations]]
+map_id = 104000000
+portal_name = "sp"
+label = "Lith Harbor"
+fare = 100

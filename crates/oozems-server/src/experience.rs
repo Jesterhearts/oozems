@@ -48,6 +48,8 @@ pub enum ExperienceRuleError {
     LevelNotConfigured { curve: String, level: u32 },
     #[error("player {player_id:?} does not contain character stats")]
     MissingStats { player_id: String },
+    #[error("player {player_id:?} experience exceeds the supported range")]
+    Overflow { player_id: String },
 }
 
 #[derive(Debug, Deserialize)]
@@ -172,6 +174,36 @@ pub fn required_for_level(
             curve: curve.name.clone(),
             level,
         })
+}
+
+pub fn grant_experience(
+    mut player: PlayerState,
+    amount: u64,
+    curve: &ExperienceCurve,
+) -> Result<PlayerState, ExperienceRuleError> {
+    let player_id = player.id.clone();
+    let mut level = player.level;
+    let stats = player
+        .stats
+        .as_mut()
+        .ok_or_else(|| ExperienceRuleError::MissingStats {
+            player_id: player_id.clone(),
+        })?;
+    stats.experience =
+        stats
+            .experience
+            .checked_add(amount)
+            .ok_or_else(|| ExperienceRuleError::Overflow {
+                player_id: player_id.clone(),
+            })?;
+    stats.experience_required = required_for_level(curve, level)?;
+    while level < curve.max_level() && stats.experience >= stats.experience_required {
+        stats.experience -= stats.experience_required;
+        level += 1;
+        stats.experience_required = required_for_level(curve, level)?;
+    }
+    player.level = level;
+    Ok(player)
 }
 
 fn compile_curves(raw: CurveFile) -> Result<ExperienceCurves, String> {
@@ -703,6 +735,7 @@ mod tests {
     use super::ExperienceCurves;
     use super::apply_curve;
     use super::compile_curves;
+    use super::grant_experience;
     use super::parse_formula;
 
     #[test]
@@ -786,6 +819,37 @@ formula = "atLevel(1) + Level * 10"
         let stats = configured.stats.expect("configured stats");
         assert_eq!(stats.experience, 100);
         assert_eq!(stats.experience_required, 35);
+    }
+
+    #[test]
+    fn experience_rewards_carry_across_multiple_levels() {
+        let config = curves(
+            r#"
+default_curve = "rewards"
+
+[[curves]]
+name = "rewards"
+
+[[curves.ranges]]
+start = 1
+end = 3
+formula = "10"
+"#,
+        )
+        .expect("valid reward curve");
+        let player = PlayerState {
+            id: "rewarded-player".to_owned(),
+            level: 1,
+            stats: Some(CharacterStats::default()),
+            ..PlayerState::default()
+        };
+
+        let rewarded = grant_experience(player, 25, config.default_curve()).expect("reward XP");
+        let stats = rewarded.stats.expect("rewarded stats");
+
+        assert_eq!(rewarded.level, 3);
+        assert_eq!(stats.experience, 5);
+        assert_eq!(stats.experience_required, 10);
     }
 
     #[test]

@@ -8,6 +8,8 @@ use oozems_proto::v1::KeyActionDefinition;
 use super::GuiContentError;
 use super::ItemWindowSources;
 use super::KeyConfigSources;
+use super::NpcDialogSources;
+use super::ShopWindowSources;
 use super::SkillWindowSources;
 use super::SourceSprite;
 use super::StatWindowSources;
@@ -50,6 +52,102 @@ const KEY_PALETTE_LEFT: f32 = 7.0;
 const KEY_PALETTE_TOP: f32 = 267.0;
 const KEY_PALETTE_STEP: f32 = 34.0;
 const KEY_PALETTE_COLUMNS: usize = 18;
+const NPC_DIALOG_X: f32 = 135.0;
+const NPC_DIALOG_Y: f32 = 100.0;
+const NPC_DIALOG_CENTER_ROWS: usize = 10;
+const SHOP_WINDOW_X: f32 = 168.0;
+const SHOP_WINDOW_Y: f32 = 80.0;
+
+pub(super) fn compose_npc_dialog_window(
+    sources: &NpcDialogSources
+) -> Result<GuiWindow, GuiContentError> {
+    let center_top = sources.top.height;
+    let bottom_top = center_top + sources.center.height * NPC_DIALOG_CENTER_ROWS as f32;
+    let height = bottom_top + sources.bottom.height;
+    let mut sprites = (0..NPC_DIALOG_CENTER_ROWS)
+        .map(|row| {
+            place_sprite(
+                &sources.center,
+                0.0,
+                center_top + sources.center.height * row as f32,
+                false,
+            )
+        })
+        .collect::<Vec<_>>();
+    sprites.push(place_sprite(&sources.bottom, 0.0, bottom_top, false));
+    let layout = GuiLayout {
+        width: sources.top.width,
+        height,
+        background: Some(place_sprite(&sources.top, 0.0, 0.0, false)),
+        sprites,
+        sprite_templates: [
+            &sources.close,
+            &sources.ok,
+            &sources.next,
+            &sources.previous,
+            &sources.accept,
+            &sources.decline,
+            &sources.choice,
+            &sources.choice_selected,
+        ]
+        .map(sprite_template)
+        .into(),
+        regions: vec![
+            region("npc-portrait", 15.0, 20.0, 90.0, 155.0),
+            region("npc-title", 154.0, 17.0, 345.0, 20.0),
+            region("npc-text", 154.0, 42.0, 345.0, 170.0),
+            region("npc-choices", 154.0, 108.0, 345.0, 100.0),
+            region("npc-previous", 402.0, bottom_top + 27.0, 46.0, 20.0),
+            region("npc-next", 459.0, bottom_top + 27.0, 46.0, 20.0),
+            region("npc-ok", 459.0, bottom_top + 27.0, 46.0, 20.0),
+            region("npc-close", 420.0, bottom_top + 27.0, 85.0, 20.0),
+            region("npc-accept", 383.0, bottom_top + 27.0, 60.0, 20.0),
+            region("npc-decline", 448.0, bottom_top + 27.0, 60.0, 20.0),
+        ],
+    };
+    validate_layout(&layout)?;
+    Ok(GuiWindow {
+        x: NPC_DIALOG_X,
+        y: NPC_DIALOG_Y,
+        layout: Some(layout),
+    })
+}
+
+pub(super) fn compose_shop_window(
+    sources: &ShopWindowSources
+) -> Result<GuiWindow, GuiContentError> {
+    let layout = GuiLayout {
+        width: sources.background.width,
+        height: sources.background.height,
+        background: Some(place_sprite(&sources.background, 0.0, 0.0, false)),
+        sprites: Vec::new(),
+        sprite_templates: [
+            &sources.selection,
+            &sources.meso,
+            &sources.buy,
+            &sources.sell,
+            &sources.exit,
+        ]
+        .map(sprite_template)
+        .into(),
+        regions: vec![
+            region("shop-stock", 7.0, 121.0, 198.0, 185.0),
+            region("shop-inventory", 237.0, 121.0, 198.0, 185.0),
+            region("shop-inventory-previous", 391.0, 98.0, 18.0, 18.0),
+            region("shop-inventory-next", 415.0, 98.0, 18.0, 18.0),
+            region("shop-buy", 125.0, 310.0, 80.0, 18.0),
+            region("shop-sell", 355.0, 310.0, 80.0, 18.0),
+            region("shop-close", 9.0, 310.0, 80.0, 18.0),
+            region("shop-mesos", 272.0, 96.0, 160.0, 18.0),
+        ],
+    };
+    validate_layout(&layout)?;
+    Ok(GuiWindow {
+        x: SHOP_WINDOW_X,
+        y: SHOP_WINDOW_Y,
+        layout: Some(layout),
+    })
+}
 
 pub(super) fn compose_status_bar(sources: &StatusBarSources) -> Result<GuiLayout, GuiContentError> {
     let width = sources.background.width;

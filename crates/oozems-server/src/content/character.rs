@@ -431,6 +431,12 @@ fn build_item_catalog(
         let (icon_width, icon_height) = png_size(&icon, "equipment icon")?;
         let descriptor =
             content.register_asset(&format!("Character.wz/{item_id:08}.img/info/icon"), &icon)?;
+        let sale_price = match int_value(&info, "price")? {
+            Some(value) => u64::try_from(value).map_err(|_| CharacterContentError::Invalid {
+                message: format!("equipment item {item_id} has a negative price"),
+            })?,
+            None => 0,
+        };
         definitions.push(ItemDefinition {
             item_id,
             name: name.to_owned(),
@@ -438,6 +444,7 @@ fn build_item_catalog(
             icon_asset_id: descriptor.id.clone(),
             icon_width: icon_width as f32,
             icon_height: icon_height as f32,
+            sale_price,
         });
         assets.push(descriptor);
     }

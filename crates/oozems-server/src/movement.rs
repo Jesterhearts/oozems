@@ -111,6 +111,11 @@ pub struct MovementDecision {
     pub persist: bool,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct RelocationRollback {
+    session: MovementSession,
+}
+
 #[derive(Debug, Error)]
 pub enum MovementError {
     #[error("the movement tracker is unavailable")]
@@ -131,6 +136,8 @@ pub enum MovementError {
     InvalidSupportMode,
     #[error("the player does not have an authoritative position")]
     MissingPlayerPosition,
+    #[error("the destination map has no usable portal named {portal_name:?}")]
+    MissingDestinationPortal { portal_name: String },
 }
 
 pub fn parse_snapshot(snapshot: MovementSnapshot) -> Result<SubmittedMovement, MovementError> {
@@ -326,6 +333,76 @@ pub fn enter_portal(
         persist: true,
         ..accept(session, true, now_ms, config)
     })
+}
+
+pub fn authorized_destination(
+    map: &Map,
+    portal_name: &str,
+) -> Result<Vec2, MovementError> {
+    let position = destination_position(map, portal_name).ok_or_else(|| {
+        MovementError::MissingDestinationPortal {
+            portal_name: portal_name.to_owned(),
+        }
+    })?;
+    let position = clamp_to_movement_bounds(map, position);
+    Ok(Vec2 {
+        x: position.x,
+        y: position.y,
+    })
+}
+
+pub fn relocate_player(
+    tracker: &MovementTracker,
+    player: &PlayerState,
+    source_map: &Map,
+    target_map: &Map,
+    target_portal_name: &str,
+    config: MovementConfig,
+    now_ms: u64,
+) -> Result<(MovementDecision, RelocationRollback), MovementError> {
+    register_map(tracker, source_map)?;
+    register_map(tracker, target_map)?;
+    let destination = authorized_destination(target_map, target_portal_name)?;
+    let position = Position {
+        x: destination.x,
+        y: destination.y,
+    };
+    let mut players = tracker.players.lock().map_err(|_| MovementError::Tracker)?;
+    let movement = players.entry(player.id.clone()).or_default();
+    ensure_session(movement, player, source_map, config, now_ms)?;
+    let session = movement
+        .session
+        .as_mut()
+        .expect("movement session was initialized above");
+    let rollback = RelocationRollback { session: *session };
+    let (mode, platform_layer) = initial_motion(target_map, &position, config);
+    session.map_id = target_map.id;
+    session.position = position;
+    session.mode = mode;
+    session.platform_layer = platform_layer;
+    session.received_at_ms = now_ms;
+    session.airborne = airborne_state(mode, position.y, now_ms);
+    session.horizontal_credit = 0.0;
+    session.vertical_credit = 0.0;
+    session.climb_credit = 0.0;
+    session.dirty = true;
+    Ok((
+        MovementDecision {
+            persist: true,
+            ..accept(session, true, now_ms, config)
+        },
+        rollback,
+    ))
+}
+
+pub fn restore_relocation(
+    tracker: &MovementTracker,
+    player_id: &str,
+    rollback: RelocationRollback,
+) -> Result<(), MovementError> {
+    let mut players = tracker.players.lock().map_err(|_| MovementError::Tracker)?;
+    players.entry(player_id.to_owned()).or_default().session = Some(rollback.session);
+    Ok(())
 }
 
 pub fn register_map(
@@ -997,6 +1074,8 @@ mod tests {
     use super::initialize_player;
     use super::record_skill_effect;
     use super::register_map;
+    use super::relocate_player;
+    use super::restore_relocation;
     use super::submit_movement;
     use super::synchronize_player;
     use crate::gameplay::MovementConfig;
@@ -1705,6 +1784,42 @@ mod tests {
             decision.authoritative.position.expect("position"),
             Vec2 { x: 682.0, y: 300.0 }
         );
+    }
+
+    #[test]
+    fn authorized_relocations_can_be_rolled_back_to_the_source_position() {
+        let tracker = initialized_tracker();
+        let source_map = map();
+        let target_map = Map {
+            id: 2,
+            width: 800,
+            height: 600,
+            platforms: vec![platform()],
+            portals: vec![Portal {
+                name: "taxi".to_owned(),
+                x: 700.0,
+                y: 300.0,
+                ..Portal::default()
+            }],
+            ..Map::default()
+        };
+
+        let (decision, rollback) = relocate_player(
+            &tracker,
+            &player(),
+            &source_map,
+            &target_map,
+            "taxi",
+            config(),
+            1_200,
+        )
+        .expect("authorized relocation");
+        assert_eq!(decision.authoritative.map_id, 2);
+
+        restore_relocation(&tracker, "player", rollback).expect("restore source location");
+        let restored = synchronize_player(&tracker, player()).expect("restored player");
+        assert_eq!(restored.map_id, 1);
+        assert_eq!(restored.position, Some(Vec2 { x: 100.0, y: 300.0 }));
     }
 
     fn initialized_tracker() -> MovementTracker {

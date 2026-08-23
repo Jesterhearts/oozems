@@ -7,7 +7,9 @@ use oozems_proto::v1::EquippedItem;
 use oozems_proto::v1::InventoryState;
 use oozems_proto::v1::KeyBinding;
 use oozems_proto::v1::LearnedSkill;
+use oozems_proto::v1::PlayerQuest;
 use oozems_proto::v1::PlayerState;
+use oozems_proto::v1::QuestStatus;
 use oozems_proto::v1::Vec2;
 use surrealdb::Surreal;
 use surrealdb::engine::local::Db;
@@ -72,6 +74,9 @@ struct PlayerData {
     skill_points: u32,
     learned_skill_ids: Vec<u32>,
     learned_skill_levels: Vec<u32>,
+    mesos: u64,
+    quest_ids: Vec<u32>,
+    quest_statuses: Vec<i32>,
 }
 
 #[derive(Clone, Debug, SurrealValue)]
@@ -128,6 +133,9 @@ struct PlayerRecord {
     skill_points: Option<u32>,
     learned_skill_ids: Option<Vec<u32>>,
     learned_skill_levels: Option<Vec<u32>>,
+    mesos: Option<u64>,
+    quest_ids: Option<Vec<u32>>,
+    quest_statuses: Option<Vec<i32>>,
 }
 
 impl PlayerId {
@@ -210,6 +218,9 @@ async fn initialize_schema(database: &Database) -> surrealdb::Result<()> {
             DEFINE FIELD IF NOT EXISTS skill_points ON TABLE player TYPE option<int>;
             DEFINE FIELD IF NOT EXISTS learned_skill_ids ON TABLE player TYPE option<array<int>>;
             DEFINE FIELD IF NOT EXISTS learned_skill_levels ON TABLE player TYPE option<array<int>>;
+            DEFINE FIELD IF NOT EXISTS mesos ON TABLE player TYPE option<int>;
+            DEFINE FIELD IF NOT EXISTS quest_ids ON TABLE player TYPE option<array<int>>;
+            DEFINE FIELD IF NOT EXISTS quest_statuses ON TABLE player TYPE option<array<int>>;
             "#,
         )
         .await?
@@ -250,6 +261,8 @@ pub async fn create_player(
         key_bindings: crate::keymap::default_bindings(),
         skill_points: initial_skill_points,
         learned_skills: Vec::new(),
+        mesos: 0,
+        quests: Vec::new(),
     };
     save_player(database, &player).await
 }
@@ -310,6 +323,7 @@ fn player_from_record(
     let inventory = inventory_from_record(&record);
     let key_bindings = key_bindings_from_record(&record);
     let learned_skills = learned_skills_from_record(&record);
+    let quests = quests_from_record(&record);
     let _record_id = record.id;
     PlayerState {
         id: record.player_id,
@@ -326,6 +340,8 @@ fn player_from_record(
         key_bindings,
         skill_points: record.skill_points.unwrap_or(initial_skill_points),
         learned_skills,
+        mesos: record.mesos.unwrap_or_default(),
+        quests,
     }
 }
 
@@ -467,6 +483,31 @@ fn learned_skills_from_record(record: &PlayerRecord) -> Vec<LearnedSkill> {
     skills
 }
 
+fn quests_from_record(record: &PlayerRecord) -> Vec<PlayerQuest> {
+    let (Some(quest_ids), Some(statuses)) =
+        (record.quest_ids.as_ref(), record.quest_statuses.as_ref())
+    else {
+        return Vec::new();
+    };
+    if quest_ids.len() != statuses.len() {
+        return Vec::new();
+    }
+    let mut quests = quest_ids
+        .iter()
+        .zip(statuses)
+        .filter_map(|(quest_id, status)| {
+            let status = QuestStatus::try_from(*status).ok()?;
+            (*quest_id != 0 && status != QuestStatus::Unspecified).then_some(PlayerQuest {
+                quest_id: *quest_id,
+                status: status as i32,
+            })
+        })
+        .collect::<Vec<_>>();
+    quests.sort_by_key(|quest| quest.quest_id);
+    quests.dedup_by_key(|quest| quest.quest_id);
+    quests
+}
+
 impl From<&PlayerState> for PlayerData {
     fn from(player: &PlayerState) -> Self {
         let position = player.position.as_ref().cloned().unwrap_or_default();
@@ -504,6 +545,8 @@ impl From<&PlayerState> for PlayerData {
             .iter()
             .map(|skill| skill.level)
             .collect();
+        let quest_ids = player.quests.iter().map(|quest| quest.quest_id).collect();
+        let quest_statuses = player.quests.iter().map(|quest| quest.status).collect();
         Self {
             player_id: player.id.clone(),
             name: player.name.clone(),
@@ -539,6 +582,9 @@ impl From<&PlayerState> for PlayerData {
             skill_points: player.skill_points,
             learned_skill_ids,
             learned_skill_levels,
+            mesos: player.mesos,
+            quest_ids,
+            quest_statuses,
         }
     }
 }
@@ -596,6 +642,7 @@ mod tests {
     use oozems_proto::v1::CharacterAppearance;
     use oozems_proto::v1::CharacterGender;
     use oozems_proto::v1::PlayerState;
+    use oozems_proto::v1::QuestStatus;
     use oozems_proto::v1::Vec2;
     use surrealdb::types::SurrealValue;
 
@@ -637,6 +684,11 @@ mod tests {
             key_bindings: crate::keymap::default_bindings(),
             skill_points: 3,
             learned_skills: Vec::new(),
+            mesos: 500,
+            quests: vec![oozems_proto::v1::PlayerQuest {
+                quest_id: 100,
+                status: QuestStatus::Started as i32,
+            }],
         };
         let requested = PlayerState {
             id: "local".to_owned(),
@@ -653,6 +705,11 @@ mod tests {
                 skill_id: 1_000,
                 level: 2,
             }],
+            mesos: 99_999,
+            quests: vec![oozems_proto::v1::PlayerQuest {
+                quest_id: 100,
+                status: QuestStatus::Completed as i32,
+            }],
         };
 
         let result = apply_player_preferences(current, &requested);
@@ -666,6 +723,8 @@ mod tests {
         assert_eq!(result.inventory, Some(crate::items::starter_inventory()));
         assert_eq!(result.skill_points, 3);
         assert!(result.learned_skills.is_empty());
+        assert_eq!(result.mesos, 500);
+        assert_eq!(result.quests[0].status, QuestStatus::Started as i32);
     }
 
     #[tokio::test]
@@ -704,6 +763,11 @@ mod tests {
         player.learned_skills.push(oozems_proto::v1::LearnedSkill {
             skill_id: 1_000,
             level: 1,
+        });
+        player.mesos = 1_234;
+        player.quests.push(oozems_proto::v1::PlayerQuest {
+            quest_id: 1_009,
+            status: QuestStatus::Started as i32,
         });
         player.key_bindings.push(oozems_proto::v1::KeyBinding {
             code: "F1".to_owned(),
@@ -791,6 +855,8 @@ mod tests {
         assert_eq!(loaded.key_bindings, crate::keymap::default_bindings());
         assert_eq!(loaded.skill_points, 7);
         assert!(loaded.learned_skills.is_empty());
+        assert_eq!(loaded.mesos, 0);
+        assert!(loaded.quests.is_empty());
     }
 
     fn appearance() -> CharacterAppearance {

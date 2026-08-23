@@ -16,6 +16,7 @@ use crate::game::Game;
 use crate::game::character_animation_elapsed_ms;
 use crate::game_gui;
 
+mod interaction;
 mod mob;
 mod npc;
 mod skill_info;
@@ -114,6 +115,26 @@ pub(crate) fn world_layers(map: &Map) -> Vec<i32> {
     layers.sort_unstable();
     layers.dedup();
     layers
+}
+
+pub(crate) fn npc_at_point(
+    game: &Game,
+    point: game_gui::CanvasPoint,
+) -> Option<u32> {
+    let viewport_width = f64::from(game.canvas.width());
+    let viewport_height = f64::from(game.canvas.height());
+    let position = game.player.position.as_ref()?;
+    let camera_x = camera_x(
+        f64::from(position.x),
+        viewport_width,
+        f64::from(game.map.width),
+    );
+    let camera_y = camera_y(
+        f64::from(position.y),
+        viewport_height,
+        f64::from(game.map.height),
+    );
+    npc::at_point(game, point, camera_x, camera_y)
 }
 
 fn layer_passes(has_player: bool) -> &'static [LayerPass] {
@@ -471,6 +492,7 @@ fn draw_hud(game: &Game) {
         draw_key_config_window(game);
     }
     skill_info::draw_hovered_skill(game);
+    interaction::draw(game);
 }
 
 fn draw_key_config_window(game: &Game) {

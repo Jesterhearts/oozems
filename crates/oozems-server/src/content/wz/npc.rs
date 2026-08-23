@@ -35,11 +35,14 @@ use super::vector_value;
 use super::wrap_archive_root;
 
 const NPC_ARCHIVE: &str = "Npc.wz";
+const STRING_ARCHIVE: &str = "String.wz";
 const DEFAULT_FRAME_DELAY_MS: u32 = 100;
 
 pub(super) struct NpcContent {
     _base: WzNodeArc,
+    _string_base: Option<WzNodeArc>,
     root: WzNodeArc,
+    strings: Option<WzNodeArc>,
     fingerprint: String,
     definitions: RwLock<HashMap<u32, LoadedNpcDefinition>>,
     assets: RwLock<HashMap<String, Arc<WzAsset>>>,
@@ -49,6 +52,9 @@ pub(super) struct NpcContent {
 struct LoadedNpcDefinition {
     frames: Vec<NpcFrame>,
     assets: Vec<AssetDescriptor>,
+    name: String,
+    function: String,
+    ambient_lines: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -81,11 +87,14 @@ impl NpcContent {
         let base = wrap_archive_root(&root)?;
         parse(&root, format!("{} root", path.display()))?;
         let fingerprint = archive_fingerprint(&path)?;
+        let (string_base, strings) = open_npc_strings(directory)?;
 
         tracing::info!(path = %path.display(), "WZ NPC source ready");
         Ok(Some(Self {
             _base: base,
+            _string_base: string_base,
             root,
+            strings,
             fingerprint,
             definitions: RwLock::new(HashMap::new()),
             assets: RwLock::new(HashMap::new()),
@@ -128,13 +137,14 @@ impl NpcContent {
             && linked_id != npc_id
             && let Some(definition) = self.load_definition(linked_id, visited)?
         {
+            let definition = with_presentation(self, npc_id, &node, definition)?;
             self.definitions
                 .write()
                 .map_err(|_| lock_error("WZ NPC definition cache"))?
                 .insert(npc_id, definition.clone());
             return Ok(Some(definition));
         }
-        let definition = build_definition(self, &node)?;
+        let definition = with_presentation(self, npc_id, &node, build_definition(self, &node)?)?;
         if definition.frames.is_empty() {
             tracing::warn!(npc_id, "NPC definition has no displayable animation frames");
             return Ok(None);
@@ -174,6 +184,68 @@ impl NpcContent {
             content_hash: version,
         })
     }
+}
+
+fn open_npc_strings(
+    directory: &Path
+) -> Result<(Option<WzNodeArc>, Option<WzNodeArc>), WzContentError> {
+    let path = directory.join(STRING_ARCHIVE);
+    if !path
+        .try_exists()
+        .map_err(|source| WzContentError::Metadata {
+            path: path.clone(),
+            source,
+        })?
+    {
+        tracing::warn!(path = %path.display(), "String.wz is absent; NPC names and speech will be unavailable");
+        return Ok((None, None));
+    }
+    let root = open_archive(&path)?;
+    let base = wrap_archive_root(&root)?;
+    parse(&root, format!("{} root", path.display()))?;
+    let Some(strings) = child(&root, "Npc.img")? else {
+        tracing::warn!(path = %path.display(), "String.wz has no Npc.img; NPC names and speech will be unavailable");
+        return Ok((Some(base), None));
+    };
+    parse(&strings, format!("{} Npc.img", path.display()))?;
+    Ok((Some(base), Some(strings)))
+}
+
+fn with_presentation(
+    content: &NpcContent,
+    npc_id: u32,
+    node: &WzNodeArc,
+    mut definition: LoadedNpcDefinition,
+) -> Result<LoadedNpcDefinition, WzContentError> {
+    definition.name = format!("NPC {npc_id}");
+    definition.function.clear();
+    definition.ambient_lines.clear();
+    let Some(strings) = &content.strings else {
+        return Ok(definition);
+    };
+    let Some(entry) = child(strings, &npc_id.to_string())? else {
+        return Ok(definition);
+    };
+    definition.name = string_value(&entry, "name")?
+        .filter(|name| !name.is_empty())
+        .unwrap_or(definition.name);
+    definition.function = string_value(&entry, "func")?.unwrap_or_default();
+    let Some(info) = child(node, "info")? else {
+        return Ok(definition);
+    };
+    let Some(speak) = child(&info, "speak")? else {
+        return Ok(definition);
+    };
+    for key_node in sorted_children(&speak)? {
+        let child_name = node_name(&key_node)?;
+        let Some(key) = string_value(&speak, &child_name)? else {
+            continue;
+        };
+        if let Some(line) = string_value(&entry, &key)?.filter(|line| !line.is_empty()) {
+            definition.ambient_lines.push(line);
+        }
+    }
+    Ok(definition)
 }
 
 fn linked_definition_id(node: &WzNodeArc) -> Result<Option<u32>, WzContentError> {
@@ -262,7 +334,15 @@ pub(super) fn build_npcs(
                 assets.push(asset);
             }
         }
-        npcs.push(build_npc(spawn, definition.frames, platforms, bounds));
+        npcs.push(build_npc(
+            spawn,
+            definition.frames,
+            definition.name,
+            definition.function,
+            definition.ambient_lines,
+            platforms,
+            bounds,
+        ));
     }
     Ok(npcs)
 }
@@ -270,6 +350,9 @@ pub(super) fn build_npcs(
 fn build_npc(
     source: RawNpcSpawn,
     frames: Vec<NpcFrame>,
+    name: String,
+    function: String,
+    ambient_lines: Vec<String>,
     platforms: &[Platform],
     bounds: Bounds,
 ) -> Npc {
@@ -285,6 +368,9 @@ fn build_npc(
         flip_x: source.flip_x,
         layer,
         frames,
+        name,
+        function,
+        ambient_lines,
     }
 }
 
@@ -300,7 +386,13 @@ fn build_definition(
     if frames.is_empty() {
         frames = read_first_animation(content, node, &mut assets)?;
     }
-    Ok(LoadedNpcDefinition { frames, assets })
+    Ok(LoadedNpcDefinition {
+        frames,
+        assets,
+        name: String::new(),
+        function: String::new(),
+        ambient_lines: Vec::new(),
+    })
 }
 
 fn read_first_animation(
@@ -419,6 +511,9 @@ mod tests {
                 limited_name: None,
             },
             vec![NpcFrame::default()],
+            "Regular Cab".to_owned(),
+            String::new(),
+            Vec::new(),
             &platforms,
             Bounds {
                 left: 0,
@@ -432,5 +527,6 @@ mod tests {
         assert_eq!(npc.layer, 3);
         assert!(npc.flip_x);
         assert_eq!(npc.frames.len(), 1);
+        assert_eq!(npc.name, "Regular Cab");
     }
 }

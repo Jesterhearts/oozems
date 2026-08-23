@@ -65,6 +65,12 @@ pub enum ItemRuleError {
     EmptyEquipmentSlot { slot: EquipmentSlot },
     #[error("the inventory is full")]
     InventoryFull,
+    #[error("the player does not have enough mesos")]
+    InsufficientMesos,
+    #[error("item {item_id} cannot be sold")]
+    UnsellableItem { item_id: u32 },
+    #[error("the mesos balance exceeds the supported range")]
+    MesosOverflow,
     #[error("the player does not have a valid map position")]
     MissingPosition,
     #[error("there is no dropped item close enough to pick up")]
@@ -177,6 +183,51 @@ pub fn unequip_item(
         .ok_or(ItemRuleError::EmptyEquipmentSlot { slot })?;
     let equipped = inventory.equipment.remove(index);
     inventory.item_ids.push(equipped.item_id);
+    Ok(player)
+}
+
+pub fn buy_shop_item(
+    mut player: PlayerState,
+    item_id: u32,
+    price: u64,
+    definitions: &[ItemDefinition],
+) -> Result<PlayerState, ItemRuleError> {
+    find_definition(definitions, item_id)?;
+    if player.mesos < price {
+        return Err(ItemRuleError::InsufficientMesos);
+    }
+    let inventory = player
+        .inventory
+        .as_mut()
+        .ok_or(ItemRuleError::MissingInventory)?;
+    if inventory.item_ids.len() >= inventory.capacity as usize {
+        return Err(ItemRuleError::InventoryFull);
+    }
+    player.mesos -= price;
+    inventory.item_ids.push(item_id);
+    Ok(player)
+}
+
+pub fn sell_inventory_item(
+    mut player: PlayerState,
+    inventory_index: u32,
+    definitions: &[ItemDefinition],
+) -> Result<PlayerState, ItemRuleError> {
+    let inventory = player
+        .inventory
+        .as_mut()
+        .ok_or(ItemRuleError::MissingInventory)?;
+    let index = valid_inventory_index(inventory, inventory_index)?;
+    let item_id = inventory.item_ids[index];
+    let price = find_definition(definitions, item_id)?.sale_price;
+    if price == 0 {
+        return Err(ItemRuleError::UnsellableItem { item_id });
+    }
+    player.mesos = player
+        .mesos
+        .checked_add(price)
+        .ok_or(ItemRuleError::MesosOverflow)?;
+    inventory.item_ids.remove(index);
     Ok(player)
 }
 
@@ -363,6 +414,7 @@ mod tests {
     use super::DropStore;
     use super::SPARE_TOP_ID;
     use super::STARTER_TOP_ID;
+    use super::buy_shop_item;
     use super::create_drop;
     use super::create_drop_at;
     use super::equip_inventory_item;
@@ -370,6 +422,7 @@ mod tests {
     use super::map_drops_at;
     use super::pick_up_nearest;
     use super::remove_inventory_item;
+    use super::sell_inventory_item;
     use super::starter_inventory;
     use super::unequip_item;
 
@@ -394,6 +447,30 @@ mod tests {
                 .any(|item| item.slot == EquipmentSlot::Top as i32)
         );
         assert_eq!(inventory.item_ids.last(), Some(&SPARE_TOP_ID));
+    }
+
+    #[test]
+    fn shop_transactions_exchange_inventory_items_and_mesos() {
+        let mut player = player();
+        player.mesos = 200;
+        let definitions = vec![ItemDefinition {
+            sale_price: 40,
+            ..definition(SPARE_TOP_ID, EquipmentSlot::Top)
+        }];
+
+        let bought = buy_shop_item(player, SPARE_TOP_ID, 100, &definitions).expect("buy item");
+        assert_eq!(bought.mesos, 100);
+        assert_eq!(
+            bought.inventory.as_ref().expect("inventory").item_ids.len(),
+            4
+        );
+
+        let sold = sell_inventory_item(bought, 3, &definitions).expect("sell item");
+        assert_eq!(sold.mesos, 140);
+        assert_eq!(
+            sold.inventory.as_ref().expect("inventory").item_ids.len(),
+            3
+        );
     }
 
     #[test]

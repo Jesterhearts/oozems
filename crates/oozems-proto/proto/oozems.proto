@@ -22,6 +22,19 @@ message PlayerState {
   repeated KeyBinding key_bindings = 9;
   uint32 skill_points = 10;
   repeated LearnedSkill learned_skills = 11;
+  uint64 mesos = 12;
+  repeated PlayerQuest quests = 13;
+}
+
+message PlayerQuest {
+  uint32 quest_id = 1;
+  QuestStatus status = 2;
+}
+
+enum QuestStatus {
+  QUEST_STATUS_UNSPECIFIED = 0;
+  QUEST_STATUS_STARTED = 1;
+  QUEST_STATUS_COMPLETED = 2;
 }
 
 message KeyBinding {
@@ -341,6 +354,8 @@ message GameGui {
   repeated KeyActionDefinition key_actions = 8;
   repeated KeySlot key_slots = 9;
   GuiWindow skill_window = 10;
+  GuiWindow npc_dialog_window = 11;
+  GuiWindow shop_window = 12;
 }
 
 message SkillBook {
@@ -448,6 +463,7 @@ message ItemDefinition {
   string icon_asset_id = 4;
   float icon_width = 5;
   float icon_height = 6;
+  uint64 sale_price = 7;
 }
 
 message GuiLayout {
@@ -560,6 +576,96 @@ message ItemActionResponse {
   string picked_up_drop_id = 3;
 }
 
+message NpcInteractionRequest {
+  string player_id = 1;
+  uint32 map_id = 2;
+  uint32 npc_spawn_id = 3;
+  oneof action {
+    OpenNpcAction open = 4;
+    SelectNpcChoiceAction select_choice = 5;
+    BuyShopItemAction buy = 6;
+    SellShopItemAction sell = 7;
+    TakeTaxiAction take_taxi = 8;
+  }
+}
+
+message OpenNpcAction {}
+
+message SelectNpcChoiceAction {
+  uint32 quest_id = 1;
+  uint32 choice_id = 2;
+}
+
+message BuyShopItemAction {
+  uint32 item_id = 1;
+}
+
+message SellShopItemAction {
+  uint32 inventory_index = 1;
+}
+
+message TakeTaxiAction {
+  uint32 target_map_id = 1;
+}
+
+message NpcInteractionResponse {
+  PlayerState player = 1;
+  NpcInteraction interaction = 2;
+  MovementSnapshot authoritative = 3;
+  Map map = 4;
+}
+
+message NpcInteraction {
+  uint32 map_id = 1;
+  uint32 npc_spawn_id = 2;
+  uint32 npc_id = 3;
+  string npc_name = 4;
+  oneof view {
+    NpcDialogView dialog = 5;
+    NpcShopView shop = 6;
+    NpcTaxiView taxi = 7;
+  }
+}
+
+message NpcDialogView {
+  uint32 quest_id = 1;
+  string title = 2;
+  repeated string pages = 3;
+  repeated NpcDialogChoice choices = 4;
+}
+
+message NpcDialogChoice {
+  uint32 choice_id = 1;
+  string label = 2;
+  NpcDialogChoiceKind kind = 3;
+}
+
+enum NpcDialogChoiceKind {
+  NPC_DIALOG_CHOICE_KIND_UNSPECIFIED = 0;
+  NPC_DIALOG_CHOICE_KIND_ACCEPT_QUEST = 1;
+  NPC_DIALOG_CHOICE_KIND_DECLINE_QUEST = 2;
+  NPC_DIALOG_CHOICE_KIND_ANSWER = 3;
+}
+
+message NpcShopView {
+  repeated NpcShopOffer offers = 1;
+}
+
+message NpcShopOffer {
+  uint32 item_id = 1;
+  uint64 buy_price = 2;
+}
+
+message NpcTaxiView {
+  repeated NpcTaxiDestination destinations = 1;
+}
+
+message NpcTaxiDestination {
+  uint32 map_id = 1;
+  string label = 2;
+  uint64 fare = 3;
+}
+
 message Map {
   uint32 id = 1;
   string name = 2;
@@ -593,6 +699,9 @@ message Npc {
   bool flip_x = 4;
   int32 layer = 5;
   repeated NpcFrame frames = 6;
+  string name = 7;
+  string function = 8;
+  repeated string ambient_lines = 9;
 }
 
 message NpcFrame {

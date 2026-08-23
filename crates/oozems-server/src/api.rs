@@ -43,6 +43,7 @@ use crate::database::CharacterName;
 use crate::database::PlayerId;
 
 pub(crate) mod combat;
+pub(crate) mod interactions;
 pub(crate) mod movement;
 
 pub async fn bootstrap(

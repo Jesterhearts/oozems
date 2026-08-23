@@ -26,6 +26,8 @@ mod layout;
 
 use layout::compose_item_window;
 use layout::compose_key_config;
+use layout::compose_npc_dialog_window;
+use layout::compose_shop_window;
 use layout::compose_skill_window;
 use layout::compose_stat_window;
 use layout::compose_status_bar;
@@ -111,6 +113,29 @@ struct KeyConfigSources {
     background: SourceSprite,
     close: SourceSprite,
     actions: Vec<(crate::keymap::KeyActionSpec, SourceSprite)>,
+}
+
+struct NpcDialogSources {
+    top: SourceSprite,
+    center: SourceSprite,
+    bottom: SourceSprite,
+    close: SourceSprite,
+    ok: SourceSprite,
+    next: SourceSprite,
+    previous: SourceSprite,
+    accept: SourceSprite,
+    decline: SourceSprite,
+    choice: SourceSprite,
+    choice_selected: SourceSprite,
+}
+
+struct ShopWindowSources {
+    background: SourceSprite,
+    selection: SourceSprite,
+    meso: SourceSprite,
+    buy: SourceSprite,
+    sell: SourceSprite,
+    exit: SourceSprite,
 }
 
 impl GuiContent {
@@ -215,6 +240,12 @@ fn build_game_gui(
     let (key_config_sources, key_config_assets) = load_key_config_sources(content, ui_window)?;
     let (key_config_window, key_actions) = compose_key_config(&key_config_sources)?;
     assets.extend(key_config_assets);
+    let (npc_dialog_sources, npc_dialog_assets) = load_npc_dialog_sources(content, ui_window)?;
+    let npc_dialog_window = compose_npc_dialog_window(&npc_dialog_sources)?;
+    assets.extend(npc_dialog_assets);
+    let (shop_sources, shop_assets) = load_shop_window_sources(content, ui_window)?;
+    let shop_window = compose_shop_window(&shop_sources)?;
+    assets.extend(shop_assets);
     let mut asset_ids = HashSet::new();
     assets.retain(|asset| asset_ids.insert(asset.id.clone()));
     Ok(GameGui {
@@ -237,7 +268,55 @@ fn build_game_gui(
             })
             .collect(),
         skill_window: Some(skill_window),
+        npc_dialog_window: Some(npc_dialog_window),
+        shop_window: Some(shop_window),
     })
+}
+
+fn load_npc_dialog_sources(
+    content: &GuiContent,
+    ui_window: &WzNodeArc,
+) -> Result<(NpcDialogSources, Vec<AssetDescriptor>), GuiContentError> {
+    let mut assets = Vec::new();
+    let mut load = |name: &str, path: &[&str]| {
+        load_source(content, ui_window, UI_WINDOW_IMAGE, name, path, &mut assets)
+    };
+    let sources = NpcDialogSources {
+        top: load("npc-dialog-top", &["UtilDlgEx", "t"])?,
+        center: load("npc-dialog-center", &["UtilDlgEx", "c"])?,
+        bottom: load("npc-dialog-bottom", &["UtilDlgEx", "s"])?,
+        close: load("npc-dialog-close", &["UtilDlgEx", "BtClose", "normal", "0"])?,
+        ok: load("npc-dialog-ok", &["UtilDlgEx", "BtOK", "normal", "0"])?,
+        next: load("npc-dialog-next", &["UtilDlgEx", "BtNext", "normal", "0"])?,
+        previous: load(
+            "npc-dialog-previous",
+            &["UtilDlgEx", "BtPrev", "normal", "0"],
+        )?,
+        accept: load("npc-dialog-accept", &["UtilDlgEx", "BtQYes", "normal", "0"])?,
+        decline: load("npc-dialog-decline", &["UtilDlgEx", "BtQNo", "normal", "0"])?,
+        choice: load("npc-dialog-choice", &["UtilDlgEx", "dot0"])?,
+        choice_selected: load("npc-dialog-choice-selected", &["UtilDlgEx", "dot1"])?,
+    };
+    Ok((sources, assets))
+}
+
+fn load_shop_window_sources(
+    content: &GuiContent,
+    ui_window: &WzNodeArc,
+) -> Result<(ShopWindowSources, Vec<AssetDescriptor>), GuiContentError> {
+    let mut assets = Vec::new();
+    let mut load = |name: &str, path: &[&str]| {
+        load_source(content, ui_window, UI_WINDOW_IMAGE, name, path, &mut assets)
+    };
+    let sources = ShopWindowSources {
+        background: load("shop-background", &["Shop", "backgrnd"])?,
+        selection: load("shop-selection", &["Shop", "select"])?,
+        meso: load("shop-meso", &["Shop", "meso"])?,
+        buy: load("shop-buy", &["Shop", "BtBuy", "normal", "0"])?,
+        sell: load("shop-sell", &["Shop", "BtSell", "normal", "0"])?,
+        exit: load("shop-exit", &["Shop", "BtExit", "normal", "0"])?,
+    };
+    Ok((sources, assets))
 }
 
 fn load_status_bar_sources(
@@ -839,7 +918,9 @@ mod tests {
             stat_window.layout.as_ref().map(|layout| layout.height),
             Some(347.0)
         );
-        assert_eq!(gui.assets.len(), 46);
+        assert_eq!(gui.assets.len(), 63);
+        assert!(gui.npc_dialog_window.is_some());
+        assert!(gui.shop_window.is_some());
         assert_eq!(gui.key_actions.len(), crate::keymap::ACTIONS.len());
         assert_eq!(gui.key_slots.len(), crate::keymap::SLOTS.len());
         assert_eq!(

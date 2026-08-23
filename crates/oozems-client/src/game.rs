@@ -6,7 +6,6 @@ use std::rc::Rc;
 use oozems_proto::v1::ActiveBuffState;
 use oozems_proto::v1::CharacterSpriteSet;
 use oozems_proto::v1::GameGui;
-use oozems_proto::v1::ItemActionResponse;
 use oozems_proto::v1::KeyAction;
 use oozems_proto::v1::KeyBinding;
 use oozems_proto::v1::Map;
@@ -32,6 +31,8 @@ use crate::game_gui::GuiAction;
 use crate::game_gui::GuiState;
 use crate::game_gui::KeyDrag;
 use crate::game_gui::PointerButton;
+use crate::interaction_ui;
+use crate::interaction_ui::InteractionState;
 use crate::js_error;
 use crate::keymap;
 use crate::keymap::KeyboardState;
@@ -46,6 +47,8 @@ use crate::skill_effects;
 use crate::skill_effects::SkillEffectState;
 
 mod buffs;
+mod interaction_actions;
+mod item_actions;
 mod movement_actions;
 mod recovery_actions;
 mod skill_actions;
@@ -61,6 +64,7 @@ pub struct Game {
     pub gui: GameGui,
     pub gui_state: Rc<RefCell<GuiState>>,
     pub images: HashMap<String, BrowserAsset>,
+    pub interaction: InteractionState,
     pub key_bindings: Rc<RefCell<Vec<KeyBinding>>>,
     pub key_drag: Option<KeyDrag>,
     pub pointer: Option<CanvasPoint>,
@@ -207,6 +211,7 @@ fn build_game(
         gui,
         gui_state,
         images,
+        interaction: InteractionState::default(),
         key_bindings,
         key_drag: None,
         pointer: None,
@@ -405,6 +410,48 @@ fn install_canvas_input(
         .map_err(js_error)?;
     click.forget();
 
+    let double_click_canvas = canvas.clone();
+    let double_click_game = game.clone();
+    let double_click = Closure::<dyn FnMut(MouseEvent)>::new(move |event: MouseEvent| {
+        if event.button() != 0 {
+            return;
+        }
+        let Some(point) = canvas_event_point(&double_click_canvas, &event) else {
+            return;
+        };
+        let npc_spawn_id = {
+            let game = double_click_game.borrow();
+            let gui = *game.gui_state.borrow();
+            if game.interaction.is_busy()
+                || game.item_action_in_flight.get()
+                || game.skill_action_in_flight.get()
+                || game.transition_in_flight.get()
+                || gui.stats_open
+                || gui.equipment_open
+                || gui.inventory_open
+                || gui.key_config_open
+                || gui.skills_open
+            {
+                None
+            } else {
+                render::npc_at_point(&game, point)
+            }
+        };
+        if let Some(npc_spawn_id) = npc_spawn_id {
+            if double_click_game.borrow().gui.npc_dialog_window.is_none() {
+                show_status("NPC interaction requires UI.wz.", true);
+                return;
+            }
+            interaction_actions::begin_open(double_click_game.clone(), npc_spawn_id);
+            event.prevent_default();
+            let _ = double_click_canvas.focus();
+        }
+    });
+    canvas
+        .add_event_listener_with_callback("dblclick", double_click.as_ref().unchecked_ref())
+        .map_err(js_error)?;
+    double_click.forget();
+
     let context_canvas = canvas.clone();
     let context_menu = Closure::<dyn FnMut(MouseEvent)>::new(move |event: MouseEvent| {
         if handle_canvas_pointer(&game, &context_canvas, &event, PointerButton::Right) {
@@ -431,6 +478,28 @@ fn handle_canvas_pointer(
     let Some(point) = canvas_event_point(canvas, event) else {
         return false;
     };
+    if game.borrow().interaction.is_busy() {
+        if button != PointerButton::Left {
+            return true;
+        }
+        let action = {
+            let game = game.borrow();
+            interaction_ui::click_action(
+                &game.gui,
+                &game.interaction,
+                game.player.inventory.as_ref(),
+                point,
+            )
+        };
+        let Some(action) = action else {
+            return true;
+        };
+        if interaction_ui::apply_local_action(&mut game.borrow_mut().interaction, action) {
+            return true;
+        }
+        interaction_actions::begin_action(game.clone(), action);
+        return true;
+    }
     let action = {
         let game = game.borrow();
         game_gui::click_action(
@@ -455,7 +524,7 @@ fn handle_canvas_pointer(
         GuiAction::AllocateSkill { .. } | GuiAction::UseSkill { .. } => {
             skill_actions::begin(game.clone(), action);
         }
-        _ => begin_item_action(game.clone(), action),
+        _ => item_actions::begin(game.clone(), action),
     }
     true
 }
@@ -474,201 +543,6 @@ fn canvas_event_point(
     )
 }
 
-fn begin_item_action(
-    game: Rc<RefCell<Game>>,
-    action: GuiAction,
-) {
-    if recovery_actions::is_in_flight(&game.borrow().recovery_state) {
-        show_status("Recovery is still being saved.", true);
-        return;
-    }
-    recovery_actions::reset(&mut game.borrow_mut().recovery_state);
-    let in_flight = game.borrow().item_action_in_flight.clone();
-    if in_flight.replace(true) {
-        show_status("An item action is already in progress.", true);
-        return;
-    }
-    let player_id = game.borrow().player.id.clone();
-    spawn_local(async move {
-        let result = request_item_action(&player_id, action).await;
-        match result {
-            Ok(response) => match prepare_item_action_update(action, response).await {
-                Ok(update) => {
-                    let warning = update.warning.clone();
-                    install_item_action_update(&mut game.borrow_mut(), update);
-                    match warning {
-                        Some(warning) => show_status(&warning, true),
-                        None => show_status(item_action_message(action), false),
-                    }
-                }
-                Err(error) => show_status(&format!("Item action could not finish: {error}"), true),
-            },
-            Err(error) => show_status(&format!("Item action failed: {error}"), true),
-        }
-        in_flight.set(false);
-    });
-}
-
-fn begin_pick_up(game: Rc<RefCell<Game>>) {
-    if recovery_actions::is_in_flight(&game.borrow().recovery_state) {
-        return;
-    }
-    recovery_actions::reset(&mut game.borrow_mut().recovery_state);
-    let in_flight = game.borrow().item_action_in_flight.clone();
-    if in_flight.replace(true) {
-        return;
-    }
-    let request = {
-        let game = game.borrow();
-        (game.player.id.clone(), game.map.id)
-    };
-    spawn_local(async move {
-        match api::pick_up_item(&request.0, request.1).await {
-            Ok(response) => {
-                let result = response
-                    .player
-                    .ok_or("server pickup response did not contain a player")
-                    .and_then(|player| {
-                        (!response.picked_up_drop_id.is_empty())
-                            .then_some((player, response.picked_up_drop_id))
-                            .ok_or("server pickup response did not identify the dropped item")
-                    });
-                match result {
-                    Ok((player, drop_id)) => {
-                        let mut game = game.borrow_mut();
-                        game.player.inventory = player.inventory;
-                        game.map.dropped_items.retain(|drop| drop.id != drop_id);
-                        show_status("Item picked up.", false);
-                    }
-                    Err(error) => show_status(&format!("Pickup could not finish: {error}"), true),
-                }
-            }
-            Err(error) => show_status(&format!("Pickup failed: {error}"), true),
-        }
-        in_flight.set(false);
-    });
-}
-
-async fn request_item_action(
-    player_id: &str,
-    action: GuiAction,
-) -> Result<ItemActionResponse, api::ClientError> {
-    match action {
-        GuiAction::Equip { inventory_index } => api::equip_item(player_id, inventory_index).await,
-        GuiAction::Unequip { slot } => api::unequip_item(player_id, slot).await,
-        GuiAction::Drop { inventory_index } => api::drop_item(player_id, inventory_index).await,
-        GuiAction::ToggleStats
-        | GuiAction::ToggleEquipment
-        | GuiAction::ToggleInventory
-        | GuiAction::ToggleKeyConfig
-        | GuiAction::ToggleSkills
-        | GuiAction::PreviousSkillPage
-        | GuiAction::NextSkillPage
-        | GuiAction::CloseStats
-        | GuiAction::CloseEquipment
-        | GuiAction::CloseInventory
-        | GuiAction::CloseKeyConfig
-        | GuiAction::CloseSkills
-        | GuiAction::AllocateSkill { .. }
-        | GuiAction::UseSkill { .. } => unreachable!("non-item GUI action reached the item server"),
-    }
-}
-
-struct ItemActionUpdate {
-    player: PlayerState,
-    dropped_item: Option<oozems_proto::v1::DroppedItem>,
-    sprites: Option<CharacterSpriteSet>,
-    images: Option<HashMap<String, BrowserAsset>>,
-    warning: Option<String>,
-}
-
-async fn prepare_item_action_update(
-    action: GuiAction,
-    response: ItemActionResponse,
-) -> Result<ItemActionUpdate, String> {
-    let player = response
-        .player
-        .ok_or("server item response did not contain a player")?;
-    let mut sprites = None;
-    let mut images = None;
-    let mut warning = None;
-    if matches!(action, GuiAction::Equip { .. } | GuiAction::Unequip { .. }) {
-        let appearance = player
-            .appearance
-            .ok_or("server item response did not contain an appearance")?;
-        let equipment = player
-            .inventory
-            .as_ref()
-            .map(|inventory| inventory.equipment.as_slice())
-            .unwrap_or_default();
-        match api::get_character_sprites(appearance, Some(equipment)).await {
-            Ok(next_sprites) => match assets::prepare_assets(next_sprites.assets.iter()) {
-                Ok(next_images) => {
-                    sprites = Some(next_sprites);
-                    images = Some(next_images);
-                }
-                Err(error) => {
-                    warning = Some(format!(
-                        "Item change was saved, but character assets could not refresh: {error}"
-                    ));
-                }
-            },
-            Err(error) => {
-                warning = Some(format!(
-                    "Item change was saved, but character sprites could not refresh: {error}"
-                ));
-            }
-        }
-    }
-    Ok(ItemActionUpdate {
-        player,
-        dropped_item: response.dropped_item,
-        sprites,
-        images,
-        warning,
-    })
-}
-
-fn install_item_action_update(
-    game: &mut Game,
-    update: ItemActionUpdate,
-) {
-    game.player.inventory = update.player.inventory;
-    if let (Some(sprites), Some(images)) = (update.sprites, update.images) {
-        assets::merge_assets(&mut game.images, images);
-        game.character_sprites = sprites;
-        restart_character_animation(&mut game.character_animation, game.frame_time_ms);
-    }
-    if let Some(drop) = update.dropped_item
-        && update.player.map_id == game.map.id
-        && drop.despawn_at_unix_ms > js_sys::Date::now().max(0.0) as u64
-    {
-        game.map.dropped_items.push(drop);
-    }
-}
-
-fn item_action_message(action: GuiAction) -> &'static str {
-    match action {
-        GuiAction::Equip { .. } => "Item equipped.",
-        GuiAction::Unequip { .. } => "Item moved to inventory.",
-        GuiAction::Drop { .. } => "Item dropped.",
-        GuiAction::ToggleStats
-        | GuiAction::ToggleEquipment
-        | GuiAction::ToggleInventory
-        | GuiAction::ToggleKeyConfig
-        | GuiAction::ToggleSkills
-        | GuiAction::PreviousSkillPage
-        | GuiAction::NextSkillPage
-        | GuiAction::CloseStats
-        | GuiAction::CloseEquipment
-        | GuiAction::CloseInventory
-        | GuiAction::CloseKeyConfig
-        | GuiAction::CloseSkills
-        | GuiAction::AllocateSkill { .. }
-        | GuiAction::UseSkill { .. } => "GUI updated.",
-    }
-}
-
 fn schedule_frame(game: Rc<RefCell<Game>>) -> Result<(), String> {
     let window = web_sys::window().ok_or("browser window is unavailable")?;
     let callback = Closure::once_into_js(move |timestamp_ms: f64| {
@@ -678,7 +552,7 @@ fn schedule_frame(game: Rc<RefCell<Game>>) -> Result<(), String> {
             render::draw(&game);
         }
         if update.pick_up {
-            begin_pick_up(game.clone());
+            item_actions::begin_pick_up(game.clone());
         }
         if update.movement_snapshot {
             movement_actions::begin(game.clone());
@@ -746,6 +620,12 @@ fn update(
             .actions
             .retain(|action| *action == KeyAction::OpenKeyConfig);
     }
+    let interaction_busy = game.interaction.is_busy();
+    if interaction_busy {
+        input.player = PlayerInput::default();
+        input.skills.clear();
+        input.actions.clear();
+    }
     let basic_attack_requested = input.actions.contains(&KeyAction::BasicAttack);
     let pick_up = apply_key_actions(&mut game.gui_state.borrow_mut(), &game.gui, &input.actions);
     buffs::apply(&mut game.active_buffs, &mut input.player, now_ms);
@@ -783,7 +663,8 @@ fn update(
         && !game.item_action_in_flight.get()
         && !game.save_in_flight.get()
         && !game.skill_action_in_flight.get()
-        && !game.transition_in_flight.get();
+        && !game.transition_in_flight.get()
+        && !interaction_busy;
     let recover = recovery_actions::update(
         &mut game.recovery_state,
         needs_recovery,

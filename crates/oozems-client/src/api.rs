@@ -33,6 +33,8 @@ use oozems_proto::v1::Map;
 use oozems_proto::v1::MovementRules;
 use oozems_proto::v1::MovementSnapshot;
 use oozems_proto::v1::MovementUpdateResponse;
+use oozems_proto::v1::NpcInteractionRequest;
+use oozems_proto::v1::NpcInteractionResponse;
 use oozems_proto::v1::PickUpItemRequest;
 use oozems_proto::v1::PlayerState;
 use oozems_proto::v1::RecoverPlayerRequest;
@@ -170,6 +172,12 @@ pub async fn pick_up_item(
         },
     )
     .await
+}
+
+pub async fn interact_npc(
+    request: NpcInteractionRequest
+) -> Result<NpcInteractionResponse, ClientError> {
+    post_protobuf("/api/v1/npcs/interact", request).await
 }
 
 pub async fn get_map(map_id: u32) -> Result<Map, ClientError> {

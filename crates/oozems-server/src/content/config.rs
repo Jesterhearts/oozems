@@ -10,6 +10,7 @@ use thiserror::Error;
 #[derive(Clone, Debug, Default)]
 pub struct ContentConfig {
     pub(super) npcs: NpcFilter,
+    pub(super) quest_ids: Option<BTreeSet<u32>>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -22,12 +23,19 @@ pub(super) struct NpcFilter {
 #[serde(default, deny_unknown_fields)]
 struct ContentFile {
     npcs: NpcFilterFile,
+    quests: QuestFilterFile,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct NpcFilterFile {
     allowed_limited_names: Option<Vec<String>>,
+    allowed_ids: Option<Vec<u32>>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct QuestFilterFile {
     allowed_ids: Option<Vec<u32>>,
 }
 
@@ -72,6 +80,7 @@ impl ContentConfig {
                     .map(|names| names.into_iter().collect()),
                 allowed_ids: file.npcs.allowed_ids.map(|ids| ids.into_iter().collect()),
             },
+            quest_ids: file.quests.allowed_ids.map(|ids| ids.into_iter().collect()),
         })
     }
 }
@@ -108,6 +117,7 @@ mod tests {
 
         assert!(config.npcs.allows(100, None));
         assert!(config.npcs.allows(100, Some("summer")));
+        assert!(config.quest_ids.is_none());
     }
 
     #[test]
@@ -120,6 +130,8 @@ mod tests {
                 "[npcs]\n",
                 "allowed_limited_names = [\"summer\", \"anniversary\"]\n",
                 "allowed_ids = [100, 200, 100]\n",
+                "[quests]\n",
+                "allowed_ids = [1009, 1009]\n",
             ),
         )
         .expect("write configuration");
@@ -130,6 +142,14 @@ mod tests {
         assert!(config.npcs.allows(100, Some("summer")));
         assert!(!config.npcs.allows(100, Some("winter")));
         assert!(!config.npcs.allows(300, None));
+        assert_eq!(
+            config
+                .quest_ids
+                .expect("quest allowlist")
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec![1009]
+        );
     }
 
     #[test]

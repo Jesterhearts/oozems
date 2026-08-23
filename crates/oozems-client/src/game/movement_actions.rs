@@ -194,11 +194,30 @@ fn install_map(
     game.player.position = Some(position);
     game.mob_render = crate::mob_render::new_map_state(map.simulation_sequence);
     game.map = map;
+    game.interaction.close();
     game.motion = motion;
     game.world_layers = world_layers;
     game.character_animation =
         super::new_character_animation_state(CharacterAnimation::Idle, true, game.frame_time_ms);
     Ok(())
+}
+
+pub(super) fn install_relocation(
+    game: &mut Game,
+    map: oozems_proto::v1::Map,
+    authoritative: MovementSnapshot,
+) -> Result<(), String> {
+    if authoritative.map_id != map.id {
+        return Err("taxi response map does not match its authoritative position".to_owned());
+    }
+    let position = authoritative
+        .position
+        .ok_or("taxi response did not contain a destination position")?;
+    game.movement_sync.last_response_sequence = game
+        .movement_sync
+        .last_response_sequence
+        .max(authoritative.sequence);
+    install_map(game, map, position)
 }
 
 fn next_movement_snapshot(game: &mut Game) -> Option<MovementSnapshot> {
