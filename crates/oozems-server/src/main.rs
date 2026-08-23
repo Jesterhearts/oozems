@@ -65,12 +65,7 @@ async fn main() -> anyhow::Result<()> {
         source = formulas.source_url(),
         "formula profile configuration ready"
     );
-    let catalog = ContentCatalog::load_with_wz(
-        &config.content_dir,
-        &config.asset_dir,
-        &config.wz_dir,
-        &content_config,
-    )?;
+    let catalog = ContentCatalog::load(&config.wz_dir, &content_config)?;
     let database = database::open_surreal_kv(&config.data_dir.join("surrealkv")).await?;
     let router = app::router(
         database,
@@ -79,7 +74,6 @@ async fn main() -> anyhow::Result<()> {
         gameplay,
         formulas,
         &config.public_dir,
-        &config.asset_dir,
     );
     let listener = tokio::net::TcpListener::bind(config.bind).await?;
 

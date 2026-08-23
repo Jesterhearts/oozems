@@ -690,19 +690,12 @@ message DroppedItem {
 message Platform {
   float x = 1;
   float y = 2;
-  float width = 3;
-  PlatformKind kind = 4;
+  reserved 3, 4, 7;
+  reserved "width", "kind", "hidden";
   float end_x = 5;
   float end_y = 6;
-  bool hidden = 7;
   int32 layer = 8;
   uint32 id = 9;
-}
-
-enum PlatformKind {
-  PLATFORM_KIND_UNSPECIFIED = 0;
-  PLATFORM_KIND_GROUND = 1;
-  PLATFORM_KIND_WOOD = 2;
 }
 
 message Decoration {

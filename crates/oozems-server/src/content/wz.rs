@@ -10,7 +10,6 @@ use oozems_proto::v1::Decoration;
 use oozems_proto::v1::DecorationFrame;
 use oozems_proto::v1::Map;
 use oozems_proto::v1::Platform;
-use oozems_proto::v1::PlatformKind;
 use sha2::Digest;
 use sha2::Sha256;
 use thiserror::Error;
@@ -64,6 +63,8 @@ pub enum WzContentError {
         #[source]
         source: std::io::Error,
     },
+    #[error("Map.wz is required at {path}")]
+    MissingMapArchive { path: PathBuf },
     #[error("failed to open WZ archive {path}")]
     Open {
         path: PathBuf,
@@ -159,10 +160,10 @@ impl RawDecoration {
 }
 
 impl WzContent {
-    pub fn open_optional(
+    pub fn open(
         directory: &Path,
         npc_filter: NpcFilter,
-    ) -> Result<Option<Self>, WzContentError> {
+    ) -> Result<Self, WzContentError> {
         let map_path = directory.join(MAP_ARCHIVE);
         let exists = map_path
             .try_exists()
@@ -171,7 +172,7 @@ impl WzContent {
                 source,
             })?;
         if !exists {
-            return Ok(None);
+            return Err(WzContentError::MissingMapArchive { path: map_path });
         }
 
         let root = open_archive(&map_path)?;
@@ -189,7 +190,7 @@ impl WzContent {
             "WZ map source ready"
         );
 
-        Ok(Some(Self {
+        Ok(Self {
             _base: base,
             root,
             map_nodes,
@@ -200,7 +201,7 @@ impl WzContent {
             mobs,
             npcs,
             npc_filter,
-        }))
+        })
     }
 
     pub fn contains_map(
@@ -870,11 +871,8 @@ fn build_platform(
     Platform {
         x: x1,
         y: y1,
-        width: (x2 - x1).abs(),
-        kind: PlatformKind::Unspecified as i32,
         end_x: x2,
         end_y: y2,
-        hidden: true,
         layer: source.layer,
         id: source.id,
     }

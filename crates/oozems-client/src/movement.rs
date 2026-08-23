@@ -664,7 +664,6 @@ mod tests {
             platforms: vec![Platform {
                 x: 100.0,
                 y: 300.0,
-                width: 100.0,
                 end_x: 200.0,
                 end_y: 250.0,
                 layer: 2,

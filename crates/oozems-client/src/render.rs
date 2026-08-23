@@ -5,7 +5,6 @@ use oozems_proto::v1::GuiSprite;
 use oozems_proto::v1::GuiWindow;
 use oozems_proto::v1::ItemDefinition;
 use oozems_proto::v1::Map;
-use oozems_proto::v1::PlatformKind;
 use oozems_proto::v1::PortalFrame;
 use web_sys::HtmlImageElement;
 
@@ -28,7 +27,6 @@ const GAUGE_FILL_HEIGHT: f64 = 14.0;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LayerPass {
     Decorations,
-    Platforms,
     Portals,
     Npcs,
     Mobs,
@@ -39,14 +37,12 @@ enum LayerPass {
 
 const ORDINARY_LAYER_PASSES: &[LayerPass] = &[
     LayerPass::Decorations,
-    LayerPass::Platforms,
     LayerPass::Portals,
     LayerPass::Npcs,
     LayerPass::Mobs,
 ];
 const PLAYER_LAYER_PASSES: &[LayerPass] = &[
     LayerPass::Decorations,
-    LayerPass::Platforms,
     LayerPass::Portals,
     LayerPass::Npcs,
     LayerPass::Mobs,
@@ -76,7 +72,6 @@ pub fn draw(game: &Game) {
         for pass in layer_passes(*layer == game.motion.platform_layer) {
             match pass {
                 LayerPass::Decorations => draw_decorations(game, camera_x, camera_y, *layer),
-                LayerPass::Platforms => draw_platforms(game, camera_x, camera_y, *layer),
                 LayerPass::Portals => draw_portals(game, camera_x, camera_y, *layer),
                 LayerPass::Npcs => npc::draw(game, camera_x, camera_y, *layer),
                 LayerPass::Mobs => mob::draw(game, camera_x, camera_y, *layer),
@@ -365,40 +360,6 @@ fn timed_frame_index(
         animation_time -= delay;
     }
     None
-}
-
-fn draw_platforms(
-    game: &Game,
-    camera_x: f64,
-    camera_y: f64,
-    layer: i32,
-) {
-    for platform in &game.map.platforms {
-        if platform.hidden || platform.layer != layer {
-            continue;
-        }
-        let x = f64::from(platform.x) - camera_x;
-        let y = f64::from(platform.y) - camera_y;
-        let width = f64::from(platform.width);
-        let kind = PlatformKind::try_from(platform.kind).unwrap_or(PlatformKind::Unspecified);
-
-        match kind {
-            PlatformKind::Ground => {
-                game.context.set_fill_style_str("#5b3d2b");
-                game.context.fill_rect(x, y, width, 150.0);
-                game.context.set_fill_style_str("#86ad48");
-                game.context.fill_rect(x, y, width, 11.0);
-                game.context.set_fill_style_str("#b4cb62");
-                game.context.fill_rect(x, y, width, 4.0);
-            }
-            PlatformKind::Wood | PlatformKind::Unspecified => {
-                game.context.set_fill_style_str("#4b3027");
-                game.context.fill_rect(x, y - 4.0, width, 14.0);
-                game.context.set_fill_style_str("#b8793e");
-                game.context.fill_rect(x + 3.0, y - 7.0, width - 6.0, 8.0);
-            }
-        }
-    }
 }
 
 fn draw_player(
@@ -982,7 +943,6 @@ mod tests {
             layer_passes(false),
             &[
                 LayerPass::Decorations,
-                LayerPass::Platforms,
                 LayerPass::Portals,
                 LayerPass::Npcs,
                 LayerPass::Mobs,
@@ -992,7 +952,6 @@ mod tests {
             layer_passes(true),
             &[
                 LayerPass::Decorations,
-                LayerPass::Platforms,
                 LayerPass::Portals,
                 LayerPass::Npcs,
                 LayerPass::Mobs,

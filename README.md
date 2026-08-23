@@ -15,7 +15,8 @@ likely be needed after such a release.
 
 ## Run it
 
-Install Rust, the `wasm32-unknown-unknown` target, and Trunk. Then run:
+Install Rust, the `wasm32-unknown-unknown` target, and Trunk. Place `Map.wz` in
+`./data`, then run:
 
 ```sh
 make run
@@ -32,8 +33,6 @@ variables override the defaults:
 | `OOZEMS_BIND`        | `127.0.0.1:3000`                    |
 | `OOZEMS_DATA_DIR`    | `./data`                            |
 | `OOZEMS_CONFIG_DIR`  | `./config`                          |
-| `OOZEMS_ASSET_DIR`   | `crates/oozems-server/assets`       |
-| `OOZEMS_CONTENT_DIR` | `crates/oozems-server/content/maps` |
 | `OOZEMS_PUBLIC_DIR`  | `crates/oozems-server/public`       |
 | `OOZEMS_WZ_DIR`      | `./data`                            |
 
@@ -60,7 +59,7 @@ server
   -> config/gameplay.toml         validated item, skill, and movement rules
   -> config/content.toml          WZ content inclusion rules
   -> config/skill-formulas.toml   validated combat formulas
-  -> data/Map.wz                  optional, lazy WZ map source
+  -> data/Map.wz                  required, lazy WZ map source
   -> data/Npc.wz                  optional NPC placement animation source
   -> data/Mob.wz                  optional mob stats and animation source
   -> data/Character.wz            optional character sprite source
@@ -68,7 +67,6 @@ server
   -> data/Skill.wz                optional skill data, icons, and effects
   -> data/Sound.wz                optional skill sounds
   -> data/String.wz               optional WZ map names and skill text
-  -> assets/**                    immutable source assets
   -> SurrealDB -> SurrealKV       mutable player state
 ```
 
@@ -80,9 +78,10 @@ version, so changing one file invalidates only that cached file.
 
 ## Use classic WZ maps
 
-Place `Map.wz` in `./data`. Place the matching `String.wz` beside it to use the
-original map names. The server detects the archive version, indexes map image
-entries at startup, and parses each map only when it is requested.
+`Map.wz` is required. Place the matching `String.wz` beside it to use the
+original map names. The server fails at startup when `Map.wz` is absent. It
+detects the archive version, indexes map image entries at startup, and parses
+each map only when it is requested.
 
 The map response contains footholds and references to only the sprite assets
 used by that map. It also contains typed ladder, rope, and portal data. Visible
