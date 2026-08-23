@@ -17,7 +17,6 @@ use terrain::clamp_to_movement_bounds;
 use terrain::destination_position;
 use terrain::movement_crosses_vertical_foothold;
 use terrain::platform_y;
-use terrain::platform_y_near_edge;
 use terrain::supporting_foothold;
 use terrain::supporting_platform;
 use terrain::within_map;
@@ -807,16 +806,13 @@ fn drop_through_is_valid(
     {
         return false;
     }
-    let Some(platform) = supporting_foothold(
+    supporting_foothold(
         map,
-        &session.position,
+        &origin.position,
         config.ground_tolerance,
         config.platform_edge_tolerance,
-    ) else {
-        return false;
-    };
-    platform_y_near_edge(platform, origin.position.x, config.platform_edge_tolerance)
-        .is_some_and(|surface| (surface - origin.position.y).abs() <= config.ground_tolerance)
+    )
+    .is_some()
         && has_foothold_below(
             map,
             origin.position,
@@ -1295,6 +1291,36 @@ mod tests {
             decision.authoritative.position,
             Some(Vec2 { x: 100.0, y: 302.0 })
         );
+    }
+
+    #[test]
+    fn moving_players_can_drop_through_across_adjacent_foothold_segments() {
+        let tracker = MovementTracker::default();
+        let mut player = player();
+        player.position = Some(Vec2 { x: 130.0, y: 300.0 });
+        let mut stacked_map = map();
+        stacked_map.platforms[0].end_x = 150.0;
+        stacked_map.platforms.push(Platform {
+            x: 150.0,
+            ..platform()
+        });
+        stacked_map.platforms.push(Platform {
+            y: 400.0,
+            end_y: 400.0,
+            ..platform()
+        });
+        initialize_player(&tracker, &player, &stacked_map, config(), 1_000).expect("initialize");
+        let mut movement = submitted(1, 182.0, 302.0, MovementMode::Airborne);
+        movement.support_contact = Some(SupportContact {
+            position: Position { x: 180.0, y: 300.0 },
+            mode: MovementMode::Grounded,
+        });
+        movement.drop_through = true;
+
+        let decision = submit_movement(&tracker, &player, movement, config(), 1_200)
+            .expect("moving drop-through movement");
+
+        assert!(decision.accepted);
     }
 
     #[test]
