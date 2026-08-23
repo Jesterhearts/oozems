@@ -51,7 +51,6 @@ browser
   -> POST /api/v1/items/...       equip, unequip, drop, or pick up an item
   -> POST /api/v1/skills/...      allocate a skill point or use a skill
   -> POST /api/v1/players/recover apply one rate-limited natural recovery tick
-  -> GET /assets/...              only bundled assets named by that map
   -> GET /wz-assets/...           requested WZ PNG and skill audio assets
   -> POST /api/v1/players/save    key bindings and authoritative session state
 
@@ -292,15 +291,14 @@ use the Lucky Seven formulas:
 minimum = "Luck * 2.5 * WeaponAttack / 100"
 maximum = "Luck * 5.0 * WeaponAttack / 100"
 
-[skills."4001334"]
+[skills."1111111"]
 profile = "lucky_seven"
 ```
 
-`4001334` is the Double Stab ID in the bundled WZ files. Quoted skill keys must
-be canonical decimal `u32` values without leading zeroes. A skill mapping takes
-priority over the automatic Pirate bare-hands profile. If a skill has no
-mapping, the server keeps the automatic Pirate behavior and does not guess a
-profile from the skill's display name.
+Quoted skill keys must be canonical decimal `u32` values without leading zeroes.
+A skill mapping takes priority over the automatic Pirate bare-hands profile.
+If a skill has no mapping, the server keeps the automatic Pirate behavior and
+does not guess a profile from the skill's display name.
 
 Summons also have independent profiles. A profile can expose properties other
 than damage, such as durability:
@@ -309,14 +307,13 @@ than damage, such as durability:
 [summon_profiles.battleship]
 durability = "(BattleshipLevel * 2 + (CharacterLevel - 120)) * 200"
 
-[summon."5221006"]
+[summon."22222222"]
 profile = "battleship"
 ```
 
-Use the selector only when that skill ID exists in the loaded WZ version. The
-bundled archives do not contain Battleship, so the default file keeps this
-profile available without selecting it. Its verified summon example maps
-Wrath of the Octopi, skill `5220002`, to the `standard` summon profile.
+Use the selector only when that skill ID exists in the loaded WZ version. If the
+archives do not contain Battleship, the default file keeps this profile
+available without selecting it.
 
 The supported profile and selector table pairs are:
 
