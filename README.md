@@ -58,8 +58,10 @@ browser
 server
   -> config/xp-curves.toml        validated game progression rules
   -> config/gameplay.toml         validated item, skill, and movement rules
+  -> config/content.toml          WZ content inclusion rules
   -> config/skill-formulas.toml   validated combat formulas
   -> data/Map.wz                  optional, lazy WZ map source
+  -> data/Npc.wz                  optional NPC placement animation source
   -> data/Mob.wz                  optional mob stats and animation source
   -> data/Character.wz            optional character sprite source
   -> data/UI.wz                   optional GUI sprite source
@@ -108,6 +110,29 @@ between updates. Mobs remain passive until attacked. Damage makes a mob target
 and chase the attacking player. Mobs with WZ body attack data deal contact
 damage, while mobs with positive magic attack launch projectiles after they are
 provoked.
+
+Place `Npc.wz` beside `Map.wz` to display the map's NPC life entries. The
+server loads each referenced NPC's standing animation when the map is first
+requested, places the NPC on its supporting foothold and WZ layer, and includes
+only those frame assets in the map response. The client preserves the WZ frame
+timing, origin, and facing direction while rendering NPCs. Their PNG data stays
+compressed until a frame first enters the viewport.
+
+NPC inclusion is controlled by `config/content.toml`:
+
+```toml
+[npcs]
+allowed_limited_names = []
+# allowed_ids = [1012000, 1012003]
+```
+
+WZ `limitedname` data normally identifies seasonal or event NPCs. Omit
+`allowed_limited_names` to permit every limited name. Set it to a list to permit
+only those event scopes, or to an empty list to exclude all limited NPCs. Omit
+`allowed_ids` to permit all remaining NPC IDs. Set it to a list to render only
+those IDs, or to an empty list to render no NPCs. Both allowlists apply when
+both settings are present. If `content.toml` is absent, NPC loading remains
+unrestricted. Restart the server after changing these settings.
 
 Place `Character.wz` beside the map archives to enable character creation. The
 server indexes the available skin, face, and hair styles, then composes idle,

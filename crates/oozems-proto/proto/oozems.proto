@@ -562,12 +562,31 @@ message Map {
   MapMovementBounds movement_bounds = 14;
   repeated MobProjectile mob_projectiles = 15;
   uint64 simulation_sequence = 16;
+  repeated Npc npcs = 17;
 }
 
 message MapMovementBounds {
   // Inclusive limits for the horizontal player anchor after collision width.
   float left = 1;
   float right = 2;
+}
+
+message Npc {
+  uint32 spawn_id = 1;
+  uint32 npc_id = 2;
+  Vec2 position = 3;
+  bool flip_x = 4;
+  int32 layer = 5;
+  repeated NpcFrame frames = 6;
+}
+
+message NpcFrame {
+  string asset_id = 1;
+  float width = 2;
+  float height = 3;
+  float origin_x = 4;
+  float origin_y = 5;
+  uint32 delay_ms = 6;
 }
 
 message MobSpawnPoint {

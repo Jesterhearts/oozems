@@ -17,6 +17,7 @@ use crate::game::character_animation_elapsed_ms;
 use crate::game_gui;
 
 mod mob;
+mod npc;
 mod skill_info;
 mod skillbook;
 
@@ -29,6 +30,7 @@ enum LayerPass {
     Decorations,
     Platforms,
     Portals,
+    Npcs,
     Mobs,
     DroppedItems,
     Player,
@@ -39,12 +41,14 @@ const ORDINARY_LAYER_PASSES: &[LayerPass] = &[
     LayerPass::Decorations,
     LayerPass::Platforms,
     LayerPass::Portals,
+    LayerPass::Npcs,
     LayerPass::Mobs,
 ];
 const PLAYER_LAYER_PASSES: &[LayerPass] = &[
     LayerPass::Decorations,
     LayerPass::Platforms,
     LayerPass::Portals,
+    LayerPass::Npcs,
     LayerPass::Mobs,
     LayerPass::DroppedItems,
     LayerPass::Player,
@@ -74,6 +78,7 @@ pub fn draw(game: &Game) {
                 LayerPass::Decorations => draw_decorations(game, camera_x, camera_y, *layer),
                 LayerPass::Platforms => draw_platforms(game, camera_x, camera_y, *layer),
                 LayerPass::Portals => draw_portals(game, camera_x, camera_y, *layer),
+                LayerPass::Npcs => npc::draw(game, camera_x, camera_y, *layer),
                 LayerPass::Mobs => mob::draw(game, camera_x, camera_y, *layer),
                 LayerPass::DroppedItems => draw_dropped_items(game, camera_x, camera_y),
                 LayerPass::Player => draw_player(game, camera_x, camera_y),
@@ -93,6 +98,7 @@ pub(crate) fn world_layers(map: &Map) -> Vec<i32> {
             + map.platforms.len()
             + map.ladders.len()
             + map.portals.len()
+            + map.npcs.len()
             + map.mobs.len()
             + map.mob_projectiles.len()
             + 1,
@@ -102,6 +108,7 @@ pub(crate) fn world_layers(map: &Map) -> Vec<i32> {
     layers.extend(map.platforms.iter().map(|platform| platform.layer));
     layers.extend(map.ladders.iter().map(|ladder| ladder.layer));
     layers.extend(map.portals.iter().map(|portal| portal.layer));
+    layers.extend(map.npcs.iter().map(|npc| npc.layer));
     layers.extend(map.mobs.iter().map(|mob| mob.layer));
     layers.extend(
         map.mob_projectiles
@@ -925,6 +932,7 @@ mod tests {
     use oozems_proto::v1::Ladder;
     use oozems_proto::v1::Map;
     use oozems_proto::v1::Mob;
+    use oozems_proto::v1::Npc;
     use oozems_proto::v1::Platform;
     use oozems_proto::v1::Portal;
     use oozems_proto::v1::PortalFrame;
@@ -958,10 +966,14 @@ mod tests {
                 layer: 5,
                 ..Mob::default()
             }],
+            npcs: vec![Npc {
+                layer: 6,
+                ..Npc::default()
+            }],
             ..Map::default()
         };
 
-        assert_eq!(world_layers(&map), vec![0, 1, 2, 3, 4, 5]);
+        assert_eq!(world_layers(&map), vec![0, 1, 2, 3, 4, 5, 6]);
     }
 
     #[test]
@@ -972,6 +984,7 @@ mod tests {
                 LayerPass::Decorations,
                 LayerPass::Platforms,
                 LayerPass::Portals,
+                LayerPass::Npcs,
                 LayerPass::Mobs,
             ]
         );
@@ -981,6 +994,7 @@ mod tests {
                 LayerPass::Decorations,
                 LayerPass::Platforms,
                 LayerPass::Portals,
+                LayerPass::Npcs,
                 LayerPass::Mobs,
                 LayerPass::DroppedItems,
                 LayerPass::Player,

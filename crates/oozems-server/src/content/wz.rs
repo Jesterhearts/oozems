@@ -24,9 +24,11 @@ use wz_reader::util::node_util::parse_node;
 mod archive;
 mod asset;
 mod features;
+mod foothold;
 mod mob;
 mod movement_bounds;
 mod names;
+mod npc;
 
 pub(super) use archive::archive_fingerprint;
 pub(super) use archive::open_archive;
@@ -34,6 +36,8 @@ pub(super) use archive::wrap_archive_root;
 pub(crate) use asset::WzAsset;
 use features::RawLadder;
 use features::RawPortal;
+
+use super::config::NpcFilter;
 
 const MAP_ARCHIVE: &str = "Map.wz";
 const STRING_ARCHIVE: &str = "String.wz";
@@ -48,6 +52,8 @@ pub struct WzContent {
     maps: RwLock<HashMap<u32, Map>>,
     assets: RwLock<HashMap<String, Arc<WzAsset>>>,
     mobs: Option<mob::MobContent>,
+    npcs: Option<npc::NpcContent>,
+    npc_filter: NpcFilter,
 }
 
 #[derive(Debug, Error)]
@@ -153,7 +159,10 @@ impl RawDecoration {
 }
 
 impl WzContent {
-    pub fn open_optional(directory: &Path) -> Result<Option<Self>, WzContentError> {
+    pub fn open_optional(
+        directory: &Path,
+        npc_filter: NpcFilter,
+    ) -> Result<Option<Self>, WzContentError> {
         let map_path = directory.join(MAP_ARCHIVE);
         let exists = map_path
             .try_exists()
@@ -172,6 +181,7 @@ impl WzContent {
         let map_names = names::load_map_names(&directory.join(STRING_ARCHIVE))?;
         let fingerprint = archive_fingerprint(&map_path)?;
         let mobs = mob::MobContent::open_optional(directory)?;
+        let npcs = npc::NpcContent::open_optional(directory)?;
 
         tracing::info!(
             path = %map_path.display(),
@@ -188,6 +198,8 @@ impl WzContent {
             maps: RwLock::new(HashMap::new()),
             assets: RwLock::new(HashMap::new()),
             mobs,
+            npcs,
+            npc_filter,
         }))
     }
 
@@ -239,6 +251,7 @@ impl WzContent {
             .ok()
             .and_then(|assets| assets.get(asset_id).cloned())
             .or_else(|| self.mobs.as_ref().and_then(|mobs| mobs.get_asset(asset_id)))
+            .or_else(|| self.npcs.as_ref().and_then(|npcs| npcs.get_asset(asset_id)))
     }
 
     fn register_asset(
@@ -330,6 +343,8 @@ fn build_map(
     let raw_ladders = features::read_ladders(node)?;
     let raw_portals = features::read_portals(&source.root, node)?;
     let raw_mob_spawns = mob::read_spawn_points(node)?;
+    let raw_npc_spawns =
+        npc::filter_spawn_points(npc::read_spawn_points(node)?, &source.npc_filter);
     // zM associates an item with a foothold group. It does not control drawing.
     // The order key keeps the separate WZ draw-order fields comparable.
     raw_decorations.sort_by_key(|decoration| decoration.order);
@@ -379,6 +394,14 @@ fn build_map(
         &mut assets,
         &mut asset_ids,
     )?;
+    let npcs = npc::build_npcs(
+        source.npcs.as_ref(),
+        raw_npc_spawns,
+        &platforms,
+        bounds,
+        &mut assets,
+        &mut asset_ids,
+    )?;
 
     Ok(Map {
         id: map_id,
@@ -400,6 +423,7 @@ fn build_map(
         mobs: Vec::new(),
         mob_projectiles: Vec::new(),
         simulation_sequence: 0,
+        npcs,
         movement_bounds: Some(movement_bounds),
     })
 }

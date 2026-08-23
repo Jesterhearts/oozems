@@ -19,6 +19,7 @@ mod skills;
 use anyhow::Context;
 use config::Config;
 use content::ContentCatalog;
+use content::ContentConfig;
 use experience::ExperienceCurves;
 use gameplay::GameplayConfig;
 use skill_formula::FormulaCatalog;
@@ -39,6 +40,7 @@ async fn main() -> anyhow::Result<()> {
 
     let experience = ExperienceCurves::load(&config.config_dir.join("xp-curves.toml"))?;
     let gameplay = GameplayConfig::load(&config.config_dir.join("gameplay.toml"))?;
+    let content_config = ContentConfig::load(&config.config_dir.join("content.toml"))?;
     let formulas = FormulaCatalog::load(&config.config_dir.join("skill-formulas.toml"))?;
     info!(
         curve = experience.default_curve().name(),
@@ -63,8 +65,12 @@ async fn main() -> anyhow::Result<()> {
         source = formulas.source_url(),
         "formula profile configuration ready"
     );
-    let catalog =
-        ContentCatalog::load_with_wz(&config.content_dir, &config.asset_dir, &config.wz_dir)?;
+    let catalog = ContentCatalog::load_with_wz(
+        &config.content_dir,
+        &config.asset_dir,
+        &config.wz_dir,
+        &content_config,
+    )?;
     let database = database::open_surreal_kv(&config.data_dir.join("surrealkv")).await?;
     let router = app::router(
         database,

@@ -1,0 +1,4 @@
+# See README.md for configuration reference.
+
+[npcs]
+allowed_limited_names = []

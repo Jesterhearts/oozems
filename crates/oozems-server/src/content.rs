@@ -24,12 +24,14 @@ use sha2::Sha256;
 use thiserror::Error;
 
 mod character;
+mod config;
 mod gui;
 mod skill;
 mod wz;
 
 use character::CharacterContent;
 use character::CharacterContentError;
+pub use config::ContentConfig;
 use gui::GuiContent;
 use gui::GuiContentError;
 use skill::SkillContent;
@@ -165,9 +167,10 @@ impl ContentCatalog {
         map_dir: &Path,
         asset_dir: &Path,
         wz_dir: &Path,
+        config: &ContentConfig,
     ) -> Result<Self, ContentError> {
         let mut catalog = Self::load(map_dir, asset_dir)?;
-        catalog.wz = WzContent::open_optional(wz_dir)?;
+        catalog.wz = WzContent::open_optional(wz_dir, config.npcs.clone())?;
         catalog.characters = CharacterContent::open_optional(wz_dir)?;
         catalog.gui = GuiContent::open_optional(wz_dir)?;
         catalog.skills = SkillContent::open_optional(wz_dir)?;
@@ -391,6 +394,7 @@ fn build_map(
         mobs: Vec::new(),
         mob_projectiles: Vec::new(),
         simulation_sequence: 0,
+        npcs: Vec::new(),
         movement_bounds: Some(MapMovementBounds {
             left: PLAYER_HALF_WIDTH.min(width as f32 / 2.0),
             right: (width as f32 - PLAYER_HALF_WIDTH).max(width as f32 / 2.0),
@@ -530,6 +534,7 @@ mod tests {
     use std::path::Path;
 
     use super::ContentCatalog;
+    use super::ContentConfig;
 
     #[test]
     fn bundled_maps_and_assets_are_valid() {
@@ -560,6 +565,8 @@ mod tests {
             &manifest_dir.join("content/maps"),
             &manifest_dir.join("assets"),
             &wz_dir,
+            &ContentConfig::load(&manifest_dir.join("../../config/content.toml"))
+                .expect("content configuration should be valid"),
         )
         .expect("sample WZ archives should be valid");
         let map = catalog
@@ -600,6 +607,20 @@ mod tests {
                 && portal.layer == 1
                 && !portal.frames.is_empty()
         }));
+        if wz_dir.join("Npc.wz").exists() {
+            assert!(!map.npcs.iter().any(|npc| npc.npc_id == 9_000_017));
+            let athena = map
+                .npcs
+                .iter()
+                .find(|npc| npc.npc_id == 1_012_000)
+                .expect("Athena Pierce NPC");
+            assert!(athena.position.is_some());
+            assert!(!athena.frames.is_empty());
+            assert!(athena.layer > 0);
+            assert!(athena.frames.iter().all(|frame| {
+                frame.delay_ms > 0 && map.assets.iter().any(|asset| asset.id == frame.asset_id)
+            }));
+        }
         if wz_dir.join("Mob.wz").exists() {
             let mob_map = catalog
                 .get_map(100_010_000)
