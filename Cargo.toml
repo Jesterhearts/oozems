@@ -4,6 +4,7 @@ members  = [
   "crates/oozems-client",
   "crates/oozems-proto",
   "crates/oozems-server",
+  "crates/oozems-wz",
 ]
 
 [workspace.package]

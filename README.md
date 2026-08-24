@@ -42,6 +42,34 @@ override the defaults:
 | `OOZEMS_PUBLIC_DIR`  | `crates/oozems-server/public`       |
 | `OOZEMS_WZ_DIR`      | `./data`                            |
 
+## Inspect and edit WZ archives
+
+The workspace includes `oozems-wz`, a JSON-first CLI for repeatable WZ
+inspection and safe PKG1 property edits. It inspects standard PKG1 and PKG2
+archives, paginates large node lists, and emits typed values without embedding
+large media payloads.
+
+```sh
+cargo run --package oozems-wz -- info data/Quest.wz
+cargo run --package oozems-wz -- list data/Quest.wz /Act.img --limit 25
+cargo run --package oozems-wz -- get data/Quest.wz /Act.img/1000/1/nextQuest
+```
+
+Edits always require a separate output path. The tool copies every unchanged
+image blob byte-for-byte, rebuilds archive offsets and checksums, validates the
+complete output with two independent WZ readers, and then atomically installs
+it:
+
+```sh
+cargo run --package oozems-wz -- set \
+  data/Quest.wz /Act.img/1000/1/nextQuest \
+  --value 1002 \
+  --output data/Quest.edited.wz
+```
+
+See [`crates/oozems-wz/README.md`](crates/oozems-wz/README.md) for path rules,
+pagination, JSON fields, supported value types, and safety details.
+
 ## Data flow
 
 ```text
