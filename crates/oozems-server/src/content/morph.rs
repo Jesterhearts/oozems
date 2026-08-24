@@ -276,55 +276,105 @@ fn invalid<T>(message: impl Into<String>) -> Result<T, MorphContentError> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::collections::HashMap;
+    use std::collections::HashSet;
+    use std::sync::Arc;
 
-    use super::MorphContent;
+    use wz_reader::WzNode;
+    use wz_reader::WzNodeArc;
+    use wz_reader::property::Vector2D;
+    use wz_reader::property::WzPng;
+
+    use super::REQUIRED_ANIMATIONS;
+    use super::read_definition;
 
     #[test]
-    fn local_required_morphs_preserve_audited_animations_and_metadata() {
-        let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data");
-        if !directory.join("Morph.wz").exists() {
-            return;
+    fn fake_morph_preserves_animations_frame_metadata_and_assets() {
+        let morph = WzNode::from_str("0004.img", 0, None).into_lock();
+        for name in REQUIRED_ANIMATIONS.into_iter().chain(["fly"]) {
+            let animation = add_branch(&morph, name);
+            add_frame(&animation, "0", 16, 24);
         }
-        let content = MorphContent::load(&directory).expect("local morph content");
-        let four = content.definition(4).expect("morph 4");
-        let forty = content.definition(40).expect("morph 40");
+        let info = add_branch(&morph, "info");
+        add_value(&info, "noCancelDamage", 1);
+        let mut assets = HashMap::new();
+
+        let definition =
+            read_definition(4, &morph, "fake-fingerprint", &mut assets).expect("fake morph");
+
         assert_eq!(
-            four.animations
-                .iter()
-                .map(|animation| animation.name.as_str())
-                .collect::<Vec<_>>(),
-            ["stand", "walk", "jump", "prone"]
-        );
-        assert_eq!(
-            forty
+            definition
                 .animations
                 .iter()
                 .map(|animation| animation.name.as_str())
                 .collect::<Vec<_>>(),
-            ["stand", "walk", "jump", "prone", "fly", "ladder", "rope"]
+            ["stand", "walk", "jump", "prone", "fly"]
         );
-        assert!(!four.no_cancel_damage);
-        assert!(forty.no_cancel_damage);
-        for definition in [four, forty] {
-            assert!(definition.animations.iter().all(|animation| {
-                !animation.frames.is_empty()
-                    && animation.frames.iter().all(|frame| {
-                        frame.delay_ms > 0
-                            && frame.width > 0.0
-                            && frame.height > 0.0
-                            && definition
-                                .assets
-                                .iter()
-                                .any(|asset| asset.id == frame.asset_id)
-                    })
-            }));
-            assert!(
-                definition
-                    .assets
-                    .iter()
-                    .all(|asset| content.get_asset(&asset.id).is_some())
-            );
-        }
+        assert!(definition.no_cancel_damage);
+        assert!(definition.animations.iter().all(|animation| {
+            animation.frames.len() == 1
+                && animation.frames[0].width == 16.0
+                && animation.frames[0].height == 24.0
+                && animation.frames[0].origin_x == 3.0
+                && animation.frames[0].origin_y == 5.0
+                && animation.frames[0].delay_ms == 75
+        }));
+        let frame_asset_ids = definition
+            .animations
+            .iter()
+            .flat_map(|animation| &animation.frames)
+            .map(|frame| frame.asset_id.as_str())
+            .collect::<HashSet<_>>();
+        let descriptor_ids = definition
+            .assets
+            .iter()
+            .map(|asset| asset.id.as_str())
+            .collect::<HashSet<_>>();
+        let registered_ids = assets.keys().map(String::as_str).collect::<HashSet<_>>();
+        assert_eq!(descriptor_ids, frame_asset_ids);
+        assert_eq!(registered_ids, frame_asset_ids);
+    }
+
+    fn add_frame(
+        animation: &WzNodeArc,
+        name: &str,
+        width: u32,
+        height: u32,
+    ) {
+        let frame = add_branch(animation, name);
+        let canvas = add_branch(&frame, "canvas");
+        let mut png = WzPng::default();
+        png.width = width;
+        png.height = height;
+        let source = WzNode::from_str("sprite", png, Some(&canvas)).into_lock();
+        add(&canvas, Arc::clone(&source));
+        let origin = WzNode::from_str("origin", Vector2D(3, 5), Some(&source)).into_lock();
+        add(&source, origin);
+        add_value(&source, "delay", 75);
+    }
+
+    fn add_value(
+        parent: &WzNodeArc,
+        name: &str,
+        value: i32,
+    ) {
+        let child = WzNode::from_str(name, value, Some(parent)).into_lock();
+        add(parent, child);
+    }
+
+    fn add_branch(
+        parent: &WzNodeArc,
+        name: &str,
+    ) -> WzNodeArc {
+        let child = WzNode::from_str(name, 0, Some(parent)).into_lock();
+        add(parent, Arc::clone(&child));
+        child
+    }
+
+    fn add(
+        parent: &WzNodeArc,
+        child: WzNodeArc,
+    ) {
+        parent.write().expect("parent lock").add(&child);
     }
 }

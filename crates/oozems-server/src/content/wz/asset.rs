@@ -69,17 +69,6 @@ impl WzAsset {
         })
     }
 
-    #[cfg(test)]
-    pub fn png_bytes(&self) -> Result<Arc<[u8]>, WzContentError> {
-        if self.kind != WzAssetKind::Png {
-            return Err(WzContentError::InvalidAsset {
-                asset_id: self.id.clone(),
-                message: "sound was requested as a PNG".to_owned(),
-            });
-        }
-        self.asset_bytes()
-    }
-
     pub fn asset_bytes(&self) -> Result<Arc<[u8]>, WzContentError> {
         if let Some(bytes) = self.bytes.get() {
             return Ok(Arc::clone(bytes));

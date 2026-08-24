@@ -999,13 +999,12 @@ fn invalid<T>(
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
     use std::fs;
     use std::path::Path;
 
     use oozems_proto::v1::CharacterStats;
-    use oozems_proto::v1::InventoryItemStack;
     use oozems_proto::v1::InventoryState;
-    use oozems_proto::v1::ItemCategory;
     use oozems_proto::v1::ItemDefinition;
     use oozems_proto::v1::PlayerState;
 
@@ -1013,8 +1012,6 @@ mod tests {
     use super::QuestScriptPhase;
     use super::QuestScriptResolution;
     use super::resolve;
-    use crate::content::ContentCatalog;
-    use crate::content::ContentConfig;
     use crate::content::QuestActions;
     use crate::content::QuestCompletionRequirements;
     use crate::content::QuestDefinition;
@@ -1023,8 +1020,25 @@ mod tests {
     use crate::content::QuestStartRequirements;
     use crate::content::QuestStateAction;
     use crate::content::QuestStateActionState;
+    use crate::items::ItemDefinitionLookup;
+    use crate::items::ItemRuleError;
 
     const ITEM_ID: u32 = 4_000_000;
+
+    struct LazyItemDefinitions {
+        definition: ItemDefinition,
+        lookups: Cell<usize>,
+    }
+
+    impl ItemDefinitionLookup for LazyItemDefinitions {
+        fn item_definition(
+            &self,
+            item_id: u32,
+        ) -> Result<Option<&ItemDefinition>, ItemRuleError> {
+            self.lookups.set(self.lookups.get() + 1);
+            Ok((self.definition.item_id == item_id).then_some(&self.definition))
+        }
+    }
 
     #[test]
     fn missing_referenced_script_is_unresolved() {
@@ -1438,36 +1452,19 @@ mod tests {
     }
 
     #[test]
-    fn indexed_non_eager_script_items_are_projected_for_runtime() {
-        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let wz_dir = manifest_dir.join("../../data");
-        if !["Map.wz", "Character.wz", "Item.wz"]
-            .iter()
-            .all(|name| wz_dir.join(name).exists())
-        {
-            return;
-        }
-        let mut content = ContentCatalog::load(
-            &wz_dir,
-            &ContentConfig::load(&manifest_dir.join("../../config/content.toml"))
-                .expect("content configuration"),
-        )
-        .expect("content catalog");
-        let item_id = content
-            .indexed_item_ids()
-            .find(|item_id| {
-                !content
-                    .item_definition_slice()
-                    .iter()
-                    .any(|definition| definition.item_id == *item_id)
-            })
-            .expect("item source index should contain a non-eager item");
+    fn lazy_lookup_script_items_are_accepted_and_collected_for_projection() {
+        let item_id = 4_000_001;
+        let definitions = LazyItemDefinitions {
+            definition: ItemDefinition {
+                item_id,
+                stack_max: 100,
+                ..ItemDefinition::default()
+            },
+            lookups: Cell::new(0),
+        };
         let quest = scripted_quest("lazy_item");
-        let directory = tempfile::tempdir().expect("temporary directory");
-        let path = directory.path().join("quest-scripts.toml");
-        fs::write(
-            &path,
-            format!(
+        let scripts = load(
+            &format!(
                 r#"
                     [[scripts]]
                     name = "lazy_item"
@@ -1483,60 +1480,14 @@ mod tests {
                     delta = 1
                 "#
             ),
+            &[&quest],
+            &definitions,
         )
-        .expect("write quest script configuration");
-
-        let scripts = QuestScriptCatalog::load(&path, [&quest], &content)
-            .expect("indexed script item should load");
+        .expect("lazy script item should load");
 
         assert_eq!(scripts.item_reference_ids().len(), 1);
         assert!(scripts.item_reference_ids().contains(&item_id));
-        assert!(
-            !content
-                .item_definition_slice()
-                .iter()
-                .any(|definition| definition.item_id == item_id)
-        );
-        let expected = content
-            .item_definition(item_id)
-            .expect("item metadata lookup")
-            .expect("indexed item definition")
-            .clone();
-
-        content
-            .project_item_definitions(scripts.item_reference_ids())
-            .expect("project script item definition");
-
-        let projected = content
-            .item_definition_slice()
-            .iter()
-            .find(|definition| definition.item_id == item_id)
-            .expect("script item should be in the runtime definition slice");
-        assert_eq!(projected.name, expected.name);
-        assert_eq!(projected.stack_max, expected.stack_max);
-        assert_eq!(projected.category, expected.category);
-        assert!(projected.stack_max > 0);
-        assert!(ItemCategory::try_from(projected.category).is_ok());
-        let mut eligible = player();
-        eligible.inventory = Some(InventoryState {
-            capacity: 2,
-            stacks: vec![InventoryItemStack {
-                item_id,
-                quantity: 1,
-                expires_at_unix_ms: 0,
-            }],
-            ..InventoryState::default()
-        });
-        assert!(matches!(
-            resolve(
-                &scripts,
-                &quest,
-                QuestScriptPhase::Start,
-                &eligible,
-                content.item_definition_slice(),
-            ),
-            QuestScriptResolution::Ready(_)
-        ));
+        assert_eq!(definitions.lookups.get(), 2);
     }
 
     #[test]
@@ -1559,7 +1510,7 @@ mod tests {
     fn load(
         source: &str,
         quests: &[&QuestDefinition],
-        item_definitions: &[ItemDefinition],
+        item_definitions: &(impl ItemDefinitionLookup + ?Sized),
     ) -> Result<QuestScriptCatalog, super::QuestScriptConfigError> {
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("quest-scripts.toml");

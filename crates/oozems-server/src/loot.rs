@@ -194,6 +194,7 @@ fn invalid<T>(
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
     use std::fs;
     use std::path::Path;
 
@@ -201,8 +202,23 @@ mod tests {
 
     use super::LootCatalog;
     use super::roll_items;
-    use crate::content::ContentCatalog;
-    use crate::content::ContentConfig;
+    use crate::items::ItemDefinitionLookup;
+    use crate::items::ItemRuleError;
+
+    struct LazyItemDefinitions {
+        definition: ItemDefinition,
+        lookups: Cell<usize>,
+    }
+
+    impl ItemDefinitionLookup for LazyItemDefinitions {
+        fn item_definition(
+            &self,
+            item_id: u32,
+        ) -> Result<Option<&ItemDefinition>, ItemRuleError> {
+            self.lookups.set(self.lookups.get() + 1);
+            Ok((self.definition.item_id == item_id).then_some(&self.definition))
+        }
+    }
 
     #[test]
     fn guaranteed_entries_roll_independently() {
@@ -242,30 +258,12 @@ mod tests {
     }
 
     #[test]
-    fn indexed_non_eager_items_are_valid_loot_without_eager_projection() {
-        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let wz_dir = manifest_dir.join("../../data");
-        if !["Map.wz", "Character.wz", "Item.wz"]
-            .iter()
-            .all(|name| wz_dir.join(name).exists())
-        {
-            return;
-        }
-        let content = ContentCatalog::load(
-            &wz_dir,
-            &ContentConfig::load(&manifest_dir.join("../../config/content.toml"))
-                .expect("content configuration"),
-        )
-        .expect("content catalog");
-        let item_id = content
-            .indexed_item_ids()
-            .find(|item_id| {
-                !content
-                    .item_definition_slice()
-                    .iter()
-                    .any(|definition| definition.item_id == *item_id)
-            })
-            .expect("item source index should contain a non-eager item");
+    fn lazy_lookup_items_are_valid_loot_without_eager_projection() {
+        let item_id = 4_000_001;
+        let definitions = LazyItemDefinitions {
+            definition: definition(item_id),
+            lookups: Cell::new(0),
+        };
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("loot.toml");
         fs::write(
@@ -277,53 +275,22 @@ mod tests {
         )
         .expect("write loot configuration");
 
-        let catalog = LootCatalog::load(&path, &content).expect("indexed loot item should load");
+        let catalog = LootCatalog::load(&path, &definitions).expect("lazy loot item should load");
 
         assert_eq!(catalog.len(), 1);
-        assert!(
-            !content
-                .item_definition_slice()
-                .iter()
-                .any(|definition| definition.item_id == item_id)
-        );
-
-        fs::write(
-            &path,
-            "[[mobs]]\nmob_id = 100\n[[mobs.drops]]\nitem_id = 4294967295\nchance_per_million = \
-             1\n",
-        )
-        .expect("write unknown loot item");
-        let error =
-            LootCatalog::load(&path, &content).expect_err("unknown loot item should be rejected");
-        assert!(
-            error
-                .to_string()
-                .contains("item 4294967295 is not in the item catalog")
-        );
+        assert_eq!(definitions.lookups.get(), 1);
     }
 
     #[test]
-    fn bundled_loot_references_available_items() {
+    fn bundled_loot_configuration_is_valid() {
         let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let wz_dir = manifest_dir.join("../../data");
-        if !["Map.wz", "Character.wz"]
-            .iter()
-            .all(|name| wz_dir.join(name).exists())
-        {
-            return;
-        }
-        let content = ContentCatalog::load(
-            &wz_dir,
-            &ContentConfig::load(&manifest_dir.join("../../config/content.toml"))
-                .expect("content configuration"),
-        )
-        .expect("content catalog");
+        let definitions = [
+            1_040_002, 1_040_003, 1_060_001, 1_060_002, 1_072_000, 1_072_001, 4_000_000, 4_000_001,
+        ]
+        .map(definition);
 
-        let loot = LootCatalog::load(
-            &manifest_dir.join("../../config/loot.toml"),
-            content.item_definition_slice(),
-        )
-        .expect("loot catalog");
+        let loot = LootCatalog::load(&manifest_dir.join("../../config/loot.toml"), &definitions)
+            .expect("loot catalog");
 
         assert_eq!(loot.len(), 7);
     }

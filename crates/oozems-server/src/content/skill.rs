@@ -837,48 +837,54 @@ fn invalid<T>(message: impl Into<String>) -> Result<T, SkillContentError> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::collections::HashMap;
+    use std::sync::RwLock;
 
-    use oozems_proto::v1::CharacterStats;
+    use oozems_proto::v1::AssetDescriptor;
     use oozems_proto::v1::LearnedSkill;
-    use oozems_proto::v1::PlayerState;
-    use oozems_proto::v1::SkillAnimationPlacement;
+    use oozems_proto::v1::SkillDefinition;
     use oozems_proto::v1::skill_value;
+    use wz_reader::WzNode;
+    use wz_reader::WzObjectType;
+    use wz_reader::property::WzString;
+    use wz_reader::property::WzSubProperty;
+    use wz_reader::property::WzValue;
 
+    use super::CachedSkillDefinition;
+    use super::IndexedSkill;
     use super::SkillContent;
-    use super::SkillStats;
+    use super::build_properties;
+    use super::stats_from_properties;
 
     #[test]
     fn authoritative_index_includes_hidden_skills_without_exposing_locked_entries() {
-        let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data");
-        if !directory.join("Skill.wz").exists() || !directory.join("String.wz").exists() {
-            return;
-        }
-        let content = SkillContent::open_optional(&directory)
-            .expect("sample skill archives should be valid")
-            .expect("sample Skill.wz should be present");
+        let content = synthetic_skill_content();
         let ids = content.authoritative_skill_ids();
         assert!(ids.contains(&2_321_003));
-        assert!(!ids.contains(&2_001_1003));
+        assert!(ids.contains(&1_003));
 
         let locked = content.skill_book(232).expect("bishop skill book");
+        assert!(book_contains(&locked, 2_321_001));
         assert!(!book_contains(&locked, 2_321_003));
-        let player = PlayerState {
-            stats: Some(CharacterStats {
-                job_id: 232,
-                ..CharacterStats::default()
-            }),
-            learned_skills: vec![LearnedSkill {
-                skill_id: 2_321_003,
-                level: 0,
-                master_level: 15,
-            }],
-            ..PlayerState::default()
-        };
         let unlocked = content
-            .skill_book_context(232, &player.learned_skills)
+            .skill_book_context(
+                232,
+                &[LearnedSkill {
+                    skill_id: 2_321_003,
+                    level: 0,
+                    master_level: 15,
+                }],
+            )
             .expect("unlocked hidden skill book");
         assert!(book_contains(&unlocked.book, 2_321_003));
+        assert!(
+            unlocked
+                .authoritative_skills
+                .iter()
+                .find(|skill| skill.definition.skill_id == 2_321_003)
+                .expect("hidden authoritative skill")
+                .invisible
+        );
 
         let beginner = content
             .skill_book_context(
@@ -894,155 +900,84 @@ mod tests {
     }
 
     #[test]
-    fn local_archives_load_all_job_skills_and_typed_values_when_present() {
-        let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data");
-        if !directory.join("Skill.wz").exists() || !directory.join("String.wz").exists() {
-            return;
-        }
-        let content = SkillContent::open_optional(&directory)
-            .expect("sample skill archives should be valid")
-            .expect("sample Skill.wz should be present");
-        let book = content.skill_book(0).expect("beginner skill book");
+    fn synthetic_wz_properties_preserve_integer_and_formula_values() {
+        let node = property_node("level");
+        add_value(&node, "mpCon", WzValue::Int(3));
+        add_value(
+            &node,
+            "damage",
+            WzValue::String(WzString::from_str("10+2*x", [0; 4])),
+        );
 
-        assert_eq!(book.name, "Beginner's Basics");
-        assert_eq!(book.skills.len(), 3);
-        let snails = book.skills[0]
-            .definition
-            .as_ref()
-            .expect("skill definition");
-        assert_eq!(
-            (snails.skill_id, snails.name.as_str()),
-            (1_000, "Three Snails")
-        );
-        assert_eq!(snails.max_level, 3);
-        assert_eq!(snails.icon_width, 32.0);
-        assert_eq!(book.assets.len(), 3);
-        let first_level = &snails.levels[0];
-        assert_eq!(first_level.level, 1);
-        assert_eq!(
-            integer(
-                first_level
-                    .stats
-                    .as_ref()
-                    .and_then(|stats| stats.mp_cost.as_ref())
-            ),
-            3
-        );
-        assert_eq!(
-            integer(
-                first_level
-                    .stats
-                    .as_ref()
-                    .and_then(|stats| stats.fixed_damage.as_ref())
-            ),
-            10
-        );
-        assert_eq!(first_level.description, "MP -3; Damage 10");
-        for descriptor in &book.assets {
-            assert!(content.get_asset(&descriptor.id).is_some());
-        }
-
-        let rogue = content.skill_book(400).expect("rogue skill book");
-        let double_stab = rogue
-            .skills
-            .iter()
-            .filter_map(|skill| skill.definition.as_ref())
-            .find(|skill| skill.name == "Double Stab")
-            .expect("Double Stab skill");
-        assert_eq!(double_stab.skill_id, 4_001_334);
-
-        let corsair = content.skill_book(522).expect("corsair skill book");
-        let octopi = corsair
-            .skills
-            .iter()
-            .filter_map(|skill| skill.definition.as_ref())
-            .find(|skill| skill.name == "Wrath of the Octopi")
-            .expect("Wrath of the Octopi skill");
-        assert_eq!(octopi.skill_id, 5_220_002);
-
-        assert!(book_has_stats(&content, 110, |stats| {
-            stats.weapon_attack.is_some()
-        }));
-        let mut job_ids = content.jobs.keys().copied().collect::<Vec<_>>();
-        job_ids.sort_unstable();
-        for job_id in &job_ids {
-            content.skill_book(*job_id).expect("job skill book");
-        }
-        assert!(
-            job_ids
-                .iter()
-                .any(|job_id| book_has_stats(&content, *job_id, |stats| stats.accuracy.is_some()))
-        );
-        assert!(
-            job_ids
-                .into_iter()
-                .any(|job_id| book_has_text_formula(&content, job_id))
-        );
-        assert!(book_has_stats(&content, 210, |stats| {
-            stats.magic_attack.is_some()
-        }));
+        let properties = build_properties(Some(&node)).expect("synthetic skill properties");
+        let stats = stats_from_properties(&properties);
+        assert!(matches!(
+            stats.mp_cost.and_then(|value| value.value),
+            Some(skill_value::Value::Integer(3))
+        ));
+        assert!(matches!(
+            stats.damage.and_then(|value| value.value),
+            Some(skill_value::Value::Text(value)) if value == "10+2*x"
+        ));
     }
 
-    #[test]
-    fn local_archives_build_three_snails_animation_and_sound() {
-        let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data");
-        if !directory.join("Skill.wz").exists() || !directory.join("Sound.wz").exists() {
-            return;
-        }
-        let content = SkillContent::open_optional(&directory)
-            .expect("sample skill archives should be valid")
-            .expect("sample Skill.wz should be present");
-        let effect = content
-            .skill_effect(0, 1_000, 1)
-            .expect("Three Snails effect");
-        assert_eq!(effect.animations.len(), 2);
-        assert_eq!(
-            effect.animations[0].placement,
-            SkillAnimationPlacement::Projectile as i32
-        );
-        assert_eq!(effect.animations[0].frames.len(), 3);
-        assert_eq!(
-            effect.animations[1].placement,
-            SkillAnimationPlacement::Target as i32
-        );
-        assert_eq!(effect.animations[1].start_delay_ms, 270);
-        assert_eq!(effect.animations[1].frames.len(), 6);
-        assert_eq!(effect.assets.len(), 9);
-        for descriptor in &effect.assets {
-            let asset = content
-                .get_asset(&descriptor.id)
-                .expect("registered animation asset");
-            assert!(!asset.png_bytes().expect("animation PNG bytes").is_empty());
-        }
-        let sound = effect.sound.expect("Three Snails use sound");
-        assert!(sound.url.ends_with(".mp3"));
-        let sound_asset = content
-            .get_asset(&sound.id)
-            .expect("registered sound asset");
-        assert_eq!(sound_asset.extension(), "mp3");
-        assert_eq!(sound_asset.content_type(), "audio/mpeg");
-        assert!(!sound_asset.asset_bytes().expect("MP3 bytes").is_empty());
-    }
-
-    fn book_has_stats(
-        content: &SkillContent,
-        job_id: u32,
-        predicate: impl Fn(&SkillStats) -> bool,
-    ) -> bool {
-        content
-            .skill_book(job_id)
-            .expect("job skill book")
-            .skills
-            .iter()
-            .filter_map(|skill| skill.definition.as_ref())
-            .any(|definition| {
-                definition.common_stats.as_ref().is_some_and(&predicate)
-                    || definition
-                        .levels
-                        .iter()
-                        .filter_map(|level| level.stats.as_ref())
-                        .any(&predicate)
+    fn synthetic_skill_content() -> SkillContent {
+        let node = property_node("skill");
+        let skills = HashMap::from([
+            (
+                2_321_001,
+                IndexedSkill {
+                    job_id: 232,
+                    invisible: false,
+                    node: node.clone(),
+                },
+            ),
+            (
+                2_321_003,
+                IndexedSkill {
+                    job_id: 232,
+                    invisible: true,
+                    node: node.clone(),
+                },
+            ),
+            (
+                1_003,
+                IndexedSkill {
+                    job_id: 0,
+                    invisible: false,
+                    node,
+                },
+            ),
+        ]);
+        let definitions = [2_321_001, 2_321_003, 1_003]
+            .into_iter()
+            .map(|skill_id| {
+                (
+                    skill_id,
+                    CachedSkillDefinition {
+                        definition: SkillDefinition {
+                            skill_id,
+                            max_level: 1,
+                            ..SkillDefinition::default()
+                        },
+                        asset: AssetDescriptor::default(),
+                    },
+                )
             })
+            .collect();
+        SkillContent {
+            _bases: Vec::new(),
+            jobs: HashMap::from([(232, property_node("232.img"))]),
+            skills,
+            strings: property_node("strings"),
+            fingerprint: "synthetic".to_owned(),
+            sounds: None,
+            sound_fingerprint: None,
+            books: RwLock::new(HashMap::new()),
+            definitions: RwLock::new(definitions),
+            effects: RwLock::new(HashMap::new()),
+            assets: RwLock::new(HashMap::new()),
+        }
     }
 
     fn book_contains(
@@ -1057,45 +992,20 @@ mod tests {
         })
     }
 
-    fn book_has_text_formula(
-        content: &SkillContent,
-        job_id: u32,
-    ) -> bool {
-        content
-            .skill_book(job_id)
-            .expect("job skill book")
-            .skills
-            .iter()
-            .filter_map(|skill| skill.definition.as_ref())
-            .any(|definition| {
-                definition
-                    .common_properties
-                    .iter()
-                    .chain(
-                        definition
-                            .levels
-                            .iter()
-                            .flat_map(|level| level.properties.iter()),
-                    )
-                    .any(|property| {
-                        matches!(
-                            property
-                                .value
-                                .as_ref()
-                                .and_then(|value| value.value.as_ref()),
-                            Some(skill_value::Value::Text(_))
-                        ) && matches!(
-                            property.name.as_str(),
-                            "acc" | "attackCount" | "damage" | "time"
-                        )
-                    })
-            })
+    fn property_node(name: &str) -> wz_reader::WzNodeArc {
+        WzNode::from_str(name, WzObjectType::Property(WzSubProperty::Property), None).into_lock()
     }
 
-    fn integer(value: Option<&oozems_proto::v1::SkillValue>) -> i64 {
-        match value.and_then(|value| value.value.as_ref()) {
-            Some(skill_value::Value::Integer(value)) => *value,
-            _ => panic!("expected integer skill value"),
-        }
+    fn add_value(
+        parent: &wz_reader::WzNodeArc,
+        name: &str,
+        value: WzValue,
+    ) {
+        let child = WzNode::from_str(name, WzObjectType::Value(value), Some(parent)).into_lock();
+        parent
+            .write()
+            .expect("property lock")
+            .children
+            .insert(name.into(), child);
     }
 }

@@ -4,6 +4,8 @@ use std::io::ErrorKind;
 use std::path::Path;
 use std::path::PathBuf;
 
+use oozems_proto::v1::ItemDefinition;
+use oozems_proto::v1::Map;
 use serde::Deserialize;
 use thiserror::Error;
 
@@ -108,28 +110,40 @@ struct TaxiDestinationFile {
     fare: u64,
 }
 
+trait InteractionContentLookup {
+    fn get_map(
+        &self,
+        map_id: u32,
+    ) -> Result<Option<Map>, ContentError>;
+
+    fn item_definition(
+        &self,
+        item_id: u32,
+    ) -> Result<Option<&ItemDefinition>, ContentError>;
+}
+
+impl InteractionContentLookup for ContentCatalog {
+    fn get_map(
+        &self,
+        map_id: u32,
+    ) -> Result<Option<Map>, ContentError> {
+        ContentCatalog::get_map(self, map_id)
+    }
+
+    fn item_definition(
+        &self,
+        item_id: u32,
+    ) -> Result<Option<&ItemDefinition>, ContentError> {
+        ContentCatalog::item_definition(self, item_id)
+    }
+}
+
 impl InteractionCatalog {
     pub fn load(
         path: &Path,
         content: &ContentCatalog,
     ) -> Result<Self, InteractionConfigError> {
-        let source = match fs::read_to_string(path) {
-            Ok(source) => source,
-            Err(source) if source.kind() == ErrorKind::NotFound => String::new(),
-            Err(source) => {
-                return Err(InteractionConfigError::Read {
-                    path: path.to_owned(),
-                    source,
-                });
-            }
-        };
-        let file = toml::from_str::<InteractionFile>(&source).map_err(|source| {
-            InteractionConfigError::Parse {
-                path: path.to_owned(),
-                source,
-            }
-        })?;
-        build_catalog(path, content, file)
+        load_catalog(path, content)
     }
 
     pub fn shop(
@@ -161,9 +175,32 @@ impl InteractionCatalog {
     }
 }
 
+fn load_catalog(
+    path: &Path,
+    content: &(impl InteractionContentLookup + ?Sized),
+) -> Result<InteractionCatalog, InteractionConfigError> {
+    let source = match fs::read_to_string(path) {
+        Ok(source) => source,
+        Err(source) if source.kind() == ErrorKind::NotFound => String::new(),
+        Err(source) => {
+            return Err(InteractionConfigError::Read {
+                path: path.to_owned(),
+                source,
+            });
+        }
+    };
+    let file = toml::from_str::<InteractionFile>(&source).map_err(|source| {
+        InteractionConfigError::Parse {
+            path: path.to_owned(),
+            source,
+        }
+    })?;
+    build_catalog(path, content, file)
+}
+
 fn build_catalog(
     path: &Path,
-    content: &ContentCatalog,
+    content: &(impl InteractionContentLookup + ?Sized),
     file: InteractionFile,
 ) -> Result<InteractionCatalog, InteractionConfigError> {
     let mut shops = HashMap::new();
@@ -313,9 +350,9 @@ fn build_catalog(
 
 fn configured_map(
     path: &Path,
-    content: &ContentCatalog,
+    content: &(impl InteractionContentLookup + ?Sized),
     key: InteractionKey,
-) -> Result<oozems_proto::v1::Map, InteractionConfigError> {
+) -> Result<Map, InteractionConfigError> {
     content
         .get_map(key.map_id)?
         .ok_or_else(|| InteractionConfigError::Invalid {
@@ -354,30 +391,64 @@ mod tests {
     use std::fs;
     use std::path::Path;
 
-    use oozems_proto::v1::ItemCategory;
+    use oozems_proto::v1::ItemDefinition;
+    use oozems_proto::v1::Map;
+    use oozems_proto::v1::Npc;
+    use oozems_proto::v1::Portal;
 
-    use super::InteractionCatalog;
-    use crate::content::ContentCatalog;
-    use crate::content::ContentConfig;
+    use super::InteractionContentLookup;
+    use super::load_catalog;
+    use crate::content::ContentError;
+
+    struct FakeContent {
+        maps: Vec<Map>,
+        eager_items: Vec<ItemDefinition>,
+        indexed_items: Vec<ItemDefinition>,
+    }
+
+    impl InteractionContentLookup for FakeContent {
+        fn get_map(
+            &self,
+            map_id: u32,
+        ) -> Result<Option<Map>, ContentError> {
+            Ok(self.maps.iter().find(|map| map.id == map_id).cloned())
+        }
+
+        fn item_definition(
+            &self,
+            item_id: u32,
+        ) -> Result<Option<&ItemDefinition>, ContentError> {
+            Ok(self
+                .eager_items
+                .iter()
+                .chain(&self.indexed_items)
+                .find(|definition| definition.item_id == item_id))
+        }
+    }
 
     #[test]
-    fn bundled_interactions_reference_available_wz_content() {
+    fn bundled_interaction_configuration_is_valid() {
         let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let wz_dir = manifest_dir.join("../../data");
-        if !["Map.wz", "Npc.wz", "Character.wz"]
-            .iter()
-            .all(|name| wz_dir.join(name).exists())
-        {
-            return;
-        }
-        let content = ContentCatalog::load(
-            &wz_dir,
-            &ContentConfig::load(&manifest_dir.join("../../config/content.toml"))
-                .expect("content configuration"),
-        )
-        .expect("content catalog");
+        let content = FakeContent {
+            maps: vec![
+                map_with_npc(100_000_101, 1),
+                map_with_npc(100_000_000, 2),
+                Map {
+                    id: 104_000_000,
+                    portals: vec![Portal {
+                        name: "sp".to_owned(),
+                        ..Portal::default()
+                    }],
+                    ..Map::default()
+                },
+            ],
+            eager_items: Vec::new(),
+            indexed_items: [1_040_002, 1_040_003, 1_060_002, 1_072_000, 1_072_001]
+                .map(item_definition)
+                .to_vec(),
+        };
 
-        let interactions = InteractionCatalog::load(
+        let interactions = load_catalog(
             &manifest_dir.join("../../config/interactions.toml"),
             &content,
         )
@@ -403,29 +474,12 @@ mod tests {
 
     #[test]
     fn shops_accept_indexed_non_eager_items_and_reject_unknown_items() {
-        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let wz_dir = manifest_dir.join("../../data");
-        if !["Map.wz", "Npc.wz", "Character.wz", "Item.wz"]
-            .iter()
-            .all(|name| wz_dir.join(name).exists())
-        {
-            return;
-        }
-        let content = ContentCatalog::load(
-            &wz_dir,
-            &ContentConfig::load(&manifest_dir.join("../../config/content.toml"))
-                .expect("content configuration"),
-        )
-        .expect("content catalog");
-        let item_id = content
-            .indexed_item_ids()
-            .find(|item_id| {
-                !content
-                    .item_definition_slice()
-                    .iter()
-                    .any(|definition| definition.item_id == *item_id)
-            })
-            .expect("item source index should contain a non-eager item");
+        let item_id = 4_000_001;
+        let content = FakeContent {
+            maps: vec![map_with_npc(100_000_101, 1)],
+            eager_items: Vec::new(),
+            indexed_items: vec![item_definition(item_id)],
+        };
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("interactions.toml");
         fs::write(
@@ -437,8 +491,7 @@ mod tests {
         )
         .expect("write interaction configuration");
 
-        let interactions =
-            InteractionCatalog::load(&path, &content).expect("indexed shop item should load");
+        let interactions = load_catalog(&path, &content).expect("indexed shop item should load");
 
         assert_eq!(
             interactions
@@ -448,19 +501,7 @@ mod tests {
                 .item_id,
             item_id
         );
-        let definition = content
-            .item_definition(item_id)
-            .expect("item metadata lookup")
-            .expect("indexed item definition");
-        assert!(!definition.name.is_empty());
-        assert!(definition.stack_max > 0);
-        assert!(ItemCategory::try_from(definition.category).is_ok());
-        assert!(
-            !content
-                .item_definition_slice()
-                .iter()
-                .any(|definition| definition.item_id == item_id)
-        );
+        assert!(content.eager_items.is_empty());
 
         fs::write(
             &path,
@@ -468,12 +509,33 @@ mod tests {
              4294967295\nbuy_price = 1\n",
         )
         .expect("write unknown shop item");
-        let error = InteractionCatalog::load(&path, &content)
-            .expect_err("unknown shop item should be rejected");
+        let error =
+            load_catalog(&path, &content).expect_err("unknown shop item should be rejected");
         assert!(
             error
                 .to_string()
                 .contains("shop item 4294967295 is not in the item catalog")
         );
+    }
+
+    fn map_with_npc(
+        map_id: u32,
+        npc_spawn_id: u32,
+    ) -> Map {
+        Map {
+            id: map_id,
+            npcs: vec![Npc {
+                spawn_id: npc_spawn_id,
+                ..Npc::default()
+            }],
+            ..Map::default()
+        }
+    }
+
+    fn item_definition(item_id: u32) -> ItemDefinition {
+        ItemDefinition {
+            item_id,
+            ..ItemDefinition::default()
+        }
     }
 }

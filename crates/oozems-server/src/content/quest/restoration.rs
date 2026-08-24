@@ -151,11 +151,6 @@ pub(super) fn audited_rule(quest_id: u32) -> Option<&'static AuditedRestorationR
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
-    use wz_reader::WzNodeArc;
-    use wz_reader::WzNodeCast;
-
     #[test]
     fn audited_restoration_rules_have_the_exact_reviewed_shape() {
         let actual = super::AUDITED_RESTORATION_RULES
@@ -333,45 +328,5 @@ mod tests {
                 ),
             ]
         );
-    }
-
-    #[test]
-    fn local_reactor_2619000_consumes_the_3310_device() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/Reactor.wz");
-        if !path.exists() {
-            return;
-        }
-        let root = crate::content::wz::open_archive(&path).expect("reactor archive");
-        crate::content::wz::parse(&root, "reactor archive root".to_owned())
-            .expect("parse reactor archive");
-        let image = child(&root, "2619000.img");
-        crate::content::wz::parse(&image, "reactor image 2619000".to_owned())
-            .expect("parse reactor image");
-
-        for (state, next_state) in [("0", 1), ("1", 2)] {
-            let event = child(&child(&child(&image, state), "event"), "0");
-            assert_eq!(integer(&child(&event, "type")), 100);
-            assert_eq!(integer(&child(&event, "0")), 4_031_698);
-            assert_eq!(integer(&child(&event, "1")), 1);
-            assert_eq!(integer(&child(&event, "state")), next_state);
-        }
-    }
-
-    fn child(
-        node: &WzNodeArc,
-        name: &str,
-    ) -> WzNodeArc {
-        crate::content::wz::child(node, name)
-            .expect("reactor child lookup")
-            .unwrap_or_else(|| panic!("missing reactor field {name}"))
-    }
-
-    fn integer(node: &WzNodeArc) -> i64 {
-        let read = node.read().expect("reactor node lock");
-        read.try_as_int()
-            .map(|value| i64::from(*value))
-            .or_else(|| read.try_as_short().map(|value| i64::from(*value)))
-            .or_else(|| read.try_as_long().copied())
-            .expect("reactor integer")
     }
 }

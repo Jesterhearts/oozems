@@ -26,8 +26,6 @@ pub(crate) struct QuestContent {
     _base: WzNodeArc,
     definitions: HashMap<u32, QuestDefinition>,
     item_reference_ids: BTreeSet<u32>,
-    #[cfg(test)]
-    report: QuestLoadReport,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -173,8 +171,6 @@ impl QuestContent {
             _base: base,
             definitions,
             item_reference_ids,
-            #[cfg(test)]
-            report,
         }))
     }
 
@@ -191,11 +187,6 @@ impl QuestContent {
 
     pub fn item_reference_ids(&self) -> &BTreeSet<u32> {
         &self.item_reference_ids
-    }
-
-    #[cfg(test)]
-    pub fn report(&self) -> &QuestLoadReport {
-        &self.report
     }
 }
 

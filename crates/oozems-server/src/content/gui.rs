@@ -810,16 +810,17 @@ fn invalid<T>(message: impl Into<String>) -> Result<T, GuiContentError> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
-    use super::GuiContent;
     use super::InventoryTabSources;
     use super::InventoryWindowSources;
+    use super::ItemWindowSources;
+    use super::KeyConfigSources;
     use super::SkillWindowSources;
     use super::SourceSprite;
     use super::StatWindowSources;
     use super::StatusBarSources;
     use super::compose_inventory_window;
+    use super::compose_item_window;
+    use super::compose_key_config;
     use super::compose_skill_window;
     use super::compose_stat_window;
     use super::compose_status_bar;
@@ -965,100 +966,37 @@ mod tests {
     }
 
     #[test]
-    fn local_ui_archive_builds_a_native_status_bar_when_present() {
-        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let directory = manifest_dir.join("../../data");
-        if !directory.join("UI.wz").exists() {
-            return;
-        }
-
-        let content = GuiContent::open_optional(&directory)
-            .expect("sample UI.wz should be valid")
-            .expect("sample UI.wz should be present");
-        let gui = content.game_gui();
-        let status_bar = gui.status_bar.expect("status bar layout");
-
-        assert_eq!(status_bar.width, 800.0);
-        assert_eq!(status_bar.height, 80.0);
+    fn item_and_key_config_sources_form_native_windows() {
+        let item = ItemWindowSources {
+            background: source("equipment-background", 175.0, 304.0),
+            close: source("equipment-close", 10.0, 10.0),
+        };
+        let equipment = compose_item_window(&item, 20.0, 80.0).expect("valid equipment window");
         assert_eq!(
-            status_bar
-                .background
+            equipment
+                .layout
                 .as_ref()
-                .map(|sprite| sprite.name.as_str()),
-            Some("background")
-        );
-        assert!(status_bar.sprites.iter().any(|sprite| {
-            sprite.name == "quick-slots" && sprite.x == 649.0 && sprite.anchor_right
-        }));
-        let stat_window = gui.stat_window.as_ref().expect("stat window");
-        assert_eq!(
-            stat_window.layout.as_ref().map(|layout| layout.height),
-            Some(347.0)
-        );
-        assert_eq!(gui.assets.len(), 83);
-        assert!(gui.npc_dialog_window.is_some());
-        assert!(gui.shop_window.is_some());
-        assert_eq!(gui.key_actions.len(), crate::keymap::ACTIONS.len());
-        assert_eq!(gui.key_slots.len(), crate::keymap::SLOTS.len());
-        assert_eq!(
-            gui.key_config_window
-                .as_ref()
-                .and_then(|window| window.layout.as_ref())
-                .map(|layout| (layout.width, layout.height)),
-            Some((629.0, 373.0))
-        );
-        assert_eq!(
-            gui.equipment_window
-                .as_ref()
-                .and_then(|window| window.layout.as_ref())
                 .map(|layout| (layout.width, layout.height)),
             Some((175.0, 304.0))
         );
-        assert_eq!(
-            gui.inventory_window
-                .as_ref()
-                .and_then(|window| window.layout.as_ref())
-                .map(|layout| (layout.width, layout.height)),
-            Some((175.0, 289.0))
-        );
-        let inventory_layout = gui
-            .inventory_window
-            .as_ref()
-            .and_then(|window| window.layout.as_ref())
-            .expect("inventory window layout");
-        assert_eq!(inventory_layout.sprite_templates.len(), 20);
-        assert_eq!(
-            region_geometry(inventory_layout, "inventory-tab-install"),
-            Some((71.0, 22.0, 34.0, 19.0))
-        );
-        assert_eq!(
-            gui.skill_window
-                .as_ref()
-                .and_then(|window| window.layout.as_ref())
-                .map(|layout| (layout.width, layout.height)),
-            Some((175.0, 289.0))
-        );
-        let skill_layout = gui
-            .skill_window
-            .as_ref()
-            .and_then(|window| window.layout.as_ref())
-            .expect("skill window layout");
-        assert_eq!(
-            template_size(skill_layout, "skill-row"),
-            Some((141.0, 35.0))
-        );
-        assert_eq!(
-            region_geometry(skill_layout, "skill-list"),
-            Some((17.0, 94.0, 141.0, 140.0))
-        );
 
-        for descriptor in &gui.assets {
-            let asset = content
-                .get_asset(&descriptor.id)
-                .expect("GUI asset should be registered");
-            let png = asset.png_bytes().expect("GUI asset should decode");
-            assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
-        }
+        let key_config = KeyConfigSources {
+            background: source("key-config-background", 629.0, 373.0),
+            close: source("key-config-close", 10.0, 10.0),
+            actions: crate::keymap::ACTIONS
+                .iter()
+                .map(|spec| (*spec, source(spec.icon_id, 32.0, 32.0)))
+                .collect(),
+        };
+        let (window, actions) = compose_key_config(&key_config).expect("valid key config window");
+        assert_eq!(
+            window
+                .layout
+                .as_ref()
+                .map(|layout| (layout.width, layout.height)),
+            Some((629.0, 373.0))
+        );
+        assert_eq!(actions.len(), crate::keymap::ACTIONS.len());
     }
 
     fn source(

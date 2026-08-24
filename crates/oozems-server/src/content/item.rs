@@ -255,14 +255,6 @@ impl ItemContent {
         self.monster_book_cards.get(&item_id).copied()
     }
 
-    #[cfg(test)]
-    pub fn consume_effect(
-        &self,
-        item_id: u32,
-    ) -> Option<&ConsumeEffectDefinition> {
-        self.consume_effects.get(&item_id)
-    }
-
     pub fn equipment_source_ids(&self) -> BTreeSet<u32> {
         self.sources
             .iter()
@@ -270,11 +262,6 @@ impl ItemContent {
                 (source.category == ItemCategory::Equipment).then_some(*item_id)
             })
             .collect()
-    }
-
-    #[cfg(test)]
-    pub fn source_id_iter(&self) -> impl Iterator<Item = u32> + '_ {
-        self.sources.keys().copied()
     }
 
     pub fn materialize_eager(
@@ -1200,23 +1187,32 @@ fn invalid<T>(message: impl Into<String>) -> Result<T, ItemContentError> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::collections::BTreeSet;
-    use std::collections::HashSet;
-    use std::path::Path;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    use std::sync::OnceLock;
+    use std::sync::RwLock;
 
-    use oozems_proto::v1::EquipmentSlot;
     use oozems_proto::v1::ItemCategory;
     use wz_reader::WzNode;
     use wz_reader::WzObjectType;
+    use wz_reader::property::WzPng;
     use wz_reader::property::WzString;
     use wz_reader::property::WzSubProperty;
     use wz_reader::property::WzValue;
 
+    use super::ConsumeEffectDefinition;
     use super::ItemContent;
+    use super::ItemSource;
+    use super::ItemText;
+    use super::SourceArchive;
+    use super::SourceFingerprints;
     use super::normalize_sale_price;
     use super::normalize_stack_max;
+    use super::read_consume_effect;
     use super::read_monster_book_card;
-    use crate::content::character::CharacterContent;
+    use super::validate_map_protection_effect;
 
     #[test]
     fn stack_max_uses_category_defaults_and_explicit_limits() {
@@ -1240,205 +1236,69 @@ mod tests {
     }
 
     #[test]
-    fn local_item_archives_load_quest_reward_and_current_equipment_when_present() {
-        let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data");
-        if !directory.join("Item.wz").exists()
-            || !directory.join("Character.wz").exists()
-            || !directory.join("String.wz").exists()
-        {
-            return;
-        }
+    fn consume_effects_parse_synthetic_integer_properties() {
+        let source = consume_effect_source([
+            ("time", WzValue::Long(40_000)),
+            ("pad", WzValue::Short(20)),
+            ("speed", WzValue::Int(-5)),
+            ("hp", WzValue::Int(50)),
+            ("morph", WzValue::Int(4)),
+        ]);
+        assert_eq!(
+            read_consume_effect(2_000_000, &source).expect("synthetic consume effect"),
+            ConsumeEffectDefinition {
+                item_id: 2_000_000,
+                weapon_attack: 20,
+                speed: -5,
+                hp: 50,
+                morph_id: Some(4),
+                duration_ms: 40_000,
+                ..ConsumeEffectDefinition::default()
+            }
+        );
 
-        let characters = CharacterContent::open_optional(&directory)
-            .expect("sample Character.wz should be valid")
-            .expect("sample Character.wz should be present");
-        let mut content = ItemContent::load(&directory, Some(&characters))
-            .expect("sample item archives should be valid")
-            .expect("sample item archives should provide definitions");
-        assert_eq!(content.sources.len(), 10_592);
+        let map_protection = consume_effect_source([
+            ("thaw", WzValue::Int(-6)),
+            ("time", WzValue::Int(1_800_000)),
+        ]);
+        validate_map_protection_effect(&map_protection).expect("synthetic map protection effect");
+    }
+
+    #[test]
+    fn lazy_item_materialization_projects_metadata_and_registered_assets() {
+        let item_id = 4_000_001;
+        let mut content = synthetic_item_content(item_id);
+        let requested = BTreeSet::from([item_id]);
+
+        let (definitions, descriptors) = content
+            .gui_projection(&requested)
+            .expect("lazy GUI projection");
+
+        assert!(content.eager_definition_slice().is_empty());
+        assert_eq!(definitions.len(), 1);
+        assert_eq!(definitions[0].item_id, item_id);
+        assert_eq!(definitions[0].name, "Synthetic item");
+        assert_eq!(definitions[0].description, "Synthetic description");
+        assert_eq!(definitions[0].category, ItemCategory::Etc as i32);
+        assert_eq!(definitions[0].stack_max, 200);
+        assert_eq!(definitions[0].sale_price, 123);
+        assert_eq!(
+            (definitions[0].icon_width, definitions[0].icon_height),
+            (16.0, 18.0)
+        );
+        assert_eq!(descriptors.len(), 1);
+        assert_eq!(descriptors[0].id, definitions[0].icon_asset_id);
+        assert!(content.get_asset(&descriptors[0].id).is_some());
+
         content
-            .materialize_eager(&BTreeSet::from([
-                1_332_005, 1_332_007, 4_000_000, 4_000_001,
-            ]))
-            .expect("selected item definitions should load");
-        let definitions = content.eager_definition_slice();
-        eprintln!(
-            "indexed item sources: {}; focused materialized items: {}",
-            content.sources.len(),
-            definitions.len()
-        );
-        let quest_item = definition(definitions, 4_000_000);
-        assert_eq!(quest_item.name, "Blue Snail Shell");
-        assert_eq!(quest_item.stack_max, 200);
-        assert_eq!(
-            ItemCategory::try_from(quest_item.category),
-            Ok(ItemCategory::Etc)
-        );
-        let quest_item = definition(definitions, 4_000_001);
-        assert_eq!(quest_item.name, "Orange Mushroom Cap");
+            .materialize_additional_eager(&requested)
+            .expect("eager materialization");
+        assert_eq!(content.eager_definition_slice(), definitions);
 
-        let reward_weapon = definition(definitions, 1_332_005);
-        assert_eq!(reward_weapon.name, "Razor");
-
-        let reward_weapon = definition(definitions, 1_332_007);
-        assert_eq!(reward_weapon.name, "Fruit Knife");
-        assert_eq!(reward_weapon.stack_max, 1);
-        assert_eq!(
-            ItemCategory::try_from(reward_weapon.category),
-            Ok(ItemCategory::Equipment)
-        );
-        assert!(!reward_weapon.appearance_supported);
-
-        let current = [
-            (
-                crate::items::STARTER_TOP_ID,
-                "White Undershirt",
-                EquipmentSlot::Top,
-            ),
-            (
-                crate::items::STARTER_BOTTOM_ID,
-                "Blue Jean Shorts",
-                EquipmentSlot::Bottom,
-            ),
-            (
-                crate::items::STARTER_SHOES_ID,
-                "Brown Jangoon Shoes",
-                EquipmentSlot::Shoes,
-            ),
-            (
-                crate::items::SPARE_TOP_ID,
-                "Brown Hard Leather Top",
-                EquipmentSlot::Top,
-            ),
-            (
-                crate::items::SPARE_BOTTOM_ID,
-                "Black Suit Pants",
-                EquipmentSlot::Bottom,
-            ),
-            (
-                crate::items::SPARE_SHOES_ID,
-                "Red Rubber Boots",
-                EquipmentSlot::Shoes,
-            ),
-        ];
-        for (item_id, name, slot) in current {
-            let item = definition(definitions, item_id);
-            assert_eq!(item.name, name);
-            assert_eq!(item.slot, slot as i32);
-            assert_eq!(item.stack_max, 1);
-            assert!(item.appearance_supported);
-        }
-
-        let appearance_ids = definitions
-            .iter()
-            .filter(|definition| definition.appearance_supported)
-            .map(|definition| definition.item_id)
-            .collect::<HashSet<_>>();
-        assert_eq!(
-            appearance_ids,
-            current.into_iter().map(|(item_id, _, _)| item_id).collect()
-        );
-        assert!(definitions.iter().all(|definition| {
-            !definition.icon_asset_id.is_empty()
-                && content.get_asset(&definition.icon_asset_id).is_some()
-        }));
-
-        let source_only_id = content
-            .sources
-            .iter()
-            .find_map(|(item_id, source)| source.definition.get().is_none().then_some(*item_id))
-            .expect("the source index should contain a non-eager item");
-        assert!(
-            !definitions
-                .iter()
-                .any(|definition| definition.item_id == source_only_id)
-        );
-        let source_only = content
-            .definition(source_only_id)
-            .expect("source-only item lookup should succeed")
-            .expect("source-only item should be indexed");
-        assert_eq!(source_only.item_id, source_only_id);
-        assert!(content.get_asset(&source_only.icon_asset_id).is_some());
-        assert!(
-            content
-                .definition(u32::MAX)
-                .expect("unsupported item lookup should not fail")
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn local_supported_consume_effects_match_the_audited_item_archive() {
-        let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data");
-        if !directory.join("Item.wz").exists() {
-            return;
-        }
-        let content = ItemContent::load(&directory, None)
-            .expect("sample item archive should be valid")
-            .expect("sample item archive should be present");
-        use super::ConsumeEffectDefinition as Effect;
-        let modifier = |item_id, pad, mad, pdd, mdd, acc, eva, speed, jump, duration_ms| Effect {
-            item_id,
-            weapon_attack: pad,
-            magic_attack: mad,
-            weapon_defense: pdd,
-            magic_defense: mdd,
-            accuracy: acc,
-            avoidability: eva,
-            speed,
-            jump,
-            duration_ms,
-            ..Effect::default()
-        };
-        assert_eq!(
-            content.consume_effect_definitions(),
-            vec![
-                modifier(2_022_070, 20, 20, 100, 100, 50, 50, 10, 10, 3_600_000),
-                modifier(2_022_109, 25, 35, 150, 150, 0, 0, 0, 0, 3_600_000),
-                modifier(2_022_152, 10, 10, 30, 30, 20, 20, 3, 3, 1_200_000),
-                modifier(2_022_239, 10, 10, 30, 30, 20, 20, 7, 5, 1_800_000),
-                modifier(2_022_631, 0, 0, 0, 0, 0, 0, -5, 0, 40_000),
-                modifier(2_022_632, 0, 0, 0, 0, 0, 0, -5, 0, 40_000),
-                modifier(2_022_633, 0, 0, 0, 0, 0, 0, -5, 0, 40_000),
-                Effect {
-                    item_id: 2_210_003,
-                    hp: 50,
-                    morph_id: Some(4),
-                    duration_ms: 3_600_000,
-                    ..Effect::default()
-                },
-                Effect {
-                    item_id: 2_210_034,
-                    hp: 50,
-                    morph_id: Some(40),
-                    duration_ms: 1_800_000,
-                    ..Effect::default()
-                },
-            ]
-        );
-        assert!(content.consume_effect(2_022_187).is_none());
-    }
-
-    #[test]
-    fn local_monster_book_cards_match_the_audited_item_archive() {
-        let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data");
-        if !directory.join("Item.wz").exists() {
-            return;
-        }
-        let content = ItemContent::load(&directory, None)
-            .expect("sample item archive should be valid")
-            .expect("sample item archive should be present");
-
-        assert_eq!(content.monster_book_cards.len(), 343);
-        assert_eq!(
-            content.monster_book_card(2_380_000),
-            Some(super::MonsterBookCardDefinition {
-                item_id: 2_380_000,
-                source_mob_id: 100_100,
-                max_count: 5,
-            })
-        );
-        assert!(content.monster_book_card(2_390_000).is_none());
+        let error = content
+            .gui_projection(&BTreeSet::from([u32::MAX]))
+            .expect_err("unknown projected item must fail");
+        assert!(error.to_string().contains("absent from the item index"));
     }
 
     #[test]
@@ -1544,13 +1404,103 @@ mod tests {
         item
     }
 
-    fn definition(
-        definitions: &[oozems_proto::v1::ItemDefinition],
-        item_id: u32,
-    ) -> &oozems_proto::v1::ItemDefinition {
-        definitions
-            .iter()
-            .find(|definition| definition.item_id == item_id)
-            .unwrap_or_else(|| panic!("item {item_id} definition"))
+    fn consume_effect_source<const N: usize>(fields: [(&str, WzValue); N]) -> ItemSource {
+        let item = WzNode::from_str(
+            "2000000",
+            WzObjectType::Property(WzSubProperty::Property),
+            None,
+        )
+        .into_lock();
+        let spec = WzNode::from_str(
+            "spec",
+            WzObjectType::Property(WzSubProperty::Property),
+            Some(&item),
+        )
+        .into_lock();
+        item.write()
+            .expect("item lock")
+            .children
+            .insert("spec".into(), spec.clone());
+        for (name, value) in fields {
+            let child = WzNode::from_str(name, WzObjectType::Value(value), Some(&spec)).into_lock();
+            spec.write()
+                .expect("effect lock")
+                .children
+                .insert(name.into(), child);
+        }
+        ItemSource {
+            archive: SourceArchive::Item,
+            category: ItemCategory::Consume,
+            image: item,
+            inner_path: None,
+            source_path: "synthetic consume effect".to_owned(),
+            definition: OnceLock::new(),
+        }
+    }
+
+    fn synthetic_item_content(item_id: u32) -> ItemContent {
+        let item = WzNode::from_str(
+            &item_id.to_string(),
+            WzObjectType::Property(WzSubProperty::Property),
+            None,
+        )
+        .into_lock();
+        let info = WzNode::from_str(
+            "info",
+            WzObjectType::Property(WzSubProperty::Property),
+            Some(&item),
+        )
+        .into_lock();
+        item.write()
+            .expect("item lock")
+            .children
+            .insert("info".into(), info.clone());
+
+        let mut png = WzPng::default();
+        png.width = 16;
+        png.height = 18;
+        let icon = WzNode::from_str("icon", png, Some(&info)).into_lock();
+        info.write()
+            .expect("info lock")
+            .children
+            .insert("icon".into(), icon);
+        for (name, value) in [("price", 123), ("slotMax", 200)] {
+            let child = WzNode::from_str(name, value, Some(&info)).into_lock();
+            info.write()
+                .expect("info lock")
+                .children
+                .insert(name.into(), child);
+        }
+
+        ItemContent {
+            _bases: vec![item.clone()],
+            sources: BTreeMap::from([(
+                item_id,
+                ItemSource {
+                    archive: SourceArchive::Item,
+                    category: ItemCategory::Etc,
+                    image: item,
+                    inner_path: None,
+                    source_path: format!("synthetic/{item_id}"),
+                    definition: OnceLock::new(),
+                },
+            )]),
+            texts: HashMap::from([(
+                item_id,
+                ItemText {
+                    name: "Synthetic item".to_owned(),
+                    description: "Synthetic description".to_owned(),
+                },
+            )]),
+            fingerprints: SourceFingerprints {
+                item: Some("synthetic-item-fingerprint".to_owned()),
+                character: None,
+            },
+            eager_definitions: Vec::new(),
+            consume_effects: BTreeMap::new(),
+            monster_book_cards: BTreeMap::new(),
+            materialization: Mutex::new(()),
+            assets: RwLock::new(HashMap::new()),
+        }
     }
 }

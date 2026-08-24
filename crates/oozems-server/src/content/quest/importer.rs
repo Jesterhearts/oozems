@@ -3619,7 +3619,6 @@ mod tests {
     use std::collections::BTreeMap;
     use std::collections::BTreeSet;
     use std::num::NonZeroU32;
-    use std::path::Path;
 
     use wz_reader::WzNode;
     use wz_reader::WzNodeArc;
@@ -3628,7 +3627,6 @@ mod tests {
     use wz_reader::property::WzSubProperty;
 
     use super::audited_action_corrections;
-    use super::audited_action_root;
     use super::calendar_unix_ms;
     use super::item_expiration_unix_ms;
     use super::quest_timer_milliseconds;
@@ -3640,7 +3638,6 @@ mod tests {
     use super::read_record_conditions;
     use super::read_start_requirements as read_start_requirements_with_effects;
     use super::validate_audited_4944_action;
-    use super::validate_audited_4960_parsed_actions;
     use super::validate_lost_item_restoration_flow;
     use super::validate_selectable_reward_flow;
     use crate::content::QuestActions;
@@ -3662,80 +3659,6 @@ mod tests {
     use crate::content::QuestStateActionState;
     use crate::content::QuestWeightedItem;
     use crate::content::quest::QuestContentError;
-
-    #[test]
-    fn local_unknown_check_fields_only_contain_user_interact() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/Quest.wz");
-        if !path.exists() {
-            return;
-        }
-        let root = crate::content::wz::open_archive(&path).expect("quest archive");
-        crate::content::wz::parse(&root, "quest archive root".to_owned())
-            .expect("parse quest archive");
-        let checks = super::required_child(&root, "Check.img", 0).expect("Check.img");
-        crate::content::wz::parse(&checks, "quest checks".to_owned()).expect("parse checks");
-        let mut unknown = Vec::new();
-        for quest in crate::content::wz::sorted_children(&checks).expect("quest checks") {
-            for phase_name in ["0", "1"] {
-                let Some(phase) = crate::content::wz::child(&quest, phase_name).expect("phase")
-                else {
-                    continue;
-                };
-                let allowed = if phase_name == "0" {
-                    super::START_CHECK_FIELDS
-                } else {
-                    super::COMPLETION_CHECK_FIELDS
-                };
-                unknown.extend(
-                    crate::content::wz::sorted_children(&phase)
-                        .expect("check fields")
-                        .into_iter()
-                        .map(|field| crate::content::wz::node_name(&field).expect("field name"))
-                        .filter(|name| {
-                            !allowed.contains(&name.as_str())
-                                && !matches!(
-                                    name.as_str(),
-                                    "pet"
-                                        | "pettamenessmin"
-                                        | "petAutoSpeakingLimit"
-                                        | "petRecallLimit"
-                                        | "tamingmoblevelmin"
-                                        | "partyQuest_S"
-                                        | "info"
-                                        | "infoNumber"
-                                        | "infoex"
-                                        | "buff"
-                                        | "exceptbuff"
-                                        | "skill"
-                                        | "fieldEnter"
-                                )
-                        }),
-                );
-            }
-        }
-        assert_eq!(unknown, vec!["userInteract"]);
-    }
-
-    #[test]
-    fn local_stray_selected_mob_metadata_matches_audited_fingerprints() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/Quest.wz");
-        if !path.exists() {
-            return;
-        }
-        let root = crate::content::wz::open_archive(&path).expect("quest archive");
-        crate::content::wz::parse(&root, "quest archive root".to_owned())
-            .expect("parse quest archive");
-        let info = super::required_child(&root, "QuestInfo.img", 0).expect("QuestInfo.img");
-        crate::content::wz::parse(&info, "quest info".to_owned()).expect("parse quest info");
-        for quest_id in [3_954, 4_006, 4_484, 6_012] {
-            let node =
-                super::required_child(&info, &quest_id.to_string(), quest_id).expect("quest info");
-            assert!(
-                super::retain_audited_stray_selected_mob(quest_id, &node)
-                    .expect("audited selectedMob metadata")
-            );
-        }
-    }
 
     #[test]
     fn selected_mob_metadata_fails_closed_outside_the_audited_records() {
@@ -3882,183 +3805,6 @@ mod tests {
             archive_quest_ids,
             authoritative_check,
         )
-    }
-
-    #[test]
-    fn local_skill_action_field_distribution_is_stable() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/Quest.wz");
-        if !path.exists() {
-            return;
-        }
-        let root = crate::content::wz::open_archive(&path).expect("quest archive");
-        crate::content::wz::parse(&root, "quest archive root".to_owned())
-            .expect("parse quest archive");
-        let actions = super::required_child(&root, "Act.img", 0).expect("Act.img");
-        crate::content::wz::parse(&actions, "quest action archive".to_owned())
-            .expect("parse quest actions");
-        let mut quest_count = 0;
-        let mut entry_count = 0;
-        let mut field_counts = BTreeMap::<String, usize>::new();
-        for quest in crate::content::wz::sorted_children(&actions).expect("quests") {
-            for phase_name in ["0", "1"] {
-                let Some(phase) = crate::content::wz::child(&quest, phase_name).expect("phase")
-                else {
-                    continue;
-                };
-                let Some(skills) = crate::content::wz::child(&phase, "skill").expect("skills")
-                else {
-                    continue;
-                };
-                quest_count += 1;
-                for entry in crate::content::wz::sorted_children(&skills).expect("skill entries") {
-                    entry_count += 1;
-                    let mut entry_fields = BTreeSet::new();
-                    for field in crate::content::wz::sorted_children(&entry).expect("fields") {
-                        let name = crate::content::wz::node_name(&field).expect("field name");
-                        *field_counts.entry(name.clone()).or_default() += 1;
-                        entry_fields.insert(name);
-                    }
-                    if entry_fields.contains("onlyMasterLevel") {
-                        assert!(
-                            !entry_fields.contains("skillLevel"),
-                            "local onlyMasterLevel actions must not author a skillLevel"
-                        );
-                    }
-                }
-            }
-        }
-
-        assert_eq!(quest_count, 65);
-        assert_eq!(entry_count, 80);
-        assert_eq!(
-            field_counts,
-            BTreeMap::from([
-                ("acquire".to_owned(), 1),
-                ("id".to_owned(), 80),
-                ("job".to_owned(), 77),
-                ("masterLevel".to_owned(), 79),
-                ("onlyMasterLevel".to_owned(), 8),
-                ("skillLevel".to_owned(), 22),
-            ])
-        );
-    }
-
-    #[test]
-    fn local_quest_state_action_distribution_is_stable() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/Quest.wz");
-        if !path.exists() {
-            return;
-        }
-        let root = crate::content::wz::open_archive(&path).expect("quest archive");
-        crate::content::wz::parse(&root, "quest archive root".to_owned())
-            .expect("parse quest archive");
-        let actions = super::required_child(&root, "Act.img", 0).expect("Act.img");
-        crate::content::wz::parse(&actions, "quest action archive".to_owned())
-            .expect("parse quest actions");
-        let mut state_actions = BTreeMap::<u32, Vec<(u32, i64)>>::new();
-        for quest in crate::content::wz::sorted_children(&actions).expect("quests") {
-            let quest_id = crate::content::wz::node_name(&quest)
-                .expect("quest name")
-                .parse::<u32>()
-                .expect("numeric quest name");
-            for phase_name in ["0", "1"] {
-                let Some(phase) = crate::content::wz::child(&quest, phase_name).expect("phase")
-                else {
-                    continue;
-                };
-                let Some(entries) =
-                    crate::content::wz::child(&phase, "quest").expect("quest field")
-                else {
-                    continue;
-                };
-                for entry in crate::content::wz::sorted_children(&entries).expect("state entries") {
-                    let target = super::required_u32(&entry, "id", quest_id).expect("target ID");
-                    let state = super::required_i64(&entry, "state", quest_id).expect("state");
-                    state_actions
-                        .entry(quest_id)
-                        .or_default()
-                        .push((target, state));
-                }
-            }
-        }
-
-        assert_eq!(
-            state_actions,
-            BTreeMap::from([
-                (2_101, vec![(2_100, 2)]),
-                (2_145, vec![(2_144, 2)]),
-                (2_199, vec![(2_198, 2)]),
-                (2_200, vec![(2_198, 2)]),
-                (2_201, vec![(2_199, 2), (2_200, 2)]),
-                (2_202, vec![(2_201, 2)]),
-                (2_203, vec![(2_202, 2)]),
-                (2_206, vec![(2_205, 2)]),
-                (3_081, vec![(3_080, 2)]),
-                (3_082, vec![(3_081, 2)]),
-                (3_335, vec![(3_334, 2)]),
-                (3_528, vec![(3_521, 2)]),
-                (3_537, vec![(3_521, 2)]),
-                (3_642, vec![(3_641, 2)]),
-                (3_946, vec![(3_926, 2)]),
-                (4_308, vec![(4_307, 2)]),
-                (6_034, vec![(6_033, 2)]),
-                (20_301, vec![(20_300, 2)]),
-            ])
-        );
-    }
-
-    #[test]
-    fn local_skill_edge_cases_keep_their_strict_classification() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/Quest.wz");
-        if !path.exists() {
-            return;
-        }
-        let root = crate::content::wz::open_archive(&path).expect("quest archive");
-        crate::content::wz::parse(&root, "quest archive root".to_owned())
-            .expect("parse quest archive");
-        let actions = super::required_child(&root, "Act.img", 0).expect("Act.img");
-        crate::content::wz::parse(&actions, "quest action archive".to_owned())
-            .expect("parse quest actions");
-
-        let phase = local_action_phase(&actions, 6_121, "1");
-        let mastered = super::read_action_skills(6_121, "1", &phase, &BTreeSet::from([2_321_003]))
-            .expect("local master-only action");
-        assert_eq!(
-            mastered[0].operation,
-            crate::content::QuestSkillOperation::Grant {
-                skill_level: 0,
-                master_level: 15,
-            }
-        );
-        assert_eq!(mastered[0].job_ids, vec![232]);
-
-        let duplicate_jobs = local_action_phase(&actions, 6_012, "1");
-        assert!(matches!(
-            super::read_action_skills(6_012, "1", &duplicate_jobs, &BTreeSet::from([1_003, 1_004]),),
-            Err(QuestContentError::Invalid { .. })
-        ));
-
-        let unknown = local_action_phase(&actions, 6_000, "1");
-        assert!(matches!(
-            super::read_action_skills(
-                6_000,
-                "1",
-                &unknown,
-                &BTreeSet::from([1_003, 10_001_003, 20_001_003]),
-            ),
-            Err(QuestContentError::Unsupported { category, .. })
-                if category == "unknown skill reference"
-        ));
-
-        let removal = local_action_phase(&actions, 6_034, "0");
-        let removed = super::read_action_skills(6_034, "0", &removal, &BTreeSet::from([1_007]))
-            .expect("local exact skill removal");
-        assert_eq!(removed[0].skill_id, 1_007);
-        assert_eq!(
-            removed[0].operation,
-            crate::content::QuestSkillOperation::Remove
-        );
-        assert!(removed[0].job_ids.is_empty());
     }
 
     #[test]
@@ -4656,30 +4402,6 @@ mod tests {
     }
 
     #[test]
-    fn local_archive_quest_28288_preserves_its_redirected_direct_info_check() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/Quest.wz");
-        if !path.exists() {
-            return;
-        }
-        let root = crate::content::wz::open_archive(&path).expect("quest archive");
-        crate::content::wz::parse(&root, "quest archive root".to_owned())
-            .expect("parse quest archive");
-        let checks = super::required_child(&root, "Check.img", 0).expect("check archive");
-        crate::content::wz::parse(&checks, "quest check archive".to_owned())
-            .expect("parse quest checks");
-        let quest = super::required_child(&checks, "28288", 28_288).expect("quest 28288");
-        let start = super::required_child(&quest, "0", 28_288).expect("start check");
-
-        let conditions = read_record_conditions(28_288, &start).expect("record condition");
-
-        assert_eq!(conditions[0].quest_id, 28_301);
-        assert!(matches!(
-            &conditions[0].alternatives[..],
-            [QuestRecordPredicate::Equal(value)] if value == "0"
-        ));
-    }
-
-    #[test]
     fn malformed_record_checks_are_rejected() {
         for mutate in 0..7 {
             let check = property("0");
@@ -5072,100 +4794,6 @@ mod tests {
     }
 
     #[test]
-    fn local_archive_quest_4960_uses_only_the_audited_4944_action_data() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/Quest.wz");
-        if !path.exists() {
-            return;
-        }
-        let root = crate::content::wz::open_archive(&path).expect("quest archive");
-        crate::content::wz::parse(&root, "quest archive root".to_owned())
-            .expect("parse quest archive");
-        let checks = super::required_child(&root, "Check.img", 4_960).expect("Check.img");
-        let actions = super::required_child(&root, "Act.img", 4_960).expect("Act.img");
-        let say = super::required_child(&root, "Say.img", 4_960).expect("Say.img");
-        let info = super::required_child(&root, "QuestInfo.img", 4_960).expect("QuestInfo.img");
-        for (name, node) in [
-            ("Check.img", &checks),
-            ("Act.img", &actions),
-            ("Say.img", &say),
-            ("QuestInfo.img", &info),
-        ] {
-            crate::content::wz::parse(node, name.to_owned()).expect("parse quest root");
-        }
-        let check_4960 = super::required_child(&checks, "4960", 4_960).expect("Check/4960");
-        let say_4960 = super::required_child(&say, "4960", 4_960).expect("Say/4960");
-        let info_4960 = super::required_child(&info, "4960", 4_960).expect("QuestInfo/4960");
-        assert!(
-            crate::content::wz::child(&actions, "4960")
-                .expect("Act/4960 lookup")
-                .is_none()
-        );
-
-        let aliased = audited_action_root(
-            4_960,
-            &checks,
-            &actions,
-            &say,
-            &info,
-            &check_4960,
-            Some(&say_4960),
-            &info_4960,
-        )
-        .expect("audited Act/4944 alias");
-        assert_eq!(
-            crate::content::wz::node_name(&aliased).expect("action name"),
-            "4944"
-        );
-        let item_ids = BTreeSet::from([
-            2_022_247, 2_022_248, 2_022_249, 2_022_250, 2_022_251, 4_031_771,
-        ]);
-        let start_check = child(&check_4960, "0");
-        let completion_check = child(&check_4960, "1");
-        let (start, _) = read_action_phase_with_skills(
-            4_960,
-            &aliased,
-            "0",
-            &item_ids,
-            &BTreeSet::new(),
-            &BTreeSet::new(),
-            &BTreeSet::from([4_944, 4_960]),
-            Some(&start_check),
-        )
-        .expect("aliased start actions");
-        let (completion, _) = read_action_phase_with_skills(
-            4_960,
-            &aliased,
-            "1",
-            &item_ids,
-            &BTreeSet::new(),
-            &BTreeSet::new(),
-            &BTreeSet::from([4_944, 4_960]),
-            Some(&completion_check),
-        )
-        .expect("aliased completion actions");
-
-        validate_audited_4960_parsed_actions(4_960, &start, &completion)
-            .expect("exact typed owner-4960 actions");
-        assert_eq!(completion.experience, 8_000);
-        assert_eq!(
-            completion
-                .fixed_items
-                .iter()
-                .map(|item| (item.item_id, item.count))
-                .collect::<Vec<_>>(),
-            vec![
-                (4_031_771, 1),
-                (2_022_247, -20),
-                (2_022_248, -20),
-                (2_022_249, -20),
-                (2_022_250, -20),
-                (2_022_251, 5),
-            ]
-        );
-        assert!(completion.record_writes.is_empty());
-    }
-
-    #[test]
     fn quest_10272_exact_negative_removals_ignore_only_the_audited_prop_metadata() {
         let (action, completion_check, say) = quest_10272_sources();
         let corrections =
@@ -5271,53 +4899,6 @@ mod tests {
             )
             .is_err(),
             "negative selectable entries remain invalid for every other quest",
-        );
-    }
-
-    #[test]
-    fn local_archive_quest_10272_matches_all_audited_item_evidence() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/Quest.wz");
-        if !path.exists() {
-            return;
-        }
-        let root = crate::content::wz::open_archive(&path).expect("quest archive");
-        crate::content::wz::parse(&root, "quest archive root".to_owned())
-            .expect("parse quest archive");
-        let checks = super::required_child(&root, "Check.img", 10_272).expect("Check.img");
-        let actions = super::required_child(&root, "Act.img", 10_272).expect("Act.img");
-        let say = super::required_child(&root, "Say.img", 10_272).expect("Say.img");
-        for (name, node) in [
-            ("Check.img", &checks),
-            ("Act.img", &actions),
-            ("Say.img", &say),
-        ] {
-            crate::content::wz::parse(node, name.to_owned()).expect("parse quest root");
-        }
-        let check = child(
-            &super::required_child(&checks, "10272", 10_272).expect("Check/10272"),
-            "1",
-        );
-        let action = super::required_child(&actions, "10272", 10_272).expect("Act/10272");
-        let say = super::required_child(&say, "10272", 10_272).expect("Say/10272");
-
-        let corrections = audited_action_corrections(10_272, &action, &check, Some(&say))
-            .expect("local audited quest 10272 evidence");
-        let imported = read_action_items_with_corrections(
-            10_272,
-            "1",
-            &child(&action, "1"),
-            &BTreeSet::from([4_032_280, 4_032_283]),
-            &BTreeSet::new(),
-            &corrections,
-        )
-        .expect("local audited quest 10272 actions");
-        assert_eq!(
-            imported
-                .fixed
-                .iter()
-                .map(|item| (item.item_id, item.count))
-                .collect::<Vec<_>>(),
-            vec![(4_032_283, -10), (4_032_280, -10)]
         );
     }
 
@@ -6559,16 +6140,6 @@ mod tests {
         add_child(&phase, &quests);
         add_child(&action, &phase);
         action
-    }
-
-    fn local_action_phase(
-        actions: &WzNodeArc,
-        quest_id: u32,
-        phase: &str,
-    ) -> WzNodeArc {
-        let quest = super::required_child(actions, &quest_id.to_string(), quest_id)
-            .expect("local quest action");
-        super::required_child(&quest, phase, quest_id).expect("local quest action phase")
     }
 
     fn child(

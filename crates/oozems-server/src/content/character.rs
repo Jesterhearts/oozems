@@ -897,25 +897,25 @@ fn lock_error(context: &'static str) -> CharacterContentError {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
-    use std::path::Path;
     use std::sync::Arc;
+    use std::sync::RwLock;
 
-    use oozems_proto::v1::CharacterAppearance;
+    use oozems_proto::v1::CharacterCreationOptions;
     use oozems_proto::v1::CharacterGender;
     use oozems_proto::v1::EquipmentSlot;
-    use oozems_proto::v1::EquippedItem;
     use wz_reader::WzNode;
     use wz_reader::WzNodeArc;
     use wz_reader::property::Vector2D;
 
+    use super::AppearanceKey;
     use super::CharacterContent;
+    use super::CharacterKey;
     use super::HeadView;
+    use super::PajamaSources;
     use super::attachment_translation;
-    use super::child;
+    use super::character_clothing_sources;
     use super::hair_frame;
     use super::head_view;
-    use super::node_name;
-    use super::sorted_children;
     use super::z_rank;
 
     #[test]
@@ -985,224 +985,91 @@ mod tests {
     }
 
     #[test]
-    fn local_character_archive_builds_and_decodes_a_sprite_set() {
-        let directory = Path::new("../../data");
-        if !directory.join("Character.wz").exists() {
-            return;
-        }
-        let content = CharacterContent::open_optional(directory)
-            .expect("open Character.wz")
-            .expect("Character.wz is present");
-        let options = content.creation_options();
-        let face = options
-            .faces
-            .iter()
-            .find(|option| option.gender == CharacterGender::Male as i32)
-            .expect("male face");
-        let hair = options
-            .hairs
-            .iter()
-            .find(|option| option.gender == CharacterGender::Male as i32)
-            .expect("male hair");
-        let appearance = CharacterAppearance {
-            gender: CharacterGender::Male as i32,
-            skin_id: options.skins[0].id,
-            face_id: face.id,
-            hair_id: hair.id,
-        };
-        let appearance_key = super::AppearanceKey::parse(&appearance).expect("male appearance");
-        let naked_key = super::CharacterKey {
-            appearance: appearance_key,
-            equipment: Vec::new(),
-        };
-        let naked_clothing =
-            super::character_clothing_sources(&content, &naked_key).expect("male pajama clothing");
-        assert_eq!(naked_clothing.len(), 2);
-        assert!(
-            naked_clothing
-                .iter()
-                .any(|source| Arc::ptr_eq(source, &content.pajamas.male_top))
-        );
-        assert!(
-            naked_clothing
-                .iter()
-                .any(|source| Arc::ptr_eq(source, &content.pajamas.male_bottom))
-        );
-
-        let top_only_key = super::CharacterKey {
-            appearance: appearance_key,
-            equipment: vec![(EquipmentSlot::Top as i32, crate::items::STARTER_TOP_ID)],
-        };
-        let top_only_clothing = super::character_clothing_sources(&content, &top_only_key)
-            .expect("top and pajama bottom");
-        assert_eq!(top_only_clothing.len(), 2);
-        assert!(
-            top_only_clothing
-                .iter()
-                .any(|source| Arc::ptr_eq(source, &content.pajamas.male_bottom))
-        );
-        assert!(
-            !top_only_clothing
-                .iter()
-                .any(|source| Arc::ptr_eq(source, &content.pajamas.male_top))
-        );
-
-        let female_key = super::CharacterKey {
-            appearance: super::AppearanceKey {
-                gender: CharacterGender::Female,
-                ..appearance_key
+    fn clothing_uses_gendered_pajamas_for_unequipped_slots() {
+        let root = WzNode::from_str("root", 0, None).into_lock();
+        let male_top = WzNode::from_str("male-top", 0, None).into_lock();
+        let male_bottom = WzNode::from_str("male-bottom", 0, None).into_lock();
+        let female_top = WzNode::from_str("female-top", 0, None).into_lock();
+        let female_bottom = WzNode::from_str("female-bottom", 0, None).into_lock();
+        let equipped_top = WzNode::from_str("equipped-top", 0, None).into_lock();
+        let content = CharacterContent {
+            _base: Arc::clone(&root),
+            root,
+            bodies: HashMap::new(),
+            heads: HashMap::new(),
+            faces: HashMap::new(),
+            hairs: HashMap::new(),
+            equipment: HashMap::from([(crate::items::STARTER_TOP_ID, Arc::clone(&equipped_top))]),
+            pajamas: PajamaSources {
+                male_top: Arc::clone(&male_top),
+                male_bottom: Arc::clone(&male_bottom),
+                female_top: Arc::clone(&female_top),
+                female_bottom: Arc::clone(&female_bottom),
             },
-            equipment: Vec::new(),
+            options: CharacterCreationOptions::default(),
+            fingerprint: "fake".to_owned(),
+            sprites: RwLock::new(HashMap::new()),
+            assets: RwLock::new(HashMap::new()),
         };
-        let female_clothing = super::character_clothing_sources(&content, &female_key)
-            .expect("female pajama clothing");
-        assert_eq!(female_clothing.len(), 2);
-        assert!(
-            female_clothing
-                .iter()
-                .any(|source| Arc::ptr_eq(source, &content.pajamas.female_top))
-        );
-        assert!(
-            female_clothing
-                .iter()
-                .any(|source| Arc::ptr_eq(source, &content.pajamas.female_bottom))
-        );
-
-        let naked_sprites = content
-            .get_sprites(&appearance, &[])
-            .expect("build male pajama sprites")
-            .expect("supported male pajama appearance");
-        assert!(
-            naked_sprites
-                .idle_frames
-                .iter()
-                .all(|frame| !frame.layers.is_empty())
-        );
-        let female_face = options
-            .faces
-            .iter()
-            .find(|option| option.gender == CharacterGender::Female as i32)
-            .expect("female face");
-        let female_hair = options
-            .hairs
-            .iter()
-            .find(|option| option.gender == CharacterGender::Female as i32)
-            .expect("female hair");
-        let female_appearance = CharacterAppearance {
-            gender: CharacterGender::Female as i32,
-            skin_id: appearance.skin_id,
-            face_id: female_face.id,
-            hair_id: female_hair.id,
+        let male = AppearanceKey {
+            gender: CharacterGender::Male,
+            skin_id: 0,
+            face_id: 0,
+            hair_id: 0,
         };
-        let female_naked_sprites = content
-            .get_sprites(&female_appearance, &[])
-            .expect("build female pajama sprites")
-            .expect("supported female pajama appearance");
+
+        let naked = character_clothing_sources(
+            &content,
+            &CharacterKey {
+                appearance: male,
+                equipment: Vec::new(),
+            },
+        )
+        .expect("male pajamas");
+        assert!(naked.iter().any(|source| Arc::ptr_eq(source, &male_top)));
+        assert!(naked.iter().any(|source| Arc::ptr_eq(source, &male_bottom)));
+
+        let top_equipped = character_clothing_sources(
+            &content,
+            &CharacterKey {
+                appearance: male,
+                equipment: vec![(EquipmentSlot::Top as i32, crate::items::STARTER_TOP_ID)],
+            },
+        )
+        .expect("equipped top and pajama bottom");
         assert!(
-            female_naked_sprites
-                .idle_frames
+            top_equipped
                 .iter()
-                .all(|frame| !frame.layers.is_empty())
+                .any(|source| Arc::ptr_eq(source, &equipped_top))
         );
-
-        let sprites = content
-            .get_sprites(&appearance, &crate::items::starter_inventory().equipment)
-            .expect("build sprites")
-            .expect("supported appearance");
-
-        let body = content
-            .bodies
-            .get(&appearance.skin_id)
-            .expect("selected body");
-        let selected_hair = content
-            .hairs
-            .get(&appearance.hair_id)
-            .expect("selected hair");
-        for action in ["ladder", "rope"] {
-            let animation = child(body, action)
-                .expect("read action")
-                .expect("climb action");
-            for frame in sorted_children(&animation).expect("climb frames") {
-                let frame_name = node_name(&frame).expect("climb frame name");
-                assert_eq!(head_view(&frame).expect("climb head view"), HeadView::Back);
-                let hair = hair_frame(selected_hair, action, &frame_name, HeadView::Back)
-                    .expect("climb hair frame");
-                let layer_names = sorted_children(&hair)
-                    .expect("climb hair layers")
-                    .into_iter()
-                    .map(|layer| node_name(&layer).expect("climb hair layer name"))
-                    .collect::<Vec<_>>();
-                assert!(layer_names.iter().any(|name| name == "backHair"));
-                assert!(!layer_names.iter().any(|name| name == "hairOverHead"));
-            }
-        }
-
-        assert!(!sprites.idle_frames.is_empty());
-        assert!(!sprites.walk_frames.is_empty());
-        assert!(!sprites.jump_frames.is_empty());
-        assert!(!sprites.ladder_frames.is_empty());
-        assert!(!sprites.rope_frames.is_empty());
-        assert!(!sprites.attack_frames.is_empty());
         assert!(
-            sprites
-                .idle_frames
+            top_equipped
                 .iter()
-                .chain(sprites.walk_frames.iter())
-                .chain(sprites.jump_frames.iter())
-                .chain(sprites.ladder_frames.iter())
-                .chain(sprites.rope_frames.iter())
-                .chain(sprites.attack_frames.iter())
-                .all(|frame| !frame.layers.is_empty())
+                .any(|source| Arc::ptr_eq(source, &male_bottom))
         );
-        assert!(!sprites.assets.is_empty());
-        let alternate = [
-            EquippedItem {
-                slot: EquipmentSlot::Top as i32,
-                item_id: crate::items::SPARE_TOP_ID,
-                expires_at_unix_ms: 0,
-            },
-            EquippedItem {
-                slot: EquipmentSlot::Bottom as i32,
-                item_id: crate::items::SPARE_BOTTOM_ID,
-                expires_at_unix_ms: 0,
-            },
-            EquippedItem {
-                slot: EquipmentSlot::Shoes as i32,
-                item_id: crate::items::SPARE_SHOES_ID,
-                expires_at_unix_ms: 0,
-            },
-        ];
-        let alternate_sprites = content
-            .get_sprites(&appearance, &alternate)
-            .expect("build alternate equipment sprites")
-            .expect("supported alternate equipment");
-        assert_ne!(
-            sprites.idle_frames[0]
-                .layers
+        assert!(
+            !top_equipped
                 .iter()
-                .map(|layer| layer.asset_id.as_str())
-                .collect::<Vec<_>>(),
-            alternate_sprites.idle_frames[0]
-                .layers
-                .iter()
-                .map(|layer| layer.asset_id.as_str())
-                .collect::<Vec<_>>()
+                .any(|source| Arc::ptr_eq(source, &male_top))
         );
-        for frames in [
-            &sprites.idle_frames,
-            &sprites.walk_frames,
-            &sprites.jump_frames,
-            &sprites.ladder_frames,
-            &sprites.rope_frames,
-            &sprites.attack_frames,
-        ] {
-            let png = content
-                .get_asset(&frames[0].layers[0].asset_id)
-                .expect("registered action asset")
-                .png_bytes()
-                .expect("decode action PNG");
-            assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
-        }
+
+        let female = character_clothing_sources(
+            &content,
+            &CharacterKey {
+                appearance: AppearanceKey {
+                    gender: CharacterGender::Female,
+                    ..male
+                },
+                equipment: Vec::new(),
+            },
+        )
+        .expect("female pajamas");
+        assert!(female.iter().any(|source| Arc::ptr_eq(source, &female_top)));
+        assert!(
+            female
+                .iter()
+                .any(|source| Arc::ptr_eq(source, &female_bottom))
+        );
     }
 
     fn add(

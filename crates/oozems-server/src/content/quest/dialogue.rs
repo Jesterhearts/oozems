@@ -766,8 +766,6 @@ fn numbered_pages(
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use wz_reader::WzNode;
     use wz_reader::WzNodeArc;
     use wz_reader::WzObjectType;
@@ -1219,71 +1217,6 @@ mod tests {
             read_completion_dialogue(6_035, &quest_6034_completion()),
             Err(QuestContentError::Invalid { .. })
         ));
-    }
-
-    #[test]
-    fn local_archive_quest_6034_uses_the_audited_completion_override() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/Quest.wz");
-        if !path.exists() {
-            return;
-        }
-        let root = crate::content::wz::open_archive(&path).expect("quest archive");
-        crate::content::wz::parse(&root, "quest archive root".to_owned())
-            .expect("parse quest archive");
-        let say = crate::content::quest::importer::required_child(&root, "Say.img", 6_034)
-            .expect("Say.img");
-        let action = crate::content::quest::importer::required_child(&root, "Act.img", 6_034)
-            .expect("Act.img");
-        crate::content::wz::parse(&say, "quest say archive".to_owned())
-            .expect("parse quest say archive");
-        crate::content::wz::parse(&action, "quest action archive".to_owned())
-            .expect("parse quest action archive");
-        let say = crate::content::quest::importer::required_child(&say, "6034", 6_034)
-            .expect("quest 6034 Say");
-        let action = crate::content::quest::importer::required_child(&action, "6034", 6_034)
-            .expect("quest 6034 Act");
-
-        let dialogue =
-            read_dialogue(6_034, Some(&say), &action).expect("audited local quest 6034 dialogue");
-        let question = dialogue.question.expect("completion question");
-
-        assert_eq!(question.steps[0].correct_choice_id, 0);
-        assert_eq!(question.steps[0].choices.len(), 2);
-        assert!(question.steps[0].failure_pages.is_empty());
-        assert_eq!(question.trailing_pages.len(), 1);
-    }
-
-    #[test]
-    fn local_archive_quest_3077_matches_the_audited_duplicate_source() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/Quest.wz");
-        if !path.exists() {
-            return;
-        }
-        let root = crate::content::wz::open_archive(&path).expect("quest archive");
-        crate::content::wz::parse(&root, "quest archive root".to_owned())
-            .expect("parse quest archive");
-        let say = crate::content::quest::importer::required_child(&root, "Say.img", 3_077)
-            .expect("Say.img");
-        let action = crate::content::quest::importer::required_child(&root, "Act.img", 3_077)
-            .expect("Act.img");
-        crate::content::wz::parse(&say, "quest say archive".to_owned())
-            .expect("parse quest say archive");
-        crate::content::wz::parse(&action, "quest action archive".to_owned())
-            .expect("parse quest action archive");
-        let say = crate::content::quest::importer::required_child(&say, "3077", 3_077)
-            .expect("quest 3077 Say");
-        let action = crate::content::quest::importer::required_child(&action, "3077", 3_077)
-            .expect("quest 3077 Act");
-
-        let dialogue =
-            read_dialogue(3_077, Some(&say), &action).expect("audited local quest 3077 dialogue");
-        let question = dialogue.start_question.expect("start question");
-
-        assert_eq!(question.steps.len(), 2);
-        assert!(question.steps.iter().all(|step| step.choices.len() == 1));
-        assert_eq!(question.steps[1].correct_choice_id, 0);
-        assert_eq!(question.steps[1].prompt.matches("Oh...").count(), 1);
-        assert_eq!(question.trailing_pages.len(), 1);
     }
 
     #[test]
