@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::path::Path;
@@ -6,59 +7,47 @@ use thiserror::Error;
 use wz_reader::WzNodeArc;
 
 use super::wz::WzContentError;
-use super::wz::child;
-use super::wz::int_value;
 use super::wz::node_name;
 use super::wz::open_archive;
 use super::wz::parse;
 use super::wz::sorted_children;
-use super::wz::string_value;
 use super::wz::wrap_archive_root;
 
+mod dialogue;
+mod importer;
+pub(super) mod model;
+mod restoration;
+
+use model::QuestDefinition;
+
 const QUEST_ARCHIVE: &str = "Quest.wz";
-const MAXIMUM_QUESTION_CHOICES: usize = 4;
 
 pub(crate) struct QuestContent {
     _base: WzNodeArc,
     definitions: HashMap<u32, QuestDefinition>,
+    item_reference_ids: BTreeSet<u32>,
+    #[cfg(test)]
+    report: QuestLoadReport,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct QuestDefinition {
-    pub id: u32,
-    pub name: String,
-    pub start_npc_id: u32,
-    pub completion_npc_id: u32,
-    pub allowed_jobs: Vec<u32>,
-    pub minimum_level: Option<u32>,
-    pub offer_pages: Vec<String>,
-    pub accepted_pages: Vec<String>,
-    pub declined_pages: Vec<String>,
-    pub question: Option<QuestQuestion>,
-    pub reward_experience: u64,
-    pub next_quest_id: Option<u32>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct QuestQuestion {
-    pub prompt: String,
-    pub choices: Vec<QuestChoice>,
-    pub correct_choice_id: u32,
-    pub success_pages: Vec<String>,
-    pub failure_pages: HashMap<u32, Vec<String>>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct QuestChoice {
-    pub id: u32,
-    pub label: String,
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct QuestLoadReport {
+    pub compatible_quests: usize,
+    pub unsupported_reasons: BTreeMap<String, usize>,
+    pub retained_metadata_fields: BTreeMap<String, usize>,
 }
 
 #[derive(Debug, Error)]
 pub enum QuestContentError {
     #[error(transparent)]
     Wz(#[from] WzContentError),
-    #[error("Quest.wz quest {quest_id} is unsupported: {message}")]
+    #[error("Quest.wz quest {quest_id} is unsupported ({category}): {message}")]
+    Unsupported {
+        quest_id: u32,
+        category: String,
+        message: String,
+    },
+    #[error("Quest.wz quest {quest_id} is invalid: {message}")]
     Invalid { quest_id: u32, message: String },
 }
 
@@ -66,6 +55,13 @@ impl QuestContent {
     pub fn open_optional(
         directory: &Path,
         quest_ids: Option<&BTreeSet<u32>>,
+        item_source_ids: &BTreeSet<u32>,
+        equipment_source_ids: &BTreeSet<u32>,
+        consume_effect_ids: &BTreeSet<u32>,
+        monster_book_card_ids: &BTreeSet<u32>,
+        morph_ids: &BTreeSet<u32>,
+        skill_source_ids: &BTreeSet<u32>,
+        skill_source_names: &BTreeMap<u32, String>,
     ) -> Result<Option<Self>, QuestContentError> {
         if quest_ids.is_some_and(BTreeSet::is_empty) {
             return Ok(None);
@@ -85,10 +81,10 @@ impl QuestContent {
         let root = open_archive(&path)?;
         let base = wrap_archive_root(&root)?;
         parse(&root, format!("{} root", path.display()))?;
-        let check = required_child(&root, "Check.img", 0)?;
-        let act = required_child(&root, "Act.img", 0)?;
-        let say = required_child(&root, "Say.img", 0)?;
-        let info = required_child(&root, "QuestInfo.img", 0)?;
+        let check = importer::required_child(&root, "Check.img", 0)?;
+        let act = importer::required_child(&root, "Act.img", 0)?;
+        let say = importer::required_child(&root, "Say.img", 0)?;
+        let info = importer::required_child(&root, "QuestInfo.img", 0)?;
         for (name, node) in [
             ("Check.img", &check),
             ("Act.img", &act),
@@ -99,30 +95,86 @@ impl QuestContent {
         }
 
         let strict = quest_ids.is_some();
+        let archive_quest_ids = discover_quest_ids([&check, &act, &say, &info])?;
         let quest_ids = match quest_ids {
             Some(quest_ids) => quest_ids.clone(),
-            None => discover_quest_ids(&check)?,
+            None => archive_quest_ids.clone(),
         };
+        let mut item_reference_ids = BTreeSet::new();
         let mut definitions = HashMap::new();
-        let mut unsupported = 0_usize;
+        let mut report = QuestLoadReport::default();
         for quest_id in quest_ids {
-            match load_definition(quest_id, &check, &act, &say, &info) {
-                Ok(definition) => {
-                    definitions.insert(quest_id, definition);
-                }
-                Err(QuestContentError::Invalid { .. }) if !strict => unsupported += 1,
-                Err(error) => return Err(error),
+            let Some(references) = handle_quest_load_result(
+                importer::item_reference_ids(quest_id, &check, &act),
+                strict,
+                &mut report,
+            )?
+            else {
+                continue;
+            };
+            item_reference_ids.extend(references);
+            let Some(definition) = handle_quest_load_result(
+                importer::load_definition(
+                    quest_id,
+                    &check,
+                    &act,
+                    &say,
+                    &info,
+                    item_source_ids,
+                    equipment_source_ids,
+                    consume_effect_ids,
+                    monster_book_card_ids,
+                    morph_ids,
+                    skill_source_ids,
+                    skill_source_names,
+                    &archive_quest_ids,
+                ),
+                strict,
+                &mut report,
+            )?
+            else {
+                continue;
+            };
+            for field in &definition.info.retained_metadata_fields {
+                *report
+                    .retained_metadata_fields
+                    .entry(field.clone())
+                    .or_default() += 1;
+            }
+            for field in &definition.dialogue.retained_fields {
+                *report
+                    .retained_metadata_fields
+                    .entry(format!("dialogue/{field}"))
+                    .or_default() += 1;
+            }
+            definitions.insert(quest_id, definition);
+        }
+        // Act/4960 is absent, so the raw reference scan cannot see its audited alias
+        // outputs.
+        if let Some(quest) = definitions.get(&4_960) {
+            for actions in [&quest.start_actions, &quest.completion_actions] {
+                item_reference_ids.extend(actions.fixed_items.iter().map(|item| item.item_id));
+                item_reference_ids
+                    .extend(actions.conditional_items.iter().map(|item| item.item_id));
+                item_reference_ids.extend(actions.weighted_items.iter().map(|item| item.item_id));
+                item_reference_ids.extend(actions.selectable_items.iter().map(|item| item.item_id));
             }
         }
+        report.compatible_quests = definitions.len();
         tracing::info!(
             path = %path.display(),
-            compatible_quests = definitions.len(),
-            unsupported_quests = unsupported,
+            compatible_quests = report.compatible_quests,
+            unsupported_quests = report.unsupported_reasons.values().sum::<usize>(),
+            unsupported_reasons = ?report.unsupported_reasons,
+            retained_metadata_fields = ?report.retained_metadata_fields,
             "WZ quest source ready"
         );
         Ok(Some(Self {
             _base: base,
             definitions,
+            item_reference_ids,
+            #[cfg(test)]
+            report,
         }))
     }
 
@@ -136,265 +188,64 @@ impl QuestContent {
     pub fn definitions(&self) -> impl Iterator<Item = &QuestDefinition> {
         self.definitions.values()
     }
-}
 
-fn discover_quest_ids(checks: &WzNodeArc) -> Result<BTreeSet<u32>, QuestContentError> {
-    sorted_children(checks)?
-        .into_iter()
-        .filter_map(|node| match node_name(&node) {
-            Ok(name) => name.parse::<u32>().ok().map(Ok),
-            Err(error) => Some(Err(error.into())),
-        })
-        .collect()
-}
-
-fn load_definition(
-    quest_id: u32,
-    checks: &WzNodeArc,
-    actions: &WzNodeArc,
-    dialogue: &WzNodeArc,
-    info: &WzNodeArc,
-) -> Result<QuestDefinition, QuestContentError> {
-    let key = quest_id.to_string();
-    let check = required_child(checks, &key, quest_id)?;
-    let action = required_child(actions, &key, quest_id)?;
-    let say = required_child(dialogue, &key, quest_id)?;
-    let info = required_child(info, &key, quest_id)?;
-    let start_check = required_child(&check, "0", quest_id)?;
-    let completion_check = required_child(&check, "1", quest_id)?;
-    let start_action = required_child(&action, "0", quest_id)?;
-    let completion_action = required_child(&action, "1", quest_id)?;
-    validate_children(quest_id, &start_check, &["job", "lvmin", "npc"])?;
-    validate_children(quest_id, &completion_check, &["npc"])?;
-    validate_children(quest_id, &start_action, &[])?;
-    validate_children(quest_id, &completion_action, &["exp", "nextQuest"])?;
-
-    let start_npc_id = required_u32(&start_check, "npc", quest_id)?;
-    let completion_npc_id = required_u32(&completion_check, "npc", quest_id)?;
-    let allowed_jobs = child(&start_check, "job")?
-        .map(|jobs| read_u32_values(quest_id, &jobs))
-        .transpose()?
-        .unwrap_or_default();
-    let minimum_level = optional_u32(&start_check, "lvmin", quest_id)?;
-    let reward_experience = optional_u32(&completion_action, "exp", quest_id)?.map_or(0, u64::from);
-    let next_quest_id = optional_u32(&completion_action, "nextQuest", quest_id)?;
-    let start_dialogue = required_child(&say, "0", quest_id)?;
-    let completion_dialogue = required_child(&say, "1", quest_id)?;
-    let question = read_question(quest_id, &completion_dialogue)?.ok_or_else(|| {
-        invalid(
-            quest_id,
-            "completion dialogue has no supported answer interaction",
-        )
-    })?;
-
-    Ok(QuestDefinition {
-        id: quest_id,
-        name: string_value(&info, "name")?
-            .filter(|name| !name.is_empty())
-            .ok_or_else(|| invalid(quest_id, "QuestInfo.img has no nonempty name"))?,
-        start_npc_id,
-        completion_npc_id,
-        allowed_jobs,
-        minimum_level,
-        offer_pages: numbered_strings(quest_id, &start_dialogue)?,
-        accepted_pages: branch_strings(quest_id, &start_dialogue, "yes")?,
-        declined_pages: branch_strings(quest_id, &start_dialogue, "no")?,
-        question: Some(question),
-        reward_experience,
-        next_quest_id,
-    })
-}
-
-fn read_question(
-    quest_id: u32,
-    dialogue: &WzNodeArc,
-) -> Result<Option<QuestQuestion>, QuestContentError> {
-    let Some(ask) = int_value(dialogue, "ask")? else {
-        return Ok(None);
-    };
-    if ask != 1 {
-        return Err(invalid(
-            quest_id,
-            format!("dialogue ask value {ask} is not supported"),
-        ));
+    pub fn item_reference_ids(&self) -> &BTreeSet<u32> {
+        &self.item_reference_ids
     }
-    let pages = numbered_strings(quest_id, dialogue)?;
-    let first = pages
-        .first()
-        .ok_or_else(|| invalid(quest_id, "question dialogue has no prompt"))?;
-    let (prompt, choices) = parse_choices(first)
-        .map_err(|message| invalid(quest_id, format!("question choices are invalid: {message}")))?;
-    if choices.len() > MAXIMUM_QUESTION_CHOICES {
-        return Err(invalid(
-            quest_id,
-            format!("questions support at most {MAXIMUM_QUESTION_CHOICES} choices"),
-        ));
+
+    #[cfg(test)]
+    pub fn report(&self) -> &QuestLoadReport {
+        &self.report
     }
-    let stop = required_child(dialogue, "stop", quest_id)?;
-    let answers = required_child(&stop, "0", quest_id)?;
-    let answer = required_u32(&answers, "answer", quest_id)?;
-    let correct_choice_id = answer
-        .checked_sub(1)
-        .ok_or_else(|| invalid(quest_id, "question answer uses invalid one-based index 0"))?;
-    if !choices.iter().any(|choice| choice.id == correct_choice_id) {
-        return Err(invalid(
-            quest_id,
-            "question answer does not identify a listed choice",
-        ));
-    }
-    let mut failure_pages = HashMap::new();
-    for choice in &choices {
-        if choice.id == correct_choice_id {
-            continue;
-        }
-        let key = choice.id.to_string();
-        let text = string_value(&answers, &key)?.ok_or_else(|| {
-            invalid(
-                quest_id,
-                format!("question choice {} has no failure dialogue", choice.id),
-            )
-        })?;
-        failure_pages.insert(choice.id, vec![text]);
-    }
-    Ok(Some(QuestQuestion {
-        prompt,
-        choices,
-        correct_choice_id,
-        success_pages: pages.into_iter().skip(1).collect(),
-        failure_pages,
-    }))
 }
 
-fn parse_choices(source: &str) -> Result<(String, Vec<QuestChoice>), String> {
-    let Some(first_choice) = source.find("#L") else {
-        return Err("no #L choice markers were found".to_owned());
-    };
-    let prompt = source[..first_choice].trim().to_owned();
-    let mut remaining = &source[first_choice..];
-    let mut choices = Vec::new();
-    while let Some(marker) = remaining.find("#L") {
-        remaining = &remaining[marker + 2..];
-        let id_end = remaining
-            .find('#')
-            .ok_or_else(|| "choice ID is not terminated".to_owned())?;
-        let id = remaining[..id_end]
-            .parse::<u32>()
-            .map_err(|_| "choice ID is not an unsigned integer".to_owned())?;
-        remaining = &remaining[id_end + 1..];
-        let label_end = remaining
-            .find("#l")
-            .ok_or_else(|| format!("choice {id} has no #l terminator"))?;
-        let label = strip_inline_formatting(remaining[..label_end].trim());
-        if label.is_empty() || choices.iter().any(|choice: &QuestChoice| choice.id == id) {
-            return Err(format!("choice {id} is empty or duplicated"));
-        }
-        choices.push(QuestChoice { id, label });
-        remaining = &remaining[label_end + 2..];
-    }
-    if choices.is_empty() {
-        return Err("no choices were parsed".to_owned());
-    }
-    Ok((prompt, choices))
-}
-
-fn strip_inline_formatting(source: &str) -> String {
-    ["#b", "#r", "#k", "#n"]
-        .into_iter()
-        .fold(source.to_owned(), |text, marker| text.replace(marker, ""))
-        .trim()
-        .to_owned()
-}
-
-fn branch_strings(
-    quest_id: u32,
-    node: &WzNodeArc,
-    name: &str,
-) -> Result<Vec<String>, QuestContentError> {
-    child(node, name)?
-        .map(|branch| numbered_strings(quest_id, &branch))
-        .transpose()
-        .map(Option::unwrap_or_default)
-}
-
-fn numbered_strings(
-    quest_id: u32,
-    node: &WzNodeArc,
-) -> Result<Vec<String>, QuestContentError> {
-    let mut output = Vec::new();
-    for child_node in sorted_children(node)? {
-        let name = node_name(&child_node)?;
-        if name.parse::<u32>().is_err() {
-            continue;
-        }
-        let value = string_value(node, &name)?
-            .ok_or_else(|| invalid(quest_id, format!("dialogue page {name} is not a string")))?;
-        output.push(value);
-    }
-    Ok(output)
-}
-
-fn read_u32_values(
-    quest_id: u32,
-    node: &WzNodeArc,
-) -> Result<Vec<u32>, QuestContentError> {
-    sorted_children(node)?
-        .into_iter()
-        .map(|value| {
-            let name = node_name(&value)?;
-            required_u32(node, &name, quest_id)
-        })
-        .collect()
-}
-
-fn validate_children(
-    quest_id: u32,
-    node: &WzNodeArc,
-    allowed: &[&str],
-) -> Result<(), QuestContentError> {
-    for child in sorted_children(node)? {
-        let name = node_name(&child)?;
-        if !allowed.contains(&name.as_str()) {
-            return Err(invalid(
-                quest_id,
-                format!("property {name:?} is not in the supported quest subset"),
-            ));
+impl QuestContentError {
+    fn reason_category(&self) -> &str {
+        match self {
+            Self::Unsupported { category, .. } => category,
+            Self::Invalid { .. } => "invalid quest data",
+            Self::Wz(_) => "WZ read failure",
         }
     }
-    Ok(())
 }
 
-fn required_child(
-    node: &WzNodeArc,
-    name: &str,
-    quest_id: u32,
-) -> Result<WzNodeArc, QuestContentError> {
-    child(node, name)?
-        .ok_or_else(|| invalid(quest_id, format!("required node {name:?} is missing")))
+fn handle_quest_load_result<T>(
+    result: Result<T, QuestContentError>,
+    strict: bool,
+    report: &mut QuestLoadReport,
+) -> Result<Option<T>, QuestContentError> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(error @ QuestContentError::Unsupported { .. })
+        | Err(error @ QuestContentError::Invalid { .. })
+            if !strict =>
+        {
+            *report
+                .unsupported_reasons
+                .entry(error.reason_category().to_owned())
+                .or_default() += 1;
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
 }
 
-fn required_u32(
-    node: &WzNodeArc,
-    name: &str,
-    quest_id: u32,
-) -> Result<u32, QuestContentError> {
-    optional_u32(node, name, quest_id)?
-        .ok_or_else(|| invalid(quest_id, format!("required integer {name:?} is missing")))
+fn discover_quest_ids<'a>(
+    roots: impl IntoIterator<Item = &'a WzNodeArc>
+) -> Result<BTreeSet<u32>, QuestContentError> {
+    let mut quest_ids = BTreeSet::new();
+    for root in roots {
+        for node in sorted_children(root)? {
+            let name = node_name(&node)?;
+            if let Ok(quest_id) = name.parse::<u32>() {
+                quest_ids.insert(quest_id);
+            }
+        }
+    }
+    Ok(quest_ids)
 }
 
-fn optional_u32(
-    node: &WzNodeArc,
-    name: &str,
-    quest_id: u32,
-) -> Result<Option<u32>, QuestContentError> {
-    int_value(node, name)?
-        .map(|value| {
-            u32::try_from(value)
-                .map_err(|_| invalid(quest_id, format!("integer {name:?} is negative")))
-        })
-        .transpose()
-}
-
-fn invalid(
+pub(super) fn invalid(
     quest_id: u32,
     message: impl Into<String>,
 ) -> QuestContentError {
@@ -404,19 +255,52 @@ fn invalid(
     }
 }
 
+pub(super) fn unsupported(
+    quest_id: u32,
+    category: impl Into<String>,
+    message: impl Into<String>,
+) -> QuestContentError {
+    QuestContentError::Unsupported {
+        quest_id,
+        category: category.into(),
+        message: message.into(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::parse_choices;
+    use std::collections::BTreeSet;
+
+    use super::QuestContentError;
+    use super::QuestLoadReport;
+    use super::handle_quest_load_result;
+    use super::invalid;
 
     #[test]
-    fn wz_list_markers_become_typed_choices() {
-        let (prompt, choices) =
-            parse_choices("Which key opens inventory?\n#L0##b I#l\n#L1# K#l\n#L2# S#k#l")
-                .expect("valid WZ choices");
+    fn reference_scan_errors_are_best_effort_only_without_an_allowlist() {
+        let mut report = QuestLoadReport::default();
+        let skipped = handle_quest_load_result::<BTreeSet<u32>>(
+            Err(invalid(100, "malformed item reference")),
+            false,
+            &mut report,
+        )
+        .expect("non-strict loading should skip one malformed quest");
 
-        assert_eq!(prompt, "Which key opens inventory?");
-        assert_eq!(choices.len(), 3);
-        assert_eq!((choices[0].id, choices[0].label.as_str()), (0, "I"));
-        assert_eq!((choices[2].id, choices[2].label.as_str()), (2, "S"));
+        assert!(skipped.is_none());
+        assert_eq!(
+            report.unsupported_reasons.get("invalid quest data"),
+            Some(&1)
+        );
+
+        let error = handle_quest_load_result::<BTreeSet<u32>>(
+            Err(invalid(100, "malformed item reference")),
+            true,
+            &mut QuestLoadReport::default(),
+        )
+        .expect_err("strict loading should return the reference scan error");
+        assert!(matches!(
+            error,
+            QuestContentError::Invalid { quest_id: 100, .. }
+        ));
     }
 }

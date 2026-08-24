@@ -503,7 +503,7 @@ pub fn can_allocate_skill(
     let Some(definition) = skill.definition.as_ref() else {
         return false;
     };
-    skill.level < definition.max_level
+    skill.level < maximum_skill_level(skill)
         && definition.requirements.iter().all(|requirement| {
             book.skills.iter().any(|candidate| {
                 candidate.level >= requirement.level
@@ -515,6 +515,18 @@ pub fn can_allocate_skill(
                         })
             })
         })
+}
+
+pub(crate) fn maximum_skill_level(skill: &oozems_proto::v1::PlayerSkill) -> u32 {
+    let definition_maximum = skill
+        .definition
+        .as_ref()
+        .map_or(0, |definition| definition.max_level);
+    if skill.master_level > 0 {
+        definition_maximum.min(skill.master_level)
+    } else {
+        definition_maximum
+    }
 }
 
 fn skill_action_at(
@@ -798,23 +810,19 @@ fn inventory_item_at(
     point: CanvasPoint,
 ) -> Option<u32> {
     let window = gui.inventory_window.as_ref()?;
-    inventory
-        .item_ids
-        .iter()
-        .enumerate()
-        .find_map(|(index, _)| {
-            let (x, y) = inventory_slot_position(index);
-            rect_contains(
-                CanvasRect {
-                    x: window.x + x,
-                    y: window.y + y,
-                    width: ITEM_SLOT_SIZE,
-                    height: ITEM_SLOT_SIZE,
-                },
-                point,
-            )
-            .then_some(index as u32)
-        })
+    inventory.stacks.iter().enumerate().find_map(|(index, _)| {
+        let (x, y) = inventory_slot_position(index);
+        rect_contains(
+            CanvasRect {
+                x: window.x + x,
+                y: window.y + y,
+                width: ITEM_SLOT_SIZE,
+                height: ITEM_SLOT_SIZE,
+            },
+            point,
+        )
+        .then_some(index as u32)
+    })
 }
 
 fn equipped_item_at(
@@ -937,6 +945,7 @@ mod tests {
     use oozems_proto::v1::GuiSprite;
     use oozems_proto::v1::GuiSpriteTemplate;
     use oozems_proto::v1::GuiWindow;
+    use oozems_proto::v1::InventoryItemStack;
     use oozems_proto::v1::InventoryState;
     use oozems_proto::v1::KeyAction;
     use oozems_proto::v1::KeyActionDefinition;
@@ -999,12 +1008,18 @@ mod tests {
     fn item_slots_produce_server_actions() {
         let gui = gui_fixture();
         let inventory = InventoryState {
-            item_ids: vec![1_040_003],
+            item_ids: Vec::new(),
             equipment: vec![EquippedItem {
                 slot: EquipmentSlot::Top as i32,
                 item_id: 1_040_002,
+                expires_at_unix_ms: 0,
             }],
             capacity: 24,
+            stacks: vec![InventoryItemStack {
+                item_id: 1_040_003,
+                quantity: 1,
+                expires_at_unix_ms: 0,
+            }],
         };
         let state = GuiState {
             equipment_open: true,
@@ -1279,6 +1294,16 @@ mod tests {
     }
 
     #[test]
+    fn mastery_cap_disables_allocation_without_capping_legacy_skills_at_zero() {
+        let mut mastered = skill_book_fixture(2, 1);
+        mastered.skills[0].master_level = 2;
+        assert!(!super::can_allocate_skill(&mastered, 1_000));
+
+        mastered.skills[0].master_level = 0;
+        assert!(super::can_allocate_skill(&mastered, 1_000));
+    }
+
+    #[test]
     fn invalid_layouts_are_rejected_at_the_client_boundary() {
         let gui = gui_fixture();
         let valid = gui.status_bar.expect("status bar");
@@ -1455,6 +1480,7 @@ mod tests {
                     ..SkillDefinition::default()
                 }),
                 level,
+                master_level: 0,
             }],
             ..SkillBook::default()
         }

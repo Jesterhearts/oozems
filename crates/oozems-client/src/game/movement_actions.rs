@@ -6,6 +6,7 @@ use oozems_proto::v1::MovementContact;
 use oozems_proto::v1::MovementMode;
 use oozems_proto::v1::MovementSnapshot;
 use oozems_proto::v1::MovementUpdateResponse;
+use oozems_proto::v1::PlayerState;
 use oozems_proto::v1::Vec2;
 use wasm_bindgen_futures::spawn_local;
 
@@ -80,12 +81,15 @@ pub(super) fn begin(game: Rc<RefCell<Game>>) {
         return;
     };
     spawn_local(async move {
+        let request_started_ms = super::monotonic_time_ms();
         match api::submit_movement(&player_id, snapshot).await {
-            Ok(response) => match install_response(&mut game.borrow_mut(), response) {
-                Ok(Some(reason)) => show_status(&format!("Movement corrected: {reason}"), true),
-                Ok(None) => {}
-                Err(error) => show_status(&format!("Movement sync failed: {error}"), true),
-            },
+            Ok(response) => {
+                match install_response(&mut game.borrow_mut(), response, request_started_ms) {
+                    Ok(Some(reason)) => show_status(&format!("Movement corrected: {reason}"), true),
+                    Ok(None) => {}
+                    Err(error) => show_status(&format!("Movement sync failed: {error}"), true),
+                }
+            }
             Err(error) => show_status(&format!("Movement sync failed: {error}"), true),
         }
         in_flight.set(false);
@@ -116,6 +120,11 @@ pub(super) fn begin_portal(
     transition: MapTransition,
 ) {
     let transition_in_flight = game.borrow().transition_in_flight.clone();
+    if game.borrow().skill_action_in_flight.get() {
+        transition_in_flight.set(false);
+        show_status("A skill action must finish before changing maps.", true);
+        return;
+    }
     spawn_local(async move {
         let request = {
             let mut game = game.borrow_mut();
@@ -141,6 +150,7 @@ async fn request_map_transition(
     source: MovementSnapshot,
     transition: &MapTransition,
 ) -> Result<String, String> {
+    let request_started_ms = super::monotonic_time_ms();
     let mut response = api::enter_portal(
         player_id,
         source,
@@ -151,11 +161,12 @@ async fn request_map_transition(
     .map_err(|error| error.to_string())?;
     if !response.accepted {
         let reason = response.rejection_reason.clone();
-        install_response(&mut game.borrow_mut(), response)?;
+        install_response(&mut game.borrow_mut(), response, request_started_ms)?;
         return Err(reason);
     }
-    let authoritative = portal_authoritative(&mut game.borrow_mut(), &response)?
-        .ok_or("portal response was superseded by a newer movement response")?;
+    let authoritative =
+        portal_authoritative(&mut game.borrow_mut(), &mut response, request_started_ms)?
+            .ok_or("portal response was superseded by a newer movement response")?;
     let position = authoritative
         .position
         .ok_or("portal response did not contain a destination position")?;
@@ -164,10 +175,10 @@ async fn request_map_transition(
         .map_err(|error| error.to_string())?;
     let name = map.name.clone();
     let mut game = game.borrow_mut();
-    install_map(&mut game, map, position)?;
-    if let Some(stats) = response.player_stats {
-        game.player.stats = Some(stats);
+    if authoritative.sequence < game.movement_sync.last_response_sequence {
+        return Err("portal response was superseded while its map was loading".to_owned());
     }
+    install_map(&mut game, map, position)?;
     let timestamp_ms = game.frame_time_ms;
     crate::mob_render::install_combat_events(
         &mut game.mob_render,
@@ -187,6 +198,7 @@ fn install_map(
     let motion = movement::initial_motion_state(&map, &position);
     let world_layers = render::world_layers(&map);
     skill_effects::clear(&mut game.skill_effect_state);
+    crate::render::npc::clear(&mut game.npc_animations);
     super::recovery_actions::reset(&mut game.recovery_state);
     reset_schedule(&mut game.movement_sync, game.frame_time_ms);
 
@@ -206,18 +218,19 @@ pub(super) fn install_relocation(
     game: &mut Game,
     map: oozems_proto::v1::Map,
     authoritative: MovementSnapshot,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     if authoritative.map_id != map.id {
         return Err("taxi response map does not match its authoritative position".to_owned());
+    }
+    if authoritative.sequence < game.movement_sync.last_response_sequence {
+        return Ok(false);
     }
     let position = authoritative
         .position
         .ok_or("taxi response did not contain a destination position")?;
-    game.movement_sync.last_response_sequence = game
-        .movement_sync
-        .last_response_sequence
-        .max(authoritative.sequence);
-    install_map(game, map, position)
+    game.movement_sync.last_response_sequence = authoritative.sequence;
+    install_map(game, map, position)?;
+    Ok(true)
 }
 
 fn next_movement_snapshot(game: &mut Game) -> Option<MovementSnapshot> {
@@ -300,8 +313,29 @@ fn reset_after_correction(
 
 pub(super) fn portal_authoritative(
     game: &mut Game,
-    response: &MovementUpdateResponse,
+    response: &mut MovementUpdateResponse,
+    request_started_ms: f64,
 ) -> Result<Option<MovementSnapshot>, String> {
+    super::install_active_buffs(
+        game,
+        response.active_buffs.clone().unwrap_or_default(),
+        request_started_ms,
+    );
+    if let Some(player) = response.player.take() {
+        super::install_full_player_update(game, player);
+    } else {
+        super::install_player_update(
+            &mut game.player,
+            &mut game.player_revisions,
+            PlayerState {
+                stats: response.player_stats.clone(),
+                quests: response.quests.clone(),
+                revision: response.player_revision,
+                ..PlayerState::default()
+            },
+            super::PlayerDomains::STATS_AND_QUESTS,
+        );
+    }
     let authoritative = response
         .authoritative
         .ok_or("movement response did not contain an authoritative snapshot")?;
@@ -309,29 +343,21 @@ pub(super) fn portal_authoritative(
         return Ok(None);
     }
     game.movement_sync.last_response_sequence = authoritative.sequence;
-    super::buffs::install(
-        &mut game.active_buffs,
-        response.active_buffs.clone().unwrap_or_default(),
-        js_sys::Date::now().max(0.0) as u64,
-    );
     Ok(Some(authoritative))
 }
 
 pub(super) fn install_response(
     game: &mut Game,
     mut response: MovementUpdateResponse,
+    request_started_ms: f64,
 ) -> Result<Option<String>, String> {
     let authoritative = response
         .authoritative
         .ok_or("movement response did not contain an authoritative snapshot")?;
-    if authoritative.sequence < game.movement_sync.last_response_sequence {
-        return Ok(None);
-    }
-    game.movement_sync.last_response_sequence = authoritative.sequence;
-    super::buffs::install(
-        &mut game.active_buffs,
+    super::install_active_buffs(
+        game,
         response.active_buffs.take().unwrap_or_default(),
-        js_sys::Date::now().max(0.0) as u64,
+        request_started_ms,
     );
     if authoritative.map_id == game.map.id
         && crate::mob_render::accept_simulation_snapshot(
@@ -359,10 +385,26 @@ pub(super) fn install_response(
             std::mem::take(&mut response.combat_events),
             game.frame_time_ms,
         );
-        if let Some(stats) = response.player_stats {
-            game.player.stats = Some(stats);
-        }
     }
+    if let Some(player) = response.player.take() {
+        super::install_full_player_update(game, player);
+    } else {
+        super::install_player_update(
+            &mut game.player,
+            &mut game.player_revisions,
+            PlayerState {
+                stats: response.player_stats.take(),
+                quests: std::mem::take(&mut response.quests),
+                revision: response.player_revision,
+                ..PlayerState::default()
+            },
+            super::PlayerDomains::STATS_AND_QUESTS,
+        );
+    }
+    if authoritative.sequence < game.movement_sync.last_response_sequence {
+        return Ok(None);
+    }
+    game.movement_sync.last_response_sequence = authoritative.sequence;
     if response.accepted {
         return Ok(None);
     }

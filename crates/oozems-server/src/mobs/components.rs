@@ -8,6 +8,7 @@ use oozems_proto::v1::Vec2;
 use shipyard::Component;
 use shipyard::Unique;
 
+use super::MobDeath;
 use crate::gameplay::CombatConfig;
 use crate::skill_formula::FormulaCatalog;
 
@@ -62,6 +63,10 @@ pub(super) struct MobCombat {
     pub physical_attack: i32,
     pub physical_defense: i32,
     pub magic_attack: i32,
+    #[allow(dead_code)]
+    pub magic_defense: i32,
+    pub accuracy: i32,
+    pub avoidability: i32,
     pub body_attack: bool,
     pub aggro_target: Option<String>,
     pub next_attack_ms: u64,
@@ -69,6 +74,7 @@ pub(super) struct MobCombat {
     pub movement_resume_ms: u64,
     pub dead_until_ms: Option<u64>,
     pub respawn_delay_ms: u64,
+    pub player_attack_transaction: Option<u64>,
 }
 
 #[derive(Component, Clone, Debug)]
@@ -76,8 +82,16 @@ pub(super) struct PlayerPresence {
     pub id: String,
     pub level: u32,
     pub current_hp: u32,
+    pub weapon_defense: i32,
+    pub magic_defense: i32,
+    pub accuracy: i32,
+    pub accuracy_bonus: i32,
+    pub intelligence: u32,
+    pub luck: u32,
+    pub avoidability: i32,
     pub last_seen_ms: u64,
     pub invulnerable_until_ms: u64,
+    pub contact_attempt_after_ms: u64,
 }
 
 #[derive(Component, Clone, Debug)]
@@ -97,6 +111,8 @@ pub(super) struct PlayerTarget {
     pub position: Position,
     pub level: u32,
     pub current_hp: u32,
+    pub magic_defense: i32,
+    pub avoidability: i32,
 }
 
 #[derive(Clone, Debug)]
@@ -105,6 +121,7 @@ pub(super) struct ProjectileSpawn {
     pub target_player_id: String,
     pub position: Position,
     pub damage: u64,
+    pub missed: bool,
 }
 
 #[derive(Unique)]
@@ -134,6 +151,8 @@ pub(super) struct ProjectileSpawns(pub Vec<ProjectileSpawn>);
 #[derive(Unique, Default)]
 pub(super) struct PendingEvents {
     pub by_player: HashMap<String, Vec<CombatEvent>>,
+    pub mob_deaths_by_player: HashMap<String, Vec<MobDeath>>,
+    pub staged_drops_by_player: HashMap<String, Vec<crate::items::StagedDropGrant>>,
     pub next_sequence: u64,
 }
 

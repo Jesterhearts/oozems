@@ -29,6 +29,7 @@ struct CombatText {
     position: Vec2,
     damage: u64,
     player_damage: bool,
+    missed: bool,
     started_at_ms: f64,
 }
 
@@ -37,6 +38,7 @@ pub struct RenderedCombatText {
     pub position: Vec2,
     pub damage: u64,
     pub player_damage: bool,
+    pub missed: bool,
     pub progress: f32,
 }
 
@@ -141,12 +143,19 @@ pub fn install_combat_events(
             let kind = CombatEventKind::try_from(event.kind).ok()?;
             let player_damage = matches!(
                 kind,
-                CombatEventKind::MobTouchedPlayer | CombatEventKind::MobProjectileHitPlayer
+                CombatEventKind::MobTouchedPlayer
+                    | CombatEventKind::MobProjectileHitPlayer
+                    | CombatEventKind::MobMissedPlayer
             );
-            (event.damage > 0).then_some(CombatText {
+            let missed = matches!(
+                kind,
+                CombatEventKind::PlayerMissedMob | CombatEventKind::MobMissedPlayer
+            );
+            (event.damage > 0 || missed).then_some(CombatText {
                 position,
                 damage: event.damage,
                 player_damage,
+                missed,
                 started_at_ms: timestamp_ms,
             })
         }));
@@ -179,6 +188,7 @@ pub fn combat_texts(
                     position: text.position,
                     damage: text.damage,
                     player_damage: text.player_damage,
+                    missed: text.missed,
                     progress,
                 })
         })
@@ -354,6 +364,26 @@ mod tests {
         assert_eq!(visible[0].damage, 42);
         assert_eq!(visible[0].progress, 0.5);
         assert!(combat_texts(&state, 1_900.0).is_empty());
+    }
+
+    #[test]
+    fn miss_events_become_zero_damage_miss_text() {
+        let mut state = MobRenderState::default();
+        install_combat_events(
+            &mut state,
+            vec![CombatEvent {
+                kind: CombatEventKind::MobMissedPlayer as i32,
+                position: Some(Vec2 { x: 100.0, y: 200.0 }),
+                ..CombatEvent::default()
+            }],
+            1_000.0,
+        );
+
+        let visible = combat_texts(&state, 1_100.0);
+        assert_eq!(visible.len(), 1);
+        assert!(visible[0].missed);
+        assert!(visible[0].player_damage);
+        assert_eq!(visible[0].damage, 0);
     }
 
     fn mob(

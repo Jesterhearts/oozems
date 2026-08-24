@@ -10,6 +10,7 @@ use oozems_proto::v1::npc_interaction;
 
 use crate::assets::ready_image;
 use crate::game::Game;
+use crate::interaction_ui::DIALOG_CHOICE_PAGE_SIZE;
 use crate::interaction_ui::SHOP_PAGE_SIZE;
 use crate::interaction_ui::visual_dialog_pages;
 
@@ -53,12 +54,20 @@ fn draw_dialog(
     let Some(layout) = window.layout.as_ref() else {
         return;
     };
-    if game.interaction.page > 0 {
+    let choice_page_count = dialog
+        .choices
+        .len()
+        .max(1)
+        .div_ceil(DIALOG_CHOICE_PAGE_SIZE);
+    if game.interaction.choice_page > 0 || game.interaction.page > 0 {
         draw_template_in_region(game, window, layout, "npc-dialog-previous", "npc-previous");
     }
     if game.interaction.page + 1 < pages.len() {
         draw_template_in_region(game, window, layout, "npc-dialog-next", "npc-next");
         return;
+    }
+    if game.interaction.choice_page + 1 < choice_page_count {
+        draw_template_in_region(game, window, layout, "npc-dialog-next", "npc-next");
     }
     let has_accept = dialog.choices.iter().any(|choice| {
         NpcDialogChoiceKind::try_from(choice.kind).ok() == Some(NpcDialogChoiceKind::AcceptQuest)
@@ -128,6 +137,7 @@ fn draw_shop(
     let Some(layout) = window.layout.as_ref() else {
         return;
     };
+    let now_unix_ms = js_sys::Date::now().max(0.0) as u64;
     draw_shop_portrait(game, interaction, window);
     if let Some(index) = game
         .interaction
@@ -171,25 +181,32 @@ fn draw_shop(
     }
     if let Some(inventory) = game.player.inventory.as_ref() {
         let start = game.interaction.inventory_page * SHOP_PAGE_SIZE;
-        for (index, item_id) in inventory
-            .item_ids
+        for (index, stack) in inventory
+            .stacks
             .iter()
             .skip(start)
             .take(SHOP_PAGE_SIZE)
             .enumerate()
         {
-            if let Some(definition) = super::item_definition(game, *item_id) {
+            if let Some(definition) = super::item_definition(game, stack.item_id) {
                 let y = window.y + 123.0 + index as f32 * SHOP_ROW_HEIGHT;
                 super::draw_item_icon(game, definition, window.x + 238.0, y);
+                super::draw_item_quantity(game, stack.quantity, window.x + 238.0, y);
                 let price = if definition.sale_price == 0 {
                     "Cannot sell".to_owned()
                 } else {
                     format!("{} mesos", definition.sale_price)
                 };
-                draw_shop_item_text(game, window.x + 274.0, y, &definition.name, &price);
+                let detail = super::item_expiration_detail(
+                    super::item_expiration(stack.expires_at_unix_ms, now_unix_ms),
+                    super::permanent_stack_needs_label(&inventory.stacks, stack),
+                )
+                .map(|expiration| format!("{price}, {expiration}"))
+                .unwrap_or(price);
+                draw_shop_item_text(game, window.x + 274.0, y, &definition.name, &detail);
             }
         }
-        draw_inventory_page_controls(game, window, layout, inventory.item_ids.len());
+        draw_inventory_page_controls(game, window, layout, inventory.stacks.len());
     }
     draw_template_in_region(game, window, layout, "shop-buy", "shop-buy");
     draw_template_in_region(game, window, layout, "shop-sell", "shop-sell");
@@ -263,7 +280,13 @@ fn draw_dialog_choices(
     let Some(region) = region(layout, "npc-choices") else {
         return;
     };
-    for (index, choice) in dialog.choices.iter().enumerate() {
+    for (index, choice) in dialog
+        .choices
+        .iter()
+        .skip(game.interaction.choice_page * DIALOG_CHOICE_PAGE_SIZE)
+        .take(DIALOG_CHOICE_PAGE_SIZE)
+        .enumerate()
+    {
         draw_template(
             game,
             window,

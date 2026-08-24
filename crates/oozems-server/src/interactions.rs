@@ -153,6 +153,12 @@ impl InteractionCatalog {
             npc_spawn_id,
         })
     }
+
+    pub fn item_reference_ids(&self) -> impl Iterator<Item = u32> + '_ {
+        self.shops
+            .values()
+            .flat_map(|shop| shop.offers.iter().map(|offer| offer.item_id))
+    }
 }
 
 fn build_catalog(
@@ -160,7 +166,6 @@ fn build_catalog(
     content: &ContentCatalog,
     file: InteractionFile,
 ) -> Result<InteractionCatalog, InteractionConfigError> {
-    let definitions = content.item_definitions();
     let mut shops = HashMap::new();
     for shop in file.shops {
         let key = InteractionKey {
@@ -189,13 +194,12 @@ fn build_catalog(
                     format!("shop item {} has a zero buy price", offer.item_id),
                 );
             }
-            let definition = definitions
-                .iter()
-                .find(|definition| definition.item_id == offer.item_id)
-                .ok_or_else(|| InteractionConfigError::Invalid {
+            let definition = content.item_definition(offer.item_id)?.ok_or_else(|| {
+                InteractionConfigError::Invalid {
                     path: path.to_owned(),
                     message: format!("shop item {} is not in the item catalog", offer.item_id),
-                })?;
+                }
+            })?;
             if definition.sale_price > offer.buy_price {
                 return invalid(
                     path,
@@ -347,7 +351,10 @@ fn invalid<T>(
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::path::Path;
+
+    use oozems_proto::v1::ItemCategory;
 
     use super::InteractionCatalog;
     use crate::content::ContentCatalog;
@@ -391,6 +398,82 @@ mod tests {
                 .destinations[0]
                 .map_id,
             104_000_000
+        );
+    }
+
+    #[test]
+    fn shops_accept_indexed_non_eager_items_and_reject_unknown_items() {
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let wz_dir = manifest_dir.join("../../data");
+        if !["Map.wz", "Npc.wz", "Character.wz", "Item.wz"]
+            .iter()
+            .all(|name| wz_dir.join(name).exists())
+        {
+            return;
+        }
+        let content = ContentCatalog::load(
+            &wz_dir,
+            &ContentConfig::load(&manifest_dir.join("../../config/content.toml"))
+                .expect("content configuration"),
+        )
+        .expect("content catalog");
+        let item_id = content
+            .indexed_item_ids()
+            .find(|item_id| {
+                !content
+                    .item_definition_slice()
+                    .iter()
+                    .any(|definition| definition.item_id == *item_id)
+            })
+            .expect("item source index should contain a non-eager item");
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("interactions.toml");
+        fs::write(
+            &path,
+            format!(
+                "[[shops]]\nmap_id = 100000101\nnpc_spawn_id = 1\n[[shops.offers]]\nitem_id = \
+                 {item_id}\nbuy_price = 9223372036854775807\n"
+            ),
+        )
+        .expect("write interaction configuration");
+
+        let interactions =
+            InteractionCatalog::load(&path, &content).expect("indexed shop item should load");
+
+        assert_eq!(
+            interactions
+                .shop(100_000_101, 1)
+                .expect("configured shop")
+                .offers[0]
+                .item_id,
+            item_id
+        );
+        let definition = content
+            .item_definition(item_id)
+            .expect("item metadata lookup")
+            .expect("indexed item definition");
+        assert!(!definition.name.is_empty());
+        assert!(definition.stack_max > 0);
+        assert!(ItemCategory::try_from(definition.category).is_ok());
+        assert!(
+            !content
+                .item_definition_slice()
+                .iter()
+                .any(|definition| definition.item_id == item_id)
+        );
+
+        fs::write(
+            &path,
+            "[[shops]]\nmap_id = 100000101\nnpc_spawn_id = 1\n[[shops.offers]]\nitem_id = \
+             4294967295\nbuy_price = 1\n",
+        )
+        .expect("write unknown shop item");
+        let error = InteractionCatalog::load(&path, &content)
+            .expect_err("unknown shop item should be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("shop item 4294967295 is not in the item catalog")
         );
     }
 }

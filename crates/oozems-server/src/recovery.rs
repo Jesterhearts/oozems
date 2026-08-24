@@ -198,6 +198,7 @@ mod tests {
         player.learned_skills.push(LearnedSkill {
             skill_id: IMPROVED_MP_RECOVERY_SKILL_ID,
             level: 5,
+            master_level: 0,
         });
 
         let recovered = prepare_recovery(player, &formulas()).expect("mage recovery");

@@ -24,6 +24,8 @@ use oozems_proto::v1::GetGuiRequest;
 use oozems_proto::v1::GetGuiResponse;
 use oozems_proto::v1::GetMapRequest;
 use oozems_proto::v1::GetMapResponse;
+use oozems_proto::v1::GetMorphRequest;
+use oozems_proto::v1::GetMorphResponse;
 use oozems_proto::v1::GetMovementRulesRequest;
 use oozems_proto::v1::GetMovementRulesResponse;
 use oozems_proto::v1::GetSkillBookRequest;
@@ -118,15 +120,25 @@ pub async fn get_character_sprites(
         .ok_or(ClientError::MissingData("character sprites"))
 }
 
+pub async fn get_morph(morph_id: u32) -> Result<oozems_proto::v1::MorphDefinition, ClientError> {
+    let response: GetMorphResponse =
+        post_protobuf("/api/v1/morphs/get", GetMorphRequest { morph_id }).await?;
+    response.morph.ok_or(ClientError::MissingData("morph"))
+}
+
 pub async fn equip_item(
     player_id: &str,
     inventory_index: u32,
+    expected_item_id: u32,
+    expected_expires_at_unix_ms: u64,
 ) -> Result<ItemActionResponse, ClientError> {
     post_protobuf(
         "/api/v1/items/equip",
         EquipItemRequest {
             player_id: player_id.to_owned(),
             inventory_index,
+            expected_item_id,
+            expected_expires_at_unix_ms,
         },
     )
     .await
@@ -149,12 +161,16 @@ pub async fn unequip_item(
 pub async fn drop_item(
     player_id: &str,
     inventory_index: u32,
+    expected_item_id: u32,
+    expected_expires_at_unix_ms: u64,
 ) -> Result<ItemActionResponse, ClientError> {
     post_protobuf(
         "/api/v1/items/drop",
         DropItemRequest {
             player_id: player_id.to_owned(),
             inventory_index,
+            expected_item_id,
+            expected_expires_at_unix_ms,
         },
     )
     .await
@@ -308,16 +324,14 @@ pub async fn recover_player(player_id: &str) -> Result<RecoverPlayerResponse, Cl
     .await
 }
 
-pub async fn save_player(player: PlayerState) -> Result<PlayerState, ClientError> {
-    let response: SavePlayerResponse = post_protobuf(
+pub async fn save_player(player: PlayerState) -> Result<SavePlayerResponse, ClientError> {
+    post_protobuf(
         "/api/v1/players/save",
         SavePlayerRequest {
             player: Some(player),
         },
     )
-    .await?;
-
-    response.player.ok_or(ClientError::MissingData("player"))
+    .await
 }
 
 async fn post_protobuf<I, O>(

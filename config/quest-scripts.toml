@@ -1,0 +1,21 @@
+# Quest.wz stores script names but not script bodies. Add project-authored,
+# deterministic replacements here. See README.md for the complete format.
+#
+# [[scripts]]
+# name = "exact_wz_script_name"
+# result_pages = ["Shown after the WZ result dialogue."]
+# incomplete_pages = ["Shown while a condition is not met."]
+#
+# [[scripts.conditions]]
+# type = "minimum_level"
+# level = 10
+#
+# [[scripts.actions]]
+# type = "mesos"
+# delta = 100
+#
+# Record conditions use quest_record_equals, quest_record_at_least, or
+# quest_record_at_most with quest_id, index, and a string value. Record actions
+# use type = "set_record" with quest_id, index, and value. Cross-quest status
+# actions use type = "set_quest_status" with quest_id and state set to
+# "not_started", "started", or "completed".

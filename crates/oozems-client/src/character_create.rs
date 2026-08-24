@@ -196,7 +196,13 @@ async fn create_and_start(
     set_visible("character-create", false)?;
     set_visible("game-frame", true)?;
     set_visible("controls", true)?;
-    game::run(player, sprites).await
+    game::run(
+        player,
+        sprites,
+        oozems_proto::v1::ActiveBuffState::default(),
+        game::monotonic_time_ms(),
+    )
+    .await
 }
 
 fn request_preview(creator: &Rc<Creator>) {

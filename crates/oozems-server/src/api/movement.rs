@@ -14,10 +14,12 @@ use super::Protobuf;
 use super::decode_request;
 use super::load_map;
 use super::lock_player;
+use super::merge_dropped_items;
 use super::parse_player_id;
+use super::persist_simulation_player_effects;
+use super::prepare_simulation_player_effects;
 use super::record_recovery_activity;
 use super::require_player;
-use super::skill_rule_error;
 use super::unix_time_ms;
 use crate::app::AppState;
 use crate::database::PlayerId;
@@ -54,10 +56,16 @@ pub async fn submit_movement(
         })?;
     let current = require_player(&state, &player_id).await?;
     let now_ms = unix_time_ms()?;
-    let decision = submit_with_lazy_map(&state, &current, submitted, now_ms).await?;
+    let effects = crate::effects::snapshot(&state.active_effects, player_id.as_str(), now_ms)?;
+    let projected = effects.projected().modifiers;
+    let modifiers = crate::movement::MovementModifiers {
+        speed: projected.speed,
+        jump: projected.jump,
+    };
+    let decision = submit_with_lazy_map(&state, &current, submitted, modifiers, now_ms).await?;
     apply_movement_side_effects(&state, &player_id, &current, &decision, now_ms).await?;
     Ok(Protobuf(
-        movement_response(&state, &current, decision).await?,
+        movement_response(&state, &current, decision, false).await?,
     ))
 }
 
@@ -65,12 +73,14 @@ async fn submit_with_lazy_map(
     state: &AppState,
     current: &PlayerState,
     submitted: crate::movement::SubmittedMovement,
+    modifiers: crate::movement::MovementModifiers,
     now_ms: u64,
 ) -> Result<crate::movement::MovementDecision, ApiError> {
-    match crate::movement::submit_movement(
+    match crate::movement::submit_movement_with_modifiers(
         &state.movement,
         current,
         submitted,
+        modifiers,
         state.gameplay.movement,
         now_ms,
     ) {
@@ -80,10 +90,11 @@ async fn submit_with_lazy_map(
                 ApiError::not_found("map_not_found", format!("map {map_id} does not exist"))
             })?;
             crate::movement::register_map(&state.movement, &map)?;
-            Ok(crate::movement::submit_movement(
+            Ok(crate::movement::submit_movement_with_modifiers(
                 &state.movement,
                 current,
                 submitted,
+                modifiers,
                 state.gameplay.movement,
                 now_ms,
             )?)
@@ -127,7 +138,9 @@ pub async fn enter_portal(
             )
         })?;
     let now_ms = unix_time_ms()?;
-    let decision = crate::movement::enter_portal(
+    let effects = crate::effects::snapshot(&state.active_effects, player_id.as_str(), now_ms)?;
+    let projected = effects.projected().modifiers;
+    let (decision, rollback) = crate::movement::enter_portal_with_modifiers(
         &state.movement,
         &current,
         crate::movement::PortalMovement {
@@ -136,12 +149,39 @@ pub async fn enter_portal(
             source,
             target_portal_name: &request.target_portal_name,
         },
+        crate::movement::MovementModifiers {
+            speed: projected.speed,
+            jump: projected.jump,
+        },
         state.gameplay.movement,
         now_ms,
     )?;
+    if let Some(rollback) = rollback {
+        let response = match movement_response(&state, &current, decision, true).await {
+            Ok(response) => response,
+            Err(error) => {
+                if let Err(restore_error) =
+                    crate::movement::restore_relocation(&state.movement, &current.id, rollback)
+                {
+                    tracing::error!(
+                        %restore_error,
+                        "failed to roll back a portal transition after response preparation failed"
+                    );
+                }
+                return Err(error);
+            }
+        };
+        if let Err(error) =
+            crate::movement::mark_persisted(&state.movement, player_id.as_str(), now_ms)
+        {
+            tracing::error!(%error, "portal movement was persisted but could not be marked clean");
+        }
+        record_recovery_activity(&state, player_id.as_str(), now_ms);
+        return Ok(Protobuf(response));
+    }
     apply_movement_side_effects(&state, &player_id, &current, &decision, now_ms).await?;
     Ok(Protobuf(
-        movement_response(&state, &current, decision).await?,
+        movement_response(&state, &current, decision, false).await?,
     ))
 }
 
@@ -179,6 +219,7 @@ async fn movement_response(
     state: &AppState,
     current: &PlayerState,
     decision: crate::movement::MovementDecision,
+    persistence_required: bool,
 ) -> Result<MovementUpdateResponse, ApiError> {
     let map_id = decision.authoritative.map_id;
     let map = load_map(state, map_id).await?.ok_or_else(|| {
@@ -186,45 +227,54 @@ async fn movement_response(
     })?;
     let authoritative_player =
         crate::movement::synchronize_player(&state.movement, current.clone())?;
-    let simulation = crate::mobs::observe_player(&state.mobs, &map, &authoritative_player)?;
-    let player_damage = simulation.player_damage();
-    let mut updated_player = authoritative_player;
-    if player_damage > 0 {
-        let stats = updated_player.stats.get_or_insert_default();
-        stats.hp = stats
-            .hp
-            .saturating_sub(u32::try_from(player_damage).unwrap_or(u32::MAX));
-        updated_player = match crate::database::save_player(&state.database, &updated_player).await
-        {
-            Ok(player) => player,
-            Err(error) => {
-                crate::mobs::restore_player_events(
-                    &state.mobs,
-                    map_id,
-                    &updated_player.id,
-                    simulation.combat_events.clone(),
-                )?;
-                return Err(error.into());
-            }
-        };
-        record_recovery_activity(state, &updated_player.id, unix_time_ms()?);
-    }
-    let active_buffs =
-        crate::skills::active_skill_buffs(&state.skill_buffs, &updated_player.id, unix_time_ms()?)
-            .map_err(skill_rule_error)?;
+    let now_unix_ms = unix_time_ms()?;
+    let effects =
+        crate::effects::snapshot(&state.active_effects, &authoritative_player.id, now_unix_ms)?;
     let dropped_items = crate::items::map_drops(&state.drops, map_id)?;
-    Ok(MovementUpdateResponse {
+    let mut simulation = crate::mobs::observe_player_with_effects(
+        &state.mobs,
+        &map,
+        &authoritative_player,
+        effects.projected(),
+    )?;
+    let has_player_effects = simulation.player_damage() > 0 || !simulation.mob_deaths.is_empty();
+    let prepared = prepare_simulation_player_effects(
+        state,
+        authoritative_player,
+        &simulation,
+        effects,
+        now_unix_ms,
+        persistence_required,
+    );
+    let active_buffs = crate::effects::state(&prepared.effects, now_unix_ms);
+    let mut response = MovementUpdateResponse {
         authoritative: Some(decision.authoritative),
         accepted: decision.accepted,
         rejection_reason: decision.rejection_reason,
-        mobs: simulation.mobs,
-        player_stats: updated_player.stats,
-        mob_projectiles: simulation.mob_projectiles,
-        combat_events: simulation.combat_events,
+        mobs: std::mem::take(&mut simulation.mobs),
+        player_stats: prepared.player.stats,
+        mob_projectiles: std::mem::take(&mut simulation.mob_projectiles),
+        combat_events: simulation.combat_events.clone(),
         simulation_sequence: simulation.sequence,
         active_buffs: Some(active_buffs),
         dropped_items,
-    })
+        quests: prepared.player.quests.clone(),
+        player_revision: prepared.player.revision,
+        player: Some(prepared.player.clone()),
+    };
+    let persisted = persist_simulation_player_effects(state, prepared, &mut simulation).await?;
+    let updated_player = persisted.player;
+    let effects = persisted.effects;
+    merge_dropped_items(&mut response.dropped_items, persisted.committed_drops);
+    if has_player_effects {
+        record_recovery_activity(state, &updated_player.id, now_unix_ms);
+    }
+    response.player_stats = updated_player.stats;
+    response.active_buffs = Some(crate::effects::state(&effects, now_unix_ms));
+    response.quests = updated_player.quests.clone();
+    response.player_revision = updated_player.revision;
+    response.player = Some(updated_player);
+    Ok(response)
 }
 
 fn movement_rules_response(config: crate::gameplay::MovementConfig) -> MovementRules {

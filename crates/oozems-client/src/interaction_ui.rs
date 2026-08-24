@@ -13,12 +13,14 @@ use crate::game_gui::CanvasPoint;
 const LIST_ROW_HEIGHT: f32 = 24.0;
 const SHOP_ROW_HEIGHT: f32 = 37.0;
 pub const SHOP_PAGE_SIZE: usize = 5;
+pub const DIALOG_CHOICE_PAGE_SIZE: usize = 4;
 const DIALOG_PAGE_CHARACTER_LIMIT: usize = 360;
 
 #[derive(Default)]
 pub struct InteractionState {
     pub interaction: Option<NpcInteraction>,
     pub page: usize,
+    pub choice_page: usize,
     pub selected_offer: Option<usize>,
     pub selected_inventory: Option<usize>,
     pub inventory_page: usize,
@@ -32,6 +34,8 @@ pub enum InteractionUiAction {
     Close,
     PreviousPage,
     NextPage,
+    PreviousChoicePage,
+    NextChoicePage,
     SelectChoice { quest_id: u32, choice_id: u32 },
     SelectOffer { index: usize },
     SelectInventory { index: usize },
@@ -57,6 +61,7 @@ impl InteractionState {
     ) {
         self.interaction = interaction;
         self.page = 0;
+        self.choice_page = 0;
         self.selected_offer = None;
         self.selected_inventory = None;
         self.inventory_page = 0;
@@ -81,12 +86,22 @@ pub fn click_action(
             if !contains_window(window, point) {
                 return Some(InteractionUiAction::Consume);
             }
-            if state.page > 0 && contains_region(window, "npc-previous", point) {
-                return Some(InteractionUiAction::PreviousPage);
-            }
             let pages = visual_dialog_pages(dialog);
             if state.page + 1 < pages.len() && contains_region(window, "npc-next", point) {
                 return Some(InteractionUiAction::NextPage);
+            }
+            if state.page + 1 == pages.len() && !dialog.choices.is_empty() {
+                if state.choice_page > 0 && contains_region(window, "npc-previous", point) {
+                    return Some(InteractionUiAction::PreviousChoicePage);
+                }
+                if (state.choice_page + 1) * DIALOG_CHOICE_PAGE_SIZE < dialog.choices.len()
+                    && contains_region(window, "npc-next", point)
+                {
+                    return Some(InteractionUiAction::NextChoicePage);
+                }
+            }
+            if state.page > 0 && contains_region(window, "npc-previous", point) {
+                return Some(InteractionUiAction::PreviousPage);
             }
             if state.page + 1 < pages.len() {
                 return Some(InteractionUiAction::Consume);
@@ -119,7 +134,10 @@ pub fn click_action(
                 }
             }
             if let Some(index) = row_at(window, "npc-choices", point, LIST_ROW_HEIGHT)
-                && let Some(choice) = dialog.choices.get(index)
+                && index < DIALOG_CHOICE_PAGE_SIZE
+                && let Some(choice) = dialog
+                    .choices
+                    .get(state.choice_page * DIALOG_CHOICE_PAGE_SIZE + index)
             {
                 return Some(InteractionUiAction::SelectChoice {
                     quest_id: dialog.quest_id,
@@ -145,7 +163,7 @@ pub fn click_action(
             if contains_region(window, "shop-sell", point) {
                 return Some(InteractionUiAction::Sell);
             }
-            let inventory_len = inventory.map_or(0, |inventory| inventory.item_ids.len());
+            let inventory_len = inventory.map_or(0, |inventory| inventory.stacks.len());
             if state.inventory_page > 0 && contains_region(window, "shop-inventory-previous", point)
             {
                 return Some(InteractionUiAction::PreviousInventoryPage);
@@ -200,10 +218,20 @@ pub fn apply_local_action(
         }
         InteractionUiAction::PreviousPage => {
             state.page = state.page.saturating_sub(1);
+            state.choice_page = 0;
             true
         }
         InteractionUiAction::NextPage => {
             state.page = state.page.saturating_add(1);
+            state.choice_page = 0;
+            true
+        }
+        InteractionUiAction::PreviousChoicePage => {
+            state.choice_page = state.choice_page.saturating_sub(1);
+            true
+        }
+        InteractionUiAction::NextChoicePage => {
+            state.choice_page = state.choice_page.saturating_add(1);
             true
         }
         InteractionUiAction::SelectOffer { index } => {
@@ -268,9 +296,9 @@ fn contains_window(
 ) -> bool {
     window.layout.as_ref().is_some_and(|layout| {
         point.x >= window.x
-            && point.x <= window.x + layout.width
+            && point.x < window.x + layout.width
             && point.y >= window.y
-            && point.y <= window.y + layout.height
+            && point.y < window.y + layout.height
     })
 }
 
@@ -283,9 +311,9 @@ fn contains_region(
         layout.regions.iter().any(|region| {
             region.name == name
                 && point.x >= window.x + region.x
-                && point.x <= window.x + region.x + region.width
+                && point.x < window.x + region.x + region.width
                 && point.y >= window.y + region.y
-                && point.y <= window.y + region.y + region.height
+                && point.y < window.y + region.y + region.height
         })
     })
 }
@@ -303,7 +331,7 @@ fn row_at(
         .find(|region| region.name == region_name)?;
     let local_x = point.x - window.x - region.x;
     let local_y = point.y - window.y - region.y;
-    if local_x < 0.0 || local_x > region.width || local_y < 0.0 || local_y > region.height {
+    if local_x < 0.0 || local_x >= region.width || local_y < 0.0 || local_y >= region.height {
         return None;
     }
     Some((local_y / row_height) as usize)
@@ -311,10 +339,18 @@ fn row_at(
 
 #[cfg(test)]
 mod tests {
+    use oozems_proto::v1::GameGui;
     use oozems_proto::v1::GuiLayout;
     use oozems_proto::v1::GuiRegion;
     use oozems_proto::v1::GuiWindow;
+    use oozems_proto::v1::NpcDialogChoice;
+    use oozems_proto::v1::NpcDialogView;
+    use oozems_proto::v1::NpcInteraction;
+    use oozems_proto::v1::npc_interaction;
 
+    use super::InteractionState;
+    use super::InteractionUiAction;
+    use super::click_action;
     use super::row_at;
     use super::visual_dialog_pages;
     use crate::game_gui::CanvasPoint;
@@ -358,5 +394,51 @@ mod tests {
         };
 
         assert!(visual_dialog_pages(&dialog).len() > 1);
+    }
+
+    #[test]
+    fn bottom_padding_cannot_select_a_hidden_fifth_dialog_choice() {
+        let window = GuiWindow {
+            layout: Some(GuiLayout {
+                width: 200.0,
+                height: 140.0,
+                regions: vec![GuiRegion {
+                    name: "npc-choices".to_owned(),
+                    x: 10.0,
+                    y: 20.0,
+                    width: 100.0,
+                    height: 100.0,
+                }],
+                ..GuiLayout::default()
+            }),
+            ..GuiWindow::default()
+        };
+        let gui = GameGui {
+            npc_dialog_window: Some(window),
+            ..GameGui::default()
+        };
+        let state = InteractionState {
+            interaction: Some(NpcInteraction {
+                view: Some(npc_interaction::View::Dialog(NpcDialogView {
+                    quest_id: 100,
+                    choices: (0..5)
+                        .map(|choice_id| NpcDialogChoice {
+                            choice_id,
+                            ..NpcDialogChoice::default()
+                        })
+                        .collect(),
+                    ..NpcDialogView::default()
+                })),
+                ..NpcInteraction::default()
+            }),
+            ..InteractionState::default()
+        };
+
+        for y in [116.0, 117.0, 118.0, 119.0] {
+            assert_eq!(
+                click_action(&gui, &state, None, CanvasPoint { x: 20.0, y }),
+                Some(InteractionUiAction::Consume)
+            );
+        }
     }
 }

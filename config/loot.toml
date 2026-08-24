@@ -16,6 +16,10 @@ mob_id = 100101
 item_id            = 1060002
 chance_per_million = 1000000
 
+[[mobs.drops]]
+item_id            = 4000000
+chance_per_million = 1000000
+
 [[mobs]]
 mob_id = 100102
 
@@ -30,12 +34,20 @@ mob_id = 120100
 item_id            = 1040002
 chance_per_million = 150000
 
+[[mobs.drops]]
+item_id            = 4000001
+chance_per_million = 500000
+
 [[mobs]]
 mob_id = 1210100
 
 [[mobs.drops]]
 item_id            = 1060001
 chance_per_million = 150000
+
+[[mobs.drops]]
+item_id            = 4000001
+chance_per_million = 500000
 
 [[mobs]]
 mob_id = 1210102

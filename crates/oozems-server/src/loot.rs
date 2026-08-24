@@ -4,9 +4,10 @@ use std::io::ErrorKind;
 use std::path::Path;
 use std::path::PathBuf;
 
-use oozems_proto::v1::ItemDefinition;
 use serde::Deserialize;
 use thiserror::Error;
+
+use crate::items::ItemDefinitionLookup;
 
 const CHANCE_SCALE: u32 = 1_000_000;
 
@@ -62,7 +63,7 @@ struct LootEntryFile {
 impl LootCatalog {
     pub fn load(
         path: &Path,
-        item_definitions: &[ItemDefinition],
+        item_definitions: &(impl ItemDefinitionLookup + ?Sized),
     ) -> Result<Self, LootConfigError> {
         let source = match fs::read_to_string(path) {
             Ok(source) => source,
@@ -85,6 +86,10 @@ impl LootCatalog {
     pub fn len(&self) -> usize {
         self.tables.len()
     }
+
+    pub fn item_reference_ids(&self) -> impl Iterator<Item = u32> + '_ {
+        self.tables.values().flatten().map(|entry| entry.item_id)
+    }
 }
 
 pub fn roll_items(
@@ -106,7 +111,7 @@ pub fn roll_items(
 
 fn build_catalog(
     path: &Path,
-    item_definitions: &[ItemDefinition],
+    item_definitions: &(impl ItemDefinitionLookup + ?Sized),
     file: LootFile,
 ) -> Result<LootCatalog, LootConfigError> {
     let mut tables = HashMap::new();
@@ -125,18 +130,7 @@ fn build_catalog(
                     ),
                 );
             }
-            if !item_definitions
-                .iter()
-                .any(|definition| definition.item_id == drop.item_id)
-            {
-                return invalid(
-                    path,
-                    format!(
-                        "mob {} item {} is not in the item catalog",
-                        table.mob_id, drop.item_id
-                    ),
-                );
-            }
+            validate_item(path, table.mob_id, drop.item_id, item_definitions)?;
             if entries
                 .iter()
                 .any(|entry: &LootEntry| entry.item_id == drop.item_id)
@@ -159,6 +153,25 @@ fn build_catalog(
         }
     }
     Ok(LootCatalog { tables })
+}
+
+fn validate_item(
+    path: &Path,
+    mob_id: u32,
+    item_id: u32,
+    item_definitions: &(impl ItemDefinitionLookup + ?Sized),
+) -> Result<(), LootConfigError> {
+    match item_definitions.item_definition(item_id) {
+        Ok(Some(_)) => Ok(()),
+        Ok(None) => invalid(
+            path,
+            format!("mob {mob_id} item {item_id} is not in the item catalog"),
+        ),
+        Err(error) => invalid(
+            path,
+            format!("mob {mob_id} item {item_id} metadata could not be loaded: {error}"),
+        ),
+    }
 }
 
 fn roll_succeeds(
@@ -229,6 +242,67 @@ mod tests {
     }
 
     #[test]
+    fn indexed_non_eager_items_are_valid_loot_without_eager_projection() {
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let wz_dir = manifest_dir.join("../../data");
+        if !["Map.wz", "Character.wz", "Item.wz"]
+            .iter()
+            .all(|name| wz_dir.join(name).exists())
+        {
+            return;
+        }
+        let content = ContentCatalog::load(
+            &wz_dir,
+            &ContentConfig::load(&manifest_dir.join("../../config/content.toml"))
+                .expect("content configuration"),
+        )
+        .expect("content catalog");
+        let item_id = content
+            .indexed_item_ids()
+            .find(|item_id| {
+                !content
+                    .item_definition_slice()
+                    .iter()
+                    .any(|definition| definition.item_id == *item_id)
+            })
+            .expect("item source index should contain a non-eager item");
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("loot.toml");
+        fs::write(
+            &path,
+            format!(
+                "[[mobs]]\nmob_id = 100\n[[mobs.drops]]\nitem_id = {item_id}\nchance_per_million \
+                 = 1\n"
+            ),
+        )
+        .expect("write loot configuration");
+
+        let catalog = LootCatalog::load(&path, &content).expect("indexed loot item should load");
+
+        assert_eq!(catalog.len(), 1);
+        assert!(
+            !content
+                .item_definition_slice()
+                .iter()
+                .any(|definition| definition.item_id == item_id)
+        );
+
+        fs::write(
+            &path,
+            "[[mobs]]\nmob_id = 100\n[[mobs.drops]]\nitem_id = 4294967295\nchance_per_million = \
+             1\n",
+        )
+        .expect("write unknown loot item");
+        let error =
+            LootCatalog::load(&path, &content).expect_err("unknown loot item should be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("item 4294967295 is not in the item catalog")
+        );
+    }
+
+    #[test]
     fn bundled_loot_references_available_items() {
         let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
         let wz_dir = manifest_dir.join("../../data");
@@ -247,7 +321,7 @@ mod tests {
 
         let loot = LootCatalog::load(
             &manifest_dir.join("../../config/loot.toml"),
-            &content.item_definitions(),
+            content.item_definition_slice(),
         )
         .expect("loot catalog");
 

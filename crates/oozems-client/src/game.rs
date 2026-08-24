@@ -9,6 +9,7 @@ use oozems_proto::v1::GameGui;
 use oozems_proto::v1::KeyAction;
 use oozems_proto::v1::KeyBinding;
 use oozems_proto::v1::Map;
+use oozems_proto::v1::MorphDefinition;
 use oozems_proto::v1::MovementRules;
 use oozems_proto::v1::PlayerState;
 use oozems_proto::v1::SkillBook;
@@ -46,14 +47,33 @@ use crate::show_status;
 use crate::skill_effects;
 use crate::skill_effects::SkillEffectState;
 
-mod buffs;
+pub(crate) mod buffs;
 mod interaction_actions;
 mod item_actions;
 mod movement_actions;
+mod player_updates;
 mod recovery_actions;
 mod skill_actions;
 
+use player_updates::PlayerDomains;
+use player_updates::PlayerInstallation;
+use player_updates::PlayerRevisions;
+use player_updates::appearance_assets_are_eligible;
+use player_updates::appearance_refresh;
+use player_updates::install_player_update;
+use player_updates::install_revision;
+use player_updates::synchronize_skill_book;
+use player_updates::visible_appearance_identity;
+
 const SAVE_INTERVAL_MS: f64 = 2_000.0;
+const APPEARANCE_RETRY_LIMIT: u8 = 2;
+const APPEARANCE_RETRY_BACKOFF_MS: f64 = 1_000.0;
+
+pub(crate) fn monotonic_time_ms() -> f64 {
+    web_sys::window()
+        .and_then(|window| window.performance())
+        .map_or(0.0, |performance| performance.now())
+}
 
 pub struct Game {
     pub canvas: HtmlCanvasElement,
@@ -66,15 +86,20 @@ pub struct Game {
     pub images: HashMap<String, BrowserAsset>,
     pub interaction: InteractionState,
     pub key_bindings: Rc<RefCell<Vec<KeyBinding>>>,
+    key_bindings_generation: u64,
+    key_bindings_pending: bool,
     pub key_drag: Option<KeyDrag>,
     pub pointer: Option<CanvasPoint>,
+    pub(crate) selected_buff: Option<buffs::BuffKey>,
     pub map: Map,
     pub mob_render: MobRenderState,
+    pub(crate) npc_animations: render::npc::NpcAnimationPlaybackState,
     pub movement_rules: MovementRules,
     pub motion: MotionState,
     pub player: PlayerState,
     pub skill_book: SkillBook,
     pub(crate) active_buffs: buffs::TrackedBuffs,
+    pub(crate) morph_definition: Option<MorphDefinition>,
     pub(crate) skill_effect_state: SkillEffectState,
     pub frame_time_ms: f64,
     pub world_layers: Vec<i32>,
@@ -89,7 +114,264 @@ pub struct Game {
     last_frame_ms: f64,
     next_save_ms: f64,
     movement_sync: movement_actions::MovementSyncState,
+    player_revisions: PlayerRevisions,
     recovery_state: recovery_actions::RecoveryState,
+    appearance_refresh_state: AppearanceRefreshState,
+    morph_refresh_state: MorphRefreshState,
+}
+
+fn install_full_player_update(
+    game: &mut Game,
+    update: PlayerState,
+) -> PlayerInstallation {
+    let mut domains = PlayerDomains::FULL;
+    domains.key_bindings = !game.key_bindings_pending;
+    let installed = install_player_update(
+        &mut game.player,
+        &mut game.player_revisions,
+        update,
+        domains,
+    );
+    if installed.domains.skills {
+        synchronize_skill_book(&mut game.skill_book, &game.player);
+        if game.key_bindings_pending {
+            let updated = keymap::retain_learned_skill_bindings(
+                &game.key_bindings.borrow(),
+                &game.player.learned_skills,
+            );
+            if updated != *game.key_bindings.borrow() {
+                *game.key_bindings.borrow_mut() = updated.clone();
+                game.player.key_bindings = updated;
+                game.key_bindings_generation = game.key_bindings_generation.saturating_add(1);
+                game.dirty = true;
+            }
+        }
+        let dragged_skill_was_removed = game.key_drag.as_ref().is_some_and(|drag| {
+            let keymap::BindingTarget::Skill(skill_id) = drag.target else {
+                return false;
+            };
+            !game
+                .player
+                .learned_skills
+                .iter()
+                .any(|skill| skill.skill_id == skill_id && skill.level > 0)
+        });
+        if dragged_skill_was_removed {
+            game.key_drag = None;
+        }
+    }
+    if installed.domains.key_bindings {
+        *game.key_bindings.borrow_mut() = game.player.key_bindings.clone();
+    }
+    queue_appearance_refresh(game, installed);
+    installed
+}
+
+#[derive(Default)]
+struct AppearanceRefreshState {
+    cached_sprites: HashMap<player_updates::AppearanceIdentity, CharacterSpriteSet>,
+    pending: Option<player_updates::AppearanceRefresh>,
+    in_flight: Option<player_updates::AppearanceRefresh>,
+    retry_identity: Option<player_updates::AppearanceIdentity>,
+    retry_count: u8,
+    retry_after_ms: f64,
+}
+
+#[derive(Default)]
+struct MorphRefreshState {
+    cached: HashMap<u32, MorphDefinition>,
+    pending: Option<u32>,
+    in_flight: Option<u32>,
+    retry_after_ms: HashMap<u32, f64>,
+}
+
+const MORPH_RETRY_BACKOFF_MS: f64 = 5_000.0;
+
+fn install_active_buffs(
+    game: &mut Game,
+    state: ActiveBuffState,
+    request_started_ms: f64,
+) {
+    let received_at_ms = monotonic_time_ms();
+    buffs::install(
+        &mut game.active_buffs,
+        state,
+        received_at_ms,
+        elapsed_since(request_started_ms, received_at_ms),
+    );
+    synchronize_morph(game);
+}
+
+fn elapsed_since(
+    started_ms: f64,
+    finished_ms: f64,
+) -> f64 {
+    (finished_ms - started_ms).max(0.0)
+}
+
+fn synchronize_morph(game: &mut Game) {
+    let desired = game.active_buffs.morph_id;
+    if desired.is_none() {
+        game.morph_definition = None;
+        update_morph_refresh_request(
+            &mut game.morph_refresh_state,
+            None,
+            false,
+            game.frame_time_ms,
+        );
+        return;
+    }
+    let desired = desired.expect("checked active morph");
+    if game
+        .morph_definition
+        .as_ref()
+        .is_some_and(|definition| definition.morph_id == desired)
+    {
+        update_morph_refresh_request(
+            &mut game.morph_refresh_state,
+            Some(desired),
+            true,
+            game.frame_time_ms,
+        );
+        return;
+    }
+    if let Some(definition) = game.morph_refresh_state.cached.get(&desired).cloned() {
+        game.morph_definition = Some(definition);
+        update_morph_refresh_request(
+            &mut game.morph_refresh_state,
+            Some(desired),
+            true,
+            game.frame_time_ms,
+        );
+        return;
+    }
+    game.morph_definition = None;
+    update_morph_refresh_request(
+        &mut game.morph_refresh_state,
+        Some(desired),
+        false,
+        game.frame_time_ms,
+    );
+}
+
+fn update_morph_refresh_request(
+    state: &mut MorphRefreshState,
+    desired: Option<u32>,
+    ready: bool,
+    now_ms: f64,
+) {
+    if state.pending != desired {
+        state.pending = None;
+    }
+    let Some(desired) = desired.filter(|_| !ready) else {
+        state.pending = None;
+        return;
+    };
+    let retry_ready = state
+        .retry_after_ms
+        .get(&desired)
+        .is_none_or(|deadline_ms| now_ms >= *deadline_ms);
+    if state.in_flight != Some(desired) && retry_ready {
+        state.pending = Some(desired);
+    }
+}
+
+fn queue_appearance_refresh(
+    game: &mut Game,
+    installed: PlayerInstallation,
+) {
+    if !installed.domains.inventory {
+        return;
+    }
+    let Some(mut refresh) = appearance_refresh(&game.player) else {
+        return;
+    };
+    refresh.revision = game.player_revisions.inventory;
+    if let Some(in_flight) = game
+        .appearance_refresh_state
+        .in_flight
+        .as_mut()
+        .filter(|in_flight| in_flight.identity == refresh.identity)
+    {
+        in_flight.revision = in_flight.revision.max(refresh.revision);
+    }
+    if let Some(pending) = game
+        .appearance_refresh_state
+        .pending
+        .as_mut()
+        .filter(|pending| pending.identity == refresh.identity)
+    {
+        pending.revision = pending.revision.max(refresh.revision);
+    }
+    if !installed.visible_appearance_changed {
+        return;
+    }
+
+    game.appearance_refresh_state.pending = None;
+    reset_appearance_retry(&mut game.appearance_refresh_state);
+    if let Some(cached) = game
+        .appearance_refresh_state
+        .cached_sprites
+        .get(&refresh.identity)
+        .cloned()
+    {
+        if install_revision(
+            &mut game.player_revisions.appearance_assets,
+            refresh.revision,
+        ) {
+            game.character_sprites = cached;
+            restart_character_animation(&mut game.character_animation, game.frame_time_ms);
+        }
+        return;
+    }
+
+    let same_request_is_in_flight = game
+        .appearance_refresh_state
+        .in_flight
+        .as_ref()
+        .is_some_and(|in_flight| in_flight.identity == refresh.identity);
+    if !same_request_is_in_flight {
+        game.appearance_refresh_state.pending = Some(refresh);
+    }
+}
+
+fn reset_appearance_retry(state: &mut AppearanceRefreshState) {
+    state.retry_identity = None;
+    state.retry_count = 0;
+    state.retry_after_ms = 0.0;
+}
+
+fn next_appearance_retry(
+    completed_retries: u8,
+    now_ms: f64,
+) -> Option<(u8, f64)> {
+    if completed_retries >= APPEARANCE_RETRY_LIMIT {
+        return None;
+    }
+    let retry_count = completed_retries + 1;
+    Some((
+        retry_count,
+        now_ms + APPEARANCE_RETRY_BACKOFF_MS * f64::from(retry_count),
+    ))
+}
+
+fn schedule_appearance_retry(
+    state: &mut AppearanceRefreshState,
+    request: player_updates::AppearanceRefresh,
+    now_ms: f64,
+) -> bool {
+    let completed_retries = (state.retry_identity.as_ref() == Some(&request.identity))
+        .then_some(state.retry_count)
+        .unwrap_or_default();
+    let Some((retry_count, retry_after_ms)) = next_appearance_retry(completed_retries, now_ms)
+    else {
+        return false;
+    };
+    state.retry_identity = Some(request.identity.clone());
+    state.retry_count = retry_count;
+    state.retry_after_ms = retry_after_ms;
+    state.pending = Some(request);
+    true
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -103,6 +385,8 @@ pub struct CharacterAnimationState {
 pub async fn run(
     player: PlayerState,
     character_sprites: CharacterSpriteSet,
+    bootstrap_active_buffs: ActiveBuffState,
+    bootstrap_requested_at_ms: f64,
 ) -> Result<(), String> {
     show_status("Loading map, GUI, and skills...", false);
     let map = api::get_map(player.map_id)
@@ -115,6 +399,7 @@ pub async fn run(
     let gui_result = api::get_gui().await;
     let gui_warning = gui_result.as_ref().err().map(ToString::to_string);
     let gui = gui_result.unwrap_or_default();
+    let skill_requested_at_ms = monotonic_time_ms();
     let skill_result = api::get_skill_book(&player.id).await;
     let skill_warning = skill_result.as_ref().err().map(ToString::to_string);
     let loaded_skills = skill_result.unwrap_or_else(|_| api::LoadedSkillBook {
@@ -132,7 +417,10 @@ pub async fn run(
         character_sprites,
         gui,
         loaded_skills.skill_book,
+        bootstrap_active_buffs,
+        bootstrap_requested_at_ms,
         loaded_skills.active_buffs,
+        skill_requested_at_ms,
     )?;
     let asset_count = game.borrow().images.len();
 
@@ -168,7 +456,10 @@ fn build_game(
     character_sprites: CharacterSpriteSet,
     gui: GameGui,
     skill_book: SkillBook,
-    active_buffs: ActiveBuffState,
+    bootstrap_active_buffs: ActiveBuffState,
+    bootstrap_requested_at_ms: f64,
+    skill_active_buffs: ActiveBuffState,
+    skill_requested_at_ms: f64,
 ) -> Result<Rc<RefCell<Game>>, String> {
     if let Some(position) = player.position {
         player.position = Some(movement::constrain_position(&map, position));
@@ -201,7 +492,30 @@ fn build_game(
         });
     let world_layers = render::world_layers(&map);
     let simulation_sequence = map.simulation_sequence;
+    let player_revisions = PlayerRevisions::new(player.revision);
+    let mut appearance_refresh_state = AppearanceRefreshState::default();
+    if let Some(identity) = visible_appearance_identity(&player) {
+        appearance_refresh_state
+            .cached_sprites
+            .insert(identity, character_sprites.clone());
+    }
 
+    let now_local_ms = monotonic_time_ms();
+    let mut active_buffs = buffs::from_state(
+        bootstrap_active_buffs,
+        now_local_ms,
+        elapsed_since(bootstrap_requested_at_ms, now_local_ms),
+    );
+    buffs::install(
+        &mut active_buffs,
+        skill_active_buffs,
+        now_local_ms,
+        elapsed_since(skill_requested_at_ms, now_local_ms),
+    );
+    let morph_refresh_state = MorphRefreshState {
+        pending: active_buffs.morph_id,
+        ..MorphRefreshState::default()
+    };
     let game = Rc::new(RefCell::new(Game {
         canvas: canvas.clone(),
         character_animation: new_character_animation_state(CharacterAnimation::Idle, true, 0.0),
@@ -213,15 +527,20 @@ fn build_game(
         images,
         interaction: InteractionState::default(),
         key_bindings,
+        key_bindings_generation: 0,
+        key_bindings_pending: false,
         key_drag: None,
         pointer: None,
+        selected_buff: None,
         map,
         mob_render: crate::mob_render::new_map_state(simulation_sequence),
+        npc_animations: render::npc::NpcAnimationPlaybackState::default(),
         movement_rules,
         motion,
         player,
         skill_book,
-        active_buffs: buffs::from_state(active_buffs, js_sys::Date::now().max(0.0) as u64),
+        active_buffs,
+        morph_definition: None,
         skill_effect_state: SkillEffectState::default(),
         frame_time_ms: 0.0,
         world_layers,
@@ -236,7 +555,10 @@ fn build_game(
         last_frame_ms: 0.0,
         next_save_ms: SAVE_INTERVAL_MS,
         movement_sync: movement_actions::MovementSyncState::default(),
+        player_revisions,
         recovery_state: recovery_actions::RecoveryState::default(),
+        appearance_refresh_state,
+        morph_refresh_state,
     }));
     install_canvas_input(&canvas, game.clone())?;
     Ok(game)
@@ -386,6 +708,8 @@ fn install_canvas_input(
         if let Some(updated) = updated.filter(|_| changed) {
             *game.key_bindings.borrow_mut() = updated.clone();
             game.player.key_bindings = updated;
+            game.key_bindings_generation = game.key_bindings_generation.saturating_add(1);
+            game.key_bindings_pending = true;
             game.dirty = true;
         }
         game.suppress_click.set(true);
@@ -500,6 +824,9 @@ fn handle_canvas_pointer(
         interaction_actions::begin_action(game.clone(), action);
         return true;
     }
+    if button == PointerButton::Left && render::select_active_buff(&mut game.borrow_mut(), point) {
+        return true;
+    }
     let action = {
         let game = game.borrow();
         game_gui::click_action(
@@ -551,6 +878,8 @@ fn schedule_frame(game: Rc<RefCell<Game>>) -> Result<(), String> {
             let game = game.borrow();
             render::draw(&game);
         }
+        begin_appearance_refresh(game.clone());
+        begin_morph_refresh(game.clone());
         if update.pick_up {
             item_actions::begin_pick_up(game.clone());
         }
@@ -566,6 +895,9 @@ fn schedule_frame(game: Rc<RefCell<Game>>) -> Result<(), String> {
         if update.recover {
             recovery_actions::begin(game.clone());
         }
+        if let Some(player) = update.save {
+            begin_save(game.clone(), player);
+        }
         if let Some(transition) = update.transition {
             movement_actions::begin_portal(game.clone(), transition);
         }
@@ -579,13 +911,147 @@ fn schedule_frame(game: Rc<RefCell<Game>>) -> Result<(), String> {
     Ok(())
 }
 
+fn begin_appearance_refresh(game: Rc<RefCell<Game>>) {
+    let request = {
+        let mut game = game.borrow_mut();
+        if game.appearance_refresh_state.in_flight.is_some() {
+            return;
+        }
+        let Some(request) = game.appearance_refresh_state.pending.take() else {
+            return;
+        };
+        let retry_is_ready = game
+            .appearance_refresh_state
+            .retry_identity
+            .as_ref()
+            .is_none_or(|identity| identity != &request.identity)
+            || game.frame_time_ms >= game.appearance_refresh_state.retry_after_ms;
+        if !retry_is_ready {
+            game.appearance_refresh_state.pending = Some(request);
+            return;
+        }
+        game.appearance_refresh_state.in_flight = Some(request.clone());
+        request
+    };
+    spawn_local(async move {
+        let prepared =
+            match api::get_character_sprites(request.appearance.clone(), Some(&request.equipment))
+                .await
+            {
+                Ok(sprites) => {
+                    assets::prepare_assets(sprites.assets.iter()).map(|images| (sprites, images))
+                }
+                Err(error) => Err(error.to_string()),
+            };
+        let mut game = game.borrow_mut();
+        let Some(active) = game.appearance_refresh_state.in_flight.take() else {
+            return;
+        };
+        if active.identity != request.identity {
+            return;
+        }
+        let current_identity = visible_appearance_identity(&game.player);
+        let eligible = appearance_assets_are_eligible(
+            current_identity.as_ref(),
+            &active,
+            game.player_revisions.inventory,
+            game.player_revisions.appearance_assets,
+        );
+        match prepared {
+            Ok((sprites, images)) if eligible => {
+                if install_revision(
+                    &mut game.player_revisions.appearance_assets,
+                    active.revision,
+                ) {
+                    assets::merge_assets(&mut game.images, images);
+                    game.appearance_refresh_state
+                        .cached_sprites
+                        .insert(active.identity, sprites.clone());
+                    game.character_sprites = sprites;
+                    let frame_time_ms = game.frame_time_ms;
+                    restart_character_animation(&mut game.character_animation, frame_time_ms);
+                    reset_appearance_retry(&mut game.appearance_refresh_state);
+                }
+            }
+            Err(error) if eligible => {
+                let frame_time_ms = game.frame_time_ms;
+                let retrying = schedule_appearance_retry(
+                    &mut game.appearance_refresh_state,
+                    active,
+                    frame_time_ms,
+                );
+                let suffix = if retrying { "; retrying" } else { "" };
+                show_status(
+                    &format!("Character appearance could not refresh: {error}{suffix}"),
+                    true,
+                );
+            }
+            Ok(_) | Err(_) => {}
+        }
+    });
+}
+
+fn begin_morph_refresh(game: Rc<RefCell<Game>>) {
+    let morph_id = {
+        let mut game = game.borrow_mut();
+        if game.morph_refresh_state.in_flight.is_some() {
+            return;
+        }
+        let Some(morph_id) = game.morph_refresh_state.pending.take() else {
+            return;
+        };
+        game.morph_refresh_state.in_flight = Some(morph_id);
+        morph_id
+    };
+    spawn_local(async move {
+        let prepared = match api::get_morph(morph_id).await {
+            Ok(definition) if definition.morph_id == morph_id => {
+                assets::prepare_assets(definition.assets.iter()).map(|images| (definition, images))
+            }
+            Ok(_) => Err("server returned a different morph definition".to_owned()),
+            Err(error) => Err(error.to_string()),
+        };
+        let mut game = game.borrow_mut();
+        if game.morph_refresh_state.in_flight.take() != Some(morph_id) {
+            return;
+        }
+        match prepared {
+            Ok((definition, images)) => {
+                assets::merge_assets(&mut game.images, images);
+                game.morph_refresh_state
+                    .cached
+                    .insert(morph_id, definition.clone());
+                game.morph_refresh_state.retry_after_ms.remove(&morph_id);
+                if game.active_buffs.morph_id == Some(morph_id) {
+                    game.morph_definition = Some(definition);
+                }
+            }
+            Err(error) if game.active_buffs.morph_id == Some(morph_id) => {
+                let retry_at = game.frame_time_ms + MORPH_RETRY_BACKOFF_MS;
+                game.morph_refresh_state
+                    .retry_after_ms
+                    .insert(morph_id, retry_at);
+                show_status(&format!("Morph could not load: {error}"), true);
+            }
+            Err(_) => {}
+        }
+        synchronize_morph(&mut game);
+    });
+}
+
 struct FrameUpdate {
     transition: Option<MapTransition>,
     basic_attack: bool,
     pick_up: bool,
     movement_snapshot: bool,
     recover: bool,
+    save: Option<PendingSave>,
     skill_id: Option<u32>,
+}
+
+struct PendingSave {
+    player: PlayerState,
+    key_bindings_generation: u64,
 }
 
 fn update(
@@ -604,9 +1070,10 @@ fn update(
         game.dirty = true;
     }
     let now_ms = js_sys::Date::now().max(0.0) as u64;
-    game.map
-        .dropped_items
-        .retain(|drop| drop.despawn_at_unix_ms > now_ms);
+    game.map.dropped_items.retain(|drop| {
+        drop.despawn_at_unix_ms > now_ms
+            && (drop.expires_at_unix_ms == 0 || drop.expires_at_unix_ms > now_ms)
+    });
 
     let mut input = {
         let bindings = game.key_bindings.borrow();
@@ -626,21 +1093,36 @@ fn update(
         input.skills.clear();
         input.actions.clear();
     }
-    let basic_attack_requested = input.actions.contains(&KeyAction::BasicAttack);
     let pick_up = apply_key_actions(&mut game.gui_state.borrow_mut(), &game.gui, &input.actions);
-    buffs::apply(&mut game.active_buffs, &mut input.player, now_ms);
+    buffs::apply(&mut game.active_buffs, &mut input.player, timestamp_ms);
+    synchronize_morph(game);
+
+    if game.active_buffs.attacks_disabled {
+        input
+            .actions
+            .retain(|action| *action != KeyAction::BasicAttack);
+        input.skills.clear();
+    }
+    let basic_attack_requested = input.actions.contains(&KeyAction::BasicAttack);
 
     let transition = if game.transition_in_flight.get() {
         None
     } else {
-        update_player(game, elapsed_seconds, input.player)
+        let selected = update_player(game, elapsed_seconds, input.player);
+        (!game.skill_action_in_flight.get())
+            .then_some(selected)
+            .flatten()
     };
     if transition.is_some() {
         game.transition_in_flight.set(true);
     }
-    let basic_attack =
-        basic_attack_requested && transition.is_none() && !game.transition_in_flight.get();
-    let skill_id = input.skills.into_iter().next();
+    let (basic_attack, skill_id) = select_combat_requests(
+        game.active_buffs.attacks_disabled,
+        transition.is_some(),
+        game.transition_in_flight.get(),
+        basic_attack_requested,
+        input.skills.into_iter().next(),
+    );
     let movement_observation =
         movement_actions::observation(game.map.id, game.player.position, game.motion);
     let movement_snapshot = movement_actions::update(
@@ -671,15 +1153,30 @@ fn update(
         can_poll_recovery,
         timestamp_ms,
     );
-    save_if_due(game, timestamp_ms);
+    let save = save_if_due(game, timestamp_ms);
     FrameUpdate {
         transition,
         basic_attack,
         pick_up,
         movement_snapshot,
         recover,
+        save,
         skill_id,
     }
+}
+
+fn select_combat_requests(
+    attacks_disabled: bool,
+    transition_selected: bool,
+    transition_active: bool,
+    basic_attack_requested: bool,
+    skill_id: Option<u32>,
+) -> (bool, Option<u32>) {
+    let combat_allowed = !attacks_disabled && !transition_selected && !transition_active;
+    (
+        combat_allowed && basic_attack_requested,
+        combat_allowed.then_some(skill_id).flatten(),
+    )
 }
 
 fn apply_key_actions(
@@ -859,25 +1356,56 @@ pub(crate) fn character_animation_elapsed_ms(
 fn save_if_due(
     game: &mut Game,
     timestamp_ms: f64,
-) {
+) -> Option<PendingSave> {
     if !game.dirty
         || timestamp_ms < game.next_save_ms
         || game.save_in_flight.get()
         || recovery_actions::is_in_flight(&game.recovery_state)
     {
-        return;
+        return None;
     }
 
     game.dirty = false;
     game.next_save_ms = timestamp_ms + SAVE_INTERVAL_MS;
     game.save_in_flight.set(true);
-    let save_failed = game.save_failed.clone();
-    let save_in_flight = game.save_in_flight.clone();
-    let player = game.player.clone();
+    Some(PendingSave {
+        player: game.player.clone(),
+        key_bindings_generation: game.key_bindings_generation,
+    })
+}
+
+fn begin_save(
+    game: Rc<RefCell<Game>>,
+    pending: PendingSave,
+) {
+    let (save_failed, save_in_flight) = {
+        let game = game.borrow();
+        (game.save_failed.clone(), game.save_in_flight.clone())
+    };
     spawn_local(async move {
-        if let Err(error) = api::save_player(player).await {
-            save_failed.set(true);
-            show_status(&format!("Save failed: {error}"), true);
+        let request_started_ms = monotonic_time_ms();
+        match api::save_player(pending.player).await {
+            Ok(mut response) => {
+                if let Some(player) = response.player.take() {
+                    let mut game = game.borrow_mut();
+                    if game.key_bindings_generation == pending.key_bindings_generation {
+                        game.key_bindings_pending = false;
+                    }
+                    install_full_player_update(&mut game, player);
+                    install_active_buffs(
+                        &mut game,
+                        response.active_buffs.take().unwrap_or_default(),
+                        request_started_ms,
+                    );
+                } else {
+                    save_failed.set(true);
+                    show_status("Save failed: response did not contain a player", true);
+                }
+            }
+            Err(error) => {
+                save_failed.set(true);
+                show_status(&format!("Save failed: {error}"), true);
+            }
         }
         save_in_flight.set(false);
     });
@@ -889,12 +1417,16 @@ mod tests {
     use oozems_proto::v1::Map;
     use oozems_proto::v1::Vec2;
 
+    use super::MorphRefreshState;
     use super::character_animation;
     use super::character_animation_elapsed_ms;
     use super::character_animation_plays;
     use super::new_character_animation_state;
+    use super::next_appearance_retry;
     use super::restart_character_animation;
+    use super::select_combat_requests;
     use super::update_character_animation;
+    use super::update_morph_refresh_request;
     use crate::character_render::CharacterAnimation;
     use crate::movement::MotionState;
     use crate::movement::PlayerInput;
@@ -1033,5 +1565,58 @@ mod tests {
             position,
             position,
         ));
+    }
+
+    #[test]
+    fn authoritative_disable_and_transitions_suppress_combat_requests() {
+        assert_eq!(
+            select_combat_requests(true, false, false, true, Some(1)),
+            (false, None)
+        );
+        assert_eq!(
+            select_combat_requests(false, true, false, true, Some(1)),
+            (false, None)
+        );
+        assert_eq!(
+            select_combat_requests(false, false, true, true, Some(1)),
+            (false, None)
+        );
+        assert_eq!(
+            select_combat_requests(false, false, false, true, Some(1)),
+            (true, Some(1))
+        );
+    }
+
+    #[test]
+    fn morph_a_b_a_race_clears_the_stale_b_request() {
+        let mut state = MorphRefreshState {
+            in_flight: Some(4),
+            ..MorphRefreshState::default()
+        };
+
+        update_morph_refresh_request(&mut state, Some(40), false, 100.0);
+        assert_eq!(state.pending, Some(40));
+        update_morph_refresh_request(&mut state, Some(4), false, 101.0);
+
+        assert_eq!(state.pending, None);
+        assert_eq!(state.in_flight, Some(4));
+    }
+
+    #[test]
+    fn failed_morph_requests_wait_for_the_retry_deadline() {
+        let mut state = MorphRefreshState::default();
+        state.retry_after_ms.insert(4, 5_000.0);
+
+        update_morph_refresh_request(&mut state, Some(4), false, 4_999.0);
+        assert_eq!(state.pending, None);
+        update_morph_refresh_request(&mut state, Some(4), false, 5_000.0);
+        assert_eq!(state.pending, Some(4));
+    }
+
+    #[test]
+    fn appearance_retries_are_delayed_and_bounded() {
+        assert_eq!(next_appearance_retry(0, 100.0), Some((1, 1_100.0)));
+        assert_eq!(next_appearance_retry(1, 1_100.0), Some((2, 3_100.0)));
+        assert_eq!(next_appearance_retry(2, 3_100.0), None);
     }
 }

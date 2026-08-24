@@ -58,7 +58,15 @@ pub(super) fn draw(game: &Game) {
         let row_y = window.y + ui.list.y + index as f32 * ui.row.height;
         draw_sprite_template(game, ui.row, row_x, row_y);
         draw_skill_icon(game, definition, row_x, row_y, ui.row.height);
-        draw_skill_text(game, definition, skill.level, row_x, row_y, ui.row);
+        draw_skill_text(
+            game,
+            definition,
+            skill.level,
+            crate::game_gui::maximum_skill_level(skill),
+            row_x,
+            row_y,
+            ui.row,
+        );
         draw_skill_point_button(game, definition.skill_id, row_x, row_y, ui.row, &ui);
     }
     draw_page_controls(game, window.x, window.y, page, page_count, &ui);
@@ -232,6 +240,7 @@ fn draw_skill_text(
     game: &Game,
     definition: &oozems_proto::v1::SkillDefinition,
     level: u32,
+    maximum_level: u32,
     row_x: f32,
     row_y: f32,
     row: &GuiSpriteTemplate,
@@ -249,7 +258,7 @@ fn draw_skill_text(
     game.context.set_fill_style_str("#596469");
     game.context.set_font("9px Arial");
     let _ = game.context.fill_text_with_max_width(
-        &format!("Level {level}/{}", definition.max_level),
+        &format!("Level {level}/{maximum_level}"),
         f64::from(text_x),
         f64::from(row_y + 27.0),
         f64::from(text_width),

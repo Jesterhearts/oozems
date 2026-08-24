@@ -62,9 +62,10 @@ browser
 
 server
   -> config/xp-curves.toml        validated game progression rules
-  -> config/gameplay.toml         validated item, skill, and movement rules
+   -> config/gameplay.toml         validated world, item, skill, and movement rules
   -> config/content.toml          WZ content inclusion rules
   -> config/interactions.toml     authored shop stock and taxi routes
+  -> config/quest-scripts.toml    typed replacements for WZ quest scripts
   -> config/loot.toml             authored mob item drop rates
   -> config/skill-formulas.toml   validated combat formulas
   -> data/Map.wz                  required, lazy WZ map source
@@ -165,9 +166,184 @@ When an allowlist is present, startup fails if one of its quests is absent or
 uses data outside the supported subset. Rain's real `Quest.wz` quiz in Amherst
 is one compatible quest. It exercises job and NPC conditions, accept and
 decline dialog, list answers, persistent started/completed state, EXP rewards,
-and retained next-quest metadata. Quest chains are not advanced automatically
-yet. Mesos and quest state are stored with the player; existing records receive
-zero mesos and an empty quest log.
+and retained next-quest metadata. `autoAccept`, `normalAutoStart`, and
+`autoStart` accept a quest when its normal availability checks pass.
+`autoComplete` completes a normally ready quest, while
+`autoPreComplete` bypasses ordinary objectives but still preflights scripts and
+actions. Automatic transitions repeat to a stable state so dependency chains
+can advance in one locked request. WZ `ask = 1` list questions are supported in
+both start and completion dialogue. Start questions require a human answer and
+therefore take precedence over automatic-start metadata. They remain available
+through their authoritative start NPC; a start question without an NPC is
+rejected as unreachable.
+
+`gameplay.toml` defines one authoritative nonnegative server world ID. The
+bundled configuration uses world `0`:
+
+```toml
+[world]
+id = 0
+```
+
+Quest `worldmin` and `worldmax` start checks use this value with inclusive
+bounds. Quest fame checks read the authoritative character stats. Completion
+mesos, calendar-window, and eligible completed-quest-count checks are evaluated
+from current player state. Completed-quest counts exclude quest IDs
+`9000..=10999`, QuestInfo area `51`, malformed statuses, and player records for
+definitions that are not loaded.
+
+Quest `timeLimit` and `timeLimit2` values are seconds. The server converts both
+to checked milliseconds, expires an active quest at its
+accepted time plus that duration, and resets it without rewards. An expired
+quest cannot be reaccepted during the same automatic transition pass. Mesos and
+quest state are stored with the player; existing records receive zero mesos and
+an empty quest log.
+
+Quest record progress is stored as canonical, typed quest records. Record IDs
+are nonzero and unique, entry indices are unique, and both levels are sorted
+before persistence. Values are exact ASCII strings of at most 15 bytes, so
+leading zeros and case remain significant. `Quest.wz` `infoNumber` redirects a
+check to another quest record; direct `info` and `infoex` entries are OR
+alternatives against index 0. Equality is exact. Numeric conditions accept only
+strict decimal strings. A missing record never satisfies a check.
+
+SurrealKV stores quest records in three optional aligned arrays. Legacy absence
+loads as an empty collection. As with the existing persisted quest metadata
+arrays, malformed, misaligned, duplicate, or invalid record arrays recover as
+one empty collection rather than partially pairing entries. The next full save
+writes canonical arrays.
+
+Quest item-action `period` values are relative lifetimes in minutes. Their
+deadline starts when that start, completion, or restoration action executes.
+`dateExpire` is an absolute `yyyyMMddHH` civil deadline from the GMS archive.
+The server interprets it in `America/Los_Angeles` with Jiff's bundled timezone
+database, including PST and PDT transitions. Expiring equipment rewards remain
+unsupported because every response path does not yet refresh composed character
+sprites authoritatively.
+
+`Quest.wz` contains quest script names but does not contain their executable
+script bodies. A script-backed start or completion phase remains unresolved
+until `config/quest-scripts.toml` defines a deterministic replacement with the
+exact WZ name. If the file is absent, the catalog is empty. Missing replacements
+are never treated as successful checks. A configured name must be referenced by
+at least one loaded quest definition, and one exact name may intentionally be
+shared by the loaded definitions that reference it.
+
+Quest 10272 retains its archive completion script name, `q10272e`. The bundled
+configuration does not author that script, so runtime completion returns
+`ScriptRequired` until a project-authored deterministic replacement is added.
+
+Each program has ANDed conditions, typed resource actions, and optional
+dialogue pages:
+
+```toml
+[[scripts]]
+name = "exact_wz_script_name"
+result_pages = ["This is appended after the WZ result dialogue."]
+incomplete_pages = ["This is shown when a condition is not met."]
+
+[[scripts.conditions]]
+type = "minimum_level"
+level = 10
+
+[[scripts.conditions]]
+type = "job_ids"
+ids = [100, 110]
+
+[[scripts.conditions]]
+type = "map_id"
+map_id = 100000000
+
+[[scripts.conditions]]
+type = "mesos_at_least"
+amount = 500
+
+[[scripts.conditions]]
+type = "item_quantity"
+item_id = 4000000
+quantity = 5
+
+[[scripts.conditions]]
+type = "quest_state"
+quest_id = 1000
+state = "completed"
+
+[[scripts.conditions]]
+type = "quest_record_equals"
+quest_id = 1000
+index = 0
+value = "007"
+
+[[scripts.conditions]]
+type = "quest_record_at_least"
+quest_id = 9000
+index = 4
+value = "10"
+
+[[scripts.actions]]
+type = "item_delta"
+item_id = 4000000
+delta = -5
+
+[[scripts.actions]]
+type = "mesos"
+delta = 1000
+
+[[scripts.actions]]
+type = "experience"
+amount = 100
+
+[[scripts.actions]]
+type = "fame"
+delta = 1
+
+[[scripts.actions]]
+type = "set_record"
+quest_id = 1000
+index = 0
+value = "started"
+
+[[scripts.actions]]
+type = "set_quest_status"
+quest_id = 1001
+state = "completed"
+```
+
+The complete condition capability list is `minimum_level`, `maximum_level`,
+`job_ids`, `map_id`, `mesos_at_least`, `mesos_at_most`, `item_quantity`, and
+`quest_state`, plus `quest_record_equals`, `quest_record_at_least`, and
+`quest_record_at_most`. Quest states are `not_started`, `started`, and
+`completed`. Record conditions can read any canonical helper or redirected
+record. The
+complete action capability list is signed `item_delta`, signed `mesos`,
+unsigned `experience`, signed `fame`, `set_record`, and `set_quest_status`.
+Script actions are merged with the WZ actions for the server-selected start or
+completion phase, then the combined set uses the same atomic in-memory
+inventory, mesos, EXP, fame, record, and cross-quest status transform as an
+ordinary quest. A cross-quest status action changes only the target's stored
+status and timestamps. It does not run the target quest's checks, scripts,
+dialogue, actions, or rewards. A script cannot target the quest whose phase is
+currently transitioning. `not_started` removes the target quest entry and its
+own quest record. `started` replaces stale mob progress and timestamps with a
+clean acceptance at the action time. `completed` clears mob progress, completes
+at the action time, and preserves a valid existing acceptance time.
+
+The file uses strict tagged records. Unknown fields and capability names fail
+startup, as do duplicate or empty script names, unreferenced names, unknown
+item IDs, zero item quantities or action amounts, contradictory limits, and
+numeric combinations that cannot be represented by the quest action model.
+Record IDs must be nonzero, values must meet the persisted ASCII limit, numeric
+record predicates must be strictly decimal, and duplicate or incompatible
+record operations fail startup. Quest status targets must be nonzero loaded
+quest definitions and cannot be duplicated in one merged action plan. A
+catalog may contain at most 256 programs. One program may contain at most 64
+conditions, actions, and pages in total, with at most 16 result pages and 16
+incomplete pages. Each page is limited to 4096 UTF-8 bytes, and each script name
+to 256 bytes.
+
+Quest scripts have no filesystem, network, clock, random, loop, callback,
+generic NPC script, portal script, mob-kill integration, or dynamic branching
+capability. Restart the server after changing `quest-scripts.toml`.
 
 The local archives contain NPC script names but not their executable bodies.
 Shop stock, buy prices, taxi destinations, and fares therefore come from
@@ -214,6 +390,17 @@ learned skill, leave the Skills window open, open Key Settings, and drag the
 skill icon onto a key. A skill can have one key assignment, like each built-in
 action.
 
+Quest Act skill rewards raise learned and master levels independently without
+spending skill points or lowering either value. Their authored job IDs are exact;
+beginner-family skill IDs retain the original cross-job bypass. `Skill.wz` is the
+authoritative global index, including invisible definitions. An invisible real
+skill enters the player's skill book after a positive learned or master-level
+unlock, and its positive master level limits later point allocation. Legacy
+ordinary skills with no stored master level still use their definition maximum.
+An invisible definition with maximum level zero is different: an authored
+level-1 record may persist as an acquisition marker for quest checks, but the
+marker remains hidden, non-allocatable, non-bindable, and non-usable.
+
 A basic attack selects the nearest living mob in front of the character and
 uses the configured bare-hands damage profile. Its result follows the same
 server-owned mob HP, defense, aggro, and death pipeline as a damaging skill.
@@ -236,6 +423,11 @@ character. The server verifies the target map, foothold layer, facing direction,
 horizontal reach, and vertical reach before choosing damage from the calculated
 range. It owns mob HP, death, aggro, and respawn state. The client displays the
 resulting damage, mob HP bar, attack animation, and projectile state.
+
+Temporary effects from different skill and item sources coexist. Reapplying the
+same source replaces its previous holder. Each numeric combat or movement
+modifier uses the highest nonzero value among the active holders; values are not
+added together. A new morph replaces any active morph from another source.
 
 When `Sound.wz` is present, a successful use also returns the matching
 `Skill.img/<skill ID>/Use` sound. The server reads caster `effect`, projectile
@@ -267,8 +459,15 @@ the composed character layers. An empty top or bottom slot uses the
 gender-specific pajama layers from `Character.wz` instead of leaving the body
 unclothed.
 
+Inventory stack deadlines are persisted with the stack. Zero means permanent.
+Only matching item IDs and deadlines merge, and item consumption uses the
+earliest deadline before permanent stacks. The server removes expired stacks at
+the locked player-load boundary and saves a new player revision only when that
+pruning changes the inventory.
+
 Dropped items are transient and scoped to their map. Their item ID, position,
-and server-issued expiry time are sent in the map protobuf. Expired drops are
+normal despawn deadline, and preserved item deadline are sent in the map
+protobuf. A drop expires at the earlier active deadline. Expired drops are
 removed from the server drop store and stop rendering in the client. The Pick
 Up action moves the nearest drop within pickup range into the character's
 inventory. The server removes the drop and saves the inventory as one item

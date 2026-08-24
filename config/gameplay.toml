@@ -9,6 +9,9 @@ initial_points = 3
 [characters]
 initial_map_id = 10000
 
+[world]
+id = 0
+
 [combat]
 disengage_range        = 520.0
 player_attack_range    = 220.0

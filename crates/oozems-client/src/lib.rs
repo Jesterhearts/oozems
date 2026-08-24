@@ -9,6 +9,7 @@ mod game_gui;
 mod interaction_ui;
 mod keymap;
 mod mob_render;
+mod morph_render;
 mod movement;
 mod render;
 mod skill_effects;
@@ -31,9 +32,11 @@ pub fn start() {
 
 async fn start_client() -> Result<(), String> {
     show_status("Loading saved player...", false);
+    let bootstrap_requested_at_ms = game::monotonic_time_ms();
     let bootstrap = api::bootstrap(PLAYER_ID)
         .await
         .map_err(|error| error.to_string())?;
+    let bootstrap_active_buffs = bootstrap.active_buffs.unwrap_or_default();
     match bootstrap.player {
         Some(player) => {
             let appearance = player
@@ -51,7 +54,13 @@ async fn start_client() -> Result<(), String> {
             set_visible("character-create", false)?;
             set_visible("game-frame", true)?;
             set_visible("controls", true)?;
-            game::run(player, sprites).await
+            game::run(
+                player,
+                sprites,
+                bootstrap_active_buffs,
+                bootstrap_requested_at_ms,
+            )
+            .await
         }
         None => character_create::show(bootstrap.creation_options.unwrap_or_default()),
     }

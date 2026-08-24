@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use oozems_proto::v1::KeyAction;
 use oozems_proto::v1::KeyBinding;
+use oozems_proto::v1::LearnedSkill;
 
 use crate::movement::PlayerInput;
 
@@ -100,6 +101,22 @@ pub fn assign_target(
     updated
 }
 
+pub fn retain_learned_skill_bindings(
+    bindings: &[KeyBinding],
+    learned_skills: &[LearnedSkill],
+) -> Vec<KeyBinding> {
+    let learned_skill_ids = learned_skills
+        .iter()
+        .filter(|skill| skill.level > 0)
+        .map(|skill| skill.skill_id)
+        .collect::<HashSet<_>>();
+    bindings
+        .iter()
+        .filter(|binding| binding.skill_id == 0 || learned_skill_ids.contains(&binding.skill_id))
+        .cloned()
+        .collect()
+}
+
 pub fn target_for_code(
     bindings: &[KeyBinding],
     code: &str,
@@ -152,6 +169,7 @@ mod tests {
     use super::KeyboardState;
     use super::assign_target;
     use super::drain_frame_input;
+    use super::retain_learned_skill_bindings;
     use super::set_key;
 
     #[test]
@@ -181,6 +199,33 @@ mod tests {
             vec![KeyAction::BasicAttack]
         );
         assert!(drain_frame_input(&mut state, &bindings).actions.is_empty());
+    }
+
+    #[test]
+    fn unavailable_skill_bindings_are_removed_without_changing_actions() {
+        let jump = binding("Space", KeyAction::Jump);
+        let learned = KeyBinding {
+            code: "KeyA".to_owned(),
+            action: KeyAction::Unspecified as i32,
+            skill_id: 1_001,
+        };
+        let removed = KeyBinding {
+            code: "KeyB".to_owned(),
+            action: KeyAction::Unspecified as i32,
+            skill_id: 1_002,
+        };
+
+        assert_eq!(
+            retain_learned_skill_bindings(
+                &[jump.clone(), learned.clone(), removed],
+                &[oozems_proto::v1::LearnedSkill {
+                    skill_id: 1_001,
+                    level: 1,
+                    master_level: 1,
+                }],
+            ),
+            vec![jump, learned]
+        );
     }
 
     #[test]

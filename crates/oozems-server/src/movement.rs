@@ -34,7 +34,6 @@ pub struct MovementTracker {
 #[derive(Default)]
 struct PlayerMovement {
     session: Option<MovementSession>,
-    effects: HashMap<u32, MovementEffect>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -51,19 +50,13 @@ struct MovementSession {
     horizontal_credit: f32,
     vertical_credit: f32,
     climb_credit: f32,
+    modifiers: MovementModifiers,
 }
 
 #[derive(Clone, Copy, Debug)]
 struct AirborneState {
     origin_y: f32,
     started_at_ms: u64,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct MovementEffect {
-    speed_bonus: i32,
-    jump_bonus: i32,
-    expires_at_ms: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -220,7 +213,6 @@ pub fn initialize_player(
             player.id.clone(),
             PlayerMovement {
                 session: Some(session),
-                effects: HashMap::new(),
             },
         );
     Ok(())
@@ -244,6 +236,7 @@ pub fn synchronize_player(
     Ok(player)
 }
 
+#[cfg(test)]
 pub fn submit_movement(
     tracker: &MovementTracker,
     player: &PlayerState,
@@ -251,11 +244,28 @@ pub fn submit_movement(
     config: MovementConfig,
     now_ms: u64,
 ) -> Result<MovementDecision, MovementError> {
+    submit_movement_with_modifiers(
+        tracker,
+        player,
+        submitted,
+        MovementModifiers::default(),
+        config,
+        now_ms,
+    )
+}
+
+pub fn submit_movement_with_modifiers(
+    tracker: &MovementTracker,
+    player: &PlayerState,
+    submitted: SubmittedMovement,
+    modifiers: MovementModifiers,
+    config: MovementConfig,
+    now_ms: u64,
+) -> Result<MovementDecision, MovementError> {
     let map = movement_map(tracker, player.map_id)?;
     let mut players = tracker.players.lock().map_err(|_| MovementError::Tracker)?;
     let movement = players.entry(player.id.clone()).or_default();
     ensure_session(movement, player, &map, config, now_ms)?;
-    let modifiers = active_modifiers(&mut movement.effects, now_ms);
     let session = movement
         .session
         .as_mut()
@@ -265,19 +275,19 @@ pub fn submit_movement(
     ))
 }
 
-pub fn enter_portal(
+pub fn enter_portal_with_modifiers(
     tracker: &MovementTracker,
     player: &PlayerState,
     portal: PortalMovement<'_>,
+    modifiers: MovementModifiers,
     config: MovementConfig,
     now_ms: u64,
-) -> Result<MovementDecision, MovementError> {
+) -> Result<(MovementDecision, Option<RelocationRollback>), MovementError> {
     register_map(tracker, portal.source_map)?;
     register_map(tracker, portal.target_map)?;
     let mut players = tracker.players.lock().map_err(|_| MovementError::Tracker)?;
     let movement = players.entry(player.id.clone()).or_default();
     ensure_session(movement, player, portal.source_map, config, now_ms)?;
-    let modifiers = active_modifiers(&mut movement.effects, now_ms);
     let session = movement
         .session
         .as_mut()
@@ -291,7 +301,7 @@ pub fn enter_portal(
         now_ms,
     );
     if !source_decision.accepted {
-        return Ok(source_decision);
+        return Ok((source_decision, None));
     }
     let activity = source_decision.activity;
     let persist = source_decision.persist;
@@ -302,25 +312,32 @@ pub fn enter_portal(
             && (session.position.x - source_portal.x).abs() <= config.portal_horizontal_reach
             && (session.position.y - source_portal.y).abs() <= config.portal_vertical_reach
     }) else {
-        return Ok(MovementDecision {
-            persist,
-            ..reject(
-                session,
-                "the authoritative position is not at that portal",
-                activity,
-            )
-        });
+        return Ok((
+            MovementDecision {
+                persist,
+                ..reject(
+                    session,
+                    "the authoritative position is not at that portal",
+                    activity,
+                )
+            },
+            None,
+        ));
     };
     let Some(position) = destination_position(portal.target_map, &source_portal.target_name) else {
-        return Ok(MovementDecision {
-            persist,
-            ..reject(
-                session,
-                "the destination map has no usable portal",
-                activity,
-            )
-        });
+        return Ok((
+            MovementDecision {
+                persist,
+                ..reject(
+                    session,
+                    "the destination map has no usable portal",
+                    activity,
+                )
+            },
+            None,
+        ));
     };
+    let rollback = RelocationRollback { session: *session };
     let position = clamp_to_movement_bounds(portal.target_map, position);
     let (mode, platform_layer) = initial_motion(portal.target_map, &position, config);
     session.map_id = portal.target_map.id;
@@ -329,10 +346,13 @@ pub fn enter_portal(
     session.platform_layer = platform_layer;
     session.airborne = airborne_state(session.mode, position.y, now_ms);
     session.dirty = true;
-    Ok(MovementDecision {
-        persist: true,
-        ..accept(session, true, now_ms, config)
-    })
+    Ok((
+        MovementDecision {
+            persist: true,
+            ..accept(session, true, now_ms, config)
+        },
+        Some(rollback),
+    ))
 }
 
 pub fn authorized_destination(
@@ -449,31 +469,6 @@ pub fn mark_persisted(
     Ok(())
 }
 
-pub fn record_skill_effect(
-    tracker: &MovementTracker,
-    player_id: &str,
-    skill_id: u32,
-    speed_bonus: i32,
-    jump_bonus: i32,
-    duration_ms: u64,
-    now_ms: u64,
-) -> Result<(), MovementError> {
-    let mut players = tracker.players.lock().map_err(|_| MovementError::Tracker)?;
-    let movement = players.entry(player_id.to_owned()).or_default();
-    movement.effects.remove(&skill_id);
-    if duration_ms > 0 && (speed_bonus != 0 || jump_bonus != 0) {
-        movement.effects.insert(
-            skill_id,
-            MovementEffect {
-                speed_bonus,
-                jump_bonus,
-                expires_at_ms: now_ms.saturating_add(duration_ms),
-            },
-        );
-    }
-    Ok(())
-}
-
 fn ensure_session(
     movement: &mut PlayerMovement,
     player: &PlayerState,
@@ -522,6 +517,7 @@ fn initial_session(
         horizontal_credit: config.position_tolerance,
         vertical_credit: config.position_tolerance,
         climb_credit: config.position_tolerance,
+        modifiers: MovementModifiers::default(),
     }
 }
 
@@ -553,6 +549,8 @@ fn apply_snapshot(
         return reject(session, "the movement sequence is not newer", false);
     }
     session.sequence = submitted.sequence;
+    let interval_modifiers = endpoint_modifiers(session.modifiers, modifiers);
+    session.modifiers = modifiers;
     let elapsed_ms = now_ms
         .saturating_sub(session.received_at_ms)
         .min(duration_millis(config.maximum_snapshot_gap));
@@ -587,8 +585,12 @@ fn apply_snapshot(
     }
 
     let elapsed_seconds = elapsed_ms as f32 / 1_000.0;
-    let walk_speed = modified_speed(config.walk_speed, modifiers.speed, config.speed_cap);
-    let jump_speed = modified_speed(config.jump_speed, modifiers.jump, config.jump_cap);
+    let walk_speed = modified_speed(
+        config.walk_speed,
+        interval_modifiers.speed,
+        config.speed_cap,
+    );
+    let jump_speed = modified_speed(config.jump_speed, interval_modifiers.jump, config.jump_cap);
     replenish_movement_credit(
         session,
         config,
@@ -955,24 +957,20 @@ fn update_airborne_state(
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
-struct MovementModifiers {
-    speed: i32,
-    jump: i32,
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MovementModifiers {
+    pub speed: i32,
+    pub jump: i32,
 }
 
-fn active_modifiers(
-    effects: &mut HashMap<u32, MovementEffect>,
-    now_ms: u64,
+fn endpoint_modifiers(
+    previous: MovementModifiers,
+    current: MovementModifiers,
 ) -> MovementModifiers {
-    effects.retain(|_, effect| effect.expires_at_ms > now_ms);
-    effects
-        .values()
-        .fold(MovementModifiers::default(), |mut modifiers, effect| {
-            modifiers.speed = modifiers.speed.saturating_add(effect.speed_bonus);
-            modifiers.jump = modifiers.jump.saturating_add(effect.jump_bonus);
-            modifiers
-        })
+    MovementModifiers {
+        speed: previous.speed.max(current.speed),
+        jump: previous.jump.max(current.jump),
+    }
 }
 
 fn modified_speed(
@@ -1065,18 +1063,19 @@ mod tests {
     use oozems_proto::v1::Vec2;
 
     use super::MovementMode;
+    use super::MovementModifiers;
     use super::MovementTracker;
     use super::PortalMovement;
     use super::Position;
     use super::SubmittedMovement;
     use super::SupportContact;
-    use super::enter_portal;
+    use super::enter_portal_with_modifiers;
     use super::initialize_player;
-    use super::record_skill_effect;
     use super::register_map;
     use super::relocate_player;
     use super::restore_relocation;
     use super::submit_movement;
+    use super::submit_movement_with_modifiers;
     use super::synchronize_player;
     use crate::gameplay::MovementConfig;
 
@@ -1140,21 +1139,25 @@ mod tests {
     #[test]
     fn haste_bonus_is_capped_by_the_configured_speed_stat() {
         let tracker = initialized_tracker();
-        record_skill_effect(&tracker, "player", 4_001_005, 150, 0, 10_000, 1_000)
-            .expect("movement effect");
+        let modifiers = MovementModifiers {
+            speed: 150,
+            jump: 0,
+        };
 
-        let accepted = submit_movement(
+        let accepted = submit_movement_with_modifiers(
             &tracker,
             &player(),
             submitted(1, 190.0, 300.0, MovementMode::Grounded),
+            modifiers,
             config(),
             1_200,
         )
         .expect("capped movement");
-        let rejected = submit_movement(
+        let rejected = submit_movement_with_modifiers(
             &tracker,
             &player(),
             submitted(2, 305.0, 300.0, MovementMode::Grounded),
+            modifiers,
             config(),
             1_400,
         )
@@ -1167,40 +1170,26 @@ mod tests {
     #[test]
     fn jump_bonus_is_capped_by_the_configured_jump_stat() {
         let accepted_tracker = initialized_tracker();
-        record_skill_effect(
-            &accepted_tracker,
-            "player",
-            4_001_005,
-            0,
-            150,
-            10_000,
-            1_000,
-        )
-        .expect("jump effect");
-        let accepted = submit_movement(
+        let modifiers = MovementModifiers {
+            speed: 0,
+            jump: 150,
+        };
+        let accepted = submit_movement_with_modifiers(
             &accepted_tracker,
             &player(),
             submitted(1, 100.0, 110.0, MovementMode::Airborne),
+            modifiers,
             config(),
             1_200,
         )
         .expect("capped jump");
 
         let rejected_tracker = initialized_tracker();
-        record_skill_effect(
-            &rejected_tracker,
-            "player",
-            4_001_005,
-            0,
-            150,
-            10_000,
-            1_000,
-        )
-        .expect("jump effect");
-        let rejected = submit_movement(
+        let rejected = submit_movement_with_modifiers(
             &rejected_tracker,
             &player(),
             submitted(1, 100.0, 80.0, MovementMode::Airborne),
+            modifiers,
             config(),
             1_200,
         )
@@ -1211,21 +1200,43 @@ mod tests {
     }
 
     #[test]
-    fn expired_movement_effects_no_longer_expand_the_envelope() {
+    fn an_endpoint_haste_modifier_covers_the_interval_where_it_expires() {
         let tracker = initialized_tracker();
-        record_skill_effect(&tracker, "player", 4_001_005, 40, 20, 100, 1_000)
-            .expect("movement effect");
-
-        let decision = submit_movement(
+        let haste = MovementModifiers {
+            speed: 100,
+            jump: 0,
+        };
+        let active_endpoint = submit_movement_with_modifiers(
             &tracker,
             &player(),
-            submitted(1, 190.0, 300.0, MovementMode::Grounded),
+            submitted(1, 100.0, 300.0, MovementMode::Grounded),
+            haste,
+            config(),
+            1_000,
+        )
+        .expect("active Haste endpoint");
+        let expiration_endpoint = submit_movement_with_modifiers(
+            &tracker,
+            &player(),
+            submitted(2, 190.0, 300.0, MovementMode::Grounded),
+            MovementModifiers::default(),
             config(),
             1_200,
         )
-        .expect("expired effect movement");
+        .expect("expired Haste endpoint");
+        let unbuffed_interval = submit_movement_with_modifiers(
+            &tracker,
+            &player(),
+            submitted(3, 280.0, 300.0, MovementMode::Grounded),
+            MovementModifiers::default(),
+            config(),
+            1_400,
+        )
+        .expect("unbuffed interval");
 
-        assert!(!decision.accepted);
+        assert!(active_endpoint.accepted);
+        assert!(expiration_endpoint.accepted);
+        assert!(!unbuffed_interval.accepted);
     }
 
     #[test]
@@ -1270,10 +1281,8 @@ mod tests {
     }
 
     #[test]
-    fn registering_a_missing_map_preserves_pending_skill_effects() {
+    fn registering_a_missing_map_accepts_later_projected_modifiers() {
         let tracker = MovementTracker::default();
-        record_skill_effect(&tracker, "player", 4_001_005, 150, 0, 10_000, 1_000)
-            .expect("movement effect");
         let missing = submit_movement(
             &tracker,
             &player(),
@@ -1287,18 +1296,24 @@ mod tests {
         ));
 
         register_map(&tracker, &map()).expect("register map");
-        let heartbeat = submit_movement(
+        let modifiers = MovementModifiers {
+            speed: 150,
+            jump: 0,
+        };
+        let heartbeat = submit_movement_with_modifiers(
             &tracker,
             &player(),
             submitted(1, 100.0, 300.0, MovementMode::Grounded),
+            modifiers,
             config(),
             1_200,
         )
         .expect("initial heartbeat");
-        let haste_movement = submit_movement(
+        let haste_movement = submit_movement_with_modifiers(
             &tracker,
             &player(),
             submitted(2, 190.0, 300.0, MovementMode::Grounded),
+            modifiers,
             config(),
             1_400,
         )
@@ -1764,7 +1779,7 @@ mod tests {
             }),
             ..Map::default()
         };
-        let decision = enter_portal(
+        let (decision, rollback) = enter_portal_with_modifiers(
             &tracker,
             &player(),
             PortalMovement {
@@ -1773,6 +1788,7 @@ mod tests {
                 source: submitted(1, 120.0, 300.0, MovementMode::Grounded),
                 target_portal_name: "west",
             },
+            MovementModifiers::default(),
             config(),
             1_200,
         )
@@ -1784,6 +1800,11 @@ mod tests {
             decision.authoritative.position.expect("position"),
             Vec2 { x: 682.0, y: 300.0 }
         );
+        restore_relocation(&tracker, "player", rollback.expect("portal rollback"))
+            .expect("restore portal source");
+        let restored = synchronize_player(&tracker, player()).expect("restored portal player");
+        assert_eq!(restored.map_id, 1);
+        assert_eq!(restored.position, Some(Vec2 { x: 120.0, y: 300.0 }));
     }
 
     #[test]

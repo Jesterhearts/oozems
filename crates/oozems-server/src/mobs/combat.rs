@@ -23,15 +23,17 @@ use super::components::ProjectileSpawns;
 use super::components::SimulationErrors;
 use super::components::TargetCache;
 use super::components::Tick;
+use crate::jobs::SkillAttackType;
 use crate::random::next_u64;
 use crate::skill_formula::FormulaCatalog;
 use crate::skill_formula::FormulaEvaluationError;
 use crate::skill_formula::evaluate_damage_profile;
+use crate::skill_formula::evaluate_profile_property;
 
 const ATTACK_ANIMATION_MS: u64 = 500;
 const PROJECTILE_LIFETIME_MS: u64 = 5_000;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum MobDamageKind {
     Physical,
     Magical,
@@ -58,6 +60,8 @@ pub(super) fn collect_player_targets(
             position: *position,
             level: player.level,
             current_hp: player.current_hp,
+            magic_defense: player.magic_defense,
+            avoidability: player.avoidability,
         })
         .collect();
 }
@@ -100,6 +104,7 @@ pub(super) fn respawn_mobs(
         (&mut positions, &mut motions, &mut combats, &identities).iter()
     {
         if combat.current_hp != 0
+            || combat.player_attack_transaction.is_some()
             || combat
                 .dead_until_ms
                 .is_none_or(|deadline| tick.now_ms < deadline)
@@ -156,7 +161,10 @@ pub(super) fn apply_touch_damage(
         .collect::<Vec<_>>();
 
     for (player_position, player) in (&positions, &mut players).iter() {
-        if player.current_hp == 0 || player.invulnerable_until_ms > tick.now_ms {
+        if player.current_hp == 0
+            || player.invulnerable_until_ms > tick.now_ms
+            || player.contact_attempt_after_ms > tick.now_ms
+        {
             continue;
         }
         let Some((_mob_position, identity, combat, random_state)) =
@@ -168,13 +176,46 @@ pub(super) fn apply_touch_damage(
         else {
             continue;
         };
+        player.contact_attempt_after_ms = tick
+            .now_ms
+            .saturating_add(duration_millis(rules.0.player_invulnerability));
         let mut random_state = *random_state ^ tick.now_ms;
+        let hit = match physical_attack_hits(
+            &formulas.0,
+            combat.accuracy,
+            player.avoidability,
+            combat.level,
+            player.level,
+            &mut random_state,
+        ) {
+            Ok(hit) => hit,
+            Err(error) => {
+                errors.0.push(format!(
+                    "touch accuracy from mob {} failed: {error}",
+                    identity.public_id
+                ));
+                continue;
+            }
+        };
+        if !hit {
+            queue_event(
+                &mut events,
+                &player.id,
+                CombatEventKind::MobMissedPlayer,
+                &identity.public_id,
+                &player.id,
+                0,
+                *player_position,
+            );
+            continue;
+        }
         let damage = match calculate_mob_damage(
             &formulas.0,
             MobDamageKind::Physical,
             combat.physical_attack,
             combat.level,
             player.level,
+            player.weapon_defense,
             &mut random_state,
         ) {
             Ok(damage) => damage,
@@ -237,12 +278,45 @@ pub(super) fn queue_projectile_attacks(
         else {
             continue;
         };
+        combat.next_attack_ms = tick
+            .now_ms
+            .saturating_add(duration_millis(rules.0.mob_attack_interval));
+        combat.attack_until_ms = tick.now_ms.saturating_add(ATTACK_ANIMATION_MS);
+        motion.mode = oozems_proto::v1::MobMovementMode::Attacking;
+        let hit = match physical_attack_hits(
+            &formulas.0,
+            combat.accuracy,
+            target.avoidability,
+            combat.level,
+            target.level,
+            &mut motion.random_state,
+        ) {
+            Ok(hit) => hit,
+            Err(error) => {
+                errors.0.push(format!(
+                    "projectile accuracy from mob {} failed: {error}",
+                    identity.public_id
+                ));
+                continue;
+            }
+        };
+        if !hit {
+            spawns.0.push(ProjectileSpawn {
+                source_mob_id: identity.public_id.clone(),
+                target_player_id: target.id.clone(),
+                position: target.position,
+                damage: 0,
+                missed: true,
+            });
+            continue;
+        }
         let damage = match calculate_mob_damage(
             &formulas.0,
             MobDamageKind::Magical,
             combat.magic_attack,
             combat.level,
             target.level,
+            target.magic_defense,
             &mut motion.random_state,
         ) {
             Ok(damage) => damage,
@@ -259,12 +333,8 @@ pub(super) fn queue_projectile_attacks(
             target_player_id: target.id.clone(),
             position: *position,
             damage,
+            missed: false,
         });
-        combat.next_attack_ms = tick
-            .now_ms
-            .saturating_add(duration_millis(rules.0.mob_attack_interval));
-        combat.attack_until_ms = tick.now_ms.saturating_add(ATTACK_ANIMATION_MS);
-        motion.mode = oozems_proto::v1::MobMovementMode::Attacking;
     }
 }
 
@@ -278,6 +348,18 @@ pub(super) fn spawn_projectiles(
     mut events: UniqueViewMut<PendingEvents>,
 ) {
     for spawn in spawns.0.drain(..) {
+        if spawn.missed {
+            queue_event(
+                &mut events,
+                &spawn.target_player_id,
+                CombatEventKind::MobMissedPlayer,
+                &spawn.source_mob_id,
+                &spawn.target_player_id,
+                0,
+                spawn.position,
+            );
+            continue;
+        }
         let id = next_id(&mut events, "projectile");
         entities.add_entity(
             (&mut positions, &mut projectiles),
@@ -367,6 +449,7 @@ fn calculate_mob_damage(
     attack: i32,
     monster_level: u32,
     player_level: u32,
+    defense: i32,
     random_state: &mut u64,
 ) -> Result<u64, FormulaEvaluationError> {
     let Some(profile) = formulas.defense_profile(kind.profile()) else {
@@ -378,8 +461,24 @@ fn calculate_mob_damage(
             ("DamageBeforeDefense", f64::from(attack.max(1))),
             ("MonsterLevel", f64::from(monster_level)),
             ("PlayerLevel", f64::from(player_level)),
-            ("WeaponDefense", 0.0),
-            ("MagicDefense", 0.0),
+            (
+                "WeaponDefense",
+                f64::from(
+                    (kind == MobDamageKind::Physical)
+                        .then_some(defense)
+                        .unwrap_or_default()
+                        .max(0),
+                ),
+            ),
+            (
+                "MagicDefense",
+                f64::from(
+                    (kind == MobDamageKind::Magical)
+                        .then_some(defense)
+                        .unwrap_or_default()
+                        .max(0),
+                ),
+            ),
         ],
     )?;
     let minimum = final_damage(range.minimum);
@@ -388,10 +487,120 @@ fn calculate_mob_damage(
     Ok(minimum.saturating_add(next_u64(random_state) % width))
 }
 
+pub(super) fn physical_attack_hits(
+    formulas: &FormulaCatalog,
+    accuracy: i32,
+    avoidability: i32,
+    monster_level: u32,
+    player_level: u32,
+    random_state: &mut u64,
+) -> Result<bool, FormulaEvaluationError> {
+    if avoidability <= 0 {
+        return Ok(true);
+    }
+    if accuracy <= 0 {
+        return Ok(false);
+    }
+    let Some(profile) = formulas.accuracy_profile("physical") else {
+        return Ok(true);
+    };
+    let chance = evaluate_profile_property(
+        profile,
+        "hit_chance",
+        &[
+            ("Accuracy", f64::from(accuracy)),
+            ("Avoidability", f64::from(avoidability)),
+            ("MonsterLevel", f64::from(monster_level)),
+            ("PlayerLevel", f64::from(player_level)),
+        ],
+    )?
+    .clamp(0.0, 1.0);
+    let threshold = (chance * 1_000_000.0).trunc() as u64;
+    Ok(next_u64(random_state) % 1_000_000 < threshold)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn player_attack_hits(
+    formulas: &FormulaCatalog,
+    attack_type: SkillAttackType,
+    physical_accuracy: i32,
+    accuracy_bonus: i32,
+    intelligence: u32,
+    luck: u32,
+    avoidability: i32,
+    monster_level: u32,
+    player_level: u32,
+    random_state: &mut u64,
+) -> Result<bool, FormulaEvaluationError> {
+    match attack_type {
+        SkillAttackType::Physical => physical_attack_hits(
+            formulas,
+            physical_accuracy,
+            avoidability,
+            monster_level,
+            player_level,
+            random_state,
+        ),
+        SkillAttackType::Magical => magical_attack_hits(
+            formulas,
+            accuracy_bonus,
+            intelligence,
+            luck,
+            avoidability,
+            monster_level,
+            player_level,
+            random_state,
+        ),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn magical_attack_hits(
+    formulas: &FormulaCatalog,
+    accuracy_bonus: i32,
+    intelligence: u32,
+    luck: u32,
+    avoidability: i32,
+    monster_level: u32,
+    player_level: u32,
+    random_state: &mut u64,
+) -> Result<bool, FormulaEvaluationError> {
+    let Some(profile) = formulas.accuracy_profile("magical") else {
+        return Ok(true);
+    };
+    let stats = [
+        ("Intelligence", f64::from(intelligence)),
+        ("Luck", f64::from(luck)),
+    ];
+    let accuracy =
+        evaluate_profile_property(profile, "accuracy", &stats)? + f64::from(accuracy_bonus);
+    let ratio = evaluate_profile_property(
+        profile,
+        "ratio",
+        &[
+            ("Accuracy", accuracy.max(0.0)),
+            ("Intelligence", f64::from(intelligence)),
+            ("Luck", f64::from(luck)),
+            ("Avoidability", f64::from(avoidability.max(0))),
+            ("MonsterLevel", f64::from(monster_level)),
+            ("PlayerLevel", f64::from(player_level)),
+        ],
+    )?;
+    let chance = evaluate_profile_property(
+        profile,
+        "hit_rate",
+        &[("AccuracyRatio", ratio.clamp(0.0, 1.0))],
+    )?
+    .clamp(0.0, 1.0);
+    let threshold = (chance * 1_000_000.0).trunc() as u64;
+    Ok(next_u64(random_state) % 1_000_000 < threshold)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn calculate_player_damage(
     formulas: &FormulaCatalog,
-    physical_defense: i32,
+    attack_type: SkillAttackType,
+    defense: i32,
     monster_level: u32,
     player_level: u32,
     minimum_damage: u32,
@@ -401,14 +610,33 @@ pub(super) fn calculate_player_damage(
 ) -> Result<u64, FormulaEvaluationError> {
     let (minimum, maximum) = if fixed_damage {
         (u64::from(minimum_damage), u64::from(maximum_damage))
-    } else if let Some(profile) = formulas.defense_profile("physical") {
+    } else if let Some(profile) = formulas.defense_profile(match attack_type {
+        SkillAttackType::Physical => "physical",
+        SkillAttackType::Magical => "magical",
+    }) {
         let variables = |damage| {
             [
                 ("DamageBeforeDefense", f64::from(damage)),
                 ("MonsterLevel", f64::from(monster_level)),
                 ("PlayerLevel", f64::from(player_level)),
-                ("WeaponDefense", f64::from(physical_defense.max(0))),
-                ("MagicDefense", 0.0),
+                (
+                    "WeaponDefense",
+                    f64::from(
+                        (attack_type == SkillAttackType::Physical)
+                            .then_some(defense)
+                            .unwrap_or_default()
+                            .max(0),
+                    ),
+                ),
+                (
+                    "MagicDefense",
+                    f64::from(
+                        (attack_type == SkillAttackType::Magical)
+                            .then_some(defense)
+                            .unwrap_or_default()
+                            .max(0),
+                    ),
+                ),
             ]
         };
         let minimum = evaluate_damage_profile(profile, &variables(minimum_damage))?.minimum;
@@ -479,6 +707,9 @@ mod tests {
     use super::MobDamageKind;
     use super::calculate_mob_damage;
     use super::calculate_player_damage;
+    use super::physical_attack_hits;
+    use super::player_attack_hits;
+    use crate::jobs::SkillAttackType;
     use crate::skill_formula::FormulaCatalog;
 
     #[test]
@@ -493,6 +724,7 @@ mod tests {
             20,
             10,
             10,
+            0,
             &mut random_state,
         )
         .expect("mob damage");
@@ -506,9 +738,18 @@ mod tests {
             .expect("formula catalog");
         let mut random_state = 1;
 
-        let damage =
-            calculate_player_damage(&formulas, 10, 10, 10, 20, 20, false, &mut random_state)
-                .expect("player damage");
+        let damage = calculate_player_damage(
+            &formulas,
+            SkillAttackType::Physical,
+            10,
+            10,
+            10,
+            20,
+            20,
+            false,
+            &mut random_state,
+        )
+        .expect("player damage");
 
         assert!((14..=15).contains(&damage));
     }
@@ -519,10 +760,81 @@ mod tests {
             .expect("formula catalog");
         let mut random_state = 1;
 
-        let damage =
-            calculate_player_damage(&formulas, 10_000, 100, 1, 10, 10, true, &mut random_state)
-                .expect("fixed damage");
+        let damage = calculate_player_damage(
+            &formulas,
+            SkillAttackType::Physical,
+            10_000,
+            100,
+            1,
+            10,
+            10,
+            true,
+            &mut random_state,
+        )
+        .expect("fixed damage");
 
         assert_eq!(damage, 10);
+    }
+
+    #[test]
+    fn physical_accuracy_formula_has_deterministic_hit_and_miss_boundaries() {
+        let formulas = FormulaCatalog::load(Path::new("../../config/skill-formulas.toml"))
+            .expect("formula catalog");
+
+        assert!(
+            physical_attack_hits(&formulas, 100, 10, 10, 10, &mut 1).expect("high-accuracy hit")
+        );
+        assert!(
+            !physical_attack_hits(&formulas, 1, 10, 10, 10, &mut 1).expect("low-accuracy miss")
+        );
+    }
+
+    #[test]
+    fn magical_accuracy_uses_intelligence_and_luck() {
+        let formulas = FormulaCatalog::load(Path::new("../../config/skill-formulas.toml"))
+            .expect("formula catalog");
+
+        assert!(
+            player_attack_hits(
+                &formulas,
+                SkillAttackType::Magical,
+                0,
+                0,
+                100,
+                10,
+                10,
+                10,
+                10,
+                &mut 1,
+            )
+            .expect("high magical accuracy hit")
+        );
+        assert!(
+            !player_attack_hits(
+                &formulas,
+                SkillAttackType::Magical,
+                100,
+                0,
+                10,
+                10,
+                10,
+                10,
+                10,
+                &mut 1,
+            )
+            .expect("low magical accuracy miss")
+        );
+    }
+
+    #[test]
+    fn projected_player_defenses_reduce_matching_mob_damage() {
+        let formulas = FormulaCatalog::load(Path::new("../../config/skill-formulas.toml"))
+            .expect("formula catalog");
+
+        for kind in [MobDamageKind::Physical, MobDamageKind::Magical] {
+            let damage = calculate_mob_damage(&formulas, kind, 20, 10, 10, 10, &mut 1)
+                .expect("defended mob damage");
+            assert!((14..=15).contains(&damage));
+        }
     }
 }

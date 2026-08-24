@@ -37,6 +37,7 @@ pub enum AttackRuleError {
 pub fn calculate_basic_attack(
     player: &PlayerState,
     formulas: &FormulaCatalog,
+    weapon_attack_bonus: i32,
 ) -> Result<DamageRange, AttackRuleError> {
     let stats = player.stats.as_ref().ok_or(AttackRuleError::MissingStats)?;
     let profile = formulas
@@ -47,7 +48,8 @@ pub fn calculate_basic_attack(
         "attack",
         &[("CharacterLevel", f64::from(player.level))],
     )
-    .map_err(formula_error)?;
+    .map_err(formula_error)?
+        + f64::from(weapon_attack_bonus);
     let variables = [
         ("CharacterLevel", f64::from(player.level)),
         ("PlayerLevel", f64::from(player.level)),
@@ -159,7 +161,7 @@ mod tests {
         };
 
         assert_eq!(
-            calculate_basic_attack(&player, &formulas()).expect("basic attack damage"),
+            calculate_basic_attack(&player, &formulas(), 0).expect("basic attack damage"),
             DamageRange {
                 minimum: 1,
                 maximum: 5,
@@ -170,7 +172,7 @@ mod tests {
     #[test]
     fn basic_attack_requires_character_stats() {
         assert_eq!(
-            calculate_basic_attack(&PlayerState::default(), &formulas()),
+            calculate_basic_attack(&PlayerState::default(), &formulas(), 0),
             Err(AttackRuleError::MissingStats)
         );
     }

@@ -71,8 +71,19 @@ pub(super) fn begin_action(
                     show_status("Select an inventory item first.", true);
                     return;
                 };
+                let Some(stack) = game
+                    .player
+                    .inventory
+                    .as_ref()
+                    .and_then(|inventory| inventory.stacks.get(index))
+                else {
+                    show_status("The selected inventory item is no longer available.", true);
+                    return;
+                };
                 npc_interaction_request::Action::Sell(SellShopItemAction {
                     inventory_index: u32::try_from(index).unwrap_or(u32::MAX),
+                    expected_item_id: stack.item_id,
+                    expected_expires_at_unix_ms: stack.expires_at_unix_ms,
                 })
             }
             InteractionUiAction::TakeTaxi { map_id } => {
@@ -84,6 +95,8 @@ pub(super) fn begin_action(
             | InteractionUiAction::Close
             | InteractionUiAction::PreviousPage
             | InteractionUiAction::NextPage
+            | InteractionUiAction::PreviousChoicePage
+            | InteractionUiAction::NextChoicePage
             | InteractionUiAction::SelectOffer { .. }
             | InteractionUiAction::SelectInventory { .. }
             | InteractionUiAction::PreviousInventoryPage
@@ -104,12 +117,13 @@ fn begin_request(
     request: NpcInteractionRequest,
     context: &'static str,
 ) {
-    let (in_flight, generation, source_map_id) = {
+    let (in_flight, generation, source_map_id, learned_skills) = {
         let game = game.borrow();
         (
             game.interaction.in_flight.clone(),
             game.interaction.generation,
             game.map.id,
+            game.player.learned_skills.clone(),
         )
     };
     if in_flight.replace(true) {
@@ -117,7 +131,15 @@ fn begin_request(
         return;
     }
     spawn_local(async move {
-        let result = request_and_prepare(request, generation, source_map_id).await;
+        let request_started_ms = super::monotonic_time_ms();
+        let result = request_and_prepare(
+            request,
+            generation,
+            source_map_id,
+            learned_skills,
+            request_started_ms,
+        )
+        .await;
         match result {
             Ok(update) => match install_response(&mut game.borrow_mut(), update) {
                 Ok(message) => show_status(message, false),
@@ -131,22 +153,38 @@ fn begin_request(
 
 struct InteractionUpdate {
     response: NpcInteractionResponse,
+    skill_book: Option<(api::LoadedSkillBook, f64)>,
     generation: u64,
     source_map_id: u32,
+    request_started_ms: f64,
 }
 
 async fn request_and_prepare(
     request: NpcInteractionRequest,
     generation: u64,
     source_map_id: u32,
+    learned_skills: Vec<oozems_proto::v1::LearnedSkill>,
+    request_started_ms: f64,
 ) -> Result<InteractionUpdate, String> {
     let response = api::interact_npc(request)
         .await
         .map_err(|error| error.to_string())?;
+    let skill_book = match response.player.as_ref() {
+        Some(player) if player.learned_skills != learned_skills => {
+            let skill_requested_at_ms = super::monotonic_time_ms();
+            api::get_skill_book(&player.id)
+                .await
+                .ok()
+                .map(|loaded| (loaded, skill_requested_at_ms))
+        }
+        _ => None,
+    };
     Ok(InteractionUpdate {
         response,
+        skill_book,
         generation,
         source_map_id,
+        request_started_ms,
     })
 }
 
@@ -159,33 +197,57 @@ fn install_response(
         .player
         .take()
         .ok_or("NPC response did not contain a player")?;
+    let response_player_revision = player.revision;
+    let npc_animation = update.response.npc_animation.take();
     let context_is_current =
         game.interaction.generation == update.generation && game.map.id == update.source_map_id;
+    let installed = super::install_full_player_update(game, player);
+    super::install_active_buffs(
+        game,
+        update.response.active_buffs.take().unwrap_or_default(),
+        update.request_started_ms,
+    );
+    if installed.domains.skills {
+        if let Some((mut loaded, skill_requested_at_ms)) = update.skill_book.take() {
+            game.skill_book = loaded.skill_book;
+            super::install_active_buffs(
+                game,
+                std::mem::take(&mut loaded.active_buffs),
+                skill_requested_at_ms,
+            );
+        }
+    }
+    let relocation_requested =
+        update.response.map.is_some() || update.response.authoritative.is_some();
     let relocated = match (
         update.response.map.take(),
         update.response.authoritative.take(),
     ) {
         (Some(map), Some(authoritative)) => {
-            super::movement_actions::install_relocation(game, map, authoritative)?;
-            true
+            super::movement_actions::install_relocation(game, map, authoritative)?
         }
         (None, None) => false,
         _ => return Err("NPC response contains an incomplete map transition".to_owned()),
     };
-    if relocated {
-        game.player.map_id = player.map_id;
-        game.player.position = player.position;
-    }
-    game.player.level = player.level;
-    game.player.stats = player.stats;
-    game.player.inventory = player.inventory;
-    game.player.mesos = player.mesos;
-    game.player.quests = player.quests;
-    if context_is_current && !relocated {
+    if context_is_current && !relocation_requested {
         game.interaction.install(update.response.interaction);
+        if let Some(event) = npc_animation
+            && let Err(error) = crate::render::npc::install_event(
+                &mut game.npc_animations,
+                &game.map,
+                event,
+                response_player_revision,
+                game.player.revision,
+                game.frame_time_ms,
+            )
+        {
+            return Err(error);
+        }
     }
     Ok(if relocated {
         "Travel complete."
+    } else if relocation_requested {
+        "Travel response was superseded by newer movement."
     } else {
         "NPC interaction updated."
     })

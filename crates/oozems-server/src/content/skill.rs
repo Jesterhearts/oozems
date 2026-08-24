@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Path;
@@ -5,6 +7,7 @@ use std::sync::Arc;
 use std::sync::RwLock;
 
 use oozems_proto::v1::AssetDescriptor;
+use oozems_proto::v1::LearnedSkill;
 use oozems_proto::v1::PlayerSkill;
 use oozems_proto::v1::SkillBook;
 use oozems_proto::v1::SkillDefinition;
@@ -36,13 +39,39 @@ mod effect;
 pub struct SkillContent {
     _bases: Vec<WzNodeArc>,
     jobs: HashMap<u32, WzNodeArc>,
+    skills: HashMap<u32, IndexedSkill>,
     strings: WzNodeArc,
     fingerprint: String,
     sounds: Option<WzNodeArc>,
     sound_fingerprint: Option<String>,
     books: RwLock<HashMap<u32, SkillBook>>,
+    definitions: RwLock<HashMap<u32, CachedSkillDefinition>>,
     effects: RwLock<HashMap<(u32, u32, u32), SkillEffect>>,
     assets: RwLock<HashMap<String, Arc<WzAsset>>>,
+}
+
+struct IndexedSkill {
+    job_id: u32,
+    invisible: bool,
+    node: WzNodeArc,
+}
+
+#[derive(Clone)]
+struct CachedSkillDefinition {
+    definition: SkillDefinition,
+    asset: AssetDescriptor,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct AuthoritativeSkillDefinition {
+    pub definition: SkillDefinition,
+    pub invisible: bool,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct SkillBookContext {
+    pub book: SkillBook,
+    pub authoritative_skills: Vec<AuthoritativeSkillDefinition>,
 }
 
 struct SoundArchive {
@@ -94,6 +123,7 @@ impl SkillContent {
         let skill_base = wz::wrap_archive_root(&skill_root)?;
         wz::parse(&skill_root, format!("{} root", skill_path.display()))?;
         let jobs = index_jobs(&skill_root)?;
+        let skills = index_skills(&jobs)?;
 
         let string_root = wz::open_archive(&string_path)?;
         let string_base = wz::wrap_archive_root(&string_root)?;
@@ -119,11 +149,13 @@ impl SkillContent {
         Ok(Some(Self {
             _bases: bases,
             jobs,
+            skills,
             strings,
             fingerprint,
             sounds,
             sound_fingerprint,
             books: RwLock::new(HashMap::new()),
+            definitions: RwLock::new(HashMap::new()),
             effects: RwLock::new(HashMap::new()),
             assets: RwLock::new(HashMap::new()),
         }))
@@ -149,6 +181,107 @@ impl SkillContent {
             .map_err(|_| lock_error("skill book cache"))?
             .insert(job_id, book.clone());
         Ok(book)
+    }
+
+    pub(crate) fn skill_book_context(
+        &self,
+        job_id: u32,
+        learned_skills: &[LearnedSkill],
+    ) -> Result<SkillBookContext, SkillContentError> {
+        let mut book = self.skill_book(job_id)?;
+        let mut displayed = book
+            .skills
+            .iter()
+            .filter_map(|skill| skill.definition.as_ref())
+            .map(|definition| definition.skill_id)
+            .collect::<HashSet<_>>();
+        let mut authoritative = book
+            .skills
+            .iter()
+            .filter_map(|skill| skill.definition.clone())
+            .map(|definition| {
+                (
+                    definition.skill_id,
+                    AuthoritativeSkillDefinition {
+                        definition,
+                        invisible: false,
+                    },
+                )
+            })
+            .collect::<HashMap<_, _>>();
+
+        for learned in learned_skills {
+            let indexed =
+                self.skills
+                    .get(&learned.skill_id)
+                    .ok_or_else(|| SkillContentError::Invalid {
+                        message: format!(
+                            "learned skill {} is absent from authoritative Skill.wz",
+                            learned.skill_id
+                        ),
+                    })?;
+            let cached = self.cached_definition(learned.skill_id)?;
+            authoritative.insert(
+                learned.skill_id,
+                AuthoritativeSkillDefinition {
+                    definition: cached.definition.clone(),
+                    invisible: indexed.invisible,
+                },
+            );
+            let unlocked = learned.level > 0 || learned.master_level > 0;
+            let eligible = indexed.job_id == job_id || is_beginner_family_skill(learned.skill_id);
+            if unlocked
+                && eligible
+                && cached.definition.max_level > 0
+                && displayed.insert(learned.skill_id)
+            {
+                book.skills.push(PlayerSkill {
+                    definition: Some(cached.definition),
+                    level: 0,
+                    master_level: 0,
+                });
+                book.assets.push(cached.asset);
+            }
+        }
+        book.skills.sort_by_key(|skill| {
+            skill
+                .definition
+                .as_ref()
+                .map_or(u32::MAX, |definition| definition.skill_id)
+        });
+        let mut asset_ids = HashSet::new();
+        book.assets
+            .retain(|asset| asset_ids.insert(asset.id.clone()));
+        let mut authoritative_skills = authoritative.into_values().collect::<Vec<_>>();
+        authoritative_skills.sort_by_key(|skill| skill.definition.skill_id);
+        Ok(SkillBookContext {
+            book,
+            authoritative_skills,
+        })
+    }
+
+    pub(crate) fn authoritative_skill_ids(&self) -> BTreeSet<u32> {
+        self.skills.keys().copied().collect()
+    }
+
+    pub(crate) fn authoritative_skill_names(
+        &self
+    ) -> Result<BTreeMap<u32, String>, SkillContentError> {
+        let mut names = BTreeMap::new();
+        for skill_id in self.skills.keys().copied() {
+            let key = format!("{skill_id:07}");
+            let Some(text) = wz::child(&self.strings, &key)? else {
+                continue;
+            };
+            let Some(name) = wz::string_value(&text, "name")?
+                .map(normalize_text)
+                .filter(|name| !name.trim().is_empty())
+            else {
+                continue;
+            };
+            names.insert(skill_id, name);
+        }
+        Ok(names)
     }
 
     pub fn get_asset(
@@ -235,6 +368,35 @@ impl SkillContent {
             content_hash: version,
         })
     }
+
+    fn cached_definition(
+        &self,
+        skill_id: u32,
+    ) -> Result<CachedSkillDefinition, SkillContentError> {
+        if let Some(cached) = self
+            .definitions
+            .read()
+            .map_err(|_| lock_error("skill definition cache"))?
+            .get(&skill_id)
+            .cloned()
+        {
+            return Ok(cached);
+        }
+        let indexed = self
+            .skills
+            .get(&skill_id)
+            .ok_or_else(|| SkillContentError::Invalid {
+                message: format!("skill {skill_id} is absent from authoritative Skill.wz"),
+            })?;
+        let (definition, asset) =
+            build_skill_definition(self, indexed.job_id, skill_id, &indexed.node)?;
+        let cached = CachedSkillDefinition { definition, asset };
+        self.definitions
+            .write()
+            .map_err(|_| lock_error("skill definition cache"))?
+            .insert(skill_id, cached.clone());
+        Ok(cached)
+    }
 }
 
 fn open_sound_archive(directory: &Path) -> Result<Option<SoundArchive>, SkillContentError> {
@@ -280,33 +442,60 @@ fn index_jobs(root: &WzNodeArc) -> Result<HashMap<u32, WzNodeArc>, SkillContentE
     Ok(jobs)
 }
 
+fn index_skills(
+    jobs: &HashMap<u32, WzNodeArc>
+) -> Result<HashMap<u32, IndexedSkill>, SkillContentError> {
+    let mut job_ids = jobs.keys().copied().collect::<Vec<_>>();
+    job_ids.sort_unstable();
+    let mut indexed = HashMap::new();
+    for job_id in job_ids {
+        let job = &jobs[&job_id];
+        wz::parse(job, format!("{SKILL_ARCHIVE}/{job_id:03}.img"))?;
+        let skills = required_child(job, "skill")?;
+        for skill in wz::sorted_children(&skills)? {
+            let skill_id = parse_node_id(&skill, "skill")?;
+            let entry = IndexedSkill {
+                job_id,
+                invisible: wz::int_value(&skill, "invisible")?.unwrap_or_default() != 0,
+                node: skill,
+            };
+            if indexed.insert(skill_id, entry).is_some() {
+                return invalid(format!("skill {skill_id} appears more than once"));
+            }
+        }
+    }
+    Ok(indexed)
+}
+
 fn build_skill_book(
     content: &SkillContent,
     job_id: u32,
 ) -> Result<SkillBook, SkillContentError> {
     let name = skill_book_name(&content.strings, job_id)?;
-    let Some(job) = content.jobs.get(&job_id) else {
+    if !content.jobs.contains_key(&job_id) {
         return Ok(SkillBook {
             job_id,
             name,
             ..SkillBook::default()
         });
     };
-    wz::parse(job, format!("{SKILL_ARCHIVE}/{job_id:03}.img"))?;
-    let skills = required_child(job, "skill")?;
     let mut entries = Vec::new();
     let mut assets = Vec::new();
-    for skill in wz::sorted_children(&skills)? {
-        if wz::int_value(&skill, "invisible")?.unwrap_or_default() != 0 {
-            continue;
-        }
-        let skill_id = parse_node_id(&skill, "skill")?;
-        let (definition, asset) = build_skill_definition(content, job_id, skill_id, &skill)?;
+    let mut skill_ids = content
+        .skills
+        .iter()
+        .filter(|(_, skill)| skill.job_id == job_id && !skill.invisible)
+        .map(|(skill_id, _)| *skill_id)
+        .collect::<Vec<_>>();
+    skill_ids.sort_unstable();
+    for skill_id in skill_ids {
+        let cached = content.cached_definition(skill_id)?;
         entries.push(PlayerSkill {
-            definition: Some(definition),
+            definition: Some(cached.definition),
             level: 0,
+            master_level: 0,
         });
-        assets.push(asset);
+        assets.push(cached.asset);
     }
     let mut asset_ids = HashSet::new();
     assets.retain(|asset| asset_ids.insert(asset.id.clone()));
@@ -317,6 +506,10 @@ fn build_skill_book(
         skills: entries,
         assets,
     })
+}
+
+fn is_beginner_family_skill(skill_id: u32) -> bool {
+    skill_id % 10_000_000 < 10_000
 }
 
 fn build_skill_definition(
@@ -648,11 +841,59 @@ fn invalid<T>(message: impl Into<String>) -> Result<T, SkillContentError> {
 mod tests {
     use std::path::Path;
 
+    use oozems_proto::v1::CharacterStats;
+    use oozems_proto::v1::LearnedSkill;
+    use oozems_proto::v1::PlayerState;
     use oozems_proto::v1::SkillAnimationPlacement;
     use oozems_proto::v1::skill_value;
 
     use super::SkillContent;
     use super::SkillStats;
+
+    #[test]
+    fn authoritative_index_includes_hidden_skills_without_exposing_locked_entries() {
+        let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data");
+        if !directory.join("Skill.wz").exists() || !directory.join("String.wz").exists() {
+            return;
+        }
+        let content = SkillContent::open_optional(&directory)
+            .expect("sample skill archives should be valid")
+            .expect("sample Skill.wz should be present");
+        let ids = content.authoritative_skill_ids();
+        assert!(ids.contains(&2_321_003));
+        assert!(!ids.contains(&2_001_1003));
+
+        let locked = content.skill_book(232).expect("bishop skill book");
+        assert!(!book_contains(&locked, 2_321_003));
+        let player = PlayerState {
+            stats: Some(CharacterStats {
+                job_id: 232,
+                ..CharacterStats::default()
+            }),
+            learned_skills: vec![LearnedSkill {
+                skill_id: 2_321_003,
+                level: 0,
+                master_level: 15,
+            }],
+            ..PlayerState::default()
+        };
+        let unlocked = content
+            .skill_book_context(232, &player.learned_skills)
+            .expect("unlocked hidden skill book");
+        assert!(book_contains(&unlocked.book, 2_321_003));
+
+        let beginner = content
+            .skill_book_context(
+                112,
+                &[LearnedSkill {
+                    skill_id: 1_003,
+                    level: 1,
+                    master_level: 1,
+                }],
+            )
+            .expect("beginner-family bypass");
+        assert!(book_contains(&beginner.book, 1_003));
+    }
 
     #[test]
     fn local_archives_load_all_job_skills_and_typed_values_when_present() {
@@ -804,6 +1045,18 @@ mod tests {
                         .filter_map(|level| level.stats.as_ref())
                         .any(&predicate)
             })
+    }
+
+    fn book_contains(
+        book: &oozems_proto::v1::SkillBook,
+        skill_id: u32,
+    ) -> bool {
+        book.skills.iter().any(|skill| {
+            skill
+                .definition
+                .as_ref()
+                .is_some_and(|definition| definition.skill_id == skill_id)
+        })
     }
 
     fn book_has_text_formula(

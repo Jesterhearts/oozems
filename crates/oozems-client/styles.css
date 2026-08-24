@@ -194,6 +194,7 @@ canvas {
   border: 1px solid #172826;
   background: #87c9c0;
   image-rendering: pixelated;
+  touch-action: manipulation;
 }
 
 .status {

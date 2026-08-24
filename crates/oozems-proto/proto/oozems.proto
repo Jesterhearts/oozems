@@ -24,11 +24,42 @@ message PlayerState {
   repeated LearnedSkill learned_skills = 11;
   uint64 mesos = 12;
   repeated PlayerQuest quests = 13;
+  uint64 revision = 14;
+  repeated QuestRecord quest_records = 15;
+  repeated MonsterBookCard monster_book_cards = 16;
+}
+
+message MonsterBookCard {
+  uint32 card_item_id = 1;
+  uint32 count = 2;
 }
 
 message PlayerQuest {
   uint32 quest_id = 1;
   QuestStatus status = 2;
+  repeated QuestMobProgress mob_progress = 3;
+  uint64 accepted_at_unix_ms = 4;
+  uint64 completed_at_unix_ms = 5;
+  // One-based current question step. A passed start question awaiting a decision
+  // uses one past the final step. Zero means no interaction is pending.
+  uint32 dialogue_step = 6;
+  // A completion quiz has passed and its selectable reward is pending.
+  bool completion_quiz_passed = 7;
+}
+
+message QuestMobProgress {
+  uint32 mob_id = 1;
+  uint32 count = 2;
+}
+
+message QuestRecord {
+  uint32 quest_id = 1;
+  repeated QuestRecordEntry entries = 2;
+}
+
+message QuestRecordEntry {
+  uint32 index = 1;
+  string value = 2;
 }
 
 enum QuestStatus {
@@ -46,6 +77,7 @@ message KeyBinding {
 message LearnedSkill {
   uint32 skill_id = 1;
   uint32 level = 2;
+  uint32 master_level = 3;
 }
 
 enum KeyAction {
@@ -64,11 +96,21 @@ message InventoryState {
   repeated uint32 item_ids = 1;
   repeated EquippedItem equipment = 2;
   uint32 capacity = 3;
+  repeated InventoryItemStack stacks = 4;
+}
+
+message InventoryItemStack {
+  uint32 item_id = 1;
+  uint32 quantity = 2;
+  // Zero means that the stack is permanent.
+  uint64 expires_at_unix_ms = 3;
 }
 
 message EquippedItem {
   EquipmentSlot slot = 1;
   uint32 item_id = 2;
+  // Zero means that the equipped item is permanent.
+  uint64 expires_at_unix_ms = 3;
 }
 
 enum EquipmentSlot {
@@ -126,6 +168,7 @@ message BootstrapRequest {
 message BootstrapResponse {
   PlayerState player = 1;
   CharacterCreationOptions creation_options = 2;
+  ActiveBuffState active_buffs = 3;
 }
 
 message GetMovementRulesRequest {}
@@ -196,6 +239,9 @@ message MovementUpdateResponse {
   uint64 simulation_sequence = 8;
   ActiveBuffState active_buffs = 9;
   repeated DroppedItem dropped_items = 10;
+  repeated PlayerQuest quests = 11;
+  uint64 player_revision = 12;
+  PlayerState player = 13;
 }
 
 message CreateCharacterRequest {
@@ -241,6 +287,7 @@ message AllocateSkillPointRequest {
 message AllocateSkillPointResponse {
   PlayerState player = 1;
   SkillBook skill_book = 2;
+  ActiveBuffState active_buffs = 3;
 }
 
 message UseSkillRequest {
@@ -274,12 +321,23 @@ message BasicAttackResponse {
   repeated CombatEvent combat_events = 4;
   uint64 simulation_sequence = 5;
   repeated DroppedItem dropped_items = 6;
+  ActiveBuffState active_buffs = 7;
 }
 
 message ActiveBuffState {
   repeated ActiveBuff buffs = 1;
   uint64 revision = 2;
   uint64 observed_at_unix_ms = 3;
+  sint32 weapon_attack = 4;
+  sint32 magic_attack = 5;
+  sint32 weapon_defense = 6;
+  sint32 magic_defense = 7;
+  sint32 accuracy = 8;
+  sint32 avoidability = 9;
+  sint32 speed = 10;
+  sint32 jump = 11;
+  uint32 morph_id = 12;
+  bool attacks_disabled = 13;
 }
 
 message ActiveBuff {
@@ -289,6 +347,17 @@ message ActiveBuff {
   sint32 jump_bonus = 4;
   uint64 activated_at_unix_ms = 5;
   uint64 expires_at_unix_ms = 6;
+  oneof source {
+    uint32 source_skill_id = 7;
+    uint32 item_id = 8;
+  }
+  sint32 weapon_attack = 9;
+  sint32 magic_attack = 10;
+  sint32 weapon_defense = 11;
+  sint32 magic_defense = 12;
+  sint32 accuracy = 13;
+  sint32 avoidability = 14;
+  uint32 morph_id = 15;
 }
 
 message RecoverPlayerRequest {
@@ -300,6 +369,7 @@ message RecoverPlayerResponse {
   uint32 hp_restored = 2;
   uint32 mp_restored = 3;
   uint64 retry_after_ms = 4;
+  ActiveBuffState active_buffs = 5;
 }
 
 message SkillUseResult {
@@ -316,6 +386,12 @@ message SkillUseResult {
   uint64 duration_ms = 11;
   uint32 mp_restored = 12;
   bool fixed_damage = 13;
+  sint32 weapon_attack_bonus = 14;
+  sint32 magic_attack_bonus = 15;
+  sint32 weapon_defense_bonus = 16;
+  sint32 magic_defense_bonus = 17;
+  sint32 accuracy_bonus = 18;
+  sint32 avoidability_bonus = 19;
 }
 
 message SkillEffect {
@@ -372,6 +448,7 @@ message SkillBook {
 message PlayerSkill {
   SkillDefinition definition = 1;
   uint32 level = 2;
+  uint32 master_level = 3;
 }
 
 message SkillDefinition {
@@ -467,6 +544,20 @@ message ItemDefinition {
   float icon_width = 5;
   float icon_height = 6;
   uint64 sale_price = 7;
+  ItemCategory category = 8;
+  uint32 stack_max = 9;
+  string description = 10;
+  bool appearance_supported = 11;
+}
+
+enum ItemCategory {
+  ITEM_CATEGORY_UNSPECIFIED = 0;
+  ITEM_CATEGORY_EQUIPMENT = 1;
+  ITEM_CATEGORY_CONSUME = 2;
+  ITEM_CATEGORY_ETC = 3;
+  ITEM_CATEGORY_INSTALL = 4;
+  ITEM_CATEGORY_CASH = 5;
+  ITEM_CATEGORY_PET = 6;
 }
 
 message GuiLayout {
@@ -523,6 +614,35 @@ message CharacterSpriteSet {
   repeated CharacterFrame attack_frames = 7;
 }
 
+message GetMorphRequest {
+  uint32 morph_id = 1;
+}
+
+message GetMorphResponse {
+  MorphDefinition morph = 1;
+}
+
+message MorphDefinition {
+  uint32 morph_id = 1;
+  repeated MorphAnimation animations = 2;
+  repeated AssetDescriptor assets = 3;
+  bool no_cancel_damage = 4;
+}
+
+message MorphAnimation {
+  string name = 1;
+  repeated MorphFrame frames = 2;
+}
+
+message MorphFrame {
+  string asset_id = 1;
+  float width = 2;
+  float height = 3;
+  float origin_x = 4;
+  float origin_y = 5;
+  uint32 delay_ms = 6;
+}
+
 message CharacterFrame {
   repeated CharacterLayer layers = 1;
   uint32 delay_ms = 2;
@@ -550,11 +670,14 @@ message SavePlayerRequest {
 
 message SavePlayerResponse {
   PlayerState player = 1;
+  ActiveBuffState active_buffs = 2;
 }
 
 message EquipItemRequest {
   string player_id = 1;
   uint32 inventory_index = 2;
+  uint32 expected_item_id = 3;
+  uint64 expected_expires_at_unix_ms = 4;
 }
 
 message UnequipItemRequest {
@@ -565,6 +688,8 @@ message UnequipItemRequest {
 message DropItemRequest {
   string player_id = 1;
   uint32 inventory_index = 2;
+  uint32 expected_item_id = 3;
+  uint64 expected_expires_at_unix_ms = 4;
 }
 
 message PickUpItemRequest {
@@ -577,6 +702,7 @@ message ItemActionResponse {
   PlayerState player = 1;
   DroppedItem dropped_item = 2;
   string picked_up_drop_id = 3;
+  ActiveBuffState active_buffs = 4;
 }
 
 message NpcInteractionRequest {
@@ -605,6 +731,8 @@ message BuyShopItemAction {
 
 message SellShopItemAction {
   uint32 inventory_index = 1;
+  uint32 expected_item_id = 2;
+  uint64 expected_expires_at_unix_ms = 3;
 }
 
 message TakeTaxiAction {
@@ -616,6 +744,16 @@ message NpcInteractionResponse {
   NpcInteraction interaction = 2;
   MovementSnapshot authoritative = 3;
   Map map = 4;
+  NpcAnimationEvent npc_animation = 5;
+  ActiveBuffState active_buffs = 6;
+}
+
+message NpcAnimationEvent {
+  uint32 map_id = 1;
+  uint32 npc_spawn_id = 2;
+  uint32 npc_id = 3;
+  string action_name = 4;
+  uint64 player_revision = 5;
 }
 
 message NpcInteraction {
@@ -648,6 +786,9 @@ enum NpcDialogChoiceKind {
   NPC_DIALOG_CHOICE_KIND_ACCEPT_QUEST = 1;
   NPC_DIALOG_CHOICE_KIND_DECLINE_QUEST = 2;
   NPC_DIALOG_CHOICE_KIND_ANSWER = 3;
+  NPC_DIALOG_CHOICE_KIND_COMPLETE_QUEST = 4;
+  NPC_DIALOG_CHOICE_KIND_SELECT_QUEST_REWARD = 5;
+  NPC_DIALOG_CHOICE_KIND_RESTORE_QUEST_ITEMS = 6;
 }
 
 message NpcShopView {
@@ -705,6 +846,12 @@ message Npc {
   string name = 7;
   string function = 8;
   repeated string ambient_lines = 9;
+  repeated NpcAnimation animations = 10;
+}
+
+message NpcAnimation {
+  string name = 1;
+  repeated NpcFrame frames = 2;
 }
 
 message NpcFrame {
@@ -797,6 +944,8 @@ enum CombatEventKind {
   COMBAT_EVENT_KIND_MOB_PROJECTILE_HIT_PLAYER = 3;
   COMBAT_EVENT_KIND_MOB_DIED = 4;
   COMBAT_EVENT_KIND_MOB_RESPAWNED = 5;
+  COMBAT_EVENT_KIND_PLAYER_MISSED_MOB = 6;
+  COMBAT_EVENT_KIND_MOB_MISSED_PLAYER = 7;
 }
 
 enum MobMovementMode {
@@ -812,6 +961,10 @@ message DroppedItem {
   uint32 item_id = 2;
   Vec2 position = 3;
   uint64 despawn_at_unix_ms = 4;
+  uint32 quantity = 5;
+  // Zero means that the item itself is permanent. The drop is active only
+  // while both this deadline and despawn_at_unix_ms permit it.
+  uint64 expires_at_unix_ms = 6;
 }
 
 message Platform {

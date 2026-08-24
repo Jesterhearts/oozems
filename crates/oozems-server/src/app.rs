@@ -13,6 +13,7 @@ use tower_http::trace::TraceLayer;
 use crate::attacks::BasicAttackCooldowns;
 use crate::content::ContentCatalog;
 use crate::database::Database;
+use crate::effects::ActiveEffects;
 use crate::experience::ExperienceCurves;
 use crate::gameplay::GameplayConfig;
 use crate::interactions::InteractionCatalog;
@@ -21,9 +22,9 @@ use crate::loot::LootCatalog;
 use crate::mobs::MobStore;
 use crate::movement::MovementTracker;
 use crate::player_lock::PlayerLocks;
+use crate::quest_scripts::QuestScriptCatalog;
 use crate::recovery::RecoveryTimers;
 use crate::skill_formula::FormulaCatalog;
-use crate::skills::SkillBuffs;
 use crate::skills::SkillCooldowns;
 
 #[derive(Clone)]
@@ -37,10 +38,11 @@ pub struct AppState {
     pub movement: Arc<MovementTracker>,
     pub mobs: Arc<MobStore>,
     pub player_locks: Arc<PlayerLocks>,
+    pub quest_scripts: Arc<QuestScriptCatalog>,
     pub recovery_timers: Arc<RecoveryTimers>,
     pub basic_attack_cooldowns: Arc<BasicAttackCooldowns>,
     pub skill_cooldowns: Arc<SkillCooldowns>,
-    pub skill_buffs: Arc<SkillBuffs>,
+    pub active_effects: Arc<ActiveEffects>,
     pub formulas: Arc<FormulaCatalog>,
 }
 
@@ -48,6 +50,7 @@ pub fn router(
     database: Database,
     catalog: ContentCatalog,
     interactions: InteractionCatalog,
+    quest_scripts: QuestScriptCatalog,
     loot: LootCatalog,
     experience: ExperienceCurves,
     gameplay: GameplayConfig,
@@ -71,15 +74,17 @@ pub fn router(
             drops,
         )),
         player_locks: Arc::new(PlayerLocks::default()),
+        quest_scripts: Arc::new(quest_scripts),
         recovery_timers: Arc::new(RecoveryTimers::default()),
         basic_attack_cooldowns: Arc::new(BasicAttackCooldowns::default()),
         skill_cooldowns: Arc::new(SkillCooldowns::default()),
-        skill_buffs: Arc::new(SkillBuffs::default()),
+        active_effects: Arc::new(ActiveEffects::default()),
         formulas,
     };
     let api = Router::new()
         .route("/bootstrap", post(crate::api::bootstrap))
         .route("/characters/create", post(crate::api::create_character))
+        .route("/morphs/get", post(crate::api::get_morph))
         .route(
             "/characters/sprites",
             post(crate::api::get_character_sprites),

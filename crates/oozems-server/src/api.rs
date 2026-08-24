@@ -22,6 +22,8 @@ use oozems_proto::v1::GetGuiRequest;
 use oozems_proto::v1::GetGuiResponse;
 use oozems_proto::v1::GetMapRequest;
 use oozems_proto::v1::GetMapResponse;
+use oozems_proto::v1::GetMorphRequest;
+use oozems_proto::v1::GetMorphResponse;
 use oozems_proto::v1::GetSkillBookRequest;
 use oozems_proto::v1::GetSkillBookResponse;
 use oozems_proto::v1::ItemActionResponse;
@@ -60,6 +62,7 @@ pub async fn bootstrap(
         .filter(|player| player.appearance.is_some());
     let player = if let Some(player) = player {
         let activity_time_ms = unix_time_ms()?;
+        let player = process_automatic_quests(&state, player, activity_time_ms).await?;
         let map = load_map(&state, player.map_id).await?.ok_or_else(|| {
             ApiError::not_found(
                 "map_not_found",
@@ -82,9 +85,18 @@ pub async fn bootstrap(
         None
     };
 
+    let active_buffs = player
+        .as_ref()
+        .map(|player| -> Result<_, ApiError> {
+            let now_unix_ms = unix_time_ms()?;
+            let effects = crate::effects::snapshot(&state.active_effects, &player.id, now_unix_ms)?;
+            Ok(crate::effects::state(&effects, now_unix_ms))
+        })
+        .transpose()?;
     Ok(Protobuf(BootstrapResponse {
         player,
         creation_options: Some(state.catalog.character_creation_options()),
+        active_buffs,
     }))
 }
 
@@ -190,6 +202,19 @@ pub async fn get_character_sprites(
     }))
 }
 
+pub async fn get_morph(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Protobuf<GetMorphResponse>, ApiError> {
+    let request: GetMorphRequest = decode_request(&headers, body)?;
+    let morph = state
+        .catalog
+        .morph_definition(request.morph_id)
+        .ok_or_else(|| ApiError::not_found("morph_not_found", "morph does not exist"))?;
+    Ok(Protobuf(GetMorphResponse { morph: Some(morph) }))
+}
+
 pub async fn get_map(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -220,10 +245,17 @@ pub async fn equip_item(
     let player_id = parse_player_id(&request.player_id)?;
     let _player_guard = lock_player(&state, &player_id).await?;
     let current = require_player(&state, &player_id).await?;
+    crate::items::validate_inventory_selection(
+        &current,
+        request.inventory_index,
+        request.expected_item_id,
+        request.expected_expires_at_unix_ms,
+    )
+    .map_err(item_rule_error)?;
     let updated = crate::items::equip_inventory_item(
         current,
         request.inventory_index,
-        &state.catalog.item_definitions(),
+        state.catalog.as_ref(),
     )
     .map_err(item_rule_error)?;
     let activity_time_ms = unix_time_ms()?;
@@ -234,6 +266,11 @@ pub async fn equip_item(
         player: Some(player),
         dropped_item: None,
         picked_up_drop_id: String::new(),
+        active_buffs: Some(active_buff_state(
+            &state,
+            player_id.as_str(),
+            activity_time_ms,
+        )?),
     }))
 }
 
@@ -246,7 +283,8 @@ pub async fn unequip_item(
     let player_id = parse_player_id(&request.player_id)?;
     let _player_guard = lock_player(&state, &player_id).await?;
     let current = require_player(&state, &player_id).await?;
-    let updated = crate::items::unequip_item(current, request.slot).map_err(item_rule_error)?;
+    let updated = crate::items::unequip_item(current, request.slot, state.catalog.as_ref())
+        .map_err(item_rule_error)?;
     let activity_time_ms = unix_time_ms()?;
     let player = crate::database::save_player(&state.database, &updated).await?;
     record_recovery_activity(&state, player_id.as_str(), activity_time_ms);
@@ -255,6 +293,11 @@ pub async fn unequip_item(
         player: Some(player),
         dropped_item: None,
         picked_up_drop_id: String::new(),
+        active_buffs: Some(active_buff_state(
+            &state,
+            player_id.as_str(),
+            activity_time_ms,
+        )?),
     }))
 }
 
@@ -268,10 +311,17 @@ pub async fn drop_item(
     let _player_guard = lock_player(&state, &player_id).await?;
     let current = require_player(&state, &player_id).await?;
     let original = current.clone();
+    crate::items::validate_inventory_selection(
+        &current,
+        request.inventory_index,
+        request.expected_item_id,
+        request.expected_expires_at_unix_ms,
+    )
+    .map_err(item_rule_error)?;
     let removed = crate::items::remove_inventory_item(
         current,
         request.inventory_index,
-        &state.catalog.item_definitions(),
+        state.catalog.as_ref(),
     )
     .map_err(item_rule_error)?;
     let activity_time_ms = unix_time_ms()?;
@@ -293,6 +343,11 @@ pub async fn drop_item(
         player: Some(player),
         dropped_item: Some(dropped_item),
         picked_up_drop_id: String::new(),
+        active_buffs: Some(active_buff_state(
+            &state,
+            player_id.as_str(),
+            activity_time_ms,
+        )?),
     }))
 }
 
@@ -315,10 +370,15 @@ pub async fn pick_up_item(
         .position
         .ok_or(crate::movement::MovementError::MissingPlayerPosition)?;
     let picked =
-        crate::items::pick_up_nearest(&state.drops, current, position).map_err(pick_up_error)?;
+        crate::items::pick_up_nearest(&state.drops, current, position, state.catalog.as_ref())
+            .map_err(pick_up_error)?;
     let map_id = picked.player.map_id;
     let activity_time_ms = unix_time_ms()?;
-    let player = match crate::database::save_player(&state.database, &picked.player).await {
+    let effects =
+        crate::effects::snapshot(&state.active_effects, player_id.as_str(), activity_time_ms)?;
+    let advanced = advance_automatic_player(&state, picked.player, effects, activity_time_ms);
+    let active_buffs = crate::effects::state(&advanced.effects, activity_time_ms);
+    let player = match crate::database::save_player(&state.database, &advanced.player).await {
         Ok(player) => player,
         Err(error) => {
             if let Err(restore_error) = crate::items::restore_drop(
@@ -332,12 +392,14 @@ pub async fn pick_up_item(
             return Err(error.into());
         }
     };
+    crate::effects::commit(&state.active_effects, player_id.as_str(), advanced.effects)?;
     record_recovery_activity(&state, player_id.as_str(), activity_time_ms);
 
     Ok(Protobuf(ItemActionResponse {
         player: Some(player),
         dropped_item: None,
         picked_up_drop_id: picked.drop.id,
+        active_buffs: Some(active_buffs),
     }))
 }
 
@@ -359,14 +421,13 @@ pub async fn get_skill_book(
 ) -> Result<Protobuf<GetSkillBookResponse>, ApiError> {
     let request: GetSkillBookRequest = decode_request(&headers, body)?;
     let player_id = parse_player_id(&request.player_id)?;
+    let _player_guard = lock_player(&state, &player_id).await?;
     let player = require_player(&state, &player_id).await?;
-    let job_id = player.stats.as_ref().map_or(0, |stats| stats.job_id);
-    let skill_book = load_skill_book(&state, job_id).await?;
+    let skill_context = load_skill_book(&state, &player).await?;
     let skill_book =
-        crate::skills::personalize_skill_book(skill_book, &player).map_err(skill_rule_error)?;
-    let active_buffs =
-        crate::skills::active_skill_buffs(&state.skill_buffs, player_id.as_str(), unix_time_ms()?)
-            .map_err(skill_rule_error)?;
+        crate::skills::personalize_skill_book(skill_context, &player).map_err(skill_rule_error)?;
+    let now_unix_ms = unix_time_ms()?;
+    let active_buffs = active_buff_state(&state, player_id.as_str(), now_unix_ms)?;
 
     Ok(Protobuf(GetSkillBookResponse {
         skill_book: Some(skill_book),
@@ -383,19 +444,25 @@ pub async fn allocate_skill_point(
     let player_id = parse_player_id(&request.player_id)?;
     let _player_guard = lock_player(&state, &player_id).await?;
     let current = require_player(&state, &player_id).await?;
-    let job_id = current.stats.as_ref().map_or(0, |stats| stats.job_id);
-    let base_book = load_skill_book(&state, job_id).await?;
-    let updated = crate::skills::allocate_skill_point(current, &base_book, request.skill_id)
+    let skill_context = load_skill_book(&state, &current).await?;
+    let updated = crate::skills::allocate_skill_point(current, &skill_context, request.skill_id)
         .map_err(skill_rule_error)?;
     let activity_time_ms = unix_time_ms()?;
-    let player = crate::database::save_player(&state.database, &updated).await?;
+    let effects =
+        crate::effects::snapshot(&state.active_effects, player_id.as_str(), activity_time_ms)?;
+    let advanced = advance_automatic_player(&state, updated, effects, activity_time_ms);
+    let active_buffs = crate::effects::state(&advanced.effects, activity_time_ms);
+    let player = crate::database::save_player(&state.database, &advanced.player).await?;
+    crate::effects::commit(&state.active_effects, player_id.as_str(), advanced.effects)?;
     record_recovery_activity(&state, player_id.as_str(), activity_time_ms);
+    let skill_context = load_skill_book(&state, &player).await?;
     let skill_book =
-        crate::skills::personalize_skill_book(base_book, &player).map_err(skill_rule_error)?;
+        crate::skills::personalize_skill_book(skill_context, &player).map_err(skill_rule_error)?;
 
     Ok(Protobuf(AllocateSkillPointResponse {
         player: Some(player),
         skill_book: Some(skill_book),
+        active_buffs: Some(active_buffs),
     }))
 }
 
@@ -408,19 +475,49 @@ pub async fn use_skill(
     let player_id = parse_player_id(&request.player_id)?;
     let _player_guard = lock_player(&state, &player_id).await?;
     let current = require_player(&state, &player_id).await?;
-    let job_id = current.stats.as_ref().map_or(0, |stats| stats.job_id);
-    let book = load_skill_book(&state, job_id).await?;
-    let prepared =
-        crate::skills::prepare_skill_use(current, &book, request.skill_id, &state.formulas)
-            .map_err(skill_rule_error)?;
+    let now_ms = unix_time_ms()?;
+    let mut effects = crate::effects::snapshot(&state.active_effects, player_id.as_str(), now_ms)?;
+    let skill_context = load_skill_book(&state, &current).await?;
+    let skill_job_id = skill_context
+        .book
+        .skills
+        .iter()
+        .filter_map(|skill| skill.definition.as_ref())
+        .find(|definition| definition.skill_id == request.skill_id)
+        .map_or_else(
+            || current.stats.as_ref().map_or(0, |stats| stats.job_id),
+            |definition| definition.job_id,
+        );
+    let prepared = crate::skills::prepare_skill_use(
+        current,
+        &skill_context,
+        request.skill_id,
+        &state.formulas,
+        effects.projected(),
+    )
+    .map_err(skill_rule_error)?;
+    if prepared.result.has_damage && effects.attacks_disabled() {
+        return Err(ApiError::bad_request(
+            "invalid_skill_action",
+            "the active morph does not allow attacks",
+        ));
+    }
     let effect = load_skill_effect(
         &state,
-        job_id,
+        skill_job_id,
         request.skill_id,
         prepared.result.skill_level,
     )
     .await?;
-    let now_ms = unix_time_ms()?;
+    let map = load_map(&state, prepared.player.map_id)
+        .await?
+        .ok_or_else(|| {
+            ApiError::not_found(
+                "map_not_found",
+                format!("map {} does not exist", prepared.player.map_id),
+            )
+        })?;
+    let mut dropped_items = crate::items::map_drops(&state.drops, map.id)?;
     crate::skills::reserve_skill_cooldown(
         &state.skill_cooldowns,
         player_id.as_str(),
@@ -429,59 +526,42 @@ pub async fn use_skill(
         prepared.cooldown_ms,
     )
     .map_err(skill_rule_error)?;
-    let mut player = match crate::database::save_player(&state.database, &prepared.player).await {
-        Ok(player) => player,
-        Err(error) => {
-            if let Err(release_error) = crate::skills::release_skill_cooldown(
-                &state.skill_cooldowns,
-                player_id.as_str(),
-                request.skill_id,
-            ) {
-                tracing::error!(%release_error, "failed to release a skill cooldown after a save error");
-            }
-            return Err(error.into());
-        }
-    };
-    crate::movement::record_skill_effect(
-        &state.movement,
-        player_id.as_str(),
-        prepared.result.skill_id,
-        prepared.result.speed_bonus,
-        prepared.result.jump_bonus,
-        prepared.result.duration_ms.saturating_add(
-            u64::try_from(state.gameplay.movement.maximum_snapshot_gap.as_millis())
-                .unwrap_or(u64::MAX),
-        ),
-        now_ms,
-    )?;
-    let map = load_map(&state, player.map_id).await?.ok_or_else(|| {
-        ApiError::not_found(
-            "map_not_found",
-            format!("map {} does not exist", player.map_id),
-        )
-    })?;
-    let simulation = crate::mobs::use_player_attack(
+    crate::effects::apply_skill_effect(&mut effects, &prepared.result, now_ms);
+    let mut simulation = match crate::mobs::use_player_attack_with_effects(
         &state.mobs,
         &map,
-        &player,
+        &prepared.player,
         crate::mobs::PlayerAttack {
             target_mob_id: &request.target_mob_id,
+            source_skill_id: Some(prepared.result.skill_id),
             facing_left: request.facing_left,
             minimum_damage: prepared.result.minimum_damage,
             maximum_damage: prepared.result.maximum_damage,
             fixed_damage: prepared.result.fixed_damage,
+            attack_type: prepared.attack_type,
         },
-    )?;
-    player = save_simulation_player_damage(&state, player, &simulation).await?;
-    let dropped_items = crate::items::map_drops(&state.drops, map.id)?;
-    record_recovery_activity(&state, player_id.as_str(), now_ms);
-    let active_buffs = crate::skills::record_skill_buff(
-        &state.skill_buffs,
-        player_id.as_str(),
-        &prepared.result,
+        effects.projected(),
+    ) {
+        Ok(simulation) => simulation,
+        Err(error) => {
+            release_skill_reservation(&state, player_id.as_str(), request.skill_id);
+            return Err(error.into());
+        }
+    };
+    let persisted = save_simulation_player_effects(
+        &state,
+        prepared.player,
+        &mut simulation,
+        effects,
         now_ms,
+        true,
     )
-    .map_err(skill_rule_error)?;
+    .await?;
+    let player = persisted.player;
+    let effects = persisted.effects;
+    merge_dropped_items(&mut dropped_items, persisted.committed_drops);
+    record_recovery_activity(&state, player_id.as_str(), now_ms);
+    let active_buffs = crate::effects::state(&effects, now_ms);
 
     Ok(Protobuf(UseSkillResponse {
         player: Some(player),
@@ -515,6 +595,7 @@ pub async fn recover_player(
             return Ok(Protobuf(RecoverPlayerResponse {
                 player: Some(current),
                 retry_after_ms: remaining_ms,
+                active_buffs: Some(active_buff_state(&state, player_id.as_str(), now_ms)?),
                 ..RecoverPlayerResponse::default()
             }));
         }
@@ -544,6 +625,7 @@ pub async fn recover_player(
         hp_restored: prepared.hp_restored,
         mp_restored: prepared.mp_restored,
         retry_after_ms: crate::recovery::RECOVERY_INTERVAL_MS,
+        active_buffs: Some(active_buff_state(&state, player_id.as_str(), now_ms)?),
     }))
 }
 
@@ -563,14 +645,17 @@ pub async fn save_player(
         .map_err(|error| ApiError::bad_request("invalid_player_id", error.to_string()))?;
     let _player_guard = lock_player(&state, &player_id).await?;
     let current = require_player(&state, &player_id).await?;
-    crate::skills::validate_bound_skills(&requested.key_bindings, &current.learned_skills)
+    let skill_context = load_skill_book(&state, &current).await?;
+    crate::skills::validate_bound_skills(&requested.key_bindings, &current, &skill_context)
         .map_err(skill_rule_error)?;
     let player = crate::database::apply_player_preferences(current, &requested);
     crate::database::save_player_session(&state.database, &player).await?;
-    crate::movement::mark_persisted(&state.movement, player_id.as_str(), unix_time_ms()?)?;
+    let now_unix_ms = unix_time_ms()?;
+    crate::movement::mark_persisted(&state.movement, player_id.as_str(), now_unix_ms)?;
 
     Ok(Protobuf(SavePlayerResponse {
         player: Some(player),
+        active_buffs: Some(active_buff_state(&state, player_id.as_str(), now_unix_ms)?),
     }))
 }
 
@@ -622,25 +707,65 @@ async fn load_player(
     state: &AppState,
     player_id: &PlayerId,
 ) -> Result<Option<PlayerState>, ApiError> {
-    crate::database::load_player(
+    let Some(mut player) = crate::database::load_player(
         &state.database,
         player_id,
         state.gameplay.initial_skill_points,
     )
     .await?
-    .map(|player| {
-        crate::experience::apply_curve(player, state.experience.default_curve())
-            .map_err(ApiError::from)
-    })
-    .transpose()
+    else {
+        return Ok(None);
+    };
+    let inventory_pruned = if let Some(inventory) = player.inventory.as_mut() {
+        let changed = crate::items::prune_expired_inventory(inventory, unix_time_ms()?);
+        crate::items::normalize_legacy_inventory(inventory, state.catalog.as_ref())
+            .map_err(item_rule_error)?;
+        changed
+    } else {
+        false
+    };
+    let original_cards = std::mem::take(&mut player.monster_book_cards);
+    let (monster_book_recovered, cards) = match crate::monster_book::canonicalize(
+        original_cards.clone(),
+    ) {
+        Ok(cards) => {
+            let known_card_ids = state.catalog.monster_book_card_ids();
+            if !known_card_ids.is_empty() {
+                let unknown_card_ids = cards
+                    .iter()
+                    .map(|card| card.card_item_id)
+                    .filter(|card_item_id| !known_card_ids.contains(card_item_id))
+                    .collect::<Vec<_>>();
+                if !unknown_card_ids.is_empty() {
+                    tracing::warn!(
+                        player_id = %player.id,
+                        ?unknown_card_ids,
+                        "preserving Monster Book cards absent from the current content catalog"
+                    );
+                }
+            }
+            (cards != original_cards, cards)
+        }
+        Err(error) => {
+            tracing::warn!(player_id = %player.id, %error, "discarding malformed Monster Book state");
+            (!original_cards.is_empty(), Vec::new())
+        }
+    };
+    player.monster_book_cards = cards;
+    player = crate::experience::apply_curve(player, state.experience.default_curve())?;
+    if inventory_pruned || monster_book_recovered {
+        player = crate::database::save_player(&state.database, &player).await?;
+    }
+    Ok(Some(player))
 }
 
 async fn load_skill_book(
     state: &AppState,
-    job_id: u32,
-) -> Result<oozems_proto::v1::SkillBook, ApiError> {
+    player: &PlayerState,
+) -> Result<crate::content::SkillBookContext, ApiError> {
     let catalog = state.catalog.clone();
-    Ok(tokio::task::spawn_blocking(move || catalog.skill_book(job_id)).await??)
+    let player = player.clone();
+    Ok(tokio::task::spawn_blocking(move || catalog.skill_book_context(&player)).await??)
 }
 
 async fn load_skill_effect(
@@ -672,14 +797,68 @@ async fn require_player(
     state: &AppState,
     player_id: &PlayerId,
 ) -> Result<PlayerState, ApiError> {
+    require_player_at(state, player_id, unix_time_ms()?).await
+}
+
+async fn require_player_at(
+    state: &AppState,
+    player_id: &PlayerId,
+    now_unix_ms: u64,
+) -> Result<PlayerState, ApiError> {
     let player = load_player(state, player_id)
         .await?
         .filter(|player| player.appearance.is_some())
         .ok_or_else(|| ApiError::not_found("player_not_found", "player does not exist"))?;
-    Ok(crate::movement::synchronize_player(
-        &state.movement,
+    let player = crate::movement::synchronize_player(&state.movement, player)?;
+    process_automatic_quests(state, player, now_unix_ms).await
+}
+
+pub(crate) fn advance_automatic_player(
+    state: &AppState,
+    player: PlayerState,
+    effects: crate::effects::PlayerEffects,
+    now_unix_ms: u64,
+) -> crate::quests::AutomaticQuestAdvance {
+    let mut definitions = state.catalog.quest_definitions().collect::<Vec<_>>();
+    definitions.sort_by_key(|quest| quest.id);
+    let consume_effects = state.catalog.consume_effect_definitions();
+    let advanced = crate::quests::advance_automatic_quests(
         player,
-    )?)
+        effects,
+        definitions,
+        state.experience.default_curve(),
+        state.catalog.item_definition_slice(),
+        &consume_effects,
+        &state.quest_scripts,
+        crate::quests::QuestEnvironment {
+            now_unix_ms,
+            world_id: state.gameplay.world_id,
+        },
+    );
+    if !advanced.failures.is_empty() {
+        tracing::warn!(
+            player_id = %advanced.player.id,
+            failures = ?advanced.failures,
+            "automatic quest transitions were blocked"
+        );
+    }
+    advanced
+}
+
+async fn process_automatic_quests(
+    state: &AppState,
+    player: PlayerState,
+    now_unix_ms: u64,
+) -> Result<PlayerState, ApiError> {
+    let effects = crate::effects::snapshot(&state.active_effects, &player.id, now_unix_ms)?;
+    let advanced = advance_automatic_player(state, player, effects, now_unix_ms);
+    let player = if advanced.changed {
+        crate::database::save_player(&state.database, &advanced.player).await?
+    } else {
+        advanced.player
+    };
+    crate::effects::commit(&state.active_effects, &player.id, advanced.effects)?;
+    Ok(player)
 }
 
 fn item_rule_error(error: crate::items::ItemRuleError) -> ApiError {
@@ -696,37 +875,187 @@ fn pick_up_error(error: crate::items::PickUpError) -> ApiError {
 fn skill_rule_error(error: crate::skills::SkillRuleError) -> ApiError {
     match error {
         crate::skills::SkillRuleError::CooldownStore
-        | crate::skills::SkillRuleError::BuffStore
         | crate::skills::SkillRuleError::Formula { .. } => ApiError::SkillRules(error),
         _ => ApiError::bad_request("invalid_skill_action", error.to_string()),
     }
 }
 
-async fn save_simulation_player_damage(
+async fn save_simulation_player_effects(
+    state: &AppState,
+    player: PlayerState,
+    simulation: &mut crate::mobs::MobUpdate,
+    effects: crate::effects::PlayerEffects,
+    now_unix_ms: u64,
+    persistence_required: bool,
+) -> Result<SimulationPersistence, ApiError> {
+    let prepared = prepare_simulation_player_effects(
+        state,
+        player,
+        simulation,
+        effects,
+        now_unix_ms,
+        persistence_required,
+    );
+    persist_simulation_player_effects(state, prepared, simulation).await
+}
+
+fn prepare_simulation_player_effects(
     state: &AppState,
     mut player: PlayerState,
     simulation: &crate::mobs::MobUpdate,
-) -> Result<PlayerState, ApiError> {
+    mut effects: crate::effects::PlayerEffects,
+    now_unix_ms: u64,
+    persistence_required: bool,
+) -> PreparedSimulationPersistence {
     let player_damage = simulation.player_damage();
-    if player_damage == 0 {
-        return Ok(player);
+    if player_damage > 0 {
+        let stats = player.stats.get_or_insert_default();
+        stats.hp = stats
+            .hp
+            .saturating_sub(u32::try_from(player_damage).unwrap_or(u32::MAX));
+        crate::effects::cancel_damage_morphs(&mut effects, |morph_id| {
+            state.catalog.morph_definition(morph_id)
+        });
     }
-    let stats = player.stats.get_or_insert_default();
-    stats.hp = stats
-        .hp
-        .saturating_sub(u32::try_from(player_damage).unwrap_or(u32::MAX));
-    match crate::database::save_player(&state.database, &player).await {
-        Ok(player) => Ok(player),
+    let mob_kills = simulation
+        .mob_deaths
+        .iter()
+        .map(|death| (death.definition_id, death.source_skill_id))
+        .collect::<Vec<_>>();
+    let kill_result =
+        crate::quests::record_mob_kills(player, &mob_kills, state.catalog.quest_definitions());
+    let advanced = advance_automatic_player(state, kill_result.player, effects, now_unix_ms);
+    let should_save = persistence_required
+        || player_damage > 0
+        || !kill_result.changed_quest_ids.is_empty()
+        || advanced.changed;
+    PreparedSimulationPersistence {
+        player: advanced.player,
+        effects: advanced.effects,
+        should_save,
+    }
+}
+
+async fn persist_simulation_player_effects(
+    state: &AppState,
+    prepared: PreparedSimulationPersistence,
+    simulation: &mut crate::mobs::MobUpdate,
+) -> Result<SimulationPersistence, ApiError> {
+    let PreparedSimulationPersistence {
+        player: advanced_player,
+        effects,
+        should_save,
+    } = prepared;
+    let player = if should_save {
+        match crate::database::save_player(&state.database, &advanced_player).await {
+            Ok(player) => player,
+            Err(error) => {
+                crate::mobs::rollback_player_attack(&state.mobs, simulation).unwrap_or_else(
+                    |rollback_error| {
+                        tracing::error!(
+                            %rollback_error,
+                            "failed to roll back a player attack after a player save error"
+                        );
+                        false
+                    },
+                );
+                crate::mobs::restore_player_effects(
+                    &state.mobs,
+                    advanced_player.map_id,
+                    &advanced_player.id,
+                    simulation.combat_events.clone(),
+                    simulation.mob_deaths.clone(),
+                    simulation.staged_drops.clone(),
+                )
+                .unwrap_or_else(|restore_error| {
+                    tracing::error!(%restore_error, "failed to restore combat after a player save error");
+                });
+                return Err(error.into());
+            }
+        }
+    } else {
+        advanced_player
+    };
+    if let Err(error) = crate::mobs::commit_player_attack(&state.mobs, simulation) {
+        tracing::error!(%error, "failed to commit an in-memory player attack transaction");
+    }
+    let committed_drops = match crate::items::commit_staged_drops(
+        &state.drops,
+        &simulation.staged_drops,
+    ) {
+        Ok(()) => simulation
+            .staged_drops
+            .iter()
+            .map(|grant| grant.item().clone())
+            .collect(),
         Err(error) => {
-            crate::mobs::restore_player_events(
+            tracing::error!(%error, "failed to commit staged mob drops; the exact grants will retry");
+            crate::mobs::restore_player_effects(
                 &state.mobs,
                 player.map_id,
                 &player.id,
-                simulation.combat_events.clone(),
-            )?;
-            Err(error.into())
+                Vec::new(),
+                Vec::new(),
+                simulation.staged_drops.clone(),
+            )
+            .unwrap_or_else(|restore_error| {
+                tracing::error!(%restore_error, "failed to queue staged mob drops for retry");
+            });
+            Vec::new()
+        }
+    };
+    if let Err(error) = crate::effects::commit(&state.active_effects, &player.id, effects.clone()) {
+        tracing::error!(%error, "failed to commit effects after player persistence");
+    }
+    Ok(SimulationPersistence {
+        player,
+        effects,
+        committed_drops,
+    })
+}
+
+struct PreparedSimulationPersistence {
+    player: PlayerState,
+    effects: crate::effects::PlayerEffects,
+    should_save: bool,
+}
+
+struct SimulationPersistence {
+    player: PlayerState,
+    effects: crate::effects::PlayerEffects,
+    committed_drops: Vec<oozems_proto::v1::DroppedItem>,
+}
+
+fn merge_dropped_items(
+    current: &mut Vec<oozems_proto::v1::DroppedItem>,
+    additions: Vec<oozems_proto::v1::DroppedItem>,
+) {
+    for drop in additions {
+        if !current.iter().any(|current| current.id == drop.id) {
+            current.push(drop);
         }
     }
+}
+
+fn release_skill_reservation(
+    state: &AppState,
+    player_id: &str,
+    skill_id: u32,
+) {
+    if let Err(error) =
+        crate::skills::release_skill_cooldown(&state.skill_cooldowns, player_id, skill_id)
+    {
+        tracing::error!(%error, "failed to release a skill cooldown before an attack was applied");
+    }
+}
+
+fn active_buff_state(
+    state: &AppState,
+    player_id: &str,
+    now_unix_ms: u64,
+) -> Result<oozems_proto::v1::ActiveBuffState, ApiError> {
+    let effects = crate::effects::snapshot(&state.active_effects, player_id, now_unix_ms)?;
+    Ok(crate::effects::state(&effects, now_unix_ms))
 }
 
 fn unix_time_ms() -> Result<u64, ApiError> {
@@ -840,6 +1169,8 @@ pub enum ApiError {
     Recovery(#[from] crate::recovery::RecoveryError),
     #[error("movement rules could not be applied")]
     Movement(#[from] crate::movement::MovementError),
+    #[error("active effects could not be accessed")]
+    Effects(#[from] crate::effects::EffectStoreError),
     #[error("player operations could not be serialized")]
     PlayerLock(#[from] crate::player_lock::PlayerLockError),
     #[error("system time is earlier than the Unix epoch")]
@@ -967,6 +1298,14 @@ impl IntoResponse for ApiError {
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "movement_rules_error",
                     "the server could not apply its movement rules".to_owned(),
+                )
+            }
+            Self::Effects(error) => {
+                tracing::error!(%error, "active effects could not be accessed");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "effect_store_error",
+                    "the server could not access active effects".to_owned(),
                 )
             }
             Self::PlayerLock(error) => {

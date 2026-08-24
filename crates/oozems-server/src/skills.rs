@@ -11,15 +11,14 @@ use oozems_proto::v1::SkillValue;
 use oozems_proto::v1::skill_value;
 use thiserror::Error;
 
+use crate::content::AuthoritativeSkillDefinition;
+use crate::content::SkillBookContext;
+use crate::effects::ProjectedEffects;
+use crate::jobs::SkillAttackType;
+use crate::jobs::skill_attack_type;
 use crate::skill_formula::FormulaCatalog;
 use crate::skill_formula::evaluate_damage_profile;
 use crate::skill_formula::evaluate_profile_property;
-
-mod buffs;
-
-pub use buffs::SkillBuffs;
-pub use buffs::active_skill_buffs;
-pub use buffs::record_skill_buff;
 
 const MAX_DAMAGE: u32 = 99_999;
 const BEGINNER_RECOVERY_SKILL_ID: u32 = 1_001;
@@ -33,6 +32,7 @@ pub struct PreparedSkillUse {
     pub player: PlayerState,
     pub result: SkillUseResult,
     pub cooldown_ms: u64,
+    pub attack_type: SkillAttackType,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -54,6 +54,12 @@ pub enum SkillRuleError {
     InvalidLearnedLevel {
         skill_id: u32,
         level: u32,
+        maximum: u32,
+    },
+    #[error("skill {skill_id} has invalid master level {master_level}; its maximum is {maximum}")]
+    InvalidMasterLevel {
+        skill_id: u32,
+        master_level: u32,
         maximum: u32,
     },
     #[error("there are no skill points available")]
@@ -91,43 +97,55 @@ pub enum SkillRuleError {
     Cooldown { skill_id: u32, remaining_ms: u64 },
     #[error("the skill cooldown store is unavailable")]
     CooldownStore,
-    #[error("the active buff store is unavailable")]
-    BuffStore,
     #[error("a configured formula failed: {message}")]
     Formula { message: String },
 }
 
 pub fn personalize_skill_book(
-    mut book: SkillBook,
+    mut context: SkillBookContext,
     player: &PlayerState,
 ) -> Result<SkillBook, SkillRuleError> {
-    validate_job(&book, player)?;
-    let levels = validate_learned_skills(&book, &player.learned_skills)?;
-    for skill in &mut book.skills {
+    validate_job(&context.book, player)?;
+    let levels = validate_learned_skills(
+        context.book.job_id,
+        &context.authoritative_skills,
+        &player.learned_skills,
+    )?;
+    for skill in &mut context.book.skills {
         let Some(definition) = skill.definition.as_ref() else {
             continue;
         };
-        skill.level = levels
+        let (level, master_level) = levels
             .get(&definition.skill_id)
             .copied()
             .unwrap_or_default();
+        skill.level = level;
+        skill.master_level = master_level;
     }
-    book.available_points = player.skill_points;
-    Ok(book)
+    context.book.available_points = player.skill_points;
+    Ok(context.book)
 }
 
 pub fn validate_bound_skills(
     bindings: &[KeyBinding],
-    learned_skills: &[LearnedSkill],
+    player: &PlayerState,
+    context: &SkillBookContext,
 ) -> Result<(), SkillRuleError> {
+    validate_job(&context.book, player)?;
+    let learned_skills = validate_learned_skills(
+        context.book.job_id,
+        &context.authoritative_skills,
+        &player.learned_skills,
+    )?;
     for skill_id in bindings
         .iter()
         .map(|binding| binding.skill_id)
         .filter(|skill_id| *skill_id != 0)
     {
         if !learned_skills
-            .iter()
-            .any(|skill| skill.skill_id == skill_id && skill.level > 0)
+            .get(&skill_id)
+            .is_some_and(|(level, _)| *level > 0)
+            || skill_definition(&context.book, skill_id).is_err()
         {
             return Err(SkillRuleError::NotLearned { skill_id });
         }
@@ -137,26 +155,35 @@ pub fn validate_bound_skills(
 
 pub fn allocate_skill_point(
     mut player: PlayerState,
-    book: &SkillBook,
+    context: &SkillBookContext,
     skill_id: u32,
 ) -> Result<PlayerState, SkillRuleError> {
-    validate_job(book, &player)?;
-    let levels = validate_learned_skills(book, &player.learned_skills)?;
-    let definition = skill_definition(book, skill_id)?;
+    validate_job(&context.book, &player)?;
+    let levels = validate_learned_skills(
+        context.book.job_id,
+        &context.authoritative_skills,
+        &player.learned_skills,
+    )?;
+    let definition = skill_definition(&context.book, skill_id)?;
     if definition.max_level == 0 {
         return Err(SkillRuleError::InvalidMaximumLevel { skill_id });
     }
     if player.skill_points == 0 {
         return Err(SkillRuleError::NoSkillPoints);
     }
-    let current_level = levels.get(&skill_id).copied().unwrap_or_default();
-    if current_level >= definition.max_level {
+    let (current_level, master_level) = levels.get(&skill_id).copied().unwrap_or_default();
+    let maximum_level = if master_level > 0 {
+        definition.max_level.min(master_level)
+    } else {
+        definition.max_level
+    };
+    if current_level >= maximum_level {
         return Err(SkillRuleError::MaximumLevel { skill_id });
     }
     for requirement in &definition.requirements {
         let learned_level = levels
             .get(&requirement.skill_id)
-            .copied()
+            .map(|(level, _)| *level)
             .unwrap_or_default();
         if learned_level < requirement.level {
             return Err(SkillRuleError::RequirementNotMet {
@@ -174,9 +201,11 @@ pub fn allocate_skill_point(
     {
         skill.level += 1;
     } else {
-        player
-            .learned_skills
-            .push(LearnedSkill { skill_id, level: 1 });
+        player.learned_skills.push(LearnedSkill {
+            skill_id,
+            level: 1,
+            master_level: 0,
+        });
         player
             .learned_skills
             .sort_by_key(|learned| learned.skill_id);
@@ -187,18 +216,23 @@ pub fn allocate_skill_point(
 
 pub fn prepare_skill_use(
     mut player: PlayerState,
-    book: &SkillBook,
+    context: &SkillBookContext,
     skill_id: u32,
     formulas: &FormulaCatalog,
+    effects: ProjectedEffects,
 ) -> Result<PreparedSkillUse, SkillRuleError> {
-    validate_job(book, &player)?;
-    let levels = validate_learned_skills(book, &player.learned_skills)?;
+    validate_job(&context.book, &player)?;
+    let levels = validate_learned_skills(
+        context.book.job_id,
+        &context.authoritative_skills,
+        &player.learned_skills,
+    )?;
     let level = levels
         .get(&skill_id)
-        .copied()
+        .map(|(level, _)| *level)
         .filter(|level| *level > 0)
         .ok_or(SkillRuleError::NotLearned { skill_id })?;
-    let definition = skill_definition(book, skill_id)?;
+    let definition = skill_definition(&context.book, skill_id)?;
     let level_stats = definition
         .levels
         .iter()
@@ -255,6 +289,42 @@ pub fn prepare_skill_use(
         level_stats.jump.as_ref(),
         common_stats.and_then(|stats| stats.jump.as_ref()),
     )?;
+    let weapon_attack_bonus = signed_numeric_stat(
+        skill_id,
+        "pad",
+        level_stats.weapon_attack.as_ref(),
+        common_stats.and_then(|stats| stats.weapon_attack.as_ref()),
+    )?;
+    let magic_attack_bonus = signed_numeric_stat(
+        skill_id,
+        "mad",
+        level_stats.magic_attack.as_ref(),
+        common_stats.and_then(|stats| stats.magic_attack.as_ref()),
+    )?;
+    let weapon_defense_bonus = signed_numeric_stat(
+        skill_id,
+        "pdd",
+        level_stats.weapon_defense.as_ref(),
+        common_stats.and_then(|stats| stats.weapon_defense.as_ref()),
+    )?;
+    let magic_defense_bonus = signed_numeric_stat(
+        skill_id,
+        "mdd",
+        level_stats.magic_defense.as_ref(),
+        common_stats.and_then(|stats| stats.magic_defense.as_ref()),
+    )?;
+    let accuracy_bonus = signed_numeric_stat(
+        skill_id,
+        "acc",
+        level_stats.accuracy.as_ref(),
+        common_stats.and_then(|stats| stats.accuracy.as_ref()),
+    )?;
+    let avoidability_bonus = signed_numeric_stat(
+        skill_id,
+        "eva",
+        level_stats.avoidability.as_ref(),
+        common_stats.and_then(|stats| stats.avoidability.as_ref()),
+    )?;
     let duration_seconds = numeric_stat(
         skill_id,
         "time",
@@ -278,7 +348,7 @@ pub fn prepare_skill_use(
     )?;
 
     let formula_damage = if fixed_damage.is_none() {
-        calculate_formula_damage(&player, formulas, skill_id, level, skill_damage)?
+        calculate_formula_damage(&player, formulas, skill_id, level, skill_damage, effects)?
     } else {
         None
     };
@@ -313,6 +383,7 @@ pub fn prepare_skill_use(
         })
         .or(formula_damage);
 
+    let attack_type = skill_attack_type(stats.job_id);
     Ok(PreparedSkillUse {
         player,
         result: SkillUseResult {
@@ -329,8 +400,15 @@ pub fn prepare_skill_use(
             duration_ms: u64::from(duration_seconds).saturating_mul(1_000),
             mp_restored,
             fixed_damage: fixed_damage.is_some(),
+            weapon_attack_bonus,
+            magic_attack_bonus,
+            weapon_defense_bonus,
+            magic_defense_bonus,
+            accuracy_bonus,
+            avoidability_bonus,
         },
         cooldown_ms: u64::from(cooldown_seconds).saturating_mul(1_000),
+        attack_type,
     })
 }
 
@@ -347,29 +425,36 @@ fn calculate_formula_damage(
     skill_id: u32,
     skill_level: u32,
     skill_damage: Option<u32>,
+    effects: ProjectedEffects,
 ) -> Result<Option<(u32, u32)>, SkillRuleError> {
     let Some(skill_damage) = skill_damage.filter(|damage| *damage > 0) else {
         return Ok(None);
     };
     let stats = player.stats.as_ref().ok_or(SkillRuleError::MissingStats)?;
-    let profile = formulas.skill_profile(skill_id).or_else(|| {
-        (500..600)
-            .contains(&stats.job_id)
-            .then(|| formulas.weapon_profile("bare_hands"))
-            .flatten()
-    });
+    let attack_type = skill_attack_type(stats.job_id);
+    let profile = formulas
+        .skill_profile(skill_id)
+        .or_else(|| match attack_type {
+            SkillAttackType::Magical => formulas.weapon_profile("wand"),
+            SkillAttackType::Physical if (500..600).contains(&stats.job_id) => {
+                formulas.weapon_profile("bare_hands")
+            }
+            SkillAttackType::Physical => None,
+        });
     let Some(profile) = profile else {
         return Ok(None);
     };
     let bare_hands = formulas
         .weapon_profile("bare_hands")
         .expect("bare-hands weapon profile is validated during startup");
-    let weapon_attack = evaluate_profile_property(
+    let base_attack = evaluate_profile_property(
         bare_hands,
         "attack",
         &[("CharacterLevel", f64::from(player.level))],
     )
     .map_err(formula_error)?;
+    let attack_bonus = projected_skill_attack_bonus(attack_type, effects);
+    let outgoing_attack = base_attack + f64::from(attack_bonus);
     let mut variables = vec![
         ("CharacterLevel", f64::from(player.level)),
         ("PlayerLevel", f64::from(player.level)),
@@ -379,7 +464,10 @@ fn calculate_formula_damage(
         ("Luck", f64::from(stats.luck)),
         ("SkillDamage", f64::from(skill_damage)),
         ("SkillLevel", f64::from(skill_level)),
-        ("WeaponAttack", weapon_attack),
+        ("WeaponAttack", outgoing_attack),
+        ("SpellAttack", outgoing_attack),
+        ("Magic", f64::from(stats.intelligence)),
+        ("Mastery", 0.1),
     ];
     if (500..600).contains(&stats.job_id) {
         variables.push(("JobMultiplier", if stats.job_id == 500 { 3.0 } else { 4.2 }));
@@ -397,6 +485,16 @@ fn calculate_formula_damage(
         });
     }
     Ok(Some((minimum, maximum)))
+}
+
+fn projected_skill_attack_bonus(
+    attack_type: SkillAttackType,
+    effects: ProjectedEffects,
+) -> i32 {
+    match attack_type {
+        SkillAttackType::Physical => effects.modifiers.weapon_attack,
+        SkillAttackType::Magical => effects.modifiers.magic_attack,
+    }
 }
 
 fn final_damage(value: f64) -> u32 {
@@ -467,21 +565,52 @@ fn validate_job(
 }
 
 fn validate_learned_skills(
-    book: &SkillBook,
+    job_id: u32,
+    authoritative: &[AuthoritativeSkillDefinition],
     learned: &[LearnedSkill],
-) -> Result<HashMap<u32, u32>, SkillRuleError> {
+) -> Result<HashMap<u32, (u32, u32)>, SkillRuleError> {
+    let definitions = authoritative
+        .iter()
+        .map(|skill| (skill.definition.skill_id, skill))
+        .collect::<HashMap<_, _>>();
     let mut levels = HashMap::new();
     for skill in learned {
-        if levels.insert(skill.skill_id, skill.level).is_some() {
+        if levels
+            .insert(skill.skill_id, (skill.level, skill.master_level))
+            .is_some()
+        {
             return Err(SkillRuleError::DuplicateLearnedSkill {
                 skill_id: skill.skill_id,
             });
         }
-        let definition = skill_definition(book, skill.skill_id)?;
-        if skill.level == 0 || skill.level > definition.max_level {
+        let authoritative =
+            definitions
+                .get(&skill.skill_id)
+                .ok_or(SkillRuleError::UnknownSkill {
+                    skill_id: skill.skill_id,
+                    job_id,
+                })?;
+        let definition = &authoritative.definition;
+        // Some WZ quests use an invisible zero-maximum skill as an acquisition
+        // marker. Its authored level 1 persists for quest checks, but exclusion
+        // from the display book prevents allocation, binding, and use.
+        let marker = authoritative.invisible
+            && definition.max_level == 0
+            && skill.level == 1
+            && skill.master_level == 0;
+        if !marker
+            && (skill.level > definition.max_level || (skill.level == 0 && skill.master_level == 0))
+        {
             return Err(SkillRuleError::InvalidLearnedLevel {
                 skill_id: skill.skill_id,
                 level: skill.level,
+                maximum: definition.max_level,
+            });
+        }
+        if skill.master_level > definition.max_level {
+            return Err(SkillRuleError::InvalidMasterLevel {
+                skill_id: skill.skill_id,
+                master_level: skill.master_level,
                 maximum: definition.max_level,
             });
         }
@@ -576,21 +705,117 @@ mod tests {
     use super::beginner_recovery_amount;
     use super::personalize_skill_book;
     use super::prepare_skill_use;
+    use super::projected_skill_attack_bonus;
+    use super::release_skill_cooldown;
     use super::reserve_skill_cooldown;
     use super::validate_bound_skills;
+    use crate::effects::EffectModifiers;
+    use crate::effects::ProjectedEffects;
+    use crate::jobs::SkillAttackType;
 
     #[test]
     fn allocation_consumes_a_point_and_updates_the_personalized_book() {
         let player = player(3, 5);
-        let book = book();
+        let context = context(book());
 
-        let player = allocate_skill_point(player, &book, 1_000).expect("allocate point");
-        let personal = personalize_skill_book(book, &player).expect("personal book");
+        let player = allocate_skill_point(player, &context, 1_000).expect("allocate point");
+        let personal = personalize_skill_book(context, &player).expect("personal book");
 
         assert_eq!(player.skill_points, 2);
         assert_eq!(player.learned_skills[0].level, 1);
         assert_eq!(personal.available_points, 2);
         assert_eq!(personal.skills[0].level, 1);
+        assert_eq!(personal.skills[0].master_level, 0);
+    }
+
+    #[test]
+    fn master_only_unlock_sets_the_player_allocation_cap() {
+        let definition = SkillDefinition {
+            skill_id: 2_321_003,
+            job_id: 232,
+            max_level: 30,
+            ..SkillDefinition::default()
+        };
+        let context = crate::content::SkillBookContext {
+            book: SkillBook {
+                job_id: 232,
+                skills: vec![PlayerSkill {
+                    definition: Some(definition.clone()),
+                    level: 0,
+                    master_level: 0,
+                }],
+                ..SkillBook::default()
+            },
+            authoritative_skills: vec![crate::content::AuthoritativeSkillDefinition {
+                definition,
+                invisible: true,
+            }],
+        };
+        let mut player = player(11, 5);
+        player.stats.as_mut().expect("stats").job_id = 232;
+        player.learned_skills.push(oozems_proto::v1::LearnedSkill {
+            skill_id: 2_321_003,
+            level: 0,
+            master_level: 10,
+        });
+
+        for _ in 0..10 {
+            player = allocate_skill_point(player, &context, 2_321_003).expect("mastered point");
+        }
+        assert_eq!(player.skill_points, 1);
+        assert_eq!(player.learned_skills[0].level, 10);
+        assert_eq!(player.learned_skills[0].master_level, 10);
+        assert_eq!(
+            allocate_skill_point(player, &context, 2_321_003),
+            Err(SkillRuleError::MaximumLevel {
+                skill_id: 2_321_003
+            })
+        );
+    }
+
+    #[test]
+    fn zero_maximum_invisible_marker_validates_but_stays_non_usable() {
+        let definition = SkillDefinition {
+            skill_id: 9_999,
+            job_id: 0,
+            max_level: 0,
+            ..SkillDefinition::default()
+        };
+        let context = crate::content::SkillBookContext {
+            book: SkillBook {
+                job_id: 0,
+                ..SkillBook::default()
+            },
+            authoritative_skills: vec![crate::content::AuthoritativeSkillDefinition {
+                definition,
+                invisible: true,
+            }],
+        };
+        let mut player = player(3, 5);
+        player.learned_skills.push(oozems_proto::v1::LearnedSkill {
+            skill_id: 9_999,
+            level: 1,
+            master_level: 0,
+        });
+
+        let personal = personalize_skill_book(context.clone(), &player).expect("marker record");
+        assert!(personal.skills.is_empty());
+        assert_eq!(
+            allocate_skill_point(player.clone(), &context, 9_999),
+            Err(SkillRuleError::UnknownSkill {
+                skill_id: 9_999,
+                job_id: 0
+            })
+        );
+        let binding = [KeyBinding {
+            code: "KeyA".to_owned(),
+            action: KeyAction::Unspecified as i32,
+            skill_id: 9_999,
+        }];
+        assert_eq!(
+            validate_bound_skills(&binding, &player, &context),
+            Err(SkillRuleError::NotLearned { skill_id: 9_999 })
+        );
     }
 
     #[test]
@@ -599,10 +824,18 @@ mod tests {
         player.learned_skills.push(oozems_proto::v1::LearnedSkill {
             skill_id: 1_000,
             level: 1,
+            master_level: 0,
         });
 
         let formulas = formulas();
-        let prepared = prepare_skill_use(player, &book(), 1_000, &formulas).expect("use skill");
+        let prepared = prepare_skill_use(
+            player,
+            &context(book()),
+            1_000,
+            &formulas,
+            ProjectedEffects::default(),
+        )
+        .expect("use skill");
 
         let stats = prepared.player.stats.expect("stats");
         assert_eq!(stats.mp, 2);
@@ -628,6 +861,7 @@ mod tests {
         player.learned_skills.push(oozems_proto::v1::LearnedSkill {
             skill_id: 4_001_334,
             level: 1,
+            master_level: 0,
         });
         let book = SkillBook {
             job_id: 400,
@@ -648,15 +882,66 @@ mod tests {
                     ..SkillDefinition::default()
                 }),
                 level: 1,
+                master_level: 0,
             }],
             ..SkillBook::default()
         };
 
-        let prepared = prepare_skill_use(player, &book, 4_001_334, &mapped_formulas())
-            .expect("use mapped skill");
+        let prepared = prepare_skill_use(
+            player,
+            &context(book),
+            4_001_334,
+            &mapped_formulas(),
+            ProjectedEffects::default(),
+        )
+        .expect("use mapped skill");
 
         assert_eq!(prepared.result.minimum_damage, 8);
         assert_eq!(prepared.result.maximum_damage, 17);
+    }
+
+    #[test]
+    fn projected_attack_effects_follow_the_typed_skill_damage_path() {
+        let effects = ProjectedEffects {
+            modifiers: EffectModifiers {
+                weapon_attack: 7,
+                magic_attack: 11,
+                ..EffectModifiers::default()
+            },
+            ..ProjectedEffects::default()
+        };
+
+        assert_eq!(
+            projected_skill_attack_bonus(SkillAttackType::Physical, effects),
+            7
+        );
+        assert_eq!(
+            projected_skill_attack_bonus(SkillAttackType::Magical, effects),
+            11
+        );
+
+        let only_magic = ProjectedEffects {
+            modifiers: EffectModifiers {
+                magic_attack: 11,
+                ..EffectModifiers::default()
+            },
+            ..ProjectedEffects::default()
+        };
+        assert_eq!(
+            projected_skill_attack_bonus(SkillAttackType::Physical, only_magic),
+            0
+        );
+        let only_weapon = ProjectedEffects {
+            modifiers: EffectModifiers {
+                weapon_attack: 7,
+                ..EffectModifiers::default()
+            },
+            ..ProjectedEffects::default()
+        };
+        assert_eq!(
+            projected_skill_attack_bonus(SkillAttackType::Magical, only_weapon),
+            0
+        );
     }
 
     #[test]
@@ -665,12 +950,19 @@ mod tests {
         player.learned_skills.push(oozems_proto::v1::LearnedSkill {
             skill_id: 1_000,
             level: 1,
+            master_level: 0,
         });
 
         assert_eq!(
-            prepare_skill_use(player, &book(), 1_000, &formulas())
-                .err()
-                .expect("insufficient MP"),
+            prepare_skill_use(
+                player,
+                &context(book()),
+                1_000,
+                &formulas(),
+                ProjectedEffects::default(),
+            )
+            .err()
+            .expect("insufficient MP"),
             SkillRuleError::InsufficientMana {
                 skill_id: 1_000,
                 required: 3,
@@ -697,6 +989,18 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_skill_transaction_can_release_its_reservation() {
+        let cooldowns = SkillCooldowns::default();
+        reserve_skill_cooldown(&cooldowns, "player", 1_000, 1_000, 5_000)
+            .expect("reserve cooldown");
+
+        release_skill_cooldown(&cooldowns, "player", 1_000).expect("release cooldown");
+
+        reserve_skill_cooldown(&cooldowns, "player", 1_000, 1_001, 5_000)
+            .expect("retry after downstream failure");
+    }
+
+    #[test]
     fn beginner_recovery_converts_five_second_ticks_to_the_wz_total() {
         assert_eq!(beginner_recovery_amount(4, 30), 24);
         assert_eq!(beginner_recovery_amount(8, 30), 48);
@@ -709,18 +1013,19 @@ mod tests {
             action: KeyAction::Unspecified as i32,
             skill_id: 1_000,
         }];
+        let player = player(0, 5);
+        let context = context(book());
         assert_eq!(
-            validate_bound_skills(&binding, &[]),
+            validate_bound_skills(&binding, &player, &context),
             Err(SkillRuleError::NotLearned { skill_id: 1_000 })
         );
-        validate_bound_skills(
-            &binding,
-            &[oozems_proto::v1::LearnedSkill {
-                skill_id: 1_000,
-                level: 1,
-            }],
-        )
-        .expect("learned skill binding");
+        let mut player = player;
+        player.learned_skills.push(oozems_proto::v1::LearnedSkill {
+            skill_id: 1_000,
+            level: 1,
+            master_level: 0,
+        });
+        validate_bound_skills(&binding, &player, &context).expect("learned skill binding");
     }
 
     fn player(
@@ -764,8 +1069,25 @@ mod tests {
                     ..SkillDefinition::default()
                 }),
                 level: 0,
+                master_level: 0,
             }],
             ..SkillBook::default()
+        }
+    }
+
+    fn context(book: SkillBook) -> crate::content::SkillBookContext {
+        let authoritative_skills = book
+            .skills
+            .iter()
+            .filter_map(|skill| skill.definition.clone())
+            .map(|definition| crate::content::AuthoritativeSkillDefinition {
+                definition,
+                invisible: false,
+            })
+            .collect();
+        crate::content::SkillBookContext {
+            book,
+            authoritative_skills,
         }
     }
 

@@ -96,7 +96,7 @@ fn merge_missing<K, V>(
     }
 }
 
-fn preferred_or_first_ready(
+pub(crate) fn preferred_or_first_ready(
     readiness: impl IntoIterator<Item = bool>,
     preferred_index: usize,
 ) -> Option<usize> {

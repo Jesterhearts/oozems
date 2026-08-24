@@ -18,13 +18,20 @@ use crate::game_gui;
 
 mod interaction;
 mod mob;
-mod npc;
+pub(crate) mod npc;
 mod skill_info;
 mod skillbook;
 
 const GAUGE_HEADER_HEIGHT: f64 = 15.0;
 const GAUGE_FILL_TOP: f64 = 15.0;
 const GAUGE_FILL_HEIGHT: f64 = 14.0;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ItemExpiration {
+    Permanent,
+    Expired,
+    RemainingMinutes(u64),
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LayerPass {
@@ -87,6 +94,13 @@ pub fn draw(game: &Game) {
     }
     mob::draw_combat_texts(game, camera_x, camera_y);
     draw_hud(game);
+}
+
+pub(crate) fn select_active_buff(
+    game: &mut Game,
+    point: game_gui::CanvasPoint,
+) -> bool {
+    skill_info::select_active_buff(game, point)
 }
 
 pub(crate) fn world_layers(map: &Map) -> Vec<i32> {
@@ -382,7 +396,9 @@ fn draw_dropped_items(
 ) {
     let now_ms = js_sys::Date::now().max(0.0) as u64;
     for drop in &game.map.dropped_items {
-        if drop.despawn_at_unix_ms <= now_ms {
+        if drop.despawn_at_unix_ms <= now_ms
+            || (drop.expires_at_unix_ms != 0 && drop.expires_at_unix_ms <= now_ms)
+        {
             continue;
         }
         let Some(position) = &drop.position else {
@@ -456,19 +472,33 @@ fn draw_player(
 
     game.context.set_fill_style_str("rgba(29, 45, 43, 0.25)");
     game.context.fill_rect(x - 23.0, y - 3.0, 46.0, 6.0);
-    character_render::draw_character(
-        &game.context,
-        &game.images,
-        &game.character_sprites,
-        game.character_animation.animation,
-        character_animation_elapsed_ms(game.character_animation, game.frame_time_ms),
-        CharacterPlacement {
-            anchor_x: x,
-            anchor_y: y,
-            scale: 1.0,
-            facing_left: game.facing_left,
-        },
-    );
+    let elapsed_ms = character_animation_elapsed_ms(game.character_animation, game.frame_time_ms);
+    let placement = || CharacterPlacement {
+        anchor_x: x,
+        anchor_y: y,
+        scale: 1.0,
+        facing_left: game.facing_left,
+    };
+    let morph_drawn = game.morph_definition.as_ref().is_some_and(|definition| {
+        crate::morph_render::draw_morph(
+            &game.context,
+            &game.images,
+            definition,
+            game.character_animation.animation,
+            elapsed_ms,
+            placement(),
+        )
+    });
+    if !morph_drawn {
+        character_render::draw_character(
+            &game.context,
+            &game.images,
+            &game.character_sprites,
+            game.character_animation.animation,
+            elapsed_ms,
+            placement(),
+        );
+    }
 }
 
 fn draw_hud(game: &Game) {
@@ -542,12 +572,20 @@ fn draw_equipment_window(game: &Game) {
     let Some(inventory) = game.player.inventory.as_ref() else {
         return;
     };
+    let now_unix_ms = js_sys::Date::now().max(0.0) as u64;
     for equipped in &inventory.equipment {
         let Some((x, y)) = game_gui::equipment_slot_position(equipped.slot) else {
             continue;
         };
         if let Some(definition) = item_definition(game, equipped.item_id) {
             draw_item_icon(game, definition, window.x + x, window.y + y);
+            draw_item_expiration(
+                game,
+                item_expiration(equipped.expires_at_unix_ms, now_unix_ms),
+                false,
+                window.x + x,
+                window.y + y,
+            );
         }
     }
 }
@@ -562,12 +600,21 @@ fn draw_inventory_window(game: &Game) {
     let Some(inventory) = game.player.inventory.as_ref() else {
         return;
     };
-    for (index, item_id) in inventory.item_ids.iter().enumerate() {
-        let Some(definition) = item_definition(game, *item_id) else {
+    let now_unix_ms = js_sys::Date::now().max(0.0) as u64;
+    for (index, stack) in inventory.stacks.iter().enumerate() {
+        let Some(definition) = item_definition(game, stack.item_id) else {
             continue;
         };
         let (x, y) = game_gui::inventory_slot_position(index);
         draw_item_icon(game, definition, window.x + x, window.y + y);
+        draw_item_quantity(game, stack.quantity, window.x + x, window.y + y);
+        draw_item_expiration(
+            game,
+            item_expiration(stack.expires_at_unix_ms, now_unix_ms),
+            permanent_stack_needs_label(&inventory.stacks, stack),
+            window.x + x,
+            window.y + y,
+        );
     }
 }
 
@@ -625,6 +672,118 @@ fn draw_item_icon(
             f64::from(definition.icon_width),
             f64::from(definition.icon_height),
         );
+}
+
+fn draw_item_quantity(
+    game: &Game,
+    quantity: u32,
+    slot_x: f32,
+    slot_y: f32,
+) {
+    if quantity <= 1 {
+        return;
+    }
+    let label = quantity.to_string();
+    game.context.set_fill_style_str("#202020");
+    game.context.set_font("bold 10px Arial");
+    let width = game
+        .context
+        .measure_text(&label)
+        .map_or(0.0, |metrics| metrics.width());
+    let _ = game.context.fill_text(
+        &label,
+        f64::from(slot_x + 30.0) - width,
+        f64::from(slot_y + 30.0),
+    );
+}
+
+fn item_expiration(
+    expires_at_unix_ms: u64,
+    now_unix_ms: u64,
+) -> ItemExpiration {
+    if expires_at_unix_ms == 0 {
+        ItemExpiration::Permanent
+    } else if expires_at_unix_ms <= now_unix_ms {
+        ItemExpiration::Expired
+    } else {
+        ItemExpiration::RemainingMinutes(
+            expires_at_unix_ms
+                .saturating_sub(now_unix_ms)
+                .div_ceil(60_000),
+        )
+    }
+}
+
+fn permanent_stack_needs_label(
+    stacks: &[oozems_proto::v1::InventoryItemStack],
+    stack: &oozems_proto::v1::InventoryItemStack,
+) -> bool {
+    stack.expires_at_unix_ms == 0
+        && stacks
+            .iter()
+            .any(|other| other.item_id == stack.item_id && other.expires_at_unix_ms != 0)
+}
+
+fn inventory_expiration_label(
+    expiration: ItemExpiration,
+    show_permanent: bool,
+) -> Option<String> {
+    match expiration {
+        ItemExpiration::Permanent => show_permanent.then(|| "PERM".to_owned()),
+        ItemExpiration::Expired => Some("EXP".to_owned()),
+        ItemExpiration::RemainingMinutes(minutes) => Some(format!("{minutes}m")),
+    }
+}
+
+fn item_expiration_detail(
+    expiration: ItemExpiration,
+    show_permanent: bool,
+) -> Option<String> {
+    match expiration {
+        ItemExpiration::Permanent => show_permanent.then(|| "permanent".to_owned()),
+        ItemExpiration::Expired => Some("expired".to_owned()),
+        ItemExpiration::RemainingMinutes(minutes) => {
+            let unit = if minutes == 1 { "minute" } else { "minutes" };
+            Some(format!("{minutes} {unit} left"))
+        }
+    }
+}
+
+fn draw_item_expiration(
+    game: &Game,
+    expiration: ItemExpiration,
+    show_permanent: bool,
+    slot_x: f32,
+    slot_y: f32,
+) {
+    let Some(label) = inventory_expiration_label(expiration, show_permanent) else {
+        return;
+    };
+    let (background, foreground) = match expiration {
+        ItemExpiration::Permanent => ("rgba(45, 67, 92, 0.9)", "#f4f8ff"),
+        ItemExpiration::Expired => ("rgba(143, 39, 39, 0.92)", "#fff4f1"),
+        ItemExpiration::RemainingMinutes(_) => ("rgba(89, 67, 21, 0.92)", "#fff4bf"),
+    };
+    game.context.set_font("bold 8px Arial");
+    let width = game
+        .context
+        .measure_text(&label)
+        .map_or(28.0, |metrics| metrics.width() + 4.0)
+        .min(31.0);
+    game.context.set_fill_style_str(background);
+    game.context.fill_rect(
+        f64::from(slot_x + 1.0),
+        f64::from(slot_y + 1.0),
+        width,
+        10.0,
+    );
+    game.context.set_fill_style_str(foreground);
+    let _ = game.context.fill_text_with_max_width(
+        &label,
+        f64::from(slot_x + 3.0),
+        f64::from(slot_y + 9.0),
+        27.0,
+    );
 }
 
 fn item_definition(
@@ -972,6 +1131,7 @@ fn draw_fallback_hud(game: &Game) {
 mod tests {
     use oozems_proto::v1::Decoration;
     use oozems_proto::v1::DecorationFrame;
+    use oozems_proto::v1::InventoryItemStack;
     use oozems_proto::v1::Ladder;
     use oozems_proto::v1::Map;
     use oozems_proto::v1::Mob;
@@ -982,7 +1142,11 @@ mod tests {
 
     use super::LayerPass;
     use super::decoration_frame_index;
+    use super::inventory_expiration_label;
+    use super::item_expiration;
+    use super::item_expiration_detail;
     use super::layer_passes;
+    use super::permanent_stack_needs_label;
     use super::portal_frame_index;
     use super::world_layers;
 
@@ -1080,5 +1244,53 @@ mod tests {
         assert_eq!(decoration_frame_index(&frames, 130.0), Some(1));
         assert_eq!(decoration_frame_index(&frames, 389.0), Some(1));
         assert_eq!(decoration_frame_index(&frames, 390.0), Some(0));
+    }
+
+    #[test]
+    fn item_expiration_labels_distinguish_deadlines_without_labeling_all_permanent_items() {
+        assert_eq!(
+            inventory_expiration_label(item_expiration(0, 1_000), false),
+            None
+        );
+        assert_eq!(
+            inventory_expiration_label(item_expiration(0, 1_000), true).as_deref(),
+            Some("PERM")
+        );
+        assert_eq!(
+            inventory_expiration_label(item_expiration(1_000, 1_000), false).as_deref(),
+            Some("EXP")
+        );
+        assert_eq!(
+            inventory_expiration_label(item_expiration(61_000, 1_000), false).as_deref(),
+            Some("1m")
+        );
+        assert_eq!(
+            inventory_expiration_label(item_expiration(121_001, 1_000), false).as_deref(),
+            Some("3m")
+        );
+        assert_eq!(
+            item_expiration_detail(item_expiration(61_000, 1_000), false).as_deref(),
+            Some("1 minute left")
+        );
+
+        let stacks = vec![
+            InventoryItemStack {
+                item_id: 1,
+                expires_at_unix_ms: 0,
+                ..InventoryItemStack::default()
+            },
+            InventoryItemStack {
+                item_id: 1,
+                expires_at_unix_ms: 10_000,
+                ..InventoryItemStack::default()
+            },
+            InventoryItemStack {
+                item_id: 2,
+                expires_at_unix_ms: 0,
+                ..InventoryItemStack::default()
+            },
+        ];
+        assert!(permanent_stack_needs_label(&stacks, &stacks[0]));
+        assert!(!permanent_stack_needs_label(&stacks, &stacks[2]));
     }
 }

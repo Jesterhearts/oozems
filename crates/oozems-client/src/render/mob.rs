@@ -99,7 +99,11 @@ pub(super) fn draw_combat_texts(
     for text in crate::mob_render::combat_texts(&game.mob_render, game.frame_time_ms) {
         let x = f64::from(text.position.x) - camera_x;
         let y = f64::from(text.position.y) - camera_y - 36.0 - f64::from(text.progress) * 24.0;
-        let label = text.damage.to_string();
+        let label = if text.missed {
+            "MISS".to_owned()
+        } else {
+            text.damage.to_string()
+        };
         context.set_fill_style_str(if text.player_damage {
             "#ff6666"
         } else {

@@ -44,9 +44,10 @@ pub(super) fn begin(game: Rc<RefCell<Game>>) {
     }
     let player_id = game.borrow().player.id.clone();
     spawn_local(async move {
+        let request_started_ms = super::monotonic_time_ms();
         match api::recover_player(&player_id).await {
             Ok(response) => {
-                if let Err(error) = install(&mut game.borrow_mut(), response) {
+                if let Err(error) = install(&mut game.borrow_mut(), response, request_started_ms) {
                     show_status(&format!("Recovery could not finish: {error}"), true);
                 }
             }
@@ -71,13 +72,21 @@ pub(super) fn is_in_flight(state: &RecoveryState) -> bool {
 
 fn install(
     game: &mut Game,
-    response: RecoverPlayerResponse,
+    mut response: RecoverPlayerResponse,
+    request_started_ms: f64,
 ) -> Result<(), String> {
-    let stats = response
+    let player = response
         .player
-        .and_then(|player| player.stats)
-        .ok_or("recovery response did not contain character stats")?;
-    game.player.stats = Some(stats);
+        .ok_or("recovery response did not contain a player")?;
+    if player.stats.is_none() {
+        return Err("recovery response did not contain character stats".to_owned());
+    }
+    super::install_full_player_update(game, player);
+    super::install_active_buffs(
+        game,
+        response.active_buffs.take().unwrap_or_default(),
+        request_started_ms,
+    );
     let retry_after_ms = response.retry_after_ms.max(1) as f64;
     game.recovery_state.next_attempt_ms = Some(game.frame_time_ms + retry_after_ms);
     Ok(())

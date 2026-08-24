@@ -233,7 +233,7 @@ required_for_full_hit = "(Avoidability + 1) * (1 + max(MonsterLevel - PlayerLeve
 minimum               = "Accuracy * 10 / 24"
 
 [accuracy_profiles.magical]
-ratio    = "(trunc(Intelligence / 10) + trunc(Luck / 10)) / (Avoidability + 1) * (1 + 0.0415 * max(MonsterLevel - PlayerLevel, 0))"
+ratio    = "Accuracy / (Avoidability + 1) * (1 + 0.0415 * max(MonsterLevel - PlayerLevel, 0))"
 hit_rate = "-2.5795 * AccuracyRatio ^ 2 + 5.2343 * AccuracyRatio - 1.6749"
 accuracy = "trunc(Intelligence / 10) + trunc(Luck / 10)"
 

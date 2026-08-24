@@ -6,15 +6,20 @@ mod attacks;
 mod config;
 mod content;
 mod database;
+mod effects;
 mod experience;
 mod gameplay;
 mod interactions;
 mod items;
+mod jobs;
 mod keymap;
 mod loot;
 mod mobs;
+mod monster_book;
 mod movement;
 mod player_lock;
+mod quest_records;
+mod quest_scripts;
 mod quests;
 mod random;
 mod recovery;
@@ -29,6 +34,7 @@ use experience::ExperienceCurves;
 use gameplay::GameplayConfig;
 use interactions::InteractionCatalog;
 use loot::LootCatalog;
+use quest_scripts::QuestScriptCatalog;
 use skill_formula::FormulaCatalog;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
@@ -58,6 +64,7 @@ async fn main() -> anyhow::Result<()> {
         item_drop_despawn = %humantime::format_duration(gameplay.item_drop_despawn),
         initial_skill_points = gameplay.initial_skill_points,
         initial_map_id = gameplay.initial_map_id,
+        world_id = gameplay.world_id,
         movement_snapshot_interval = %humantime::format_duration(gameplay.movement.snapshot_interval),
         movement_speed_cap = gameplay.movement.speed_cap,
         movement_jump_cap = gameplay.movement.jump_cap,
@@ -74,7 +81,7 @@ async fn main() -> anyhow::Result<()> {
         source = formulas.source_url(),
         "formula profile configuration ready"
     );
-    let catalog = ContentCatalog::load(&config.wz_dir, &content_config)?;
+    let mut catalog = ContentCatalog::load(&config.wz_dir, &content_config)?;
     if catalog.get_map(gameplay.initial_map_id)?.is_none() {
         anyhow::bail!(
             "configured initial character map {} does not exist",
@@ -83,16 +90,26 @@ async fn main() -> anyhow::Result<()> {
     }
     let interactions =
         InteractionCatalog::load(&config.config_dir.join("interactions.toml"), &catalog)?;
-    let loot = LootCatalog::load(
-        &config.config_dir.join("loot.toml"),
-        &catalog.item_definitions(),
+    catalog.project_item_definitions(&interactions.item_reference_ids().collect())?;
+    let quest_scripts = QuestScriptCatalog::load(
+        &config.config_dir.join("quest-scripts.toml"),
+        catalog.quest_definitions(),
+        &catalog,
     )?;
+    catalog.project_item_definitions(quest_scripts.item_reference_ids())?;
+    info!(
+        program_count = quest_scripts.len(),
+        "quest script configuration ready"
+    );
+    let loot = LootCatalog::load(&config.config_dir.join("loot.toml"), &catalog)?;
+    catalog.project_item_definitions(&loot.item_reference_ids().collect())?;
     info!(table_count = loot.len(), "mob loot configuration ready");
     let database = database::open_surreal_kv(&config.data_dir.join("surrealkv")).await?;
     let router = app::router(
         database,
         catalog,
         interactions,
+        quest_scripts,
         loot,
         experience,
         gameplay,

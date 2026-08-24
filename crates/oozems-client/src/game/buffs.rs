@@ -1,59 +1,167 @@
+use std::ops::Deref;
+
 use oozems_proto::v1::ActiveBuff;
 use oozems_proto::v1::ActiveBuffState;
+use oozems_proto::v1::active_buff;
 
 use crate::movement::PlayerInput;
 
+#[derive(Clone)]
+pub(crate) struct TrackedBuff {
+    buff: ActiveBuff,
+    expires_at_local_ms: f64,
+    attacks_disabled: bool,
+}
+
+impl TrackedBuff {
+    pub fn key(&self) -> BuffKey {
+        source_key(&self.buff)
+    }
+
+    pub fn remaining_ms(
+        &self,
+        now_local_ms: f64,
+    ) -> u64 {
+        (self.expires_at_local_ms - now_local_ms).max(0.0) as u64
+    }
+}
+
+impl Deref for TrackedBuff {
+    type Target = ActiveBuff;
+
+    fn deref(&self) -> &Self::Target {
+        &self.buff
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum BuffKey {
+    Skill(u32),
+    Item(u32),
+}
+
 #[derive(Default)]
 pub(crate) struct TrackedBuffs {
-    pub buffs: Vec<ActiveBuff>,
+    pub buffs: Vec<TrackedBuff>,
+    pub weapon_attack: i32,
+    pub magic_attack: i32,
+    pub weapon_defense: i32,
+    pub magic_defense: i32,
+    pub accuracy: i32,
+    pub avoidability: i32,
+    pub speed: i32,
+    pub jump: i32,
+    pub morph_id: Option<u32>,
+    pub attacks_disabled: bool,
     revision: u64,
     observed_at_unix_ms: u64,
+    installed: bool,
 }
 
 pub(super) fn from_state(
     state: ActiveBuffState,
-    now_ms: u64,
+    now_local_ms: f64,
+    response_transit_ms: f64,
 ) -> TrackedBuffs {
     let mut tracked = TrackedBuffs::default();
-    install(&mut tracked, state, now_ms);
+    install(&mut tracked, state, now_local_ms, response_transit_ms);
     tracked
 }
 
 pub(super) fn install(
     current: &mut TrackedBuffs,
-    mut received: ActiveBuffState,
-    now_ms: u64,
+    received: ActiveBuffState,
+    now_local_ms: f64,
+    response_transit_ms: f64,
 ) {
     let received_version = (received.observed_at_unix_ms, received.revision);
     let current_version = (current.observed_at_unix_ms, current.revision);
-    if received_version < current_version {
+    if current.installed && received_version <= current_version {
         return;
     }
-    received
+    let observed_at_unix_ms = received.observed_at_unix_ms;
+    let response_transit_ms = response_transit_ms.max(0.0).ceil() as u64;
+    let projected_morph_id = (received.morph_id > 0).then_some(received.morph_id);
+    let attacks_disabled = received.attacks_disabled;
+    let mut buffs = received
         .buffs
-        .retain(|buff| buff.expires_at_unix_ms > now_ms);
-    received.buffs.sort_by_key(|buff| buff.skill_id);
-    current.buffs = received.buffs;
+        .into_iter()
+        .filter_map(|buff| {
+            let remaining_ms = effect_remaining_ms(
+                buff.expires_at_unix_ms,
+                observed_at_unix_ms,
+                response_transit_ms,
+            );
+            (remaining_ms > 0).then(|| TrackedBuff {
+                attacks_disabled: attacks_disabled
+                    && projected_morph_id.is_some_and(|morph_id| buff.morph_id == morph_id),
+                buff,
+                expires_at_local_ms: now_local_ms + remaining_ms as f64,
+            })
+        })
+        .collect::<Vec<_>>();
+    buffs.sort_by_key(TrackedBuff::key);
+    current.buffs = buffs;
     current.revision = received.revision;
-    current.observed_at_unix_ms = received.observed_at_unix_ms;
+    current.observed_at_unix_ms = observed_at_unix_ms;
+    current.installed = true;
+    project(current);
+}
+
+fn effect_remaining_ms(
+    expires_at_unix_ms: u64,
+    observed_at_unix_ms: u64,
+    response_transit_ms: u64,
+) -> u64 {
+    expires_at_unix_ms
+        .saturating_sub(observed_at_unix_ms)
+        .saturating_sub(response_transit_ms)
 }
 
 pub(super) fn apply(
     active: &mut TrackedBuffs,
     input: &mut PlayerInput,
-    now_ms: u64,
+    now_local_ms: f64,
 ) {
-    active.buffs.retain(|buff| buff.expires_at_unix_ms > now_ms);
-    input.speed_bonus = active
+    active
+        .buffs
+        .retain(|buff| buff.expires_at_local_ms > now_local_ms);
+    project(active);
+    input.speed_bonus = active.speed;
+    input.jump_bonus = active.jump;
+}
+
+fn source_key(buff: &ActiveBuff) -> BuffKey {
+    match buff.source {
+        Some(active_buff::Source::SourceSkillId(skill_id)) => BuffKey::Skill(skill_id),
+        Some(active_buff::Source::ItemId(item_id)) => BuffKey::Item(item_id),
+        None => BuffKey::Skill(buff.skill_id),
+    }
+}
+
+fn project(active: &mut TrackedBuffs) {
+    let strongest = |select: fn(&ActiveBuff) -> i32| {
+        active
+            .buffs
+            .iter()
+            .map(|buff| select(buff))
+            .filter(|value| *value != 0)
+            .max()
+            .unwrap_or_default()
+    };
+    active.weapon_attack = strongest(|buff| buff.weapon_attack);
+    active.magic_attack = strongest(|buff| buff.magic_attack);
+    active.weapon_defense = strongest(|buff| buff.weapon_defense);
+    active.magic_defense = strongest(|buff| buff.magic_defense);
+    active.accuracy = strongest(|buff| buff.accuracy);
+    active.avoidability = strongest(|buff| buff.avoidability);
+    active.speed = strongest(|buff| buff.speed_bonus);
+    active.jump = strongest(|buff| buff.jump_bonus);
+    active.morph_id = active
         .buffs
         .iter()
-        .map(|buff| buff.speed_bonus)
-        .fold(0, i32::saturating_add);
-    input.jump_bonus = active
-        .buffs
-        .iter()
-        .map(|buff| buff.jump_bonus)
-        .fold(0, i32::saturating_add);
+        .find_map(|buff| (buff.morph_id > 0).then_some(buff.morph_id));
+    active.attacks_disabled = active.buffs.iter().any(|buff| buff.attacks_disabled);
 }
 
 #[cfg(test)]
@@ -75,66 +183,128 @@ mod tests {
         }
     }
 
-    #[test]
-    fn install_discards_expired_buffs_and_sorts_the_rest() {
-        let mut active = TrackedBuffs::default();
-
-        install(
-            &mut active,
-            ActiveBuffState {
-                buffs: vec![buff(2, 1, 1, 300), buff(1, 1, 1, 100)],
-                revision: 1,
-                observed_at_unix_ms: 90,
-            },
-            100,
-        );
-
-        assert_eq!(
-            active
-                .buffs
-                .iter()
-                .map(|buff| buff.skill_id)
-                .collect::<Vec<_>>(),
-            vec![2]
-        );
+    fn tracked(
+        buff: ActiveBuff,
+        deadline: f64,
+    ) -> TrackedBuff {
+        TrackedBuff {
+            buff,
+            expires_at_local_ms: deadline,
+            attacks_disabled: false,
+        }
     }
 
     #[test]
-    fn install_rejects_a_stale_snapshot() {
-        let mut active = from_state(
-            ActiveBuffState {
-                buffs: vec![buff(2, 1, 1, 300)],
-                revision: 2,
-                observed_at_unix_ms: 200,
-            },
-            100,
-        );
-
+    fn install_converts_server_relative_duration_to_a_local_deadline() {
+        let mut active = TrackedBuffs::default();
         install(
             &mut active,
             ActiveBuffState {
-                buffs: Vec::new(),
+                buffs: vec![buff(2, 1, 1, 1_300), buff(1, 1, 1, 900)],
                 revision: 1,
-                observed_at_unix_ms: 100,
+                observed_at_unix_ms: 1_000,
+                ..ActiveBuffState::default()
             },
-            100,
+            40.0,
+            0.0,
         );
 
         assert_eq!(active.buffs.len(), 1);
+        assert_eq!(active.buffs[0].skill_id, 2);
+        assert_eq!(active.buffs[0].remaining_ms(40.0), 300);
+        assert_eq!(active.buffs[0].remaining_ms(140.0), 200);
     }
 
     #[test]
-    fn apply_combines_active_movement_modifiers() {
+    fn equal_or_stale_snapshots_do_not_extend_local_deadlines() {
+        let state = ActiveBuffState {
+            buffs: vec![buff(2, 1, 1, 1_300)],
+            revision: 2,
+            observed_at_unix_ms: 1_000,
+            ..ActiveBuffState::default()
+        };
+        let mut active = from_state(state.clone(), 40.0, 0.0);
+
+        install(&mut active, state, 140.0, 0.0);
+
+        assert_eq!(active.buffs[0].remaining_ms(140.0), 200);
+    }
+
+    #[test]
+    fn apply_projects_the_strongest_active_movement_modifiers() {
         let mut active = TrackedBuffs {
-            buffs: vec![buff(1, 20, 5, 200), buff(2, 10, 7, 300)],
+            buffs: vec![
+                tracked(buff(1, 20, 5, 200), 200.0),
+                tracked(buff(2, 10, 7, 300), 300.0),
+            ],
             ..TrackedBuffs::default()
         };
         let mut input = PlayerInput::default();
 
-        apply(&mut active, &mut input, 200);
+        apply(&mut active, &mut input, 200.0);
 
         assert_eq!(active.buffs.len(), 1);
         assert_eq!(input.speed_bonus, 10);
         assert_eq!(input.jump_bonus, 7);
+    }
+
+    #[test]
+    fn all_negative_holders_project_the_least_negative_modifier() {
+        let mut active = TrackedBuffs {
+            buffs: vec![
+                tracked(buff(1, -10, -2, 300), 300.0),
+                tracked(buff(2, -5, -8, 300), 300.0),
+            ],
+            ..TrackedBuffs::default()
+        };
+        let mut input = PlayerInput::default();
+
+        apply(&mut active, &mut input, 100.0);
+
+        assert_eq!(input.speed_bonus, -5);
+        assert_eq!(input.jump_bonus, -2);
+    }
+
+    #[test]
+    fn authoritative_attack_disable_expires_with_its_local_morph_holder() {
+        let mut active = from_state(
+            ActiveBuffState {
+                buffs: vec![ActiveBuff {
+                    morph_id: 4,
+                    expires_at_unix_ms: 1_100,
+                    ..ActiveBuff::default()
+                }],
+                revision: 1,
+                observed_at_unix_ms: 1_000,
+                morph_id: 4,
+                attacks_disabled: true,
+                ..ActiveBuffState::default()
+            },
+            20.0,
+            0.0,
+        );
+        let mut input = PlayerInput::default();
+
+        assert_eq!(active.morph_id, Some(4));
+        assert!(active.attacks_disabled);
+        apply(&mut active, &mut input, 120.0);
+        assert_eq!(active.morph_id, None);
+        assert!(!active.attacks_disabled);
+    }
+
+    #[test]
+    fn response_transit_is_removed_before_installing_a_local_deadline() {
+        let state = ActiveBuffState {
+            buffs: vec![buff(1, 10, 5, 1_100)],
+            revision: 1,
+            observed_at_unix_ms: 1_000,
+            ..ActiveBuffState::default()
+        };
+
+        let active = from_state(state.clone(), 500.0, 40.0);
+        assert_eq!(active.buffs[0].remaining_ms(500.0), 60);
+
+        let expired = from_state(state, 500.0, 100.0);
+        assert!(expired.buffs.is_empty());
     }
 }

@@ -11,6 +11,7 @@ pub struct GameplayConfig {
     pub item_drop_despawn: Duration,
     pub initial_skill_points: u32,
     pub initial_map_id: u32,
+    pub world_id: u32,
     pub combat: CombatConfig,
     pub movement: MovementConfig,
 }
@@ -59,9 +60,17 @@ struct GameplayFile {
     #[serde(default)]
     characters: CharacterRulesFile,
     #[serde(default)]
+    world: WorldRulesFile,
+    #[serde(default)]
     combat: CombatRulesFile,
     #[serde(default)]
     movement: MovementRulesFile,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct WorldRulesFile {
+    id: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -248,6 +257,7 @@ impl GameplayConfig {
             item_drop_despawn,
             initial_skill_points: file.skills.initial_points,
             initial_map_id: file.characters.initial_map_id,
+            world_id: file.world.id,
             combat,
             movement,
         })
@@ -432,6 +442,7 @@ mod tests {
         assert_eq!(config.item_drop_despawn, Duration::from_secs(600));
         assert_eq!(config.initial_skill_points, 3);
         assert_eq!(config.initial_map_id, 10_000);
+        assert_eq!(config.world_id, 0);
         assert_eq!(config.combat.disengage_range, 520.0);
         assert_eq!(
             config.combat.player_attack_interval,
@@ -479,6 +490,49 @@ mod tests {
         let config = GameplayConfig::load(&path).expect("valid configuration");
 
         assert_eq!(config.initial_map_id, 12_345);
+    }
+
+    #[test]
+    fn loads_one_nonnegative_authoritative_world_id() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("gameplay.toml");
+        fs::write(
+            &path,
+            concat!(
+                "[items]\n",
+                "drop_despawn = \"10m\"\n",
+                "[skills]\n",
+                "initial_points = 3\n",
+                "[world]\n",
+                "id = 24\n",
+            ),
+        )
+        .expect("write configuration");
+
+        let config = GameplayConfig::load(&path).expect("valid world configuration");
+
+        assert_eq!(config.world_id, 24);
+    }
+
+    #[test]
+    fn rejects_negative_or_out_of_range_world_ids() {
+        for value in ["-1", "4294967296"] {
+            let directory = tempfile::tempdir().expect("temporary directory");
+            let path = directory.path().join("gameplay.toml");
+            fs::write(
+                &path,
+                format!(
+                    "[items]\ndrop_despawn = \"10m\"\n[skills]\ninitial_points = 3\n[world]\nid = \
+                     {value}\n"
+                ),
+            )
+            .expect("write configuration");
+
+            assert!(
+                GameplayConfig::load(&path).is_err(),
+                "world ID {value} must fail",
+            );
+        }
     }
 
     #[test]
