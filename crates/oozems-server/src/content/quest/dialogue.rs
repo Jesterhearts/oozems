@@ -172,13 +172,8 @@ fn read_start_dialogue(
             }
             retained_fields.push(format!("start/{name}"));
         }
-        if start_question.is_some() {
-            retain_question_stop_fields(
-                start,
-                "start",
-                start_question.as_ref().expect("start question exists"),
-                &mut retained_fields,
-            )?;
+        if let Some(question) = &start_question {
+            retain_question_stop_fields(start, "start", question, &mut retained_fields)?;
         }
     }
     Ok(ParsedStartDialogue {
@@ -266,13 +261,8 @@ fn read_completion_dialogue(
         }
         retained.push(format!("completion/{name}"));
     }
-    if question.is_some() {
-        retain_question_stop_fields(
-            node,
-            "completion",
-            question.as_ref().expect("completion question exists"),
-            &mut retained,
-        )?;
+    if let Some(question) = &question {
+        retain_question_stop_fields(node, "completion", question, &mut retained)?;
     } else if let Some(stop) = wz::child(node, "stop")? {
         for child in wz::sorted_children(&stop)? {
             let name = wz::node_name(&child)?;

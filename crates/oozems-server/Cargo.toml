@@ -11,7 +11,10 @@ humantime          = "2.4.0"
 image              = { version = "0.25.10", default-features = false, features = [
   "png"
 ] }
-jiff = { version = "0.2.35", default-features = false, features = ["std", "tzdb-bundle-always"] }
+jiff               = { version = "0.2.35", default-features = false, features = [
+  "std",
+  "tzdb-bundle-always"
+] }
 oozems-proto       = { path = "../oozems-proto", version = "0.1.0" }
 prost              = "0.14.4"
 serde              = { version = "1.0.229", features = ["derive"] }
@@ -39,3 +42,6 @@ wz_reader          = { version = "0.0.24", default-features = false }
 
 [dev-dependencies]
 tempfile = "3.27.0"
+
+[lints]
+workspace = true

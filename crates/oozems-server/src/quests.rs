@@ -232,12 +232,7 @@ fn quest_expiration_deadline(
     // HeavenMS applies timeLimit2 after timeLimit, so it takes precedence when both
     // exist.
     let duration_ms = quest.info.time_limit2_ms.or(quest.info.time_limit_ms)?;
-    Some(
-        entry
-            .accepted_at_unix_ms
-            .checked_add(duration_ms)
-            .unwrap_or(u64::MAX),
-    )
+    Some(entry.accepted_at_unix_ms.saturating_add(duration_ms))
 }
 
 fn quest_is_expired(
@@ -275,7 +270,7 @@ pub fn is_available(
     if quest
         .start
         .minimum_fame
-        .is_some_and(|minimum| !stats.is_some_and(|stats| stats.fame >= minimum))
+        .is_some_and(|minimum| stats.is_none_or(|stats| stats.fame < minimum))
     {
         return false;
     }
@@ -312,24 +307,24 @@ fn start_status_date_and_script_allow(
         item_definitions,
     ) && repeat_policy_allows(player, quest, environment.now_unix_ms)
         && requirements_have_equipped_items(player, &quest.start.equipped_items)
-        && !quest
+        && quest
             .start
             .minimum_world_id
-            .is_some_and(|minimum| environment.world_id < minimum)
-        && !quest
+            .is_none_or(|minimum| environment.world_id >= minimum)
+        && quest
             .start
             .maximum_world_id
-            .is_some_and(|maximum| environment.world_id > maximum)
-        && !quest
+            .is_none_or(|maximum| environment.world_id <= maximum)
+        && quest
             .start
             .available_from
             .as_ref()
-            .is_some_and(|start| environment.now_unix_ms < start.unix_ms)
-        && !quest
+            .is_none_or(|start| environment.now_unix_ms >= start.unix_ms)
+        && quest
             .start
             .available_until
             .as_ref()
-            .is_some_and(|end| environment.now_unix_ms > end.unix_ms)
+            .is_none_or(|end| environment.now_unix_ms <= end.unix_ms)
         && weekday_allows(quest, environment.now_unix_ms)
         && requirements_have_effects(effects, &quest.start.effects)
         && required_morph_is_active(effects, quest.start.required_morph_id)
@@ -340,16 +335,16 @@ fn completion_window_allows(
     quest: &QuestDefinition,
     now_unix_ms: u64,
 ) -> bool {
-    !quest
+    quest
         .completion
         .available_from
         .as_ref()
-        .is_some_and(|start| now_unix_ms < start.unix_ms)
-        && !quest
+        .is_none_or(|start| now_unix_ms >= start.unix_ms)
+        && quest
             .completion
             .available_until
             .as_ref()
-            .is_some_and(|end| now_unix_ms > end.unix_ms)
+            .is_none_or(|end| now_unix_ms <= end.unix_ms)
 }
 
 fn eligible_completed_quest_count(
@@ -1144,20 +1139,19 @@ pub fn begin_start_question(
     }
     if let Some(index) = existing_index
         && QuestStatus::try_from(player.quests[index].status) == Ok(QuestStatus::Unspecified)
+        && let Some(step_index) = question_step_index(&player.quests[index], question)
     {
-        if let Some(step_index) = question_step_index(&player.quests[index], question) {
-            return Ok(QuestSelection {
-                player,
-                pages: Vec::new(),
-                changed: false,
-                npc_animation_action: None,
-                next_interaction: Some(QuestNextInteraction::Question {
-                    phase: QuestQuestionPhase::Start,
-                    step_index,
-                }),
-                next_quest_id: None,
-            });
-        }
+        return Ok(QuestSelection {
+            player,
+            pages: Vec::new(),
+            changed: false,
+            npc_animation_action: None,
+            next_interaction: Some(QuestNextInteraction::Question {
+                phase: QuestQuestionPhase::Start,
+                step_index,
+            }),
+            next_quest_id: None,
+        });
     }
 
     let mut entry = existing_index
@@ -1653,16 +1647,16 @@ fn start_quest(
         player.quests.push(entry);
         player.quests.sort_by_key(|entry| entry.quest_id);
     }
-    let mut pages = include_question_trailing_pages
-        .then(|| {
-            quest
-                .dialogue
-                .start_question
-                .as_ref()
-                .map(|question| question.trailing_pages.clone())
-                .unwrap_or_default()
-        })
-        .unwrap_or_default();
+    let mut pages = if include_question_trailing_pages {
+        quest
+            .dialogue
+            .start_question
+            .as_ref()
+            .map(|question| question.trailing_pages.clone())
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     pages.extend(quest.dialogue.accepted_pages.iter().cloned());
     if let Some(plan) = script_plan {
         pages.extend(plan.result_pages);

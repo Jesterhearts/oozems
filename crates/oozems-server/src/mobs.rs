@@ -1931,7 +1931,6 @@ mod tests {
                 end_x: 500.0,
                 end_y: 100.0,
                 layer: 0,
-                ..Platform::default()
             }],
             mob_spawn_points: vec![MobSpawnPoint {
                 spawn_id: 1,

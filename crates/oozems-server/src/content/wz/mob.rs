@@ -442,7 +442,6 @@ mod tests {
                 end_x: 200.0,
                 end_y: 120.0,
                 layer: 2,
-                ..Platform::default()
             },
             Platform {
                 id: 7,
@@ -451,7 +450,6 @@ mod tests {
                 end_x: 200.0,
                 end_y: 300.0,
                 layer: 5,
-                ..Platform::default()
             },
         ];
         let spawn = RawMobSpawn {

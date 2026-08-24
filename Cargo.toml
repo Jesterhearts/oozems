@@ -9,3 +9,6 @@ members  = [
 [workspace.package]
 version = "0.1.0"
 license = "Unlicense"
+
+[workspace.lints.clippy]
+too_many_arguments = "allow"

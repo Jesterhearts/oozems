@@ -373,9 +373,11 @@ fn schedule_appearance_retry(
     request: player_updates::AppearanceRefresh,
     now_ms: f64,
 ) -> bool {
-    let completed_retries = (state.retry_identity.as_ref() == Some(&request.identity))
-        .then_some(state.retry_count)
-        .unwrap_or_default();
+    let completed_retries = if state.retry_identity.as_ref() == Some(&request.identity) {
+        state.retry_count
+    } else {
+        0
+    };
     let Some((retry_count, retry_after_ms)) = next_appearance_retry(completed_retries, now_ms)
     else {
         return false;
@@ -1005,9 +1007,7 @@ fn begin_appearance_refresh(game: Rc<RefCell<Game>>) {
     };
     spawn_local(async move {
         let prepared =
-            match api::get_character_sprites(request.appearance.clone(), Some(&request.equipment))
-                .await
-            {
+            match api::get_character_sprites(request.appearance, Some(&request.equipment)).await {
                 Ok(sprites) => {
                     assets::prepare_assets(sprites.assets.iter()).map(|images| (sprites, images))
                 }

@@ -277,7 +277,6 @@ fn draw_decoration(
     );
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_sprite(
     game: &Game,
     asset_id: &str,
@@ -322,7 +321,6 @@ pub(crate) fn draw_sprite(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn sprite_is_visible(
     game: &Game,
     map_x: f32,

@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use oozems_proto::v1::CharacterStats;
 use oozems_proto::v1::EquipmentSlot;
 use oozems_proto::v1::GameGui;
@@ -1193,7 +1195,6 @@ mod tests {
                 quantity: 1,
                 expires_at_unix_ms: 0,
             }],
-            ..InventoryState::default()
         };
         let state = GuiState {
             equipment_open: true,
@@ -1739,7 +1740,6 @@ mod tests {
                         region("skill-page-previous", 80.0, 64.0, 18.0, 19.0),
                         region("skill-page-next", 139.0, 64.0, 18.0, 19.0),
                     ],
-                    ..GuiLayout::default()
                 }),
             }),
             key_config_window: Some(GuiWindow {
@@ -1831,9 +1831,11 @@ mod tests {
         ItemDefinition {
             item_id,
             category: category as i32,
-            slot: (category == ItemCategory::Equipment)
-                .then_some(EquipmentSlot::Top as i32)
-                .unwrap_or_default(),
+            slot: if category == ItemCategory::Equipment {
+                EquipmentSlot::Top as i32
+            } else {
+                0
+            },
             appearance_supported: category == ItemCategory::Equipment,
             ..ItemDefinition::default()
         }
@@ -1870,4 +1872,3 @@ mod tests {
         }
     }
 }
-use std::collections::BTreeSet;

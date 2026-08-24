@@ -143,7 +143,7 @@ pub(super) fn install_player_update(
 }
 
 pub(super) fn appearance_refresh(player: &PlayerState) -> Option<AppearanceRefresh> {
-    let appearance = player.appearance.clone()?;
+    let appearance = player.appearance?;
     let equipment = player.inventory.as_ref()?.equipment.clone();
     Some(AppearanceRefresh {
         identity: appearance_identity(&appearance, &equipment),
@@ -307,7 +307,7 @@ mod tests {
         };
         let mut player = PlayerState {
             revision: 1,
-            learned_skills: vec![learned.clone()],
+            learned_skills: vec![learned],
             key_bindings: vec![target_binding.clone(), retained_binding.clone()],
             ..PlayerState::default()
         };

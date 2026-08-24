@@ -146,9 +146,8 @@ mod tests {
     #[test]
     fn readiness_checks_do_not_stop_at_the_first_missing_frame() {
         let checked = Cell::new(0);
-        let readiness = [false, true, false].into_iter().map(|ready| {
+        let readiness = [false, true, false].into_iter().inspect(|_| {
             checked.set(checked.get() + 1);
-            ready
         });
 
         assert_eq!(preferred_or_first_ready(readiness, 0), Some(1));

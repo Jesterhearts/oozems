@@ -142,9 +142,9 @@ pub fn validate_bound_skills(
         .map(|binding| binding.skill_id)
         .filter(|skill_id| *skill_id != 0)
     {
-        if !learned_skills
+        if learned_skills
             .get(&skill_id)
-            .is_some_and(|(level, _)| *level > 0)
+            .is_none_or(|(level, _)| *level == 0)
             || skill_definition(&context.book, skill_id).is_err()
         {
             return Err(SkillRuleError::NotLearned { skill_id });

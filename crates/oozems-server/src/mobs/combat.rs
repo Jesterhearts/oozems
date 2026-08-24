@@ -134,7 +134,6 @@ pub(super) fn respawn_mobs(
 }
 
 // Shipyard uses the signature as the system's explicit borrow schedule.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn apply_touch_damage(
     positions: View<Position>,
     identities: View<MobIdentity>,
@@ -246,7 +245,6 @@ pub(super) fn apply_touch_damage(
 }
 
 // Shipyard uses the signature as the system's explicit borrow schedule.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn queue_projectile_attacks(
     positions: View<Position>,
     identities: View<MobIdentity>,
@@ -464,19 +462,23 @@ fn calculate_mob_damage(
             (
                 "WeaponDefense",
                 f64::from(
-                    (kind == MobDamageKind::Physical)
-                        .then_some(defense)
-                        .unwrap_or_default()
-                        .max(0),
+                    if kind == MobDamageKind::Physical {
+                        defense
+                    } else {
+                        0
+                    }
+                    .max(0),
                 ),
             ),
             (
                 "MagicDefense",
                 f64::from(
-                    (kind == MobDamageKind::Magical)
-                        .then_some(defense)
-                        .unwrap_or_default()
-                        .max(0),
+                    if kind == MobDamageKind::Magical {
+                        defense
+                    } else {
+                        0
+                    }
+                    .max(0),
                 ),
             ),
         ],
@@ -519,7 +521,6 @@ pub(super) fn physical_attack_hits(
     Ok(next_u64(random_state) % 1_000_000 < threshold)
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn player_attack_hits(
     formulas: &FormulaCatalog,
     attack_type: SkillAttackType,
@@ -554,7 +555,6 @@ pub(super) fn player_attack_hits(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn magical_attack_hits(
     formulas: &FormulaCatalog,
     accuracy_bonus: i32,
@@ -596,7 +596,6 @@ fn magical_attack_hits(
     Ok(next_u64(random_state) % 1_000_000 < threshold)
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn calculate_player_damage(
     formulas: &FormulaCatalog,
     attack_type: SkillAttackType,
@@ -622,19 +621,23 @@ pub(super) fn calculate_player_damage(
                 (
                     "WeaponDefense",
                     f64::from(
-                        (attack_type == SkillAttackType::Physical)
-                            .then_some(defense)
-                            .unwrap_or_default()
-                            .max(0),
+                        if attack_type == SkillAttackType::Physical {
+                            defense
+                        } else {
+                            0
+                        }
+                        .max(0),
                     ),
                 ),
                 (
                     "MagicDefense",
                     f64::from(
-                        (attack_type == SkillAttackType::Magical)
-                            .then_some(defense)
-                            .unwrap_or_default()
-                            .max(0),
+                        if attack_type == SkillAttackType::Magical {
+                            defense
+                        } else {
+                            0
+                        }
+                        .max(0),
                     ),
                 ),
             ]

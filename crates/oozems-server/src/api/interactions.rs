@@ -749,9 +749,11 @@ fn active_quest_dialog(
         .and_then(|index| usize::try_from(index).ok())
         .filter(|index| *index < question.steps.len())
         .unwrap_or_default();
-    let pages = (step_index == 0)
-        .then(|| question.leading_pages.clone())
-        .unwrap_or_default();
+    let pages = if step_index == 0 {
+        question.leading_pages.clone()
+    } else {
+        Vec::new()
+    };
     question_dialog(
         quest,
         crate::quests::QuestQuestionPhase::Completion,

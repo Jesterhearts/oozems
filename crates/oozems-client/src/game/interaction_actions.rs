@@ -208,13 +208,12 @@ fn install_response(
         game.interaction.generation == update.generation && game.map.id == update.source_map_id;
     let installed = super::install_full_player_update(game, player);
     super::install_active_buffs(game, active_buffs, update.request_started_ms);
-    if installed.domains.skills {
-        if let Some(((loaded, skill_requested_at_ms), skill_active_buffs)) =
+    if installed.domains.skills
+        && let Some(((loaded, skill_requested_at_ms), skill_active_buffs)) =
             update.skill_book.take().zip(skill_active_buffs)
-        {
-            game.skill_book = loaded.skill_book;
-            super::install_active_buffs(game, skill_active_buffs, skill_requested_at_ms);
-        }
+    {
+        game.skill_book = loaded.skill_book;
+        super::install_active_buffs(game, skill_active_buffs, skill_requested_at_ms);
     }
     let relocation_requested =
         update.response.map.is_some() || update.response.authoritative.is_some();

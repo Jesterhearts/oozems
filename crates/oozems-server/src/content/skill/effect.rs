@@ -101,7 +101,6 @@ fn find_skill(
     invalid(format!("job {job_id} does not contain skill {skill_id}"))
 }
 
-#[allow(clippy::too_many_arguments)]
 fn push_animation(
     content: &SkillContent,
     skill: &WzNodeArc,

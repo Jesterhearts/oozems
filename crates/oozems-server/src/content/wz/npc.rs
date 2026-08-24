@@ -514,7 +514,6 @@ mod tests {
             end_x: 200.0,
             end_y: 120.0,
             layer: 3,
-            ..Platform::default()
         }];
         let npc = build_npc(
             RawNpcSpawn {
