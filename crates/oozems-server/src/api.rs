@@ -402,9 +402,27 @@ pub async fn get_gui(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Protobuf<GetGuiResponse>, ApiError> {
-    let _: GetGuiRequest = decode_request(&headers, body)?;
+    let request: GetGuiRequest = decode_request(&headers, body)?;
+    let player_id = PlayerId::parse(&request.player_id)
+        .map_err(|error| ApiError::bad_request("invalid_player_id", error.to_string()))?;
+    let player = crate::database::load_player(&state.database, &player_id)
+        .await?
+        .ok_or_else(|| {
+            ApiError::not_found("player_not_found", "the requested player does not exist")
+        })?;
+    let inventory = player
+        .inventory
+        .as_ref()
+        .ok_or_else(|| ApiError::PlayerData("inventory is missing".to_owned()))?;
+    let item_ids = inventory
+        .stacks
+        .iter()
+        .map(|stack| stack.item_id)
+        .chain(inventory.equipment.iter().map(|equipped| equipped.item_id))
+        .chain(request.observed_item_ids)
+        .collect();
     Ok(Protobuf(GetGuiResponse {
-        gui: Some(state.catalog.game_gui()),
+        gui: Some(state.catalog.game_gui(&item_ids)?),
     }))
 }
 

@@ -260,7 +260,10 @@ message GetCharacterSpritesResponse {
   CharacterSpriteSet sprites = 1;
 }
 
-message GetGuiRequest {}
+message GetGuiRequest {
+  string player_id = 1;
+  repeated uint32 observed_item_ids = 2;
+}
 
 message GetGuiResponse {
   GameGui gui = 1;

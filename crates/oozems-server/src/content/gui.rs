@@ -24,6 +24,7 @@ use super::wz::wrap_archive_root;
 
 mod layout;
 
+use layout::compose_inventory_window;
 use layout::compose_item_window;
 use layout::compose_key_config;
 use layout::compose_npc_dialog_window;
@@ -96,6 +97,19 @@ struct StatWindowSources {
 struct ItemWindowSources {
     background: SourceSprite,
     close: SourceSprite,
+}
+
+struct InventoryTabSources {
+    active_background: SourceSprite,
+    inactive_background: SourceSprite,
+    active_label: SourceSprite,
+    inactive_label: SourceSprite,
+}
+
+struct InventoryWindowSources {
+    background: SourceSprite,
+    close: SourceSprite,
+    tabs: Vec<InventoryTabSources>,
 }
 
 struct SkillWindowSources {
@@ -228,10 +242,9 @@ fn build_game_gui(
     let equipment_window =
         compose_item_window(&equipment_sources, EQUIPMENT_WINDOW_X, EQUIPMENT_WINDOW_Y)?;
     assets.extend(equipment_assets);
-    let (inventory_sources, inventory_assets) =
-        load_item_window_sources(content, ui_window, "inventory", "Item")?;
+    let (inventory_sources, inventory_assets) = load_inventory_window_sources(content, ui_window)?;
     let inventory_window =
-        compose_item_window(&inventory_sources, INVENTORY_WINDOW_X, INVENTORY_WINDOW_Y)?;
+        compose_inventory_window(&inventory_sources, INVENTORY_WINDOW_X, INVENTORY_WINDOW_Y)?;
     assets.extend(inventory_assets);
     let (skill_sources, skill_assets) = load_skill_window_sources(content, ui_window)?;
     let skill_window = compose_skill_window(&skill_sources)?;
@@ -510,6 +523,44 @@ fn load_item_window_sources(
     Ok((ItemWindowSources { background, close }, assets))
 }
 
+fn load_inventory_window_sources(
+    content: &GuiContent,
+    ui_window: &WzNodeArc,
+) -> Result<(InventoryWindowSources, Vec<AssetDescriptor>), GuiContentError> {
+    let (window, mut assets) = load_item_window_sources(content, ui_window, "inventory", "Item")?;
+    let mut tabs = Vec::with_capacity(5);
+    for (index, name) in ["equipment", "consume", "install", "etc", "cash"]
+        .into_iter()
+        .enumerate()
+    {
+        let index = index.to_string();
+        let mut load = |part: &str, path: &[&str]| {
+            load_source(
+                content,
+                ui_window,
+                UI_WINDOW_IMAGE,
+                &format!("inventory-tab-{name}-{part}"),
+                path,
+                &mut assets,
+            )
+        };
+        tabs.push(InventoryTabSources {
+            active_background: load("active-background", &["Item", "New", "Tab1", &index])?,
+            inactive_background: load("inactive-background", &["Item", "New", "Tab0", &index])?,
+            active_label: load("active-label", &["Item", "Tab", "enabled", &index])?,
+            inactive_label: load("inactive-label", &["Item", "Tab", "disabled", &index])?,
+        });
+    }
+    Ok((
+        InventoryWindowSources {
+            background: window.background,
+            close: window.close,
+            tabs,
+        },
+        assets,
+    ))
+}
+
 fn load_skill_window_sources(
     content: &GuiContent,
     ui_window: &WzNodeArc,
@@ -762,10 +813,13 @@ mod tests {
     use std::path::Path;
 
     use super::GuiContent;
+    use super::InventoryTabSources;
+    use super::InventoryWindowSources;
     use super::SkillWindowSources;
     use super::SourceSprite;
     use super::StatWindowSources;
     use super::StatusBarSources;
+    use super::compose_inventory_window;
     use super::compose_skill_window;
     use super::compose_stat_window;
     use super::compose_status_bar;
@@ -887,6 +941,30 @@ mod tests {
     }
 
     #[test]
+    fn inventory_sources_form_five_native_tabs() {
+        let sources = inventory_sources();
+
+        let window =
+            compose_inventory_window(&sources, 205.0, 80.0).expect("valid inventory window");
+        let layout = window.layout.expect("inventory window layout");
+
+        assert_eq!((layout.width, layout.height), (175.0, 289.0));
+        assert_eq!(layout.sprite_templates.len(), 20);
+        assert_eq!(
+            template_size(&layout, "inventory-tab-equipment-active-background"),
+            Some((34.0, 19.0))
+        );
+        assert_eq!(
+            region_geometry(&layout, "inventory-tab-equipment"),
+            Some((3.0, 22.0, 34.0, 19.0))
+        );
+        assert_eq!(
+            region_geometry(&layout, "inventory-tab-cash"),
+            Some((139.0, 22.0, 34.0, 19.0))
+        );
+    }
+
+    #[test]
     fn local_ui_archive_builds_a_native_status_bar_when_present() {
         let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
         let directory = manifest_dir.join("../../data");
@@ -917,7 +995,7 @@ mod tests {
             stat_window.layout.as_ref().map(|layout| layout.height),
             Some(347.0)
         );
-        assert_eq!(gui.assets.len(), 63);
+        assert_eq!(gui.assets.len(), 83);
         assert!(gui.npc_dialog_window.is_some());
         assert!(gui.shop_window.is_some());
         assert_eq!(gui.key_actions.len(), crate::keymap::ACTIONS.len());
@@ -942,6 +1020,16 @@ mod tests {
                 .and_then(|window| window.layout.as_ref())
                 .map(|layout| (layout.width, layout.height)),
             Some((175.0, 289.0))
+        );
+        let inventory_layout = gui
+            .inventory_window
+            .as_ref()
+            .and_then(|window| window.layout.as_ref())
+            .expect("inventory window layout");
+        assert_eq!(inventory_layout.sprite_templates.len(), 20);
+        assert_eq!(
+            region_geometry(inventory_layout, "inventory-tab-install"),
+            Some((71.0, 22.0, 34.0, 19.0))
         );
         assert_eq!(
             gui.skill_window
@@ -985,6 +1073,31 @@ mod tests {
             height,
             origin_x: 0.0,
             origin_y: 0.0,
+        }
+    }
+
+    fn inventory_sources() -> InventoryWindowSources {
+        let tabs = ["equipment", "consume", "install", "etc", "cash"]
+            .into_iter()
+            .map(|name| InventoryTabSources {
+                active_background: source(
+                    &format!("inventory-tab-{name}-active-background"),
+                    34.0,
+                    19.0,
+                ),
+                inactive_background: source(
+                    &format!("inventory-tab-{name}-inactive-background"),
+                    34.0,
+                    18.0,
+                ),
+                active_label: source(&format!("inventory-tab-{name}-active-label"), 20.0, 10.0),
+                inactive_label: source(&format!("inventory-tab-{name}-inactive-label"), 20.0, 10.0),
+            })
+            .collect();
+        InventoryWindowSources {
+            background: source("inventory-background", 175.0, 289.0),
+            close: source("inventory-close", 10.0, 10.0),
+            tabs,
         }
     }
 

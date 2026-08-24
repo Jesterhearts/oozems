@@ -409,15 +409,29 @@ impl ItemContent {
         &self.eager_definitions
     }
 
-    pub fn definition_clones_for_gui(&self) -> Vec<ItemDefinition> {
-        self.eager_definitions.clone()
-    }
-
-    pub fn descriptor_clones_for_gui(&self) -> Vec<AssetDescriptor> {
-        self.eager_definitions
+    pub fn gui_projection(
+        &self,
+        item_ids: &BTreeSet<u32>,
+    ) -> Result<(Vec<ItemDefinition>, Vec<AssetDescriptor>), ItemContentError> {
+        let mut definitions = self.eager_definitions.clone();
+        let eager_ids = definitions
+            .iter()
+            .map(|definition| definition.item_id)
+            .collect::<BTreeSet<_>>();
+        for item_id in item_ids.difference(&eager_ids) {
+            let definition =
+                self.definition(*item_id)?
+                    .ok_or_else(|| ItemContentError::Invalid {
+                        message: format!("inventory item {item_id} is absent from the item index"),
+                    })?;
+            definitions.push(definition.clone());
+        }
+        definitions.sort_by_key(|definition| definition.item_id);
+        let assets = definitions
             .iter()
             .map(|definition| descriptor_from_asset_id(&definition.icon_asset_id))
-            .collect()
+            .collect();
+        Ok((definitions, assets))
     }
 
     pub fn get_asset(

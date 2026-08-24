@@ -118,6 +118,7 @@ pub struct Game {
     recovery_state: recovery_actions::RecoveryState,
     appearance_refresh_state: AppearanceRefreshState,
     morph_refresh_state: MorphRefreshState,
+    gui_refresh_state: GuiRefreshState,
 }
 
 fn install_full_player_update(
@@ -185,7 +186,15 @@ struct MorphRefreshState {
     retry_after_ms: HashMap<u32, f64>,
 }
 
+#[derive(Default)]
+struct GuiRefreshState {
+    in_flight: bool,
+    retry_after_ms: f64,
+    required: bool,
+}
+
 const MORPH_RETRY_BACKOFF_MS: f64 = 5_000.0;
+const GUI_RETRY_BACKOFF_MS: f64 = 5_000.0;
 
 fn install_active_buffs(
     game: &mut Game,
@@ -400,7 +409,8 @@ pub async fn run(
         .await
         .map_err(|error| error.to_string())?;
     movement::validate_rules(&movement_rules)?;
-    let gui_result = api::get_gui().await;
+    let gui_result = api::get_gui(&player.id, Vec::new()).await;
+    let gui_refresh_required = gui_result.is_err();
     let gui_warning = gui_result.as_ref().err().map(ToString::to_string);
     let gui = gui_result.unwrap_or_default();
     let skill_requested_at_ms = monotonic_time_ms();
@@ -426,6 +436,7 @@ pub async fn run(
         loaded_skills.active_buffs,
         skill_requested_at_ms,
     )?;
+    game.borrow_mut().gui_refresh_state.required = gui_refresh_required;
     let asset_count = game.borrow().images.len();
 
     let warnings = [
@@ -563,6 +574,7 @@ fn build_game(
         recovery_state: recovery_actions::RecoveryState::default(),
         appearance_refresh_state,
         morph_refresh_state,
+        gui_refresh_state: GuiRefreshState::default(),
     }));
     install_canvas_input(&canvas, game.clone())?;
     Ok(game)
@@ -884,6 +896,7 @@ fn schedule_frame(game: Rc<RefCell<Game>>) -> Result<(), String> {
         }
         begin_appearance_refresh(game.clone());
         begin_morph_refresh(game.clone());
+        begin_gui_refresh(game.clone());
         if update.pick_up {
             item_actions::begin_pick_up(game.clone());
         }
@@ -913,6 +926,59 @@ fn schedule_frame(game: Rc<RefCell<Game>>) -> Result<(), String> {
         .request_animation_frame(callback.unchecked_ref())
         .map_err(js_error)?;
     Ok(())
+}
+
+fn begin_gui_refresh(game: Rc<RefCell<Game>>) {
+    let request = {
+        let game = game.borrow();
+        if game.gui_refresh_state.in_flight
+            || game.frame_time_ms < game.gui_refresh_state.retry_after_ms
+        {
+            return;
+        }
+        let observed_item_ids = game
+            .player
+            .inventory
+            .iter()
+            .flat_map(|inventory| {
+                inventory
+                    .stacks
+                    .iter()
+                    .map(|stack| stack.item_id)
+                    .chain(inventory.equipment.iter().map(|equipped| equipped.item_id))
+            })
+            .chain(game.map.dropped_items.iter().map(|drop| drop.item_id));
+        let Some(refresh_item_ids) = game_gui::item_definition_refresh_ids(
+            &game.gui,
+            observed_item_ids,
+            game.gui_refresh_state.required,
+        ) else {
+            return;
+        };
+        (game.player.id.clone(), refresh_item_ids)
+    };
+    game.borrow_mut().gui_refresh_state.in_flight = true;
+    spawn_local(async move {
+        let result = api::get_gui(&request.0, request.1)
+            .await
+            .map_err(|error| error.to_string())
+            .and_then(|gui| assets::prepare_assets(gui.assets.iter()).map(|images| (gui, images)));
+        let completed_at_ms = monotonic_time_ms();
+        let mut game = game.borrow_mut();
+        game.gui_refresh_state.in_flight = false;
+        match result {
+            Ok((gui, images)) => {
+                game.gui = gui;
+                assets::merge_assets(&mut game.images, images);
+                game.gui_refresh_state.retry_after_ms = 0.0;
+                game.gui_refresh_state.required = false;
+            }
+            Err(error) => {
+                game.gui_refresh_state.retry_after_ms = completed_at_ms + GUI_RETRY_BACKOFF_MS;
+                show_status(&format!("Item metadata refresh failed: {error}"), true);
+            }
+        }
+    });
 }
 
 fn begin_appearance_refresh(game: Rc<RefCell<Game>>) {

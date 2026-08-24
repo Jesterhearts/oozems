@@ -161,6 +161,7 @@ async fn request_item_action(
         | GuiAction::CloseStats
         | GuiAction::CloseEquipment
         | GuiAction::CloseInventory
+        | GuiAction::SelectInventoryTab { .. }
         | GuiAction::CloseKeyConfig
         | GuiAction::CloseSkills
         | GuiAction::AllocateSkill { .. }
@@ -228,6 +229,7 @@ fn item_action_message(action: GuiAction) -> &'static str {
         | GuiAction::CloseStats
         | GuiAction::CloseEquipment
         | GuiAction::CloseInventory
+        | GuiAction::SelectInventoryTab { .. }
         | GuiAction::CloseKeyConfig
         | GuiAction::CloseSkills
         | GuiAction::AllocateSkill { .. }

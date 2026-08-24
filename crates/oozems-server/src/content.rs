@@ -193,22 +193,26 @@ impl ContentCatalog {
             })
     }
 
-    pub fn game_gui(&self) -> GameGui {
+    pub fn game_gui(
+        &self,
+        item_ids: &std::collections::BTreeSet<u32>,
+    ) -> Result<GameGui, ContentError> {
         let mut gui = self
             .gui
             .as_ref()
             .map(GuiContent::game_gui)
             .unwrap_or_default();
         if let Some(items) = &self.items {
-            gui.assets.extend(items.descriptor_clones_for_gui());
-            gui.items = items.definition_clones_for_gui();
+            let (definitions, assets) = items.gui_projection(item_ids)?;
+            gui.assets.extend(assets);
+            gui.items = definitions;
             tracing::info!(
                 item_count = gui.items.len(),
                 asset_count = gui.assets.len(),
                 "game GUI payload ready"
             );
         }
-        gui
+        Ok(gui)
     }
 
     pub fn character_creation_options(&self) -> CharacterCreationOptions {
@@ -1664,7 +1668,9 @@ mod tests {
             );
         }
         if wz_dir.join("Character.wz").exists() && wz_dir.join("UI.wz").exists() {
-            let gui = catalog.game_gui();
+            let gui = catalog
+                .game_gui(&std::collections::BTreeSet::new())
+                .expect("game GUI projection");
             eprintln!(
                 "game GUI item payload: {} items, {} total assets",
                 gui.items.len(),
@@ -1695,6 +1701,39 @@ mod tests {
                     .count(),
                 6
             );
+            let eager_item_ids = gui
+                .items
+                .iter()
+                .map(|definition| definition.item_id)
+                .collect::<std::collections::BTreeSet<_>>();
+            if let Some(indexed_item_id) = catalog
+                .indexed_item_ids()
+                .find(|item_id| !eager_item_ids.contains(item_id))
+            {
+                let player_gui = catalog
+                    .game_gui(&std::collections::BTreeSet::from([indexed_item_id]))
+                    .expect("player-specific GUI projection");
+                let definition = player_gui
+                    .items
+                    .iter()
+                    .find(|definition| definition.item_id == indexed_item_id)
+                    .expect("player-specific item definition");
+                assert!(
+                    player_gui
+                        .assets
+                        .iter()
+                        .any(|descriptor| descriptor.id == definition.icon_asset_id)
+                );
+                let asset = catalog
+                    .get_wz_asset(&definition.icon_asset_id)
+                    .expect("player-specific item icon asset");
+                assert!(
+                    asset
+                        .png_bytes()
+                        .expect("player-specific item icon should decode")
+                        .starts_with(b"\x89PNG\r\n\x1a\n")
+                );
+            }
         }
         assert!(
             catalog

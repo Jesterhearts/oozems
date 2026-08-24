@@ -447,10 +447,12 @@ the window is first opened. New characters receive server-owned Beginner stats,
 which are required in their persisted player records.
 
 Click the equipment or inventory button to open its `UIWindow.img` window.
-Left-click an inventory item to equip it. Left-click an equipped item to move
-it back to inventory. Right-click an inventory item to drop it at the
-server-owned player position. Equipment and inventory changes are persisted in
-SurrealKV. The browser requests each equipment icon from `Character.wz` only
+The inventory uses the native Equip, Use, Setup, Etc, and Cash tabs; pet items
+appear under Cash. Left-click an item on the Equip tab to equip it. Left-click
+an equipped item to move it back to inventory. Right-click an item on any
+inventory tab to drop it at the server-owned player position. Equipment and
+inventory changes are persisted in SurrealKV. The browser requests each
+equipment icon from `Character.wz` only
 when the icon is first visible. Equipping or removing an item also refreshes
 the composed character layers. An empty top or bottom slot uses the
 gender-specific pajama layers from `Character.wz` instead of leaving the body

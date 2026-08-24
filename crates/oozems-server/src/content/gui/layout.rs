@@ -6,6 +6,7 @@ use oozems_proto::v1::GuiWindow;
 use oozems_proto::v1::KeyActionDefinition;
 
 use super::GuiContentError;
+use super::InventoryWindowSources;
 use super::ItemWindowSources;
 use super::KeyConfigSources;
 use super::NpcDialogSources;
@@ -29,6 +30,10 @@ const STAT_WINDOW_X: f32 = 20.0;
 const STAT_WINDOW_Y: f32 = 80.0;
 const WINDOW_CLOSE_RIGHT: f32 = 5.0;
 const WINDOW_CLOSE_TOP: f32 = 5.0;
+const INVENTORY_TAB_LEFT: f32 = 3.0;
+const INVENTORY_TAB_TOP: f32 = 22.0;
+const INVENTORY_TAB_WIDTH: f32 = 34.0;
+const INVENTORY_TAB_HEIGHT: f32 = 19.0;
 const STAT_JOB_LEFT: f32 = 60.0;
 const STAT_JOB_TOP: f32 = 57.0;
 const SKILL_WINDOW_X: f32 = 20.0;
@@ -275,6 +280,62 @@ pub(super) fn compose_item_window(
         )],
         sprite_templates: Vec::new(),
         regions: Vec::new(),
+    };
+    validate_layout(&layout)?;
+    Ok(GuiWindow {
+        x,
+        y,
+        layout: Some(layout),
+    })
+}
+
+pub(super) fn compose_inventory_window(
+    sources: &InventoryWindowSources,
+    x: f32,
+    y: f32,
+) -> Result<GuiWindow, GuiContentError> {
+    if sources.tabs.len() != 5 {
+        return invalid("the inventory window requires five tabs");
+    }
+    let width = sources.background.width;
+    let height = sources.background.height;
+    let sprite_templates = sources
+        .tabs
+        .iter()
+        .flat_map(|tab| {
+            [
+                sprite_template(&tab.active_background),
+                sprite_template(&tab.inactive_background),
+                sprite_template(&tab.active_label),
+                sprite_template(&tab.inactive_label),
+            ]
+        })
+        .collect();
+    let regions = ["equipment", "consume", "install", "etc", "cash"]
+        .into_iter()
+        .enumerate()
+        .map(|(index, name)| {
+            region(
+                &format!("inventory-tab-{name}"),
+                INVENTORY_TAB_LEFT + index as f32 * INVENTORY_TAB_WIDTH,
+                INVENTORY_TAB_TOP,
+                INVENTORY_TAB_WIDTH,
+                INVENTORY_TAB_HEIGHT,
+            )
+        })
+        .collect();
+    let layout = GuiLayout {
+        width,
+        height,
+        background: Some(place_sprite(&sources.background, 0.0, 0.0, false)),
+        sprites: vec![place_sprite(
+            &sources.close,
+            width - sources.close.width - WINDOW_CLOSE_RIGHT,
+            WINDOW_CLOSE_TOP,
+            false,
+        )],
+        sprite_templates,
+        regions,
     };
     validate_layout(&layout)?;
     Ok(GuiWindow {

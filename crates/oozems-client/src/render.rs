@@ -597,25 +597,74 @@ fn draw_inventory_window(game: &Game) {
     if !draw_window(game, window) {
         return;
     }
+    let selected_tab = game.gui_state.borrow().inventory_tab;
+    draw_inventory_tabs(game, window, selected_tab);
     let Some(inventory) = game.player.inventory.as_ref() else {
         return;
     };
     let now_unix_ms = js_sys::Date::now().max(0.0) as u64;
-    for (index, stack) in inventory.stacks.iter().enumerate() {
-        let Some(definition) = item_definition(game, stack.item_id) else {
-            continue;
-        };
-        let (x, y) = game_gui::inventory_slot_position(index);
-        draw_item_icon(game, definition, window.x + x, window.y + y);
-        draw_item_quantity(game, stack.quantity, window.x + x, window.y + y);
+    for slot in game_gui::inventory_slots(&game.gui, inventory, selected_tab) {
+        let (x, y) = game_gui::inventory_slot_position(slot.visual_index);
+        draw_item_icon(game, slot.definition, window.x + x, window.y + y);
+        draw_item_quantity(game, slot.stack.quantity, window.x + x, window.y + y);
         draw_item_expiration(
             game,
-            item_expiration(stack.expires_at_unix_ms, now_unix_ms),
-            permanent_stack_needs_label(&inventory.stacks, stack),
+            item_expiration(slot.stack.expires_at_unix_ms, now_unix_ms),
+            permanent_stack_needs_label(&inventory.stacks, slot.stack),
             window.x + x,
             window.y + y,
         );
     }
+}
+
+fn draw_inventory_tabs(
+    game: &Game,
+    window: &GuiWindow,
+    selected: game_gui::InventoryTab,
+) {
+    let Some(layout) = window.layout.as_ref() else {
+        return;
+    };
+    for tab in game_gui::InventoryTab::ALL {
+        draw_inventory_tab_part(game, window, layout, tab, tab == selected, "background");
+    }
+    for tab in game_gui::InventoryTab::ALL {
+        draw_inventory_tab_part(game, window, layout, tab, tab == selected, "label");
+    }
+}
+
+fn draw_inventory_tab_part(
+    game: &Game,
+    window: &GuiWindow,
+    layout: &oozems_proto::v1::GuiLayout,
+    tab: game_gui::InventoryTab,
+    active: bool,
+    part: &str,
+) {
+    let state = if active { "active" } else { "inactive" };
+    let Some(region) = game_gui::named_region(layout, &format!("inventory-tab-{}", tab.key()))
+    else {
+        return;
+    };
+    let Some(template) = game_gui::named_sprite_template(
+        layout,
+        &format!("inventory-tab-{}-{state}-{part}", tab.key()),
+    ) else {
+        return;
+    };
+    let Some(image) = ready_image(&game.images, &template.asset_id) else {
+        return;
+    };
+    let (x, y) = game_gui::inventory_tab_template_position(region, template, part == "background");
+    let _ = game
+        .context
+        .draw_image_with_html_image_element_and_dw_and_dh(
+            image,
+            f64::from(window.x + x),
+            f64::from(window.y + y),
+            f64::from(template.width),
+            f64::from(template.height),
+        );
 }
 
 fn draw_window(

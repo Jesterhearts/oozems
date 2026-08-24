@@ -5,7 +5,10 @@ use oozems_proto::v1::GuiLayout;
 use oozems_proto::v1::GuiRegion;
 use oozems_proto::v1::GuiSprite;
 use oozems_proto::v1::GuiSpriteTemplate;
+use oozems_proto::v1::InventoryItemStack;
 use oozems_proto::v1::InventoryState;
+use oozems_proto::v1::ItemCategory;
+use oozems_proto::v1::ItemDefinition;
 use oozems_proto::v1::KeyAction;
 use oozems_proto::v1::KeyBinding;
 use oozems_proto::v1::SkillBook;
@@ -13,10 +16,41 @@ use oozems_proto::v1::SkillBook;
 use crate::keymap::BindingTarget;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum InventoryTab {
+    #[default]
+    Equipment,
+    Consume,
+    Install,
+    Etc,
+    Cash,
+}
+
+impl InventoryTab {
+    pub(crate) const ALL: [Self; 5] = [
+        Self::Equipment,
+        Self::Consume,
+        Self::Install,
+        Self::Etc,
+        Self::Cash,
+    ];
+
+    pub(crate) fn key(self) -> &'static str {
+        match self {
+            Self::Equipment => "equipment",
+            Self::Consume => "consume",
+            Self::Install => "install",
+            Self::Etc => "etc",
+            Self::Cash => "cash",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GuiState {
     pub stats_open: bool,
     pub equipment_open: bool,
     pub inventory_open: bool,
+    pub inventory_tab: InventoryTab,
     pub key_config_open: bool,
     pub skill_page: usize,
     pub skills_open: bool,
@@ -51,12 +85,24 @@ pub struct KeyIconPlacement {
     pub height: f32,
 }
 
+pub(crate) struct InventorySlot<'a> {
+    pub inventory_index: u32,
+    pub visual_index: usize,
+    pub stack: &'a InventoryItemStack,
+    pub definition: &'a ItemDefinition,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct CanvasRect {
     x: f32,
     y: f32,
     width: f32,
     height: f32,
+}
+
+struct InventoryHit {
+    inventory_index: u32,
+    can_equip: bool,
 }
 
 struct BindingIcon {
@@ -77,6 +123,7 @@ pub enum GuiAction {
     CloseStats,
     CloseEquipment,
     CloseInventory,
+    SelectInventoryTab { tab: InventoryTab },
     CloseKeyConfig,
     CloseSkills,
     Equip { inventory_index: u32 },
@@ -157,6 +204,7 @@ pub fn apply_local_action(
         GuiAction::CloseStats => state.stats_open = false,
         GuiAction::CloseEquipment => state.equipment_open = false,
         GuiAction::CloseInventory => state.inventory_open = false,
+        GuiAction::SelectInventoryTab { tab } => state.inventory_tab = tab,
         GuiAction::CloseKeyConfig => state.key_config_open = false,
         GuiAction::CloseSkills => state.skills_open = false,
         GuiAction::Equip { .. }
@@ -313,6 +361,81 @@ pub fn inventory_slot_position(index: usize) -> (f32, f32) {
     )
 }
 
+pub(crate) fn inventory_slots<'a>(
+    gui: &'a GameGui,
+    inventory: &'a InventoryState,
+    tab: InventoryTab,
+) -> Vec<InventorySlot<'a>> {
+    inventory
+        .stacks
+        .iter()
+        .enumerate()
+        .filter_map(|(index, stack)| {
+            let definition = gui
+                .items
+                .iter()
+                .find(|definition| definition.item_id == stack.item_id)?;
+            (item_category_tab(definition.category)? == tab).then_some((index, stack, definition))
+        })
+        .enumerate()
+        .filter_map(|(visual_index, (inventory_index, stack, definition))| {
+            Some(InventorySlot {
+                inventory_index: u32::try_from(inventory_index).ok()?,
+                visual_index,
+                stack,
+                definition,
+            })
+        })
+        .collect()
+}
+
+pub(crate) fn inventory_tab_template_position(
+    region: &GuiRegion,
+    template: &GuiSpriteTemplate,
+    align_bottom: bool,
+) -> (f32, f32) {
+    let x = (region.x + (region.width - template.width) / 2.0).floor();
+    let y = if align_bottom {
+        region.y + region.height - template.height
+    } else {
+        region.y + (region.height - template.height) / 2.0
+    }
+    .floor();
+    (x, y)
+}
+
+pub(crate) fn missing_item_definition_ids(
+    gui: &GameGui,
+    observed_item_ids: impl IntoIterator<Item = u32>,
+) -> Vec<u32> {
+    let known = gui
+        .items
+        .iter()
+        .map(|definition| definition.item_id)
+        .collect::<BTreeSet<_>>();
+    observed_item_ids
+        .into_iter()
+        .filter(|item_id| *item_id > 0 && !known.contains(item_id))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+pub(crate) fn item_definition_refresh_ids(
+    gui: &GameGui,
+    observed_item_ids: impl IntoIterator<Item = u32>,
+    required: bool,
+) -> Option<Vec<u32>> {
+    let observed_item_ids = observed_item_ids
+        .into_iter()
+        .filter(|item_id| *item_id > 0)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    (required || !missing_item_definition_ids(gui, observed_item_ids.iter().copied()).is_empty())
+        .then_some(observed_item_ids)
+}
+
 pub fn equipment_slot_position(slot_value: i32) -> Option<(f32, f32)> {
     match EquipmentSlot::try_from(slot_value).ok()? {
         EquipmentSlot::Top => Some((71.0, 134.0)),
@@ -381,15 +504,25 @@ fn window_action(
         {
             return Some(GuiAction::CloseInventory);
         }
-        if let Some(index) = inventory_item_at(gui, inventory?, point) {
-            return Some(match button {
-                PointerButton::Left => GuiAction::Equip {
-                    inventory_index: index,
-                },
-                PointerButton::Right => GuiAction::Drop {
-                    inventory_index: index,
-                },
-            });
+        if button == PointerButton::Left
+            && let Some(tab) = inventory_tab_at(gui, point)
+        {
+            return Some(GuiAction::SelectInventoryTab { tab });
+        }
+        if let Some(hit) = inventory_item_at(gui, inventory?, state.inventory_tab, point) {
+            return match button {
+                PointerButton::Left
+                    if state.inventory_tab == InventoryTab::Equipment && hit.can_equip =>
+                {
+                    Some(GuiAction::Equip {
+                        inventory_index: hit.inventory_index,
+                    })
+                }
+                PointerButton::Left => None,
+                PointerButton::Right => Some(GuiAction::Drop {
+                    inventory_index: hit.inventory_index,
+                }),
+            };
         }
     }
     if button == PointerButton::Left && state.equipment_open {
@@ -807,22 +940,56 @@ fn window_region_rect(
 fn inventory_item_at(
     gui: &GameGui,
     inventory: &InventoryState,
+    tab: InventoryTab,
     point: CanvasPoint,
-) -> Option<u32> {
+) -> Option<InventoryHit> {
     let window = gui.inventory_window.as_ref()?;
-    inventory.stacks.iter().enumerate().find_map(|(index, _)| {
-        let (x, y) = inventory_slot_position(index);
-        rect_contains(
-            CanvasRect {
-                x: window.x + x,
-                y: window.y + y,
-                width: ITEM_SLOT_SIZE,
-                height: ITEM_SLOT_SIZE,
-            },
-            point,
-        )
-        .then_some(index as u32)
+    inventory_slots(gui, inventory, tab)
+        .into_iter()
+        .find_map(|slot| {
+            let (x, y) = inventory_slot_position(slot.visual_index);
+            rect_contains(
+                CanvasRect {
+                    x: window.x + x,
+                    y: window.y + y,
+                    width: ITEM_SLOT_SIZE,
+                    height: ITEM_SLOT_SIZE,
+                },
+                point,
+            )
+            .then(|| InventoryHit {
+                inventory_index: slot.inventory_index,
+                can_equip: slot.definition.appearance_supported
+                    && EquipmentSlot::try_from(slot.definition.slot).is_ok_and(|slot| {
+                        matches!(
+                            slot,
+                            EquipmentSlot::Top | EquipmentSlot::Bottom | EquipmentSlot::Shoes
+                        )
+                    }),
+            })
+        })
+}
+
+fn inventory_tab_at(
+    gui: &GameGui,
+    point: CanvasPoint,
+) -> Option<InventoryTab> {
+    let window = gui.inventory_window.as_ref()?;
+    InventoryTab::ALL.into_iter().find(|tab| {
+        window_region_rect(window, &format!("inventory-tab-{}", tab.key()))
+            .is_some_and(|rect| rect_contains(rect, point))
     })
+}
+
+fn item_category_tab(category: i32) -> Option<InventoryTab> {
+    match ItemCategory::try_from(category).ok()? {
+        ItemCategory::Equipment => Some(InventoryTab::Equipment),
+        ItemCategory::Consume => Some(InventoryTab::Consume),
+        ItemCategory::Install => Some(InventoryTab::Install),
+        ItemCategory::Etc => Some(InventoryTab::Etc),
+        ItemCategory::Cash | ItemCategory::Pet => Some(InventoryTab::Cash),
+        ItemCategory::Unspecified => None,
+    }
 }
 
 fn equipped_item_at(
@@ -947,6 +1114,8 @@ mod tests {
     use oozems_proto::v1::GuiWindow;
     use oozems_proto::v1::InventoryItemStack;
     use oozems_proto::v1::InventoryState;
+    use oozems_proto::v1::ItemCategory;
+    use oozems_proto::v1::ItemDefinition;
     use oozems_proto::v1::KeyAction;
     use oozems_proto::v1::KeyActionDefinition;
     use oozems_proto::v1::KeySlot;
@@ -957,6 +1126,7 @@ mod tests {
     use super::CanvasPoint;
     use super::GuiAction;
     use super::GuiState;
+    use super::InventoryTab;
     use super::PointerButton;
     use super::apply_local_action;
     use super::begin_key_drag;
@@ -966,6 +1136,10 @@ mod tests {
     use super::finish_key_drag;
     use super::gauge_fills;
     use super::gauge_labels;
+    use super::inventory_slots;
+    use super::inventory_tab_template_position;
+    use super::item_definition_refresh_ids;
+    use super::missing_item_definition_ids;
     use super::sprite_screen_x;
     use super::status_sprite_visible;
     use super::valid_layout;
@@ -1067,6 +1241,179 @@ mod tests {
             Some(GuiAction::Unequip {
                 slot: EquipmentSlot::Top as i32
             })
+        );
+    }
+
+    #[test]
+    fn inventory_tabs_filter_items_without_changing_server_indices() {
+        let mut gui = gui_fixture();
+        let unsupported_equipment = ItemDefinition {
+            item_id: 1_300_000,
+            category: ItemCategory::Equipment as i32,
+            ..ItemDefinition::default()
+        };
+        gui.items = vec![
+            item_definition(2_000_000, ItemCategory::Consume),
+            item_definition(1_040_003, ItemCategory::Equipment),
+            item_definition(5_000_000, ItemCategory::Pet),
+            unsupported_equipment,
+        ];
+        let inventory = InventoryState {
+            capacity: 24,
+            stacks: vec![
+                inventory_stack(2_000_000),
+                inventory_stack(1_040_003),
+                inventory_stack(5_000_000),
+                inventory_stack(1_300_000),
+            ],
+            ..InventoryState::default()
+        };
+        let mut state = GuiState {
+            inventory_open: true,
+            ..GuiState::default()
+        };
+
+        let equipment = inventory_slots(&gui, &inventory, InventoryTab::Equipment);
+        assert_eq!(equipment.len(), 2);
+        assert_eq!(equipment[0].inventory_index, 1);
+        assert_eq!(equipment[0].visual_index, 0);
+        assert_eq!(
+            click_action(
+                state,
+                &gui,
+                Some(&inventory),
+                None,
+                960.0,
+                600.0,
+                CanvasPoint { x: 213.0, y: 131.0 },
+                PointerButton::Left,
+            ),
+            Some(GuiAction::Equip { inventory_index: 1 })
+        );
+
+        let action = click_action(
+            state,
+            &gui,
+            Some(&inventory),
+            None,
+            960.0,
+            600.0,
+            CanvasPoint { x: 246.0, y: 104.0 },
+            PointerButton::Left,
+        )
+        .expect("consume tab action");
+        assert_eq!(
+            action,
+            GuiAction::SelectInventoryTab {
+                tab: InventoryTab::Consume
+            }
+        );
+        assert!(apply_local_action(&mut state, action));
+        assert_eq!(state.inventory_tab, InventoryTab::Consume);
+        assert_eq!(
+            click_action(
+                state,
+                &gui,
+                Some(&inventory),
+                None,
+                960.0,
+                600.0,
+                CanvasPoint { x: 213.0, y: 131.0 },
+                PointerButton::Left,
+            ),
+            None
+        );
+        assert_eq!(
+            click_action(
+                state,
+                &gui,
+                Some(&inventory),
+                None,
+                960.0,
+                600.0,
+                CanvasPoint { x: 213.0, y: 131.0 },
+                PointerButton::Right,
+            ),
+            Some(GuiAction::Drop { inventory_index: 0 })
+        );
+
+        state.inventory_tab = InventoryTab::Equipment;
+        assert_eq!(
+            click_action(
+                state,
+                &gui,
+                Some(&inventory),
+                None,
+                960.0,
+                600.0,
+                CanvasPoint { x: 249.0, y: 131.0 },
+                PointerButton::Left,
+            ),
+            None
+        );
+        assert_eq!(
+            click_action(
+                state,
+                &gui,
+                Some(&inventory),
+                None,
+                960.0,
+                600.0,
+                CanvasPoint { x: 249.0, y: 131.0 },
+                PointerButton::Right,
+            ),
+            Some(GuiAction::Drop { inventory_index: 3 })
+        );
+
+        let cash = inventory_slots(&gui, &inventory, InventoryTab::Cash);
+        assert_eq!(cash.len(), 1);
+        assert_eq!(cash[0].inventory_index, 2);
+    }
+
+    #[test]
+    fn inventory_tab_art_is_snapped_to_integer_pixels() {
+        let region = region("inventory-tab-consume", 37.0, 22.0, 34.0, 19.0);
+        let label = template("inventory-tab-consume-active-label", 13.0, 9.0);
+        let background = template("inventory-tab-consume-active-background", 34.0, 19.0);
+
+        assert_eq!(
+            inventory_tab_template_position(&region, &label, false),
+            (47.0, 27.0)
+        );
+        assert_eq!(
+            inventory_tab_template_position(&region, &background, true),
+            (37.0, 22.0)
+        );
+    }
+
+    #[test]
+    fn missing_item_definitions_are_sorted_and_deduplicated() {
+        let gui = GameGui {
+            items: vec![item_definition(1, ItemCategory::Equipment)],
+            ..GameGui::default()
+        };
+
+        assert_eq!(
+            missing_item_definition_ids(&gui, [3, 1, 2, 3, 0]),
+            vec![2, 3]
+        );
+    }
+
+    #[test]
+    fn item_definition_refreshes_include_every_observed_item() {
+        let gui = GameGui {
+            items: vec![item_definition(1, ItemCategory::Equipment)],
+            ..GameGui::default()
+        };
+
+        assert_eq!(
+            item_definition_refresh_ids(&gui, [3, 1, 2, 3], false),
+            Some(vec![1, 2, 3])
+        );
+        assert_eq!(item_definition_refresh_ids(&gui, [1], false), None);
+        assert_eq!(
+            item_definition_refresh_ids(&GameGui::default(), [], true),
+            Some(Vec::new())
         );
     }
 
@@ -1348,6 +1695,19 @@ mod tests {
                     height: 289.0,
                     background: Some(sprite("inventory-background", 0.0, 0.0, 175.0, 289.0)),
                     sprites: vec![sprite("inventory-close", 138.0, 5.0, 32.0, 15.0)],
+                    regions: ["equipment", "consume", "install", "etc", "cash"]
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, name)| {
+                            region(
+                                &format!("inventory-tab-{name}"),
+                                3.0 + index as f32 * 34.0,
+                                22.0,
+                                34.0,
+                                19.0,
+                            )
+                        })
+                        .collect(),
                     ..GuiLayout::default()
                 }),
             }),
@@ -1408,6 +1768,7 @@ mod tests {
                 width: 32.0,
                 height: 32.0,
             }],
+            items: vec![item_definition(1_040_003, ItemCategory::Equipment)],
             ..GameGui::default()
         }
     }
@@ -1463,6 +1824,29 @@ mod tests {
         }
     }
 
+    fn item_definition(
+        item_id: u32,
+        category: ItemCategory,
+    ) -> ItemDefinition {
+        ItemDefinition {
+            item_id,
+            category: category as i32,
+            slot: (category == ItemCategory::Equipment)
+                .then_some(EquipmentSlot::Top as i32)
+                .unwrap_or_default(),
+            appearance_supported: category == ItemCategory::Equipment,
+            ..ItemDefinition::default()
+        }
+    }
+
+    fn inventory_stack(item_id: u32) -> InventoryItemStack {
+        InventoryItemStack {
+            item_id,
+            quantity: 1,
+            expires_at_unix_ms: 0,
+        }
+    }
+
     fn skill_book_fixture(
         level: u32,
         available_points: u32,
@@ -1486,3 +1870,4 @@ mod tests {
         }
     }
 }
+use std::collections::BTreeSet;

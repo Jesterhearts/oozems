@@ -243,8 +243,18 @@ pub async fn enter_portal(
     .await
 }
 
-pub async fn get_gui() -> Result<GameGui, ClientError> {
-    let response: GetGuiResponse = post_protobuf("/api/v1/gui/get", GetGuiRequest {}).await?;
+pub async fn get_gui(
+    player_id: &str,
+    observed_item_ids: Vec<u32>,
+) -> Result<GameGui, ClientError> {
+    let response: GetGuiResponse = post_protobuf(
+        "/api/v1/gui/get",
+        GetGuiRequest {
+            player_id: player_id.to_owned(),
+            observed_item_ids,
+        },
+    )
+    .await?;
 
     require_data(response.gui, "game GUI")
 }
