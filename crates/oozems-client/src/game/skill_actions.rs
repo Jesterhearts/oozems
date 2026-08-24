@@ -118,21 +118,18 @@ fn install_allocation(
     mut response: oozems_proto::v1::AllocateSkillPointResponse,
     request_started_ms: f64,
 ) -> Result<String, String> {
-    let player = response
-        .player
-        .ok_or("skill allocation response did not contain a player")?;
-    let skill_book = response
-        .skill_book
-        .ok_or("skill allocation response did not contain a skill book")?;
+    let player =
+        api::require_data(response.player.take(), "player").map_err(|error| error.to_string())?;
+    let skill_book = api::require_data(response.skill_book.take(), "skill book")
+        .map_err(|error| error.to_string())?;
+    let active_buffs = api::require_data(response.active_buffs.take(), "active buffs")
+        .map_err(|error| error.to_string())?;
+    let active_buffs = super::validate_active_buffs(active_buffs)?;
     let installed = super::install_full_player_update(game, player);
     if installed.domains.skills {
         game.skill_book = skill_book;
     }
-    super::install_active_buffs(
-        game,
-        response.active_buffs.take().unwrap_or_default(),
-        request_started_ms,
-    );
+    super::install_active_buffs(game, active_buffs, request_started_ms);
     Ok("Skill point allocated.".to_owned())
 }
 
@@ -141,12 +138,15 @@ fn install_use(
     mut response: oozems_proto::v1::UseSkillResponse,
     request_started_ms: f64,
 ) -> Result<String, String> {
-    let player = response
-        .player
-        .ok_or("skill use response did not contain a player")?;
-    let result = response
-        .result
-        .ok_or("skill use response did not contain a result")?;
+    let player =
+        api::require_data(response.player.take(), "player").map_err(|error| error.to_string())?;
+    let result = api::require_data(response.result.take(), "skill use result")
+        .map_err(|error| error.to_string())?;
+    let active_buffs = api::require_data(response.active_buffs.take(), "active buffs")
+        .map_err(|error| error.to_string())?;
+    let active_buffs = super::validate_active_buffs(active_buffs)?;
+    let effect = api::require_data(response.effect.take(), "skill effect")
+        .map_err(|error| error.to_string())?;
     let outcome = install_combat_update(
         game,
         player,
@@ -156,16 +156,8 @@ fn install_use(
         std::mem::take(&mut response.combat_events),
         std::mem::take(&mut response.dropped_items),
     )?;
-    super::install_active_buffs(
-        game,
-        response.active_buffs.unwrap_or_default(),
-        request_started_ms,
-    );
-    skill_effects::install(
-        game,
-        response.effect.unwrap_or_default(),
-        outcome.position(),
-    );
+    super::install_active_buffs(game, active_buffs, request_started_ms);
+    skill_effects::install(game, effect, outcome.position());
     Ok(use_message(game, &result, &outcome))
 }
 
@@ -174,9 +166,11 @@ fn install_basic_attack(
     mut response: oozems_proto::v1::BasicAttackResponse,
     request_started_ms: f64,
 ) -> Result<String, String> {
-    let player = response
-        .player
-        .ok_or("basic attack response did not contain a player")?;
+    let player =
+        api::require_data(response.player.take(), "player").map_err(|error| error.to_string())?;
+    let active_buffs = api::require_data(response.active_buffs.take(), "active buffs")
+        .map_err(|error| error.to_string())?;
+    let active_buffs = super::validate_active_buffs(active_buffs)?;
     let outcome = install_combat_update(
         game,
         player,
@@ -186,11 +180,7 @@ fn install_basic_attack(
         std::mem::take(&mut response.combat_events),
         std::mem::take(&mut response.dropped_items),
     )?;
-    super::install_active_buffs(
-        game,
-        response.active_buffs.take().unwrap_or_default(),
-        request_started_ms,
-    );
+    super::install_active_buffs(game, active_buffs, request_started_ms);
     Ok(match outcome {
         PlayerAttackOutcome::Hit { damage, .. } => {
             format!("Basic attack dealt {damage} damage.")

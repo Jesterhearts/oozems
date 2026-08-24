@@ -6,7 +6,6 @@ use oozems_proto::v1::MovementContact;
 use oozems_proto::v1::MovementMode;
 use oozems_proto::v1::MovementSnapshot;
 use oozems_proto::v1::MovementUpdateResponse;
-use oozems_proto::v1::PlayerState;
 use oozems_proto::v1::Vec2;
 use wasm_bindgen_futures::spawn_local;
 
@@ -120,6 +119,11 @@ pub(super) fn begin_portal(
     transition: MapTransition,
 ) {
     let transition_in_flight = game.borrow().transition_in_flight.clone();
+    if game.borrow().item_action_in_flight.get() {
+        transition_in_flight.set(false);
+        show_status("An item action must finish before changing maps.", true);
+        return;
+    }
     if game.borrow().skill_action_in_flight.get() {
         transition_in_flight.set(false);
         show_status("A skill action must finish before changing maps.", true);
@@ -316,29 +320,15 @@ pub(super) fn portal_authoritative(
     response: &mut MovementUpdateResponse,
     request_started_ms: f64,
 ) -> Result<Option<MovementSnapshot>, String> {
-    super::install_active_buffs(
-        game,
-        response.active_buffs.clone().unwrap_or_default(),
-        request_started_ms,
-    );
-    if let Some(player) = response.player.take() {
-        super::install_full_player_update(game, player);
-    } else {
-        super::install_player_update(
-            &mut game.player,
-            &mut game.player_revisions,
-            PlayerState {
-                stats: response.player_stats.clone(),
-                quests: response.quests.clone(),
-                revision: response.player_revision,
-                ..PlayerState::default()
-            },
-            super::PlayerDomains::STATS_AND_QUESTS,
-        );
-    }
-    let authoritative = response
-        .authoritative
-        .ok_or("movement response did not contain an authoritative snapshot")?;
+    let authoritative = api::require_data(response.authoritative.take(), "authoritative snapshot")
+        .map_err(|error| error.to_string())?;
+    let active_buffs = api::require_data(response.active_buffs.take(), "active buffs")
+        .map_err(|error| error.to_string())?;
+    let active_buffs = super::validate_active_buffs(active_buffs)?;
+    let player =
+        api::require_data(response.player.take(), "player").map_err(|error| error.to_string())?;
+    super::install_active_buffs(game, active_buffs, request_started_ms);
+    super::install_full_player_update(game, player);
     if authoritative.sequence < game.movement_sync.last_response_sequence {
         return Ok(None);
     }
@@ -351,14 +341,14 @@ pub(super) fn install_response(
     mut response: MovementUpdateResponse,
     request_started_ms: f64,
 ) -> Result<Option<String>, String> {
-    let authoritative = response
-        .authoritative
-        .ok_or("movement response did not contain an authoritative snapshot")?;
-    super::install_active_buffs(
-        game,
-        response.active_buffs.take().unwrap_or_default(),
-        request_started_ms,
-    );
+    let authoritative = api::require_data(response.authoritative.take(), "authoritative snapshot")
+        .map_err(|error| error.to_string())?;
+    let active_buffs = api::require_data(response.active_buffs.take(), "active buffs")
+        .map_err(|error| error.to_string())?;
+    let active_buffs = super::validate_active_buffs(active_buffs)?;
+    let player =
+        api::require_data(response.player.take(), "player").map_err(|error| error.to_string())?;
+    super::install_active_buffs(game, active_buffs, request_started_ms);
     if authoritative.map_id == game.map.id
         && crate::mob_render::accept_simulation_snapshot(
             &mut game.mob_render,
@@ -386,21 +376,7 @@ pub(super) fn install_response(
             game.frame_time_ms,
         );
     }
-    if let Some(player) = response.player.take() {
-        super::install_full_player_update(game, player);
-    } else {
-        super::install_player_update(
-            &mut game.player,
-            &mut game.player_revisions,
-            PlayerState {
-                stats: response.player_stats.take(),
-                quests: std::mem::take(&mut response.quests),
-                revision: response.player_revision,
-                ..PlayerState::default()
-            },
-            super::PlayerDomains::STATS_AND_QUESTS,
-        );
-    }
+    super::install_full_player_update(game, player);
     if authoritative.sequence < game.movement_sync.last_response_sequence {
         return Ok(None);
     }

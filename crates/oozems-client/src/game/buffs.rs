@@ -9,13 +9,14 @@ use crate::movement::PlayerInput;
 #[derive(Clone)]
 pub(crate) struct TrackedBuff {
     buff: ActiveBuff,
+    key: BuffKey,
     expires_at_local_ms: f64,
     attacks_disabled: bool,
 }
 
 impl TrackedBuff {
     pub fn key(&self) -> BuffKey {
-        source_key(&self.buff)
+        self.key
     }
 
     pub fn remaining_ms(
@@ -58,22 +59,37 @@ pub(crate) struct TrackedBuffs {
     installed: bool,
 }
 
+pub(super) struct ValidatedState(ActiveBuffState);
+
+pub(super) fn validate_state(state: ActiveBuffState) -> Result<ValidatedState, String> {
+    for buff in &state.buffs {
+        source_key(buff)?;
+    }
+    Ok(ValidatedState(state))
+}
+
 pub(super) fn from_state(
     state: ActiveBuffState,
     now_local_ms: f64,
     response_transit_ms: f64,
-) -> TrackedBuffs {
+) -> Result<TrackedBuffs, String> {
     let mut tracked = TrackedBuffs::default();
-    install(&mut tracked, state, now_local_ms, response_transit_ms);
-    tracked
+    install(
+        &mut tracked,
+        validate_state(state)?,
+        now_local_ms,
+        response_transit_ms,
+    );
+    Ok(tracked)
 }
 
 pub(super) fn install(
     current: &mut TrackedBuffs,
-    received: ActiveBuffState,
+    received: ValidatedState,
     now_local_ms: f64,
     response_transit_ms: f64,
 ) {
+    let received = received.0;
     let received_version = (received.observed_at_unix_ms, received.revision);
     let current_version = (current.observed_at_unix_ms, current.revision);
     if current.installed && received_version <= current_version {
@@ -87,6 +103,7 @@ pub(super) fn install(
         .buffs
         .into_iter()
         .filter_map(|buff| {
+            let key = source_key(&buff).expect("validated buff source");
             let remaining_ms = effect_remaining_ms(
                 buff.expires_at_unix_ms,
                 observed_at_unix_ms,
@@ -96,6 +113,7 @@ pub(super) fn install(
                 attacks_disabled: attacks_disabled
                     && projected_morph_id.is_some_and(|morph_id| buff.morph_id == morph_id),
                 buff,
+                key,
                 expires_at_local_ms: now_local_ms + remaining_ms as f64,
             })
         })
@@ -131,11 +149,19 @@ pub(super) fn apply(
     input.jump_bonus = active.jump;
 }
 
-fn source_key(buff: &ActiveBuff) -> BuffKey {
+fn source_key(buff: &ActiveBuff) -> Result<BuffKey, String> {
     match buff.source {
-        Some(active_buff::Source::SourceSkillId(skill_id)) => BuffKey::Skill(skill_id),
-        Some(active_buff::Source::ItemId(item_id)) => BuffKey::Item(item_id),
-        None => BuffKey::Skill(buff.skill_id),
+        Some(active_buff::Source::SkillId(skill_id)) if skill_id > 0 => {
+            Ok(BuffKey::Skill(skill_id))
+        }
+        Some(active_buff::Source::ItemId(item_id)) if item_id > 0 => Ok(BuffKey::Item(item_id)),
+        Some(active_buff::Source::SkillId(_)) => {
+            Err("active buff has an invalid skill source ID".to_owned())
+        }
+        Some(active_buff::Source::ItemId(_)) => {
+            Err("active buff has an invalid item source ID".to_owned())
+        }
+        None => Err("active buff does not contain a source".to_owned()),
     }
 }
 
@@ -175,7 +201,7 @@ mod tests {
         expires: u64,
     ) -> ActiveBuff {
         ActiveBuff {
-            skill_id,
+            source: Some(active_buff::Source::SkillId(skill_id)),
             speed_bonus,
             jump_bonus,
             expires_at_unix_ms: expires,
@@ -187,8 +213,10 @@ mod tests {
         buff: ActiveBuff,
         deadline: f64,
     ) -> TrackedBuff {
+        let key = source_key(&buff).expect("tracked test buff source");
         TrackedBuff {
             buff,
+            key,
             expires_at_local_ms: deadline,
             attacks_disabled: false,
         }
@@ -199,20 +227,43 @@ mod tests {
         let mut active = TrackedBuffs::default();
         install(
             &mut active,
-            ActiveBuffState {
+            validate_state(ActiveBuffState {
                 buffs: vec![buff(2, 1, 1, 1_300), buff(1, 1, 1, 900)],
+                revision: 1,
+                observed_at_unix_ms: 1_000,
+                ..ActiveBuffState::default()
+            })
+            .expect("valid buff state"),
+            40.0,
+            0.0,
+        );
+
+        assert_eq!(active.buffs.len(), 1);
+        assert_eq!(active.buffs[0].key(), BuffKey::Skill(2));
+        assert_eq!(active.buffs[0].remaining_ms(40.0), 300);
+        assert_eq!(active.buffs[0].remaining_ms(140.0), 200);
+    }
+
+    #[test]
+    fn buffs_without_a_source_are_rejected() {
+        let error = from_state(
+            ActiveBuffState {
+                buffs: vec![ActiveBuff {
+                    speed_bonus: 20,
+                    expires_at_unix_ms: 1_300,
+                    ..ActiveBuff::default()
+                }],
                 revision: 1,
                 observed_at_unix_ms: 1_000,
                 ..ActiveBuffState::default()
             },
             40.0,
             0.0,
-        );
+        )
+        .err()
+        .expect("missing source must fail");
 
-        assert_eq!(active.buffs.len(), 1);
-        assert_eq!(active.buffs[0].skill_id, 2);
-        assert_eq!(active.buffs[0].remaining_ms(40.0), 300);
-        assert_eq!(active.buffs[0].remaining_ms(140.0), 200);
+        assert_eq!(error, "active buff does not contain a source");
     }
 
     #[test]
@@ -223,9 +274,14 @@ mod tests {
             observed_at_unix_ms: 1_000,
             ..ActiveBuffState::default()
         };
-        let mut active = from_state(state.clone(), 40.0, 0.0);
+        let mut active = from_state(state.clone(), 40.0, 0.0).expect("valid buff state");
 
-        install(&mut active, state, 140.0, 0.0);
+        install(
+            &mut active,
+            validate_state(state).expect("valid buff state"),
+            140.0,
+            0.0,
+        );
 
         assert_eq!(active.buffs[0].remaining_ms(140.0), 200);
     }
@@ -270,6 +326,7 @@ mod tests {
         let mut active = from_state(
             ActiveBuffState {
                 buffs: vec![ActiveBuff {
+                    source: Some(active_buff::Source::SkillId(1)),
                     morph_id: 4,
                     expires_at_unix_ms: 1_100,
                     ..ActiveBuff::default()
@@ -282,7 +339,8 @@ mod tests {
             },
             20.0,
             0.0,
-        );
+        )
+        .expect("valid buff state");
         let mut input = PlayerInput::default();
 
         assert_eq!(active.morph_id, Some(4));
@@ -301,10 +359,22 @@ mod tests {
             ..ActiveBuffState::default()
         };
 
-        let active = from_state(state.clone(), 500.0, 40.0);
+        let active = from_state(state.clone(), 500.0, 40.0).expect("valid buff state");
         assert_eq!(active.buffs[0].remaining_ms(500.0), 60);
 
-        let expired = from_state(state, 500.0, 100.0);
+        let expired = from_state(state, 500.0, 100.0).expect("valid buff state");
         assert!(expired.buffs.is_empty());
+    }
+
+    #[test]
+    fn zero_source_ids_are_rejected() {
+        let error = validate_state(ActiveBuffState {
+            buffs: vec![buff(0, 1, 1, 1_300)],
+            ..ActiveBuffState::default()
+        })
+        .err()
+        .expect("zero source ID must fail");
+
+        assert_eq!(error, "active buff has an invalid skill source ID");
     }
 }

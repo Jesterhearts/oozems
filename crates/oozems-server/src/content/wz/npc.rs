@@ -51,7 +51,6 @@ pub(super) struct NpcContent {
 
 #[derive(Clone)]
 struct LoadedNpcDefinition {
-    frames: Vec<NpcFrame>,
     animations: Vec<NpcAnimation>,
     assets: Vec<AssetDescriptor>,
     name: String,
@@ -147,7 +146,7 @@ impl NpcContent {
             return Ok(Some(definition));
         }
         let definition = with_presentation(self, npc_id, &node, build_definition(self, &node)?)?;
-        if definition.frames.is_empty() {
+        if definition.animations.is_empty() {
             tracing::warn!(npc_id, "NPC definition has no displayable animation frames");
             return Ok(None);
         }
@@ -183,7 +182,6 @@ impl NpcContent {
         Ok(AssetDescriptor {
             id,
             url: format!("/wz-assets/{version}.png"),
-            content_hash: version,
         })
     }
 }
@@ -338,7 +336,6 @@ pub(super) fn build_npcs(
         }
         npcs.push(build_npc(
             spawn,
-            definition.frames,
             definition.animations,
             definition.name,
             definition.function,
@@ -352,7 +349,6 @@ pub(super) fn build_npcs(
 
 fn build_npc(
     source: RawNpcSpawn,
-    frames: Vec<NpcFrame>,
     animations: Vec<NpcAnimation>,
     name: String,
     function: String,
@@ -371,7 +367,6 @@ fn build_npc(
         position: Some(Vec2 { x, y: surface_y }),
         flip_x: source.flip_x,
         layer,
-        frames,
         name,
         function,
         ambient_lines,
@@ -385,16 +380,9 @@ fn build_definition(
 ) -> Result<LoadedNpcDefinition, WzContentError> {
     let mut assets = Vec::new();
     let animations = read_animations(content, node, &mut assets)?;
-    let frames = animations
-        .iter()
-        .find(|animation| animation.name == "stand")
-        .or_else(|| animations.first())
-        .map(|animation| animation.frames.clone())
-        .unwrap_or_default();
     let mut asset_ids = HashSet::new();
     assets.retain(|asset| asset_ids.insert(asset.id.clone()));
     Ok(LoadedNpcDefinition {
-        frames,
         animations,
         assets,
         name: String::new(),
@@ -633,12 +621,6 @@ mod tests {
                 .get_definition(npc_id)
                 .expect("load completion NPC")
                 .expect("completion NPC definition");
-            let stand = definition
-                .animations
-                .iter()
-                .find(|animation| animation.name == "stand")
-                .expect("stand animation");
-            assert_eq!(definition.frames, stand.frames);
             assert!(definition.animations.iter().any(|animation| {
                 animation.name == expected_action && !animation.frames.is_empty()
             }));
@@ -678,7 +660,6 @@ mod tests {
             .get_definition(linked_pair.1)
             .expect("load linked target NPC")
             .expect("linked target NPC definition");
-        assert_eq!(source.frames, target.frames);
         assert_eq!(source.animations, target.animations);
         assert_eq!(source.assets, target.assets);
     }
@@ -719,8 +700,10 @@ mod tests {
                 foothold_id: 7,
                 limited_name: None,
             },
-            vec![NpcFrame::default()],
-            Vec::new(),
+            vec![oozems_proto::v1::NpcAnimation {
+                name: "stand".to_owned(),
+                frames: vec![NpcFrame::default()],
+            }],
             "Regular Cab".to_owned(),
             String::new(),
             Vec::new(),
@@ -736,8 +719,9 @@ mod tests {
         assert_eq!(npc.position.expect("position").y, 110.0);
         assert_eq!(npc.layer, 3);
         assert!(npc.flip_x);
-        assert_eq!(npc.frames.len(), 1);
-        assert!(npc.animations.is_empty());
+        assert_eq!(npc.animations.len(), 1);
+        assert_eq!(npc.animations[0].name, "stand");
+        assert_eq!(npc.animations[0].frames.len(), 1);
         assert_eq!(npc.name, "Regular Cab");
     }
 }

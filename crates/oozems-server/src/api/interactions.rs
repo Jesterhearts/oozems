@@ -1277,10 +1277,29 @@ mod tests {
         }];
         let original = PlayerState {
             id: "restoration-save-failure".to_owned(),
+            name: "Mina".to_owned(),
+            level: 1,
+            map_id: 100,
+            position: Some(Vec2 { x: 10.0, y: 20.0 }),
+            appearance: Some(CharacterAppearance {
+                gender: CharacterGender::Female as i32,
+                skin_id: 2_000,
+                face_id: 21_000,
+                hair_id: 31_000,
+            }),
+            stats: Some(CharacterStats {
+                hp: 1,
+                max_hp: 1,
+                mp: 1,
+                max_mp: 1,
+                experience_required: 1,
+                ..CharacterStats::default()
+            }),
             inventory: Some(InventoryState {
                 capacity: 1,
                 ..InventoryState::default()
             }),
+            key_bindings: crate::keymap::default_bindings(),
             quests: vec![PlayerQuest {
                 quest_id: quest.id,
                 status: QuestStatus::Completed as i32,
@@ -1304,7 +1323,7 @@ mod tests {
         );
         let player_id =
             crate::database::PlayerId::parse("restoration-save-failure").expect("valid player ID");
-        let loaded = crate::database::load_player(&database, &player_id, 0)
+        let loaded = crate::database::load_player(&database, &player_id)
             .await
             .expect("load saved player")
             .expect("saved player");

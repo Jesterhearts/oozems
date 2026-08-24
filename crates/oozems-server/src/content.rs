@@ -593,7 +593,7 @@ mod tests {
                     count: 1,
                     expiration: None,
                 }],
-                "the archive's omitted item count must use the legacy default"
+                "the archive's omitted item count must default to one"
             );
             assert_eq!(
                 catalog
@@ -1608,9 +1608,17 @@ mod tests {
                 .find(|npc| npc.npc_id == 1_012_000)
                 .expect("Athena Pierce NPC");
             assert!(athena.position.is_some());
-            assert!(!athena.frames.is_empty());
+            let frames = athena
+                .animations
+                .iter()
+                .find(|animation| animation.name == "stand")
+                .or_else(|| athena.animations.first())
+                .expect("Athena Pierce animation")
+                .frames
+                .as_slice();
+            assert!(!frames.is_empty());
             assert!(athena.layer > 0);
-            assert!(athena.frames.iter().all(|frame| {
+            assert!(frames.iter().all(|frame| {
                 frame.delay_ms > 0 && map.assets.iter().any(|asset| asset.id == frame.asset_id)
             }));
         }

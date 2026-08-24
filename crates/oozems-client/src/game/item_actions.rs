@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use oozems_proto::v1::DroppedItem;
 use oozems_proto::v1::InventoryItemStack;
 use oozems_proto::v1::ItemActionResponse;
 use wasm_bindgen_futures::spawn_local;
@@ -14,6 +15,10 @@ pub(super) fn begin(
     game: Rc<RefCell<Game>>,
     action: GuiAction,
 ) {
+    if game.borrow().transition_in_flight.get() {
+        show_status("A map transition is already in progress.", true);
+        return;
+    }
     if super::recovery_actions::is_in_flight(&game.borrow().recovery_state) {
         show_status("Recovery is still being saved.", true);
         return;
@@ -52,6 +57,7 @@ pub(super) fn begin(
             Ok(response) => match install_item_action_update(
                 &mut game.borrow_mut(),
                 response,
+                action,
                 request_started_ms,
             ) {
                 Ok(()) => show_status(item_action_message(action), false),
@@ -64,6 +70,9 @@ pub(super) fn begin(
 }
 
 pub(super) fn begin_pick_up(game: Rc<RefCell<Game>>) {
+    if game.borrow().transition_in_flight.get() {
+        return;
+    }
     if super::recovery_actions::is_in_flight(&game.borrow().recovery_state) {
         return;
     }
@@ -72,32 +81,37 @@ pub(super) fn begin_pick_up(game: Rc<RefCell<Game>>) {
     if in_flight.replace(true) {
         return;
     }
-    let request = {
-        let game = game.borrow();
-        (game.player.id.clone(), game.map.id)
-    };
+    let player_id = game.borrow().player.id.clone();
     spawn_local(async move {
         let request_started_ms = super::monotonic_time_ms();
-        match api::pick_up_item(&request.0, request.1).await {
+        match api::pick_up_item(&player_id).await {
             Ok(mut response) => {
-                let result = response
-                    .player
-                    .take()
-                    .ok_or("server pickup response did not contain a player")
+                let result = api::require_data(response.player.take(), "player")
                     .and_then(|player| {
+                        api::require_data(response.active_buffs.take(), "active buffs").and_then(
+                            |active_buffs| {
+                                super::validate_active_buffs(active_buffs)
+                                    .map(|active_buffs| (player, active_buffs))
+                                    .map_err(api::ClientError::InvalidResponse)
+                            },
+                        )
+                    })
+                    .and_then(|(player, active_buffs)| {
                         (!response.picked_up_drop_id.is_empty())
-                            .then_some((player, std::mem::take(&mut response.picked_up_drop_id)))
-                            .ok_or("server pickup response did not identify the dropped item")
+                            .then(|| {
+                                (
+                                    player,
+                                    active_buffs,
+                                    std::mem::take(&mut response.picked_up_drop_id),
+                                )
+                            })
+                            .ok_or(api::ClientError::MissingData("picked-up drop ID"))
                     });
                 match result {
-                    Ok((player, drop_id)) => {
+                    Ok((player, active_buffs, drop_id)) => {
                         let mut game = game.borrow_mut();
                         super::install_full_player_update(&mut game, player);
-                        super::install_active_buffs(
-                            &mut game,
-                            response.active_buffs.take().unwrap_or_default(),
-                            request_started_ms,
-                        );
+                        super::install_active_buffs(&mut game, active_buffs, request_started_ms);
                         game.map.dropped_items.retain(|drop| drop.id != drop_id);
                         show_status("Item picked up.", false);
                     }
@@ -157,20 +171,19 @@ async fn request_item_action(
 fn install_item_action_update(
     game: &mut Game,
     mut response: ItemActionResponse,
+    action: GuiAction,
     request_started_ms: f64,
-) -> Result<(), &'static str> {
-    let player = response
-        .player
-        .take()
-        .ok_or("server item response did not contain a player")?;
+) -> Result<(), String> {
+    let player =
+        api::require_data(response.player.take(), "player").map_err(|error| error.to_string())?;
+    let active_buffs = api::require_data(response.active_buffs.take(), "active buffs")
+        .map_err(|error| error.to_string())?;
+    let active_buffs = super::validate_active_buffs(active_buffs)?;
+    let dropped_item = take_dropped_item(action, response.dropped_item.take())?;
     let player_map_id = player.map_id;
     super::install_full_player_update(game, player);
-    super::install_active_buffs(
-        game,
-        response.active_buffs.take().unwrap_or_default(),
-        request_started_ms,
-    );
-    if let Some(drop) = response.dropped_item
+    super::install_active_buffs(game, active_buffs, request_started_ms);
+    if let Some(drop) = dropped_item
         && player_map_id == game.map.id
         && {
             let now_ms = js_sys::Date::now().max(0.0) as u64;
@@ -181,6 +194,23 @@ fn install_item_action_update(
         game.map.dropped_items.push(drop);
     }
     Ok(())
+}
+
+fn take_dropped_item(
+    action: GuiAction,
+    dropped_item: Option<DroppedItem>,
+) -> Result<Option<DroppedItem>, String> {
+    match (action, dropped_item) {
+        (GuiAction::Drop { .. }, Some(drop)) => Ok(Some(drop)),
+        (GuiAction::Drop { .. }, None) => {
+            Err("response does not contain the dropped item".to_owned())
+        }
+        (GuiAction::Equip { .. } | GuiAction::Unequip { .. }, None) => Ok(None),
+        (GuiAction::Equip { .. } | GuiAction::Unequip { .. }, Some(_)) => {
+            Err("response contains an unexpected dropped item".to_owned())
+        }
+        _ => unreachable!("non-item GUI action reached the item response installer"),
+    }
 }
 
 fn item_action_message(action: GuiAction) -> &'static str {
@@ -202,5 +232,30 @@ fn item_action_message(action: GuiAction) -> &'static str {
         | GuiAction::CloseSkills
         | GuiAction::AllocateSkill { .. }
         | GuiAction::UseSkill { .. } => "GUI updated.",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::take_dropped_item;
+    use crate::game_gui::GuiAction;
+
+    #[test]
+    fn drop_responses_require_a_dropped_item() {
+        let error = take_dropped_item(GuiAction::Drop { inventory_index: 0 }, None)
+            .expect_err("drop response must contain a dropped item");
+
+        assert_eq!(error, "response does not contain the dropped item");
+    }
+
+    #[test]
+    fn non_drop_responses_reject_a_dropped_item() {
+        let error = take_dropped_item(
+            GuiAction::Equip { inventory_index: 0 },
+            Some(oozems_proto::v1::DroppedItem::default()),
+        )
+        .expect_err("equip response must not contain a dropped item");
+
+        assert_eq!(error, "response contains an unexpected dropped item");
     }
 }

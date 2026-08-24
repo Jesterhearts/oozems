@@ -189,7 +189,7 @@ const MORPH_RETRY_BACKOFF_MS: f64 = 5_000.0;
 
 fn install_active_buffs(
     game: &mut Game,
-    state: ActiveBuffState,
+    state: buffs::ValidatedState,
     request_started_ms: f64,
 ) {
     let received_at_ms = monotonic_time_ms();
@@ -200,6 +200,10 @@ fn install_active_buffs(
         elapsed_since(request_started_ms, received_at_ms),
     );
     synchronize_morph(game);
+}
+
+fn validate_active_buffs(state: ActiveBuffState) -> Result<buffs::ValidatedState, String> {
+    buffs::validate_state(state)
 }
 
 fn elapsed_since(
@@ -505,10 +509,10 @@ fn build_game(
         bootstrap_active_buffs,
         now_local_ms,
         elapsed_since(bootstrap_requested_at_ms, now_local_ms),
-    );
+    )?;
     buffs::install(
         &mut active_buffs,
-        skill_active_buffs,
+        buffs::validate_state(skill_active_buffs)?,
         now_local_ms,
         elapsed_since(skill_requested_at_ms, now_local_ms),
     );
@@ -1386,20 +1390,29 @@ fn begin_save(
         let request_started_ms = monotonic_time_ms();
         match api::save_player(pending.player).await {
             Ok(mut response) => {
-                if let Some(player) = response.player.take() {
-                    let mut game = game.borrow_mut();
-                    if game.key_bindings_generation == pending.key_bindings_generation {
-                        game.key_bindings_pending = false;
+                let update =
+                    api::require_data(response.player.take(), "player").and_then(|player| {
+                        api::require_data(response.active_buffs.take(), "active buffs").and_then(
+                            |active_buffs| {
+                                validate_active_buffs(active_buffs)
+                                    .map(|active_buffs| (player, active_buffs))
+                                    .map_err(api::ClientError::InvalidResponse)
+                            },
+                        )
+                    });
+                match update {
+                    Ok((player, active_buffs)) => {
+                        let mut game = game.borrow_mut();
+                        if game.key_bindings_generation == pending.key_bindings_generation {
+                            game.key_bindings_pending = false;
+                        }
+                        install_full_player_update(&mut game, player);
+                        install_active_buffs(&mut game, active_buffs, request_started_ms);
                     }
-                    install_full_player_update(&mut game, player);
-                    install_active_buffs(
-                        &mut game,
-                        response.active_buffs.take().unwrap_or_default(),
-                        request_started_ms,
-                    );
-                } else {
-                    save_failed.set(true);
-                    show_status("Save failed: response did not contain a player", true);
+                    Err(error) => {
+                        save_failed.set(true);
+                        show_status(&format!("Save failed: {error}"), true);
+                    }
                 }
             }
             Err(error) => {

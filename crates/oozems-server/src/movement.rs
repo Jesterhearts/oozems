@@ -1551,7 +1551,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_positions_are_clamped_inside_new_map_walls() {
+    fn stored_positions_are_clamped_inside_current_map_walls() {
         let tracker = MovementTracker::default();
         let mut bounded_map = map();
         bounded_map.movement_bounds = Some(MapMovementBounds {

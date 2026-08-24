@@ -360,12 +360,6 @@ pub async fn pick_up_item(
     let player_id = parse_player_id(&request.player_id)?;
     let _player_guard = lock_player(&state, &player_id).await?;
     let current = require_player(&state, &player_id).await?;
-    if current.map_id != request.map_id {
-        return Err(ApiError::bad_request(
-            "invalid_item_action",
-            "the pickup map does not match the player's map",
-        ));
-    }
     let position = current
         .position
         .ok_or(crate::movement::MovementError::MissingPlayerPosition)?;
@@ -649,7 +643,7 @@ pub async fn save_player(
     crate::skills::validate_bound_skills(&requested.key_bindings, &current, &skill_context)
         .map_err(skill_rule_error)?;
     let player = crate::database::apply_player_preferences(current, &requested);
-    crate::database::save_player_session(&state.database, &player).await?;
+    let player = crate::database::save_player(&state.database, &player).await?;
     let now_unix_ms = unix_time_ms()?;
     crate::movement::mark_persisted(&state.movement, player_id.as_str(), now_unix_ms)?;
 
@@ -707,53 +701,50 @@ async fn load_player(
     state: &AppState,
     player_id: &PlayerId,
 ) -> Result<Option<PlayerState>, ApiError> {
-    let Some(mut player) = crate::database::load_player(
-        &state.database,
-        player_id,
-        state.gameplay.initial_skill_points,
-    )
-    .await?
-    else {
+    let Some(mut player) = crate::database::load_player(&state.database, player_id).await? else {
         return Ok(None);
     };
-    let inventory_pruned = if let Some(inventory) = player.inventory.as_mut() {
-        let changed = crate::items::prune_expired_inventory(inventory, unix_time_ms()?);
-        crate::items::normalize_legacy_inventory(inventory, state.catalog.as_ref())
-            .map_err(item_rule_error)?;
-        changed
-    } else {
-        false
-    };
-    let original_cards = std::mem::take(&mut player.monster_book_cards);
-    let (monster_book_recovered, cards) = match crate::monster_book::canonicalize(
-        original_cards.clone(),
-    ) {
-        Ok(cards) => {
-            let known_card_ids = state.catalog.monster_book_card_ids();
-            if !known_card_ids.is_empty() {
-                let unknown_card_ids = cards
-                    .iter()
-                    .map(|card| card.card_item_id)
-                    .filter(|card_item_id| !known_card_ids.contains(card_item_id))
-                    .collect::<Vec<_>>();
-                if !unknown_card_ids.is_empty() {
-                    tracing::warn!(
-                        player_id = %player.id,
-                        ?unknown_card_ids,
-                        "preserving Monster Book cards absent from the current content catalog"
-                    );
-                }
-            }
-            (cards != original_cards, cards)
+    let inventory = player
+        .inventory
+        .as_mut()
+        .ok_or(crate::items::ItemRuleError::MissingInventory)
+        .map_err(item_rule_error)?;
+    let inventory_pruned = crate::items::prune_and_validate_inventory(
+        inventory,
+        state.catalog.as_ref(),
+        unix_time_ms()?,
+    )
+    .map_err(|error| ApiError::PlayerData(error.to_string()))?;
+    let appearance = player
+        .appearance
+        .as_ref()
+        .ok_or_else(|| ApiError::PlayerData("character appearance is missing".to_owned()))?;
+    if !state.catalog.supports_character(appearance) {
+        return Err(ApiError::PlayerData(
+            "character appearance is not available in the current content".to_owned(),
+        ));
+    }
+    let skill_context = load_skill_book(state, &player).await?;
+    crate::skills::validate_bound_skills(&player.key_bindings, &player, &skill_context)
+        .map_err(|error| ApiError::PlayerData(error.to_string()))?;
+    let known_card_ids = state.catalog.monster_book_card_ids();
+    if !known_card_ids.is_empty() {
+        let unknown_card_ids = player
+            .monster_book_cards
+            .iter()
+            .map(|card| card.card_item_id)
+            .filter(|card_item_id| !known_card_ids.contains(card_item_id))
+            .collect::<Vec<_>>();
+        if !unknown_card_ids.is_empty() {
+            tracing::warn!(
+                player_id = %player.id,
+                ?unknown_card_ids,
+                "preserving Monster Book cards absent from the current content catalog"
+            );
         }
-        Err(error) => {
-            tracing::warn!(player_id = %player.id, %error, "discarding malformed Monster Book state");
-            (!original_cards.is_empty(), Vec::new())
-        }
-    };
-    player.monster_book_cards = cards;
+    }
     player = crate::experience::apply_curve(player, state.experience.default_curve())?;
-    if inventory_pruned || monster_book_recovered {
+    if inventory_pruned {
         player = crate::database::save_player(&state.database, &player).await?;
     }
     Ok(Some(player))
@@ -1155,6 +1146,8 @@ pub enum ApiError {
     Content(#[from] crate::content::ContentError),
     #[error("content worker failed")]
     Worker(#[from] tokio::task::JoinError),
+    #[error("persisted player data is invalid: {0}")]
+    PlayerData(String),
     #[error("game rules could not be applied")]
     GameRules(#[from] crate::experience::ExperienceRuleError),
     #[error("attack rules could not be applied")]
@@ -1242,6 +1235,14 @@ impl IntoResponse for ApiError {
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "content_worker_error",
                     "the server could not load game content".to_owned(),
+                )
+            }
+            Self::PlayerData(error) => {
+                tracing::error!(%error, "persisted player data is invalid");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "player_data_error",
+                    "the server could not load valid player data".to_owned(),
                 )
             }
             Self::GameRules(error) => {

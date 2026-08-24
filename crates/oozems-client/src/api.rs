@@ -72,6 +72,13 @@ pub struct LoadedSkillBook {
     pub active_buffs: ActiveBuffState,
 }
 
+pub(crate) fn require_data<T>(
+    data: Option<T>,
+    name: &'static str,
+) -> Result<T, ClientError> {
+    data.ok_or(ClientError::MissingData(name))
+}
+
 pub async fn bootstrap(player_id: &str) -> Result<BootstrapResponse, ClientError> {
     post_protobuf(
         "/api/v1/bootstrap",
@@ -97,7 +104,7 @@ pub async fn create_character(
     )
     .await?;
 
-    response.player.ok_or(ClientError::MissingData("player"))
+    require_data(response.player, "player")
 }
 
 pub async fn get_character_sprites(
@@ -115,15 +122,13 @@ pub async fn get_character_sprites(
     )
     .await?;
 
-    response
-        .sprites
-        .ok_or(ClientError::MissingData("character sprites"))
+    require_data(response.sprites, "character sprites")
 }
 
 pub async fn get_morph(morph_id: u32) -> Result<oozems_proto::v1::MorphDefinition, ClientError> {
     let response: GetMorphResponse =
         post_protobuf("/api/v1/morphs/get", GetMorphRequest { morph_id }).await?;
-    response.morph.ok_or(ClientError::MissingData("morph"))
+    require_data(response.morph, "morph")
 }
 
 pub async fn equip_item(
@@ -176,15 +181,11 @@ pub async fn drop_item(
     .await
 }
 
-pub async fn pick_up_item(
-    player_id: &str,
-    map_id: u32,
-) -> Result<ItemActionResponse, ClientError> {
+pub async fn pick_up_item(player_id: &str) -> Result<ItemActionResponse, ClientError> {
     post_protobuf(
         "/api/v1/items/pick-up",
         PickUpItemRequest {
             player_id: player_id.to_owned(),
-            map_id,
         },
     )
     .await
@@ -200,16 +201,14 @@ pub async fn get_map(map_id: u32) -> Result<Map, ClientError> {
     let response: GetMapResponse =
         post_protobuf("/api/v1/maps/get", GetMapRequest { map_id }).await?;
 
-    response.map.ok_or(ClientError::MissingData("map"))
+    require_data(response.map, "map")
 }
 
 pub async fn get_movement_rules() -> Result<MovementRules, ClientError> {
     let response: GetMovementRulesResponse =
         post_protobuf("/api/v1/movement/rules", GetMovementRulesRequest {}).await?;
 
-    response
-        .rules
-        .ok_or(ClientError::MissingData("movement rules"))
+    require_data(response.rules, "movement rules")
 }
 
 pub async fn submit_movement(
@@ -247,7 +246,7 @@ pub async fn enter_portal(
 pub async fn get_gui() -> Result<GameGui, ClientError> {
     let response: GetGuiResponse = post_protobuf("/api/v1/gui/get", GetGuiRequest {}).await?;
 
-    response.gui.ok_or(ClientError::MissingData("game GUI"))
+    require_data(response.gui, "game GUI")
 }
 
 pub async fn get_skill_book(player_id: &str) -> Result<LoadedSkillBook, ClientError> {
@@ -259,12 +258,11 @@ pub async fn get_skill_book(player_id: &str) -> Result<LoadedSkillBook, ClientEr
     )
     .await?;
 
-    let skill_book = response
-        .skill_book
-        .ok_or(ClientError::MissingData("skill book"))?;
+    let skill_book = require_data(response.skill_book, "skill book")?;
+    let active_buffs = require_data(response.active_buffs, "active buffs")?;
     Ok(LoadedSkillBook {
         skill_book,
-        active_buffs: response.active_buffs.unwrap_or_default(),
+        active_buffs,
     })
 }
 
@@ -373,4 +371,19 @@ where
     }
 
     O::decode(bytes.as_slice()).map_err(|error| ClientError::InvalidResponse(error.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ClientError;
+    use super::require_data;
+
+    #[test]
+    fn required_response_data_reports_its_missing_field() {
+        assert!(matches!(
+            require_data::<u32>(None, "player"),
+            Err(ClientError::MissingData("player"))
+        ));
+        assert_eq!(require_data(Some(7), "player").expect("present data"), 7);
+    }
 }

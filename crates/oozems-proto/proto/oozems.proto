@@ -93,10 +93,9 @@ enum KeyAction {
 }
 
 message InventoryState {
-  repeated uint32 item_ids = 1;
-  repeated EquippedItem equipment = 2;
-  uint32 capacity = 3;
-  repeated InventoryItemStack stacks = 4;
+  repeated EquippedItem equipment = 1;
+  uint32 capacity = 2;
+  repeated InventoryItemStack stacks = 3;
 }
 
 message InventoryItemStack {
@@ -233,15 +232,12 @@ message MovementUpdateResponse {
   bool accepted = 2;
   string rejection_reason = 3;
   repeated Mob mobs = 4;
-  CharacterStats player_stats = 5;
+  PlayerState player = 5;
   repeated MobProjectile mob_projectiles = 6;
   repeated CombatEvent combat_events = 7;
   uint64 simulation_sequence = 8;
   ActiveBuffState active_buffs = 9;
   repeated DroppedItem dropped_items = 10;
-  repeated PlayerQuest quests = 11;
-  uint64 player_revision = 12;
-  PlayerState player = 13;
 }
 
 message CreateCharacterRequest {
@@ -341,23 +337,22 @@ message ActiveBuffState {
 }
 
 message ActiveBuff {
-  uint32 skill_id = 1;
-  uint32 skill_level = 2;
-  sint32 speed_bonus = 3;
-  sint32 jump_bonus = 4;
-  uint64 activated_at_unix_ms = 5;
-  uint64 expires_at_unix_ms = 6;
   oneof source {
-    uint32 source_skill_id = 7;
-    uint32 item_id = 8;
+    uint32 skill_id = 1;
+    uint32 item_id = 2;
   }
-  sint32 weapon_attack = 9;
-  sint32 magic_attack = 10;
-  sint32 weapon_defense = 11;
-  sint32 magic_defense = 12;
-  sint32 accuracy = 13;
-  sint32 avoidability = 14;
-  uint32 morph_id = 15;
+  uint32 skill_level = 3;
+  sint32 speed_bonus = 4;
+  sint32 jump_bonus = 5;
+  uint64 activated_at_unix_ms = 6;
+  uint64 expires_at_unix_ms = 7;
+  sint32 weapon_attack = 8;
+  sint32 magic_attack = 9;
+  sint32 weapon_defense = 10;
+  sint32 magic_defense = 11;
+  sint32 accuracy = 12;
+  sint32 avoidability = 13;
+  uint32 morph_id = 14;
 }
 
 message RecoverPlayerRequest {
@@ -694,8 +689,6 @@ message DropItemRequest {
 
 message PickUpItemRequest {
   string player_id = 1;
-  uint32 map_id = 2;
-  reserved 3;
 }
 
 message ItemActionResponse {
@@ -842,11 +835,10 @@ message Npc {
   Vec2 position = 3;
   bool flip_x = 4;
   int32 layer = 5;
-  repeated NpcFrame frames = 6;
-  string name = 7;
-  string function = 8;
-  repeated string ambient_lines = 9;
-  repeated NpcAnimation animations = 10;
+  string name = 6;
+  string function = 7;
+  repeated string ambient_lines = 8;
+  repeated NpcAnimation animations = 9;
 }
 
 message NpcAnimation {
@@ -970,12 +962,10 @@ message DroppedItem {
 message Platform {
   float x = 1;
   float y = 2;
-  reserved 3, 4, 7;
-  reserved "width", "kind", "hidden";
-  float end_x = 5;
-  float end_y = 6;
-  int32 layer = 8;
-  uint32 id = 9;
+  float end_x = 3;
+  float end_y = 4;
+  int32 layer = 5;
+  uint32 id = 6;
 }
 
 message Decoration {
@@ -1030,7 +1020,6 @@ message PortalFrame {
 message AssetDescriptor {
   string id = 1;
   string url = 2;
-  string content_hash = 3;
 }
 
 message ErrorResponse {

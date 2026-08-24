@@ -992,7 +992,6 @@ fn item_asset(
     let descriptor = AssetDescriptor {
         id: id.clone(),
         url: format!("/wz-assets/{version}.png"),
-        content_hash: version,
     };
     (descriptor, Arc::new(WzAsset::new(id, Arc::clone(node))))
 }
@@ -1004,7 +1003,6 @@ fn descriptor_from_asset_id(asset_id: &str) -> AssetDescriptor {
     AssetDescriptor {
         id: asset_id.to_owned(),
         url: format!("/wz-assets/{version}.png"),
-        content_hash: version.to_owned(),
     }
 }
 

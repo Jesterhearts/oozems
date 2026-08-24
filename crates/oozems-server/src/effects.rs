@@ -285,14 +285,11 @@ fn project_effects<'a>(holders: impl IntoIterator<Item = &'a ActiveEffect>) -> P
 }
 
 fn to_proto(effect: &ActiveEffect) -> ActiveBuff {
-    let (skill_id, source) = match effect.source {
-        EffectSource::Skill(skill_id) => {
-            (skill_id, Some(active_buff::Source::SourceSkillId(skill_id)))
-        }
-        EffectSource::Item(item_id) => (0, Some(active_buff::Source::ItemId(item_id))),
+    let source = match effect.source {
+        EffectSource::Skill(skill_id) => Some(active_buff::Source::SkillId(skill_id)),
+        EffectSource::Item(item_id) => Some(active_buff::Source::ItemId(item_id)),
     };
     ActiveBuff {
-        skill_id,
         skill_level: effect.skill_level,
         speed_bonus: effect.modifiers.speed,
         jump_bonus: effect.modifiers.jump,
@@ -453,6 +450,12 @@ mod tests {
         assert!(matches!(
             state.buffs[0].source,
             Some(active_buff::Source::ItemId(2_022_631))
+        ));
+
+        let skill = to_proto(&effect(EffectSource::Skill(1_001_000), 10, None, 20, 100));
+        assert!(matches!(
+            skill.source,
+            Some(active_buff::Source::SkillId(1_001_000))
         ));
     }
 

@@ -265,7 +265,6 @@ fn descriptor(asset_id: &str) -> AssetDescriptor {
     AssetDescriptor {
         id: asset_id.to_owned(),
         url: format!("/wz-assets/{version}.png"),
-        content_hash: version.to_owned(),
     }
 }
 

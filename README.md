@@ -62,7 +62,7 @@ browser
 
 server
   -> config/xp-curves.toml        validated game progression rules
-   -> config/gameplay.toml         validated world, item, skill, and movement rules
+  -> config/gameplay.toml         validated world, item, skill, and movement rules
   -> config/content.toml          WZ content inclusion rules
   -> config/interactions.toml     authored shop stock and taxi routes
   -> config/quest-scripts.toml    typed replacements for WZ quest scripts
@@ -122,13 +122,13 @@ damage, while mobs with positive magic attack launch projectiles after they are
 provoked.
 
 Place `Npc.wz` beside `Map.wz` to display the map's NPC life entries. The
-server loads each referenced NPC's standing animation when the map is first
-requested, places the NPC on its supporting foothold and WZ layer, and includes
-only those frame assets in the map response. The client preserves the WZ frame
-timing, origin, and facing direction while rendering NPCs. Their PNG data stays
-compressed until the NPC first enters the viewport. A matching `String.wz`
-adds NPC names, functions, and the ambient lines selected by
-`Npc.wz/info/speak`.
+server loads each referenced NPC's displayable named animations when the map is
+first requested, places the NPC on its supporting foothold and WZ layer, and
+includes their frame assets in the map response. The client renders `stand`, or
+the first nonempty animation when `stand` is absent, while preserving the WZ
+frame timing, origin, and facing direction. PNG data stays compressed until the
+NPC first enters the viewport. A matching `String.wz` adds NPC names,
+functions, and the ambient lines selected by `Npc.wz/info/speak`.
 
 NPC inclusion is controlled by `config/content.toml`:
 
@@ -196,8 +196,9 @@ Quest `timeLimit` and `timeLimit2` values are seconds. The server converts both
 to checked milliseconds, expires an active quest at its
 accepted time plus that duration, and resets it without rewards. An expired
 quest cannot be reaccepted during the same automatic transition pass. Mesos and
-quest state are stored with the player; existing records receive zero mesos and
-an empty quest log.
+quest state are stored with the player. SurrealKV accepts one current persisted
+player schema. It does not upgrade or fill missing fields from older schemas. A
+record that does not satisfy the current schema fails to load.
 
 Quest record progress is stored as canonical, typed quest records. Record IDs
 are nonzero and unique, entry indices are unique, and both levels are sorted
@@ -207,11 +208,9 @@ check to another quest record; direct `info` and `infoex` entries are OR
 alternatives against index 0. Equality is exact. Numeric conditions accept only
 strict decimal strings. A missing record never satisfies a check.
 
-SurrealKV stores quest records in three optional aligned arrays. Legacy absence
-loads as an empty collection. As with the existing persisted quest metadata
-arrays, malformed, misaligned, duplicate, or invalid record arrays recover as
-one empty collection rather than partially pairing entries. The next full save
-writes canonical arrays.
+SurrealKV stores quest records as required nested records and entries. They must
+be unique and valid. Missing, malformed, duplicate, or invalid data fails
+player load; valid entries are sorted into canonical order.
 
 Quest item-action `period` values are relative lifetimes in minutes. Their
 deadline starts when that start, completion, or restoration action executes.
@@ -395,11 +394,10 @@ spending skill points or lowering either value. Their authored job IDs are exact
 beginner-family skill IDs retain the original cross-job bypass. `Skill.wz` is the
 authoritative global index, including invisible definitions. An invisible real
 skill enters the player's skill book after a positive learned or master-level
-unlock, and its positive master level limits later point allocation. Legacy
-ordinary skills with no stored master level still use their definition maximum.
-An invisible definition with maximum level zero is different: an authored
-level-1 record may persist as an acquisition marker for quest checks, but the
-marker remains hidden, non-allocatable, non-bindable, and non-usable.
+unlock, and its positive master level limits later point allocation. An
+invisible definition with maximum level zero is different: an authored level-1
+record may persist as an acquisition marker for quest checks, but the marker
+remains hidden, non-allocatable, non-bindable, and non-usable.
 
 A basic attack selects the nearest living mob in front of the character and
 uses the configured bare-hands damage profile. Its result follows the same
@@ -446,8 +444,7 @@ bundled configuration selects `Mushroom Town` (map `10000`).
 Click the stat button in the status bar to open the `UIWindow.img` character
 stat window. Its background, close control, and job label remain unloaded until
 the window is first opened. New characters receive server-owned Beginner stats,
-and existing SurrealDB records receive the same defaults when their older
-records do not contain stat fields.
+which are required in their persisted player records.
 
 Click the equipment or inventory button to open its `UIWindow.img` window.
 Left-click an inventory item to equip it. Left-click an equipped item to move
@@ -489,6 +486,9 @@ initial_points = 3
 [characters]
 initial_map_id = 10000
 
+[world]
+id = 0
+
 [combat]
 disengage_range = 520.0
 player_attack_range = 220.0
@@ -522,14 +522,16 @@ portal_horizontal_reach = 48.0
 portal_vertical_reach = 64.0
 ```
 
+Every section and field shown above is required. Missing or unknown sections and
+fields stop server startup instead of loading defaults from an older layout.
+
 `items.drop_despawn` controls how long a dropped item remains in a map. It must
 be a positive human-readable duration, such as `30s`, `10m`, `2h`, or
 `1h 30m`. Restart the server after changing it. Drops are intentionally not
 persisted across a server restart.
 
 `skills.initial_points` is the number of unspent skill points assigned to a new
-character. It is also used when an older SurrealKV player record has no skill
-point field. Learned levels and later point changes are persisted and are not
+character. Learned levels and later point changes are persisted and are not
 replaced when this setting changes.
 
 `characters.initial_map_id` selects the WZ map used for newly created
@@ -557,8 +559,8 @@ Movement speeds are measured in map pixels per second, and gravity is measured
 in map pixels per second squared. `speed_cap` and `jump_cap` are percentage
 stats with 100 as the unmodified value. The default cap of 200 therefore allows
 at most twice the configured base speed or jump impulse. Timed WZ skill values,
-including Haste-style `speed` and `jump` bonuses, are summed by the client and
-server before these caps are applied.
+including Haste-style `speed` and `jump` bonuses, use the highest nonzero active
+value before these caps are applied.
 
 The client submits an ordered movement snapshot every `snapshot_interval`.
 The server uses its own receipt time to calculate a reachable horizontal and

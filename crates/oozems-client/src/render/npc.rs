@@ -77,13 +77,13 @@ pub(crate) fn install_event(
         .find(|animation| animation.name == event.action_name)
         .ok_or_else(|| {
             format!(
-                "NPC {} has no animation named {:?}; using its default animation",
+                "NPC {} has no animation named {:?}; using its standing animation",
                 npc.npc_id, event.action_name
             )
         })?;
     if animation_duration_ms(&animation.frames) == 0 {
         return Err(format!(
-            "NPC {} animation {:?} has no duration; using its default animation",
+            "NPC {} animation {:?} has no duration; using its standing animation",
             npc.npc_id, event.action_name
         ));
     }
@@ -176,6 +176,7 @@ fn ready_frame<'a>(
     game: &'a Game,
     npc: &'a Npc,
 ) -> Option<&'a NpcFrame> {
+    let standing_frames = standing_frames(npc)?;
     let sequence = frame_sequence(npc, &game.npc_animations, game.frame_time_ms);
     let preferred_index = if sequence.one_shot {
         one_shot_frame_index(sequence.frames, sequence.elapsed_ms)
@@ -190,15 +191,27 @@ fn ready_frame<'a>(
         return sequence.frames.get(index);
     }
     if sequence.one_shot {
-        let default_index = animation_frame_index(&npc.frames, game.frame_time_ms)?;
+        let default_index = animation_frame_index(standing_frames, game.frame_time_ms)?;
         let index = assets::ready_or_fallback_index(
             &game.images,
-            npc.frames.iter().map(|frame| frame.asset_id.as_str()),
+            standing_frames.iter().map(|frame| frame.asset_id.as_str()),
             default_index,
         )?;
-        return npc.frames.get(index);
+        return standing_frames.get(index);
     }
     None
+}
+
+pub(super) fn standing_frames(npc: &Npc) -> Option<&[NpcFrame]> {
+    npc.animations
+        .iter()
+        .find(|animation| animation.name == "stand" && !animation.frames.is_empty())
+        .or_else(|| {
+            npc.animations
+                .iter()
+                .find(|animation| !animation.frames.is_empty())
+        })
+        .map(|animation| animation.frames.as_slice())
 }
 
 #[derive(Clone, Copy)]
@@ -233,7 +246,7 @@ fn frame_sequence<'a>(
             one_shot: true,
         },
         None => FrameSequence {
-            frames: &npc.frames,
+            frames: standing_frames(npc).unwrap_or(&[]),
             elapsed_ms: timestamp_ms,
             one_shot: false,
         },
@@ -310,6 +323,7 @@ mod tests {
     use super::install_event;
     use super::one_shot_frame_index;
     use super::point_in_frame;
+    use super::standing_frames;
     use crate::game_gui::CanvasPoint;
 
     #[test]
@@ -428,7 +442,7 @@ mod tests {
     }
 
     #[test]
-    fn named_npc_animation_plays_once_then_uses_default_frames() {
+    fn named_npc_animation_plays_once_then_uses_stand_animation() {
         let map = animation_map();
         let npc = &map.npcs[0];
         let mut state = NpcAnimationPlaybackState::default();
@@ -450,7 +464,7 @@ mod tests {
 
         let fallback = frame_sequence(npc, &state, 400.0);
         assert!(!fallback.one_shot);
-        assert_eq!(fallback.frames[0].asset_id, "default");
+        assert_eq!(fallback.frames[0].asset_id, "stand");
 
         clear(&mut state);
         assert!(state.playbacks.is_empty());
@@ -458,7 +472,28 @@ mod tests {
     }
 
     #[test]
-    fn missing_or_zero_duration_named_animation_keeps_default_frames() {
+    fn standing_frames_prefer_stand_then_the_first_nonempty_animation() {
+        let mut npc = animation_map().npcs.remove(0);
+
+        assert_eq!(
+            standing_frames(&npc).expect("stand frames")[0].asset_id,
+            "stand"
+        );
+
+        npc.animations
+            .iter_mut()
+            .find(|animation| animation.name == "stand")
+            .expect("stand animation")
+            .frames
+            .clear();
+        assert_eq!(
+            standing_frames(&npc).expect("fallback frames")[0].asset_id,
+            "named-1"
+        );
+    }
+
+    #[test]
+    fn missing_or_zero_duration_named_animation_keeps_stand_animation() {
         let mut map = animation_map();
         let mut state = NpcAnimationPlaybackState::default();
         let mut missing = animation_event(5);
@@ -509,31 +544,36 @@ mod tests {
                 spawn_id: 7,
                 npc_id: 10,
                 flip_x: true,
-                frames: vec![NpcFrame {
-                    asset_id: "default".to_owned(),
-                    width: 10.0,
-                    height: 10.0,
-                    delay_ms: 50,
-                    ..NpcFrame::default()
-                }],
-                animations: vec![NpcAnimation {
-                    name: "quest".to_owned(),
-                    frames: vec![
-                        NpcFrame {
-                            asset_id: "named-1".to_owned(),
-                            width: 20.0,
-                            height: 30.0,
-                            origin_x: 5.0,
-                            origin_y: 20.0,
-                            delay_ms: 100,
-                        },
-                        NpcFrame {
-                            asset_id: "named-2".to_owned(),
-                            delay_ms: 200,
+                animations: vec![
+                    NpcAnimation {
+                        name: "quest".to_owned(),
+                        frames: vec![
+                            NpcFrame {
+                                asset_id: "named-1".to_owned(),
+                                width: 20.0,
+                                height: 30.0,
+                                origin_x: 5.0,
+                                origin_y: 20.0,
+                                delay_ms: 100,
+                            },
+                            NpcFrame {
+                                asset_id: "named-2".to_owned(),
+                                delay_ms: 200,
+                                ..NpcFrame::default()
+                            },
+                        ],
+                    },
+                    NpcAnimation {
+                        name: "stand".to_owned(),
+                        frames: vec![NpcFrame {
+                            asset_id: "stand".to_owned(),
+                            width: 10.0,
+                            height: 10.0,
+                            delay_ms: 50,
                             ..NpcFrame::default()
-                        },
-                    ],
-                }],
+                        }],
+                    },
+                ],
                 ..Npc::default()
             }],
             ..Map::default()

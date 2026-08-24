@@ -33,20 +33,23 @@ pub fn start() {
 async fn start_client() -> Result<(), String> {
     show_status("Loading saved player...", false);
     let bootstrap_requested_at_ms = game::monotonic_time_ms();
-    let bootstrap = api::bootstrap(PLAYER_ID)
+    let mut bootstrap = api::bootstrap(PLAYER_ID)
         .await
         .map_err(|error| error.to_string())?;
-    let bootstrap_active_buffs = bootstrap.active_buffs.unwrap_or_default();
-    match bootstrap.player {
+    match bootstrap.player.take() {
         Some(player) => {
+            let bootstrap_active_buffs =
+                api::require_data(bootstrap.active_buffs.take(), "active buffs")
+                    .map_err(|error| error.to_string())?;
             let appearance = player
                 .appearance
                 .ok_or("saved player has no character appearance")?;
             let equipment = player
                 .inventory
                 .as_ref()
-                .map(|inventory| inventory.equipment.as_slice())
-                .unwrap_or_default();
+                .ok_or("saved player has no inventory")?
+                .equipment
+                .as_slice();
             show_status("Loading character...", false);
             let sprites = api::get_character_sprites(appearance, Some(equipment))
                 .await
@@ -62,7 +65,14 @@ async fn start_client() -> Result<(), String> {
             )
             .await
         }
-        None => character_create::show(bootstrap.creation_options.unwrap_or_default()),
+        None => {
+            let creation_options = api::require_data(
+                bootstrap.creation_options.take(),
+                "character creation options",
+            )
+            .map_err(|error| error.to_string())?;
+            character_create::show(creation_options)
+        }
     }
 }
 

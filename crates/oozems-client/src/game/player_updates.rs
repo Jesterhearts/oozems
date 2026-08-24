@@ -45,14 +45,6 @@ impl PlayerDomains {
         skills: true,
         key_bindings: true,
     };
-    pub const STATS_AND_QUESTS: Self = Self {
-        stats: true,
-        quests: true,
-        inventory: false,
-        progression: false,
-        skills: false,
-        key_bindings: false,
-    };
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -222,7 +214,6 @@ pub(super) fn synchronize_skill_book(
 #[cfg(test)]
 mod tests {
     use oozems_proto::v1::CharacterAppearance;
-    use oozems_proto::v1::CharacterStats;
     use oozems_proto::v1::EquipmentSlot;
     use oozems_proto::v1::EquippedItem;
     use oozems_proto::v1::InventoryState;
@@ -621,60 +612,6 @@ mod tests {
 
         assert_eq!(player.monster_book_cards, newer);
         assert_eq!(revisions.quests, 2);
-    }
-
-    #[test]
-    fn newer_sparse_stats_and_quests_do_not_suppress_older_inventory() {
-        let mut player = PlayerState {
-            appearance: Some(CharacterAppearance::default()),
-            inventory: Some(InventoryState::default()),
-            ..PlayerState::default()
-        };
-        let mut revisions = PlayerRevisions::default();
-        let inventory = InventoryState {
-            item_ids: vec![4_001_000],
-            ..InventoryState::default()
-        };
-
-        let sparse = install_player_update(
-            &mut player,
-            &mut revisions,
-            PlayerState {
-                revision: 3,
-                stats: Some(CharacterStats {
-                    hp: 50,
-                    ..CharacterStats::default()
-                }),
-                quests: vec![PlayerQuest {
-                    quest_id: 100,
-                    ..PlayerQuest::default()
-                }],
-                ..PlayerState::default()
-            },
-            PlayerDomains::STATS_AND_QUESTS,
-        );
-        let installed_inventory = install_player_update(
-            &mut player,
-            &mut revisions,
-            PlayerState {
-                revision: 2,
-                appearance: Some(CharacterAppearance::default()),
-                inventory: Some(inventory.clone()),
-                ..PlayerState::default()
-            },
-            PlayerDomains {
-                inventory: true,
-                ..PlayerDomains::default()
-            },
-        );
-
-        assert!(sparse.domains.stats);
-        assert!(sparse.domains.quests);
-        assert!(installed_inventory.domains.inventory);
-        assert_eq!(player.inventory, Some(inventory));
-        assert_eq!(revisions.stats, 3);
-        assert_eq!(revisions.quests, 3);
-        assert_eq!(revisions.inventory, 2);
     }
 
     #[test]

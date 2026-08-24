@@ -1008,7 +1008,6 @@ mod tests {
     fn item_slots_produce_server_actions() {
         let gui = gui_fixture();
         let inventory = InventoryState {
-            item_ids: Vec::new(),
             equipment: vec![EquippedItem {
                 slot: EquipmentSlot::Top as i32,
                 item_id: 1_040_002,
@@ -1020,6 +1019,7 @@ mod tests {
                 quantity: 1,
                 expires_at_unix_ms: 0,
             }],
+            ..InventoryState::default()
         };
         let state = GuiState {
             equipment_open: true,
@@ -1294,7 +1294,7 @@ mod tests {
     }
 
     #[test]
-    fn mastery_cap_disables_allocation_without_capping_legacy_skills_at_zero() {
+    fn zero_mastery_uses_the_definition_cap() {
         let mut mastered = skill_book_fixture(2, 1);
         mastered.skills[0].master_level = 2;
         assert!(!super::can_allocate_skill(&mastered, 1_000));

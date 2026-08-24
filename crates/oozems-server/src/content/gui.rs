@@ -209,7 +209,6 @@ impl GuiContent {
         Ok(AssetDescriptor {
             id,
             url: format!("/wz-assets/{version}.png"),
-            content_hash: version,
         })
     }
 }

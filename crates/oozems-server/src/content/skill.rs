@@ -335,7 +335,6 @@ impl SkillContent {
         Ok(AssetDescriptor {
             id,
             url: format!("/wz-assets/{version}.png"),
-            content_hash: version,
         })
     }
 
@@ -365,7 +364,6 @@ impl SkillContent {
         Ok(AssetDescriptor {
             id,
             url: format!("/wz-assets/{version}.{extension}"),
-            content_hash: version,
         })
     }
 

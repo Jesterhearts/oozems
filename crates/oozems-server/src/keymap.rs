@@ -301,7 +301,7 @@ mod tests {
     }
 
     #[test]
-    fn keymaps_saved_before_default_changes_remain_valid() {
+    fn customized_keymaps_do_not_require_every_default_action() {
         let mut bindings = default_bindings()
             .into_iter()
             .filter(|binding| binding.action != KeyAction::BasicAttack as i32)
@@ -312,7 +312,7 @@ mod tests {
             .expect("Jump binding")
             .code = "Space".to_owned();
 
-        validate_bindings(&bindings).expect("legacy keymap");
+        validate_bindings(&bindings).expect("custom keymap");
     }
 
     #[test]

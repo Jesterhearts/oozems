@@ -57,18 +57,14 @@ pub struct MovementConfig {
 struct GameplayFile {
     items: ItemRulesFile,
     skills: SkillRulesFile,
-    #[serde(default)]
     characters: CharacterRulesFile,
-    #[serde(default)]
     world: WorldRulesFile,
-    #[serde(default)]
     combat: CombatRulesFile,
-    #[serde(default)]
     movement: MovementRulesFile,
 }
 
-#[derive(Debug, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct WorldRulesFile {
     id: u32,
 }
@@ -86,21 +82,13 @@ struct SkillRulesFile {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(deny_unknown_fields)]
 struct CharacterRulesFile {
     initial_map_id: u32,
 }
 
-impl Default for CharacterRulesFile {
-    fn default() -> Self {
-        Self {
-            initial_map_id: 10_000,
-        }
-    }
-}
-
 #[derive(Debug, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(deny_unknown_fields)]
 struct CombatRulesFile {
     disengage_range: f32,
     player_attack_range: f32,
@@ -116,27 +104,8 @@ struct CombatRulesFile {
     default_respawn: String,
 }
 
-impl Default for CombatRulesFile {
-    fn default() -> Self {
-        Self {
-            disengage_range: 520.0,
-            player_attack_range: 220.0,
-            attack_vertical_reach: 90.0,
-            touch_horizontal_reach: 28.0,
-            touch_vertical_reach: 48.0,
-            projectile_range: 420.0,
-            projectile_speed: 240.0,
-            projectile_hit_reach: 18.0,
-            player_attack_interval: "600ms".to_owned(),
-            mob_attack_interval: "1500ms".to_owned(),
-            player_invulnerability: "1s".to_owned(),
-            default_respawn: "7s".to_owned(),
-        }
-    }
-}
-
 #[derive(Debug, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(deny_unknown_fields)]
 struct MovementRulesFile {
     walk_speed: f32,
     climb_speed: f32,
@@ -154,29 +123,6 @@ struct MovementRulesFile {
     ladder_end_reach: f32,
     portal_horizontal_reach: f32,
     portal_vertical_reach: f32,
-}
-
-impl Default for MovementRulesFile {
-    fn default() -> Self {
-        Self {
-            walk_speed: 220.0,
-            climb_speed: 135.0,
-            gravity: 1_150.0,
-            jump_speed: 480.0,
-            speed_cap: 200,
-            jump_cap: 200,
-            snapshot_interval: "200ms".to_owned(),
-            maximum_snapshot_gap: "1s".to_owned(),
-            persistence_interval: "2s".to_owned(),
-            position_tolerance: 24.0,
-            ground_tolerance: 8.0,
-            platform_edge_tolerance: 20.0,
-            ladder_reach: 32.0,
-            ladder_end_reach: 20.0,
-            portal_horizontal_reach: 48.0,
-            portal_vertical_reach: 64.0,
-        }
-    }
 }
 
 #[derive(Debug, Error)]
@@ -419,97 +365,140 @@ mod tests {
     use std::fs;
     use std::time::Duration;
 
+    use super::CombatConfig;
     use super::GameplayConfig;
+    use super::GameplayConfigError;
+    use super::MovementConfig;
+
+    const COMPLETE_CONFIG: &str = include_str!("../../../config/gameplay.toml");
 
     #[test]
-    fn loads_human_readable_drop_duration() {
-        let directory = tempfile::tempdir().expect("temporary directory");
-        let path = directory.path().join("gameplay.toml");
-        fs::write(
-            &path,
-            concat!(
-                "# See README.md for configuration reference.\n",
-                "[items]\n",
-                "drop_despawn = \"10m\"\n",
-                "[skills]\n",
-                "initial_points = 3\n",
-            ),
-        )
-        .expect("write configuration");
-
-        let config = GameplayConfig::load(&path).expect("valid configuration");
+    fn loads_complete_current_configuration() {
+        let config = load(COMPLETE_CONFIG).expect("valid configuration");
 
         assert_eq!(config.item_drop_despawn, Duration::from_secs(600));
         assert_eq!(config.initial_skill_points, 3);
         assert_eq!(config.initial_map_id, 10_000);
         assert_eq!(config.world_id, 0);
-        assert_eq!(config.combat.disengage_range, 520.0);
         assert_eq!(
-            config.combat.player_attack_interval,
-            Duration::from_millis(600)
+            config.combat,
+            CombatConfig {
+                disengage_range: 520.0,
+                player_attack_range: 220.0,
+                attack_vertical_reach: 90.0,
+                touch_horizontal_reach: 28.0,
+                touch_vertical_reach: 48.0,
+                projectile_range: 420.0,
+                projectile_speed: 240.0,
+                projectile_hit_reach: 18.0,
+                player_attack_interval: Duration::from_millis(600),
+                mob_attack_interval: Duration::from_millis(1_500),
+                player_invulnerability: Duration::from_secs(1),
+                default_respawn: Duration::from_secs(7),
+            }
         );
-        assert_eq!(config.combat.default_respawn, Duration::from_secs(7));
-        assert_eq!(config.movement.speed_cap, 200);
-        assert_eq!(config.movement.jump_cap, 200);
         assert_eq!(
-            config.movement.snapshot_interval,
-            Duration::from_millis(200)
+            config.movement,
+            MovementConfig {
+                walk_speed: 220.0,
+                climb_speed: 135.0,
+                gravity: 1_150.0,
+                jump_speed: 480.0,
+                speed_cap: 200,
+                jump_cap: 200,
+                snapshot_interval: Duration::from_millis(200),
+                maximum_snapshot_gap: Duration::from_secs(1),
+                persistence_interval: Duration::from_secs(2),
+                position_tolerance: 24.0,
+                ground_tolerance: 8.0,
+                platform_edge_tolerance: 20.0,
+                ladder_reach: 32.0,
+                ladder_end_reach: 20.0,
+                portal_horizontal_reach: 48.0,
+                portal_vertical_reach: 64.0,
+            }
         );
+    }
+
+    #[test]
+    fn rejects_missing_current_sections() {
+        for section in [
+            "items",
+            "skills",
+            "characters",
+            "world",
+            "combat",
+            "movement",
+        ] {
+            assert_missing_field(&without_section(COMPLETE_CONFIG, section), section);
+        }
+    }
+
+    #[test]
+    fn rejects_missing_required_fields() {
+        for (section, field) in [
+            ("items", "drop_despawn"),
+            ("skills", "initial_points"),
+            ("characters", "initial_map_id"),
+            ("world", "id"),
+            ("combat", "disengage_range"),
+            ("combat", "player_attack_range"),
+            ("combat", "attack_vertical_reach"),
+            ("combat", "touch_horizontal_reach"),
+            ("combat", "touch_vertical_reach"),
+            ("combat", "projectile_range"),
+            ("combat", "projectile_speed"),
+            ("combat", "projectile_hit_reach"),
+            ("combat", "player_attack_interval"),
+            ("combat", "mob_attack_interval"),
+            ("combat", "player_invulnerability"),
+            ("combat", "default_respawn"),
+            ("movement", "walk_speed"),
+            ("movement", "climb_speed"),
+            ("movement", "gravity"),
+            ("movement", "jump_speed"),
+            ("movement", "speed_cap"),
+            ("movement", "jump_cap"),
+            ("movement", "snapshot_interval"),
+            ("movement", "maximum_snapshot_gap"),
+            ("movement", "persistence_interval"),
+            ("movement", "position_tolerance"),
+            ("movement", "ground_tolerance"),
+            ("movement", "platform_edge_tolerance"),
+            ("movement", "ladder_reach"),
+            ("movement", "ladder_end_reach"),
+            ("movement", "portal_horizontal_reach"),
+            ("movement", "portal_vertical_reach"),
+        ] {
+            assert_missing_field(&without_field(COMPLETE_CONFIG, section, field), field);
+        }
+    }
+
+    #[test]
+    fn rejects_unknown_current_fields() {
+        assert!(load(&format!("unknown = 1\n{COMPLETE_CONFIG}")).is_err());
+        assert!(load(&format!("{COMPLETE_CONFIG}\nunknown = 1")).is_err());
     }
 
     #[test]
     fn rejects_zero_drop_duration() {
-        let directory = tempfile::tempdir().expect("temporary directory");
-        let path = directory.path().join("gameplay.toml");
-        fs::write(
-            &path,
-            "[items]\ndrop_despawn = \"0s\"\n[skills]\ninitial_points = 3\n",
-        )
-        .expect("write configuration");
+        let source = with_field_value(COMPLETE_CONFIG, "items", "drop_despawn", "\"0s\"");
 
-        assert!(GameplayConfig::load(&path).is_err());
+        assert!(load(&source).is_err());
     }
 
     #[test]
     fn loads_configured_initial_character_map() {
-        let directory = tempfile::tempdir().expect("temporary directory");
-        let path = directory.path().join("gameplay.toml");
-        fs::write(
-            &path,
-            concat!(
-                "[items]\n",
-                "drop_despawn = \"10m\"\n",
-                "[skills]\n",
-                "initial_points = 3\n",
-                "[characters]\n",
-                "initial_map_id = 12345\n",
-            ),
-        )
-        .expect("write configuration");
-
-        let config = GameplayConfig::load(&path).expect("valid configuration");
+        let source = with_field_value(COMPLETE_CONFIG, "characters", "initial_map_id", "12345");
+        let config = load(&source).expect("valid configuration");
 
         assert_eq!(config.initial_map_id, 12_345);
     }
 
     #[test]
     fn loads_one_nonnegative_authoritative_world_id() {
-        let directory = tempfile::tempdir().expect("temporary directory");
-        let path = directory.path().join("gameplay.toml");
-        fs::write(
-            &path,
-            concat!(
-                "[items]\n",
-                "drop_despawn = \"10m\"\n",
-                "[skills]\n",
-                "initial_points = 3\n",
-                "[world]\n",
-                "id = 24\n",
-            ),
-        )
-        .expect("write configuration");
-
-        let config = GameplayConfig::load(&path).expect("valid world configuration");
+        let source = with_field_value(COMPLETE_CONFIG, "world", "id", "24");
+        let config = load(&source).expect("valid world configuration");
 
         assert_eq!(config.world_id, 24);
     }
@@ -517,42 +506,21 @@ mod tests {
     #[test]
     fn rejects_negative_or_out_of_range_world_ids() {
         for value in ["-1", "4294967296"] {
-            let directory = tempfile::tempdir().expect("temporary directory");
-            let path = directory.path().join("gameplay.toml");
-            fs::write(
-                &path,
-                format!(
-                    "[items]\ndrop_despawn = \"10m\"\n[skills]\ninitial_points = 3\n[world]\nid = \
-                     {value}\n"
-                ),
-            )
-            .expect("write configuration");
+            let source = with_field_value(COMPLETE_CONFIG, "world", "id", value);
 
-            assert!(
-                GameplayConfig::load(&path).is_err(),
-                "world ID {value} must fail",
-            );
+            assert!(load(&source).is_err(), "world ID {value} must fail");
         }
     }
 
     #[test]
     fn rejects_zero_player_attack_interval() {
-        let directory = tempfile::tempdir().expect("temporary directory");
-        let path = directory.path().join("gameplay.toml");
-        fs::write(
-            &path,
-            concat!(
-                "[items]\n",
-                "drop_despawn = \"10m\"\n",
-                "[skills]\n",
-                "initial_points = 3\n",
-                "[combat]\n",
-                "player_attack_interval = \"0s\"\n",
-            ),
-        )
-        .expect("write configuration");
-
-        let error = GameplayConfig::load(&path)
+        let source = with_field_value(
+            COMPLETE_CONFIG,
+            "combat",
+            "player_attack_interval",
+            "\"0s\"",
+        );
+        let error = load(&source)
             .expect_err("zero attack interval must fail")
             .to_string();
 
@@ -561,25 +529,116 @@ mod tests {
 
     #[test]
     fn rejects_invalid_movement_limits() {
-        let directory = tempfile::tempdir().expect("temporary directory");
-        let path = directory.path().join("gameplay.toml");
-        fs::write(
-            &path,
-            concat!(
-                "[items]\n",
-                "drop_despawn = \"10m\"\n",
-                "[skills]\n",
-                "initial_points = 3\n",
-                "[movement]\n",
-                "speed_cap = 0\n",
-            ),
-        )
-        .expect("write configuration");
-
-        let error = GameplayConfig::load(&path)
+        let source = with_field_value(COMPLETE_CONFIG, "movement", "speed_cap", "0");
+        let error = load(&source)
             .expect_err("zero speed cap must fail")
             .to_string();
 
         assert!(error.contains("movement.speed_cap"));
+    }
+
+    fn load(source: &str) -> Result<GameplayConfig, GameplayConfigError> {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("gameplay.toml");
+        fs::write(&path, source).expect("write configuration");
+        GameplayConfig::load(&path)
+    }
+
+    fn assert_missing_field(
+        source: &str,
+        field: &str,
+    ) {
+        let error = match load(source) {
+            Err(GameplayConfigError::Parse { source, .. }) => source,
+            result => panic!("missing {field} must be a parse error, got {result:?}"),
+        };
+
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("missing field `{field}`")),
+            "missing {field} produced an unexpected error: {error}",
+        );
+    }
+
+    fn without_section(
+        source: &str,
+        section: &str,
+    ) -> String {
+        let header = format!("[{section}]");
+        let mut removing = false;
+        let mut result = Vec::new();
+        for line in source.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with('[') && trimmed.ends_with(']') {
+                if trimmed == header {
+                    removing = true;
+                    continue;
+                }
+                removing = false;
+            }
+            if !removing {
+                result.push(line);
+            }
+        }
+        result.join("\n") + "\n"
+    }
+
+    fn without_field(
+        source: &str,
+        section: &str,
+        field: &str,
+    ) -> String {
+        let header = format!("[{section}]");
+        let mut in_section = false;
+        let mut removed = false;
+        let mut result = Vec::new();
+        for line in source.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with('[') && trimmed.ends_with(']') {
+                in_section = trimmed == header;
+            }
+            let is_field = in_section
+                && line
+                    .split_once('=')
+                    .is_some_and(|(name, _)| name.trim() == field);
+            if is_field {
+                removed = true;
+            } else {
+                result.push(line);
+            }
+        }
+        assert!(removed, "fixture does not contain {section}.{field}");
+        result.join("\n") + "\n"
+    }
+
+    fn with_field_value(
+        source: &str,
+        section: &str,
+        field: &str,
+        value: &str,
+    ) -> String {
+        let header = format!("[{section}]");
+        let mut in_section = false;
+        let mut replaced = false;
+        let result = source
+            .lines()
+            .map(|line| {
+                let trimmed = line.trim();
+                if trimmed.starts_with('[') && trimmed.ends_with(']') {
+                    in_section = trimmed == header;
+                }
+                if in_section
+                    && let Some((name, _)) = line.split_once('=')
+                    && name.trim() == field
+                {
+                    replaced = true;
+                    return format!("{name}= {value}");
+                }
+                line.to_owned()
+            })
+            .collect::<Vec<_>>();
+        assert!(replaced, "fixture does not contain {section}.{field}");
+        result.join("\n") + "\n"
     }
 }

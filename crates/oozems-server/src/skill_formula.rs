@@ -114,7 +114,7 @@ struct FormulaFile {
     skills: SelectionFiles,
     #[serde(default)]
     summon_profiles: ProfileFiles,
-    #[serde(default, alias = "summons")]
+    #[serde(default)]
     summon: SelectionFiles,
     #[serde(default)]
     defense_profiles: ProfileFiles,
@@ -913,6 +913,7 @@ mod tests {
     use std::fs;
 
     use super::FormulaCatalog;
+    use super::FormulaConfigError;
     use super::FormulaEvaluationError;
     use super::evaluate_damage_profile;
     use super::evaluate_profile_property;
@@ -1091,6 +1092,38 @@ profile = "natural"
             3.0,
         );
         assert!(formulas.skill_profile(4_001_335).is_none());
+    }
+
+    #[test]
+    fn rejects_undocumented_summons_selector_alias() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("formulas.toml");
+        fs::write(
+            &path,
+            r#"
+source_url = "https://example.test/formulas"
+
+[weapon_profiles.unarmed]
+attack = "1"
+minimum = "1"
+maximum = "1"
+
+[weapons.bare_hands]
+profile = "unarmed"
+
+[summon_profiles.ship]
+durability = "CharacterLevel * 200"
+
+[summons."5221006"]
+profile = "ship"
+"#,
+        )
+        .expect("write formulas");
+
+        assert!(matches!(
+            FormulaCatalog::load(&path),
+            Err(FormulaConfigError::Parse { .. })
+        ));
     }
 
     #[test]

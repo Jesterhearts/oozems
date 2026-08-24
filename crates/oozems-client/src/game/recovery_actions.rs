@@ -75,18 +75,15 @@ fn install(
     mut response: RecoverPlayerResponse,
     request_started_ms: f64,
 ) -> Result<(), String> {
-    let player = response
-        .player
-        .ok_or("recovery response did not contain a player")?;
-    if player.stats.is_none() {
-        return Err("recovery response did not contain character stats".to_owned());
-    }
+    let player =
+        api::require_data(response.player.take(), "player").map_err(|error| error.to_string())?;
+    api::require_data(player.stats.as_ref(), "character stats")
+        .map_err(|error| error.to_string())?;
+    let active_buffs = api::require_data(response.active_buffs.take(), "active buffs")
+        .map_err(|error| error.to_string())?;
+    let active_buffs = super::validate_active_buffs(active_buffs)?;
     super::install_full_player_update(game, player);
-    super::install_active_buffs(
-        game,
-        response.active_buffs.take().unwrap_or_default(),
-        request_started_ms,
-    );
+    super::install_active_buffs(game, active_buffs, request_started_ms);
     let retry_after_ms = response.retry_after_ms.max(1) as f64;
     game.recovery_state.next_attempt_ms = Some(game.frame_time_ms + retry_after_ms);
     Ok(())

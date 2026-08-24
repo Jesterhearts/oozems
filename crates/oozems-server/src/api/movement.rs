@@ -246,35 +246,25 @@ async fn movement_response(
         now_unix_ms,
         persistence_required,
     );
-    let active_buffs = crate::effects::state(&prepared.effects, now_unix_ms);
-    let mut response = MovementUpdateResponse {
+    let persisted = persist_simulation_player_effects(state, prepared, &mut simulation).await?;
+    let updated_player = persisted.player;
+    let mut dropped_items = dropped_items;
+    merge_dropped_items(&mut dropped_items, persisted.committed_drops);
+    if has_player_effects {
+        record_recovery_activity(state, &updated_player.id, now_unix_ms);
+    }
+    Ok(MovementUpdateResponse {
         authoritative: Some(decision.authoritative),
         accepted: decision.accepted,
         rejection_reason: decision.rejection_reason,
         mobs: std::mem::take(&mut simulation.mobs),
-        player_stats: prepared.player.stats,
+        player: Some(updated_player),
         mob_projectiles: std::mem::take(&mut simulation.mob_projectiles),
-        combat_events: simulation.combat_events.clone(),
+        combat_events: simulation.combat_events,
         simulation_sequence: simulation.sequence,
-        active_buffs: Some(active_buffs),
+        active_buffs: Some(crate::effects::state(&persisted.effects, now_unix_ms)),
         dropped_items,
-        quests: prepared.player.quests.clone(),
-        player_revision: prepared.player.revision,
-        player: Some(prepared.player.clone()),
-    };
-    let persisted = persist_simulation_player_effects(state, prepared, &mut simulation).await?;
-    let updated_player = persisted.player;
-    let effects = persisted.effects;
-    merge_dropped_items(&mut response.dropped_items, persisted.committed_drops);
-    if has_player_effects {
-        record_recovery_activity(state, &updated_player.id, now_unix_ms);
-    }
-    response.player_stats = updated_player.stats;
-    response.active_buffs = Some(crate::effects::state(&effects, now_unix_ms));
-    response.quests = updated_player.quests.clone();
-    response.player_revision = updated_player.revision;
-    response.player = Some(updated_player);
-    Ok(response)
+    })
 }
 
 fn movement_rules_response(config: crate::gameplay::MovementConfig) -> MovementRules {

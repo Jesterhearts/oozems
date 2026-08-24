@@ -192,29 +192,28 @@ fn install_response(
     game: &mut Game,
     mut update: InteractionUpdate,
 ) -> Result<&'static str, String> {
-    let player = update
-        .response
-        .player
-        .take()
-        .ok_or("NPC response did not contain a player")?;
+    let player = api::require_data(update.response.player.take(), "player")
+        .map_err(|error| error.to_string())?;
+    let active_buffs = api::require_data(update.response.active_buffs.take(), "active buffs")
+        .map_err(|error| error.to_string())?;
+    let active_buffs = super::validate_active_buffs(active_buffs)?;
+    let skill_active_buffs = update
+        .skill_book
+        .as_mut()
+        .map(|(loaded, _)| super::validate_active_buffs(std::mem::take(&mut loaded.active_buffs)))
+        .transpose()?;
     let response_player_revision = player.revision;
     let npc_animation = update.response.npc_animation.take();
     let context_is_current =
         game.interaction.generation == update.generation && game.map.id == update.source_map_id;
     let installed = super::install_full_player_update(game, player);
-    super::install_active_buffs(
-        game,
-        update.response.active_buffs.take().unwrap_or_default(),
-        update.request_started_ms,
-    );
+    super::install_active_buffs(game, active_buffs, update.request_started_ms);
     if installed.domains.skills {
-        if let Some((mut loaded, skill_requested_at_ms)) = update.skill_book.take() {
+        if let Some(((loaded, skill_requested_at_ms), skill_active_buffs)) =
+            update.skill_book.take().zip(skill_active_buffs)
+        {
             game.skill_book = loaded.skill_book;
-            super::install_active_buffs(
-                game,
-                std::mem::take(&mut loaded.active_buffs),
-                skill_requested_at_ms,
-            );
+            super::install_active_buffs(game, skill_active_buffs, skill_requested_at_ms);
         }
     }
     let relocation_requested =

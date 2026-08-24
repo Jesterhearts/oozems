@@ -25,19 +25,6 @@ mod tests {
     use crate::v1::QuestRecordEntry;
 
     #[test]
-    fn absent_legacy_record_field_decodes_as_empty() {
-        let legacy = PlayerState {
-            id: "legacy".to_owned(),
-            ..PlayerState::default()
-        };
-        let encoded = legacy.encode_to_vec();
-
-        let decoded = PlayerState::decode(encoded.as_slice()).expect("decode legacy player");
-
-        assert!(decoded.quest_records.is_empty());
-    }
-
-    #[test]
     fn quest_records_round_trip_sparse_entries_and_exact_values() {
         let player = PlayerState {
             quest_records: vec![QuestRecord {
@@ -63,18 +50,7 @@ mod tests {
     }
 
     #[test]
-    fn monster_book_cards_are_additive_and_round_trip() {
-        let legacy = PlayerState {
-            id: "legacy".to_owned(),
-            ..PlayerState::default()
-        };
-        assert!(
-            PlayerState::decode(legacy.encode_to_vec().as_slice())
-                .expect("decode legacy player")
-                .monster_book_cards
-                .is_empty()
-        );
-
+    fn monster_book_cards_round_trip_exactly() {
         let player = PlayerState {
             monster_book_cards: vec![MonsterBookCard {
                 card_item_id: 2_380_000,
@@ -90,91 +66,60 @@ mod tests {
     }
 
     #[test]
-    fn skill_master_levels_are_additive_and_round_trip() {
-        let legacy_learned = LearnedSkill {
-            skill_id: 1_000,
-            level: 2,
-            master_level: 0,
-        };
-        let legacy_player_skill = PlayerSkill {
-            level: 2,
-            master_level: 0,
-            ..PlayerSkill::default()
-        };
-        assert_eq!(
-            LearnedSkill::decode(legacy_learned.encode_to_vec().as_slice())
-                .expect("decode legacy learned skill")
-                .master_level,
-            0
-        );
-        assert_eq!(
-            PlayerSkill::decode(legacy_player_skill.encode_to_vec().as_slice())
-                .expect("decode legacy player skill")
-                .master_level,
-            0
-        );
-
-        let mastered = LearnedSkill {
+    fn skill_master_levels_round_trip_exactly() {
+        let learned = LearnedSkill {
             skill_id: 2_321_003,
             level: 0,
             master_level: 15,
         };
         assert_eq!(
-            LearnedSkill::decode(mastered.encode_to_vec().as_slice())
+            LearnedSkill::decode(learned.encode_to_vec().as_slice())
                 .expect("decode mastered skill"),
-            mastered
+            learned
+        );
+
+        let displayed = PlayerSkill {
+            level: 0,
+            master_level: 15,
+            ..PlayerSkill::default()
+        };
+        assert_eq!(
+            PlayerSkill::decode(displayed.encode_to_vec().as_slice())
+                .expect("decode displayed mastered skill"),
+            displayed
         );
     }
 
     #[test]
-    fn equipped_item_expiration_is_additive_and_round_trips_exactly() {
-        let legacy = EquippedItem {
+    fn equipped_item_expiration_round_trips_exactly() {
+        let equipped = EquippedItem {
             slot: EquipmentSlot::Top as i32,
             item_id: 1_040_002,
-            expires_at_unix_ms: 0,
-        };
-        assert_eq!(
-            EquippedItem::decode(legacy.encode_to_vec().as_slice())
-                .expect("decode legacy equipped item")
-                .expires_at_unix_ms,
-            0
-        );
-
-        let expiring = EquippedItem {
             expires_at_unix_ms: 1_900_000_000_123,
-            ..legacy
         };
         assert_eq!(
-            EquippedItem::decode(expiring.encode_to_vec().as_slice())
+            EquippedItem::decode(equipped.encode_to_vec().as_slice())
                 .expect("decode expiring equipped item"),
-            expiring
+            equipped
         );
     }
 
     #[test]
-    fn named_npc_animations_and_one_shot_events_round_trip_additively() {
-        let legacy = Npc {
-            frames: vec![NpcFrame {
-                asset_id: "stand".to_owned(),
-                delay_ms: 100,
-                ..NpcFrame::default()
+    fn named_npc_animations_and_one_shot_events_round_trip_exactly() {
+        let npc = Npc {
+            animations: vec![NpcAnimation {
+                name: "quest".to_owned(),
+                frames: vec![NpcFrame {
+                    asset_id: "quest".to_owned(),
+                    delay_ms: 100,
+                    ..NpcFrame::default()
+                }],
             }],
             ..Npc::default()
         };
-        let decoded = Npc::decode(legacy.encode_to_vec().as_slice()).expect("decode legacy NPC");
-        assert_eq!(decoded.frames, legacy.frames);
-        assert!(decoded.animations.is_empty());
-
-        let named = Npc {
-            animations: vec![NpcAnimation {
-                name: "quest".to_owned(),
-                frames: legacy.frames.clone(),
-            }],
-            ..legacy
-        };
         assert_eq!(
-            Npc::decode(named.encode_to_vec().as_slice()).expect("decode named NPC"),
-            named
+            Npc::decode(npc.encode_to_vec().as_slice()).expect("decode named NPC"),
+            npc
         );
 
         let response = NpcInteractionResponse {

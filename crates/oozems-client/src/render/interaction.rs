@@ -372,7 +372,8 @@ fn draw_npc_portrait(
     else {
         return;
     };
-    draw_portrait_frame(game, window, npc.frames.first());
+    let frame = super::npc::standing_frames(npc).and_then(|frames| frames.first());
+    draw_portrait_frame(game, window, frame);
 }
 
 fn draw_shop_portrait(
@@ -385,7 +386,8 @@ fn draw_shop_portrait(
         .npcs
         .iter()
         .find(|npc| npc.spawn_id == interaction.npc_spawn_id)
-        .and_then(|npc| npc.frames.first());
+        .and_then(super::npc::standing_frames)
+        .and_then(|frames| frames.first());
     let Some(frame) = frame else {
         return;
     };

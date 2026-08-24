@@ -75,6 +75,8 @@ pub enum ItemRuleError {
     InvalidInventoryIndex { index: u32 },
     #[error("the item at inventory index {index} changed before the action was applied")]
     InventorySelectionChanged { index: u32 },
+    #[error("the inventory stack layout is not canonical")]
+    NonCanonicalInventory,
     #[error("item {item_id} is not available")]
     UnknownItem { item_id: u32 },
     #[error("item {item_id} metadata could not be loaded: {message}")]
@@ -214,24 +216,33 @@ pub fn find_definition(
         .ok_or(ItemRuleError::UnknownItem { item_id })
 }
 
-pub fn normalize_legacy_item_ids(item_ids: &[u32]) -> Vec<InventoryItemStack> {
-    item_ids
-        .iter()
-        .map(|item_id| InventoryItemStack {
-            item_id: *item_id,
-            quantity: 1,
-            expires_at_unix_ms: 0,
-        })
-        .collect()
-}
-
-pub fn normalize_legacy_inventory(
+pub fn canonicalize_inventory(
     inventory: &mut InventoryState,
     definitions: &(impl ItemDefinitionLookup + ?Sized),
 ) -> Result<(), ItemRuleError> {
-    let stacks = normalized_stacks(inventory, definitions)?;
-    inventory.item_ids.clear();
+    let stacks = canonical_stacks(inventory, definitions)?;
     inventory.stacks = stacks;
+    Ok(())
+}
+
+pub fn validate_inventory(
+    inventory: &InventoryState,
+    definitions: &(impl ItemDefinitionLookup + ?Sized),
+) -> Result<(), ItemRuleError> {
+    if canonical_stacks(inventory, definitions)? != inventory.stacks {
+        return Err(ItemRuleError::NonCanonicalInventory);
+    }
+    for equipped in &inventory.equipment {
+        let definition = find_definition(definitions, equipped.item_id)?;
+        let slot = supported_equipment_slot(definition).ok_or(ItemRuleError::InvalidEquipment {
+            item_id: equipped.item_id,
+        })?;
+        if equipped.slot != slot as i32 {
+            return Err(ItemRuleError::InvalidEquipment {
+                item_id: equipped.item_id,
+            });
+        }
+    }
     Ok(())
 }
 
@@ -257,7 +268,7 @@ pub fn count_inventory_item(
     definitions: &(impl ItemDefinitionLookup + ?Sized),
     item_id: u32,
 ) -> Result<u64, ItemRuleError> {
-    let stacks = normalized_stacks(inventory, definitions)?;
+    let stacks = canonical_stacks(inventory, definitions)?;
     count_item_quantity(&stacks, item_id)
 }
 
@@ -277,6 +288,16 @@ pub fn prune_expired_inventory(
         || inventory.equipment.len() != original_equipment_len
 }
 
+pub fn prune_and_validate_inventory(
+    inventory: &mut InventoryState,
+    definitions: &(impl ItemDefinitionLookup + ?Sized),
+    now_unix_ms: u64,
+) -> Result<bool, ItemRuleError> {
+    let pruned = prune_expired_inventory(inventory, now_unix_ms);
+    validate_inventory(inventory, definitions)?;
+    Ok(pruned)
+}
+
 pub fn preflight_item_grant(
     inventory: &InventoryState,
     definitions: &(impl ItemDefinitionLookup + ?Sized),
@@ -289,7 +310,7 @@ pub fn preflight_item_grant(
     }
     let definition = find_definition(definitions, item_id)?;
     let stack_max = definition_stack_max(definition)?;
-    let mut stacks = normalized_stacks(inventory, definitions)?;
+    let mut stacks = canonical_stacks(inventory, definitions)?;
     add_to_stacks(
         &mut stacks,
         inventory.capacity,
@@ -315,7 +336,6 @@ pub fn apply_item_grant(
         quantity,
         expires_at_unix_ms,
     )?;
-    inventory.item_ids.clear();
     inventory.stacks = stacks;
     Ok(())
 }
@@ -336,14 +356,12 @@ pub fn apply_item_delta(
     delta: i64,
 ) -> Result<(), ItemRuleError> {
     let stacks = preflight_item_delta(inventory, definitions, item_id, delta)?;
-    inventory.item_ids.clear();
     inventory.stacks = stacks;
     Ok(())
 }
 
 pub fn starter_inventory() -> InventoryState {
     InventoryState {
-        item_ids: Vec::new(),
         equipment: vec![
             EquippedItem {
                 slot: EquipmentSlot::Top as i32,
@@ -362,7 +380,14 @@ pub fn starter_inventory() -> InventoryState {
             },
         ],
         capacity: INVENTORY_CAPACITY,
-        stacks: normalize_legacy_item_ids(&[SPARE_TOP_ID, SPARE_BOTTOM_ID, SPARE_SHOES_ID]),
+        stacks: [SPARE_TOP_ID, SPARE_BOTTOM_ID, SPARE_SHOES_ID]
+            .into_iter()
+            .map(|item_id| InventoryItemStack {
+                item_id,
+                quantity: 1,
+                expires_at_unix_ms: 0,
+            })
+            .collect(),
     }
 }
 
@@ -376,7 +401,7 @@ pub fn equip_inventory_item(
         .as_mut()
         .ok_or(ItemRuleError::MissingInventory)?;
     let mut next = inventory.clone();
-    normalize_legacy_inventory(&mut next, definitions)?;
+    canonicalize_inventory(&mut next, definitions)?;
     let index = valid_inventory_index(&next, inventory_index)?;
     let item_id = next.stacks[index].item_id;
     let expires_at_unix_ms = next.stacks[index].expires_at_unix_ms;
@@ -433,7 +458,7 @@ pub fn unequip_item(
         .as_mut()
         .ok_or(ItemRuleError::MissingInventory)?;
     let mut next = inventory.clone();
-    normalize_legacy_inventory(&mut next, definitions)?;
+    canonicalize_inventory(&mut next, definitions)?;
     let index = next
         .equipment
         .iter()
@@ -481,7 +506,7 @@ pub fn sell_inventory_item(
         .as_mut()
         .ok_or(ItemRuleError::MissingInventory)?;
     let mut next = inventory.clone();
-    normalize_legacy_inventory(&mut next, definitions)?;
+    canonicalize_inventory(&mut next, definitions)?;
     let index = valid_inventory_index(&next, inventory_index)?;
     let item_id = next.stacks[index].item_id;
     let price = find_definition(definitions, item_id)?.sale_price;
@@ -514,7 +539,7 @@ pub fn remove_inventory_item(
         .as_mut()
         .ok_or(ItemRuleError::MissingInventory)?;
     let mut next = inventory.clone();
-    normalize_legacy_inventory(&mut next, definitions)?;
+    canonicalize_inventory(&mut next, definitions)?;
     let index = valid_inventory_index(&next, inventory_index)?;
     let item_id = next.stacks[index].item_id;
     let expires_at_unix_ms = next.stacks[index].expires_at_unix_ms;
@@ -690,6 +715,10 @@ pub fn pick_up_nearest(
         .map(|(index, _)| index)
         .ok_or(ItemRuleError::NoNearbyDrop)?;
     let item_id = drops[index].item.item_id;
+    let quantity = drops[index].item.quantity;
+    if quantity == 0 {
+        return Err(ItemRuleError::InvalidQuantity { item_id }.into());
+    }
     if let Some(card) = definitions.monster_book_card(item_id) {
         debug_assert_eq!(card.item_id, item_id);
         debug_assert_eq!(card.max_count, crate::monster_book::MAX_CARD_COUNT);
@@ -699,8 +728,7 @@ pub fn pick_up_nearest(
             .inventory
             .as_mut()
             .ok_or(ItemRuleError::MissingInventory)?;
-        normalize_legacy_inventory(inventory, definitions)?;
-        let quantity = accepted_drop_quantity(&drops[index].item);
+        canonicalize_inventory(inventory, definitions)?;
         apply_item_grant(
             inventory,
             definitions,
@@ -736,17 +764,12 @@ pub fn restore_drop(
     Ok(())
 }
 
-fn normalized_stacks(
+fn canonical_stacks(
     inventory: &InventoryState,
     definitions: &(impl ItemDefinitionLookup + ?Sized),
 ) -> Result<Vec<InventoryItemStack>, ItemRuleError> {
-    let source = if inventory.stacks.is_empty() {
-        normalize_legacy_item_ids(&inventory.item_ids)
-    } else {
-        inventory.stacks.clone()
-    };
     let mut stacks = Vec::new();
-    for stack in source {
+    for stack in &inventory.stacks {
         if stack.quantity == 0 {
             return Err(ItemRuleError::InvalidQuantity {
                 item_id: stack.item_id,
@@ -780,7 +803,7 @@ fn inventory_after_delta(
     }
     let definition = find_definition(definitions, item_id)?;
     let stack_max = definition_stack_max(definition)?;
-    let mut stacks = normalized_stacks(inventory, definitions)?;
+    let mut stacks = canonical_stacks(inventory, definitions)?;
     if delta > 0 {
         add_to_stacks(
             &mut stacks,
@@ -884,7 +907,7 @@ fn remove_stack_quantity(
     index: usize,
     quantity: u32,
 ) -> Result<u32, ItemRuleError> {
-    let mut stacks = normalized_stacks(inventory, definitions)?;
+    let mut stacks = canonical_stacks(inventory, definitions)?;
     let stack = stacks
         .get(index)
         .ok_or(ItemRuleError::InvalidInventoryIndex {
@@ -905,7 +928,6 @@ fn remove_stack_quantity(
     if stacks[index].quantity == 0 {
         stacks.remove(index);
     }
-    inventory.item_ids.clear();
     inventory.stacks = stacks;
     Ok(item_id)
 }
@@ -932,10 +954,6 @@ fn is_supported_slot(slot: EquipmentSlot) -> bool {
         slot,
         EquipmentSlot::Top | EquipmentSlot::Bottom | EquipmentSlot::Shoes
     )
-}
-
-fn accepted_drop_quantity(drop: &DroppedItem) -> u32 {
-    drop.quantity.max(1)
 }
 
 fn map_drops_at(
@@ -1048,6 +1066,7 @@ mod tests {
     use super::apply_item_delta;
     use super::apply_item_grant;
     use super::buy_shop_item;
+    use super::canonicalize_inventory;
     use super::count_item_quantity;
     use super::create_drop;
     use super::create_drop_at;
@@ -1055,13 +1074,14 @@ mod tests {
     use super::equip_inventory_item;
     use super::map_drops;
     use super::map_drops_at;
-    use super::normalize_legacy_inventory;
     use super::pick_up_nearest;
+    use super::prune_and_validate_inventory;
     use super::prune_expired_inventory;
     use super::remove_inventory_item;
     use super::sell_inventory_item;
     use super::starter_inventory;
     use super::unequip_item;
+    use super::validate_inventory;
     use super::validate_inventory_selection;
 
     const STACKABLE_ITEM_ID: u32 = 2_000_000;
@@ -1092,17 +1112,22 @@ mod tests {
     }
 
     #[test]
-    fn legacy_items_are_merged_and_split_using_catalog_limits() {
+    fn stacks_are_merged_and_split_using_catalog_limits() {
         let definitions = vec![stackable_definition()];
         let mut inventory = InventoryState {
-            item_ids: vec![STACKABLE_ITEM_ID; 12],
+            stacks: (0..12)
+                .map(|_| InventoryItemStack {
+                    item_id: STACKABLE_ITEM_ID,
+                    quantity: 1,
+                    expires_at_unix_ms: 0,
+                })
+                .collect(),
             capacity: 2,
             ..InventoryState::default()
         };
 
-        normalize_legacy_inventory(&mut inventory, &definitions).expect("normalize inventory");
+        canonicalize_inventory(&mut inventory, &definitions).expect("canonicalize inventory");
 
-        assert!(inventory.item_ids.is_empty());
         assert_eq!(
             inventory.stacks,
             vec![
@@ -1118,6 +1143,61 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn persisted_inventory_must_already_match_the_current_catalog() {
+        let definitions = vec![stackable_definition()];
+        let inventory = InventoryState {
+            capacity: 2,
+            stacks: vec![
+                InventoryItemStack {
+                    item_id: STACKABLE_ITEM_ID,
+                    quantity: 1,
+                    expires_at_unix_ms: 0,
+                },
+                InventoryItemStack {
+                    item_id: STACKABLE_ITEM_ID,
+                    quantity: 1,
+                    expires_at_unix_ms: 0,
+                },
+            ],
+            ..InventoryState::default()
+        };
+
+        assert_eq!(
+            validate_inventory(&inventory, &definitions),
+            Err(ItemRuleError::NonCanonicalInventory)
+        );
+
+        let definitions = equipment_definitions();
+        let mut inventory = starter_inventory();
+        inventory.equipment[0].slot = EquipmentSlot::Bottom as i32;
+        assert_eq!(
+            validate_inventory(&inventory, &definitions),
+            Err(ItemRuleError::InvalidEquipment {
+                item_id: STARTER_TOP_ID,
+            })
+        );
+    }
+
+    #[test]
+    fn expired_items_are_pruned_before_catalog_validation() {
+        let mut inventory = InventoryState {
+            capacity: 1,
+            stacks: vec![InventoryItemStack {
+                item_id: 999,
+                quantity: 1,
+                expires_at_unix_ms: 100,
+            }],
+            ..InventoryState::default()
+        };
+
+        assert_eq!(
+            prune_and_validate_inventory(&mut inventory, &Vec::new(), 100),
+            Ok(true)
+        );
+        assert!(inventory.stacks.is_empty());
     }
 
     #[test]
@@ -1568,39 +1648,27 @@ mod tests {
     }
 
     #[test]
-    fn pickup_accepts_legacy_zero_quantity_as_one() {
+    fn pickup_rejects_zero_quantity_without_consuming_the_drop() {
         let definitions = vec![stackable_definition()];
-        let mut source = player();
-        source.inventory.as_mut().expect("inventory").stacks = vec![InventoryItemStack {
-            item_id: STACKABLE_ITEM_ID,
-            quantity: 4,
-            expires_at_unix_ms: 0,
-        }];
-        let removed = remove_inventory_item(source, 0, &definitions).expect("remove item");
         let store = DropStore::new(Duration::from_secs(600));
         let drop = oozems_proto::v1::DroppedItem {
-            id: "legacy-drop".to_owned(),
+            id: "zero-quantity-drop".to_owned(),
             item_id: STACKABLE_ITEM_ID,
             position: Some(Vec2 { x: 20.0, y: 30.0 }),
             despawn_at_unix_ms: u64::MAX,
             quantity: 0,
             expires_at_unix_ms: 0,
         };
-        super::restore_drop(&store, 100, drop.clone(), None).expect("restore legacy drop");
+        super::restore_drop(&store, 100, drop.clone(), None).expect("restore drop");
         let position = drop.position.expect("drop position");
 
-        let picked =
-            pick_up_nearest(&store, removed.player, position, &definitions).expect("pick up drop");
-
-        assert_eq!(picked.drop.id, drop.id);
-        assert_eq!(
-            count_item_quantity(
-                &picked.player.inventory.as_ref().expect("inventory").stacks,
-                STACKABLE_ITEM_ID,
-            ),
-            Ok(4)
-        );
-        assert!(map_drops(&store, 100).expect("map drops").is_empty());
+        assert!(matches!(
+            pick_up_nearest(&store, player(), position, &definitions),
+            Err(PickUpError::Rule(ItemRuleError::InvalidQuantity {
+                item_id: STACKABLE_ITEM_ID
+            }))
+        ));
+        assert_eq!(map_drops(&store, 100).expect("map drops"), vec![drop]);
     }
 
     #[test]

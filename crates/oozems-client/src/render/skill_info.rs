@@ -79,16 +79,12 @@ pub(super) fn draw_active_buffs(game: &Game) {
                     );
                 }
             }
-            Some(active_buff::Source::SourceSkillId(skill_id)) => {
+            Some(active_buff::Source::SkillId(skill_id)) => {
                 if let Some(definition) = skill_definition(game, skill_id) {
                     draw_buff_icon(game, definition, placement);
                 }
             }
-            None => {
-                if let Some(definition) = skill_definition(game, buff.skill_id) {
-                    draw_buff_icon(game, definition, placement);
-                }
-            }
+            None => {}
         }
         draw_buff_time(game, buff, placement, now_ms);
     }
@@ -348,14 +344,12 @@ fn buff_info(
                 remaining: Some(format!("Remaining: {}", format_long_duration(remaining_ms))),
             })
         }
-        Some(active_buff::Source::SourceSkillId(skill_id)) => {
+        Some(active_buff::Source::SkillId(skill_id)) => {
             skill_definition(game, skill_id).map(|definition| {
                 build_skill_info(definition, buff.skill_level, 0, Some(remaining_ms))
             })
         }
-        None => skill_definition(game, buff.skill_id).map(|definition| {
-            build_skill_info(definition, buff.skill_level, 0, Some(remaining_ms))
-        }),
+        None => None,
     }
 }
 
