@@ -55,6 +55,18 @@ pub struct ListOutput {
     pub nodes: Vec<NodeSummary>,
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub struct NodeTree {
+    pub name: String,
+    pub kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<Value>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub children: Vec<NodeTree>,
+}
+
 pub fn archive_info(archive: &Archive) -> ArchiveInfo {
     let (directories, images) = count_entries(&archive.file.directory);
     ArchiveInfo {
@@ -150,6 +162,51 @@ pub fn get(
             let (name, property) = find_property(&parsed.properties, &property_segments)?;
             let property_path = append_segments(&path, &property_segments);
             Ok(property_summary(name, property, &property_path))
+        }
+    }
+}
+
+pub fn tree(
+    archive: &Archive,
+    path: &str,
+    maximum_nodes: usize,
+) -> Result<NodeTree> {
+    if maximum_nodes == 0 {
+        bail!("tree node limit must be greater than zero");
+    }
+    let mut remaining = maximum_nodes;
+    match resolve_location(&archive.file.directory, path)? {
+        Location::Directory { .. } => bail!("tree paths must select an image or property"),
+        Location::Image {
+            entry,
+            property_segments,
+            ..
+        } => {
+            let parsed = parse_image(archive, entry)?;
+            if property_segments.is_empty() {
+                consume_tree_node(&mut remaining, maximum_nodes)?;
+                let mut properties = parsed.properties.iter().collect::<Vec<_>>();
+                properties.sort_by(|left, right| left.0.cmp(&right.0));
+                let children = properties
+                    .into_iter()
+                    .map(|(name, property)| {
+                        property_tree(name, property, &mut remaining, maximum_nodes)
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                return Ok(NodeTree {
+                    name: entry.name.clone(),
+                    kind: "image",
+                    value: None,
+                    details: Some(json!({
+                        "bytes": entry.size,
+                        "checksum": entry.checksum,
+                        "offset": entry.offset,
+                    })),
+                    children,
+                });
+            }
+            let (name, property) = find_property(&parsed.properties, &property_segments)?;
+            property_tree(name, property, &mut remaining, maximum_nodes)
         }
     }
 }
@@ -267,7 +324,20 @@ pub(crate) fn property_summary(
     path: &str,
 ) -> NodeSummary {
     let child_count = property.children().map_or(0, <[_]>::len);
-    let (kind, value, details) = match property {
+    let (kind, value, details) = property_parts(property);
+
+    NodeSummary {
+        path: path.to_owned(),
+        name: name.to_owned(),
+        kind,
+        child_count: Some(child_count),
+        value,
+        details,
+    }
+}
+
+fn property_parts(property: &WzProperty) -> (&'static str, Option<Value>, Option<Value>) {
+    match property {
         WzProperty::Null => ("null", Some(Value::Null), None),
         WzProperty::Short(value) => ("short", Some(json!(value)), None),
         WzProperty::Int(value) => ("int", Some(json!(value)), None),
@@ -327,16 +397,45 @@ pub(crate) fn property_summary(
                 "bytes": video_data.as_ref().map_or(*data_length as usize, Vec::len),
             })),
         ),
-    };
+    }
+}
 
-    NodeSummary {
-        path: path.to_owned(),
+fn property_tree(
+    name: &str,
+    property: &WzProperty,
+    remaining: &mut usize,
+    maximum_nodes: usize,
+) -> Result<NodeTree> {
+    consume_tree_node(remaining, maximum_nodes)?;
+    let (kind, value, details) = property_parts(property);
+    let mut properties = property
+        .children()
+        .unwrap_or_default()
+        .iter()
+        .collect::<Vec<_>>();
+    properties.sort_by(|left, right| left.0.cmp(&right.0));
+    let children = properties
+        .into_iter()
+        .map(|(name, property)| property_tree(name, property, remaining, maximum_nodes))
+        .collect::<Result<Vec<_>>>()?;
+    Ok(NodeTree {
         name: name.to_owned(),
         kind,
-        child_count: Some(child_count),
         value,
         details,
+        children,
+    })
+}
+
+fn consume_tree_node(
+    remaining: &mut usize,
+    maximum_nodes: usize,
+) -> Result<()> {
+    if *remaining == 0 {
+        bail!("tree exceeds the {maximum_nodes} node limit");
     }
+    *remaining -= 1;
+    Ok(())
 }
 
 fn append_segments(
@@ -366,5 +465,23 @@ mod tests {
         assert_eq!(page.len(), 1);
         assert_eq!(page[0].path, "/Test.img/b");
         assert_eq!(page[0].value, Some(json!(2)));
+    }
+
+    #[test]
+    fn property_tree_is_sorted_and_bounded() {
+        let property = WzProperty::SubProperty {
+            properties: vec![
+                (String::from("z"), WzProperty::Int(2)),
+                (String::from("a"), WzProperty::Int(1)),
+            ],
+        };
+
+        let tree = property_tree("root", &property, &mut 3, 3).expect("bounded tree");
+
+        assert_eq!(tree.name, "root");
+        assert_eq!(tree.kind, "property");
+        assert_eq!(tree.children[0].name, "a");
+        assert_eq!(tree.children[1].name, "z");
+        assert!(property_tree("root", &property, &mut 2, 2).is_err());
     }
 }

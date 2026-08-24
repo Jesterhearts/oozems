@@ -70,6 +70,33 @@ cargo run --package oozems-wz -- set \
 See [`crates/oozems-wz/README.md`](crates/oozems-wz/README.md) for path rules,
 pagination, JSON fields, supported value types, and safety details.
 
+## Infer quest script replacements
+
+The workspace also includes `oozems-quest-harness`, a CLI that discovers
+scripted quests and assembles model evidence directly from `Quest.wz`, `Npc.wz`,
+and `String.wz`. It sends that evidence to an OpenRouter-compatible model and
+validates the guessed `quest-scripts.toml` programs against the server's
+supported schema. OpenRouter login uses a localhost PKCE callback and never
+stores the resulting API key in the repository.
+
+```sh
+cargo run --package oozems-quest-harness -- login
+cargo run --package oozems-quest-harness -- quests \
+  data/Quest.wz --search q10272e
+cargo run --package oozems-quest-harness -- generate \
+  --model openai/gpt-5.2 \
+  data/Quest.wz \
+  q10272e
+```
+
+Pass `--all --output generated-quest-scripts.toml` instead of a quest selector
+to generate every unique script referenced by the archive. A complete batch can
+make hundreds of paid model requests.
+
+See
+[`crates/oozems-quest-harness/README.md`](crates/oozems-quest-harness/README.md)
+for input rules, compatible endpoints, credential behavior, and limitations.
+
 ## Data flow
 
 ```text

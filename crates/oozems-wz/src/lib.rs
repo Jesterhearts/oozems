@@ -12,6 +12,8 @@ pub use edit::set_value;
 pub use inspect::ArchiveInfo;
 pub use inspect::ListOutput;
 pub use inspect::NodeSummary;
+pub use inspect::NodeTree;
 pub use inspect::archive_info;
 pub use inspect::get;
 pub use inspect::list;
+pub use inspect::tree;

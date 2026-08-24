@@ -3,6 +3,7 @@ resolver = "3"
 members  = [
   "crates/oozems-client",
   "crates/oozems-proto",
+  "crates/oozems-quest-harness",
   "crates/oozems-server",
   "crates/oozems-wz",
 ]
