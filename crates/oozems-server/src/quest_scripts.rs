@@ -1001,7 +1001,6 @@ fn invalid<T>(
 mod tests {
     use std::cell::Cell;
     use std::fs;
-    use std::path::Path;
 
     use oozems_proto::v1::CharacterStats;
     use oozems_proto::v1::InventoryState;
@@ -1488,14 +1487,6 @@ mod tests {
         assert_eq!(scripts.item_reference_ids().len(), 1);
         assert!(scripts.item_reference_ids().contains(&item_id));
         assert_eq!(definitions.lookups.get(), 2);
-    }
-
-    #[test]
-    fn bundled_configuration_loads() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/quest-scripts.toml");
-        let catalog = QuestScriptCatalog::load(&path, [], &[]).expect("bundled quest scripts");
-
-        assert_eq!(catalog.len(), 0);
     }
 
     #[test]

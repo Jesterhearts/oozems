@@ -196,7 +196,6 @@ fn invalid<T>(
 mod tests {
     use std::cell::Cell;
     use std::fs;
-    use std::path::Path;
 
     use oozems_proto::v1::ItemDefinition;
 
@@ -279,20 +278,6 @@ mod tests {
 
         assert_eq!(catalog.len(), 1);
         assert_eq!(definitions.lookups.get(), 1);
-    }
-
-    #[test]
-    fn bundled_loot_configuration_is_valid() {
-        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let definitions = [
-            1_040_002, 1_040_003, 1_060_001, 1_060_002, 1_072_000, 1_072_001, 4_000_000, 4_000_001,
-        ]
-        .map(definition);
-
-        let loot = LootCatalog::load(&manifest_dir.join("../../config/loot.toml"), &definitions)
-            .expect("loot catalog");
-
-        assert_eq!(loot.len(), 7);
     }
 
     fn definition(item_id: u32) -> ItemDefinition {

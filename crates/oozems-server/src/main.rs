@@ -89,10 +89,10 @@ async fn main() -> anyhow::Result<()> {
         );
     }
     let interactions =
-        InteractionCatalog::load(&config.config_dir.join("interactions.toml"), &catalog)?;
+        InteractionCatalog::load(&config.data_dir.join("interactions.toml"), &catalog)?;
     catalog.project_item_definitions(&interactions.item_reference_ids().collect())?;
     let quest_scripts = QuestScriptCatalog::load(
-        &config.config_dir.join("quest-scripts.toml"),
+        &config.data_dir.join("quest-scripts.toml"),
         catalog.quest_definitions(),
         &catalog,
     )?;
@@ -101,7 +101,7 @@ async fn main() -> anyhow::Result<()> {
         program_count = quest_scripts.len(),
         "quest script configuration ready"
     );
-    let loot = LootCatalog::load(&config.config_dir.join("loot.toml"), &catalog)?;
+    let loot = LootCatalog::load(&config.data_dir.join("loot.toml"), &catalog)?;
     catalog.project_item_definitions(&loot.item_reference_ids().collect())?;
     info!(table_count = loot.len(), "mob loot configuration ready");
     let database = database::open_surreal_kv(&config.data_dir.join("surrealkv")).await?;

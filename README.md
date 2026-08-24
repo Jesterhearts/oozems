@@ -17,10 +17,10 @@ likely be needed after such a release.
 
 ## Run it
 
-Install Rust, the `wasm32-unknown-unknown` target, and Trunk. The bundled
-interaction configuration requires matching `Map.wz`, `Npc.wz`, and
-`Character.wz` archives in `./data`. `Quest.wz` is optional. Add `UI.wz` to
-display the configured native interaction windows, then run:
+Install Rust, the `wasm32-unknown-unknown` target, and Trunk. Local interaction
+definitions require matching `Map.wz`, `Npc.wz`, and `Character.wz` archives in
+`./data`. `Quest.wz` is optional. Add `UI.wz` to display the configured native
+interaction windows, then run:
 
 ```sh
 make run
@@ -29,8 +29,10 @@ make run
 Open <http://127.0.0.1:3000>. The Make target builds the WASM client into the
 server's generated `public` directory before starting the server.
 
-The default data directory is `./data`. It is ignored by Git. These environment
-variables override the defaults:
+The default data directory is `./data`. It contains the local WZ archives,
+SurrealKV state, and version-specific `interactions.toml`, `loot.toml`, and
+`quest-scripts.toml` files. It is ignored by Git. These environment variables
+override the defaults:
 
 | Variable             | Default                             |
 | -------------------- | ----------------------------------- |
@@ -64,10 +66,10 @@ server
   -> config/xp-curves.toml        validated game progression rules
   -> config/gameplay.toml         validated world, item, skill, and movement rules
   -> config/content.toml          WZ content inclusion rules
-  -> config/interactions.toml     authored shop stock and taxi routes
-  -> config/quest-scripts.toml    typed replacements for WZ quest scripts
-  -> config/loot.toml             authored mob item drop rates
   -> config/skill-formulas.toml   validated combat formulas
+  -> data/interactions.toml       version-specific shop stock and taxi routes
+  -> data/loot.toml               version-specific mob item drop rates
+  -> data/quest-scripts.toml      version-specific replacements for WZ quest scripts
   -> data/Map.wz                  required, lazy WZ map source
   -> data/Npc.wz                  optional NPC placement animation source
   -> data/Quest.wz                enabled quest conditions, dialog, and rewards
@@ -222,15 +224,15 @@ sprites authoritatively.
 
 `Quest.wz` contains quest script names but does not contain their executable
 script bodies. A script-backed start or completion phase remains unresolved
-until `config/quest-scripts.toml` defines a deterministic replacement with the
+until `data/quest-scripts.toml` defines a deterministic replacement with the
 exact WZ name. If the file is absent, the catalog is empty. Missing replacements
 are never treated as successful checks. A configured name must be referenced by
 at least one loaded quest definition, and one exact name may intentionally be
 shared by the loaded definitions that reference it.
 
-Quest 10272 retains its archive completion script name, `q10272e`. The bundled
-configuration does not author that script, so runtime completion returns
-`ScriptRequired` until a project-authored deterministic replacement is added.
+Quest 10272 retains its archive completion script name, `q10272e`. Runtime
+completion returns `ScriptRequired` until a deterministic replacement is added
+for the deployed WZ version.
 
 Each program has ANDed conditions, typed resource actions, and optional
 dialogue pages:
@@ -346,12 +348,12 @@ capability. Restart the server after changing `quest-scripts.toml`.
 
 The local archives contain NPC script names but not their executable bodies.
 Shop stock, buy prices, taxi destinations, and fares therefore come from
-`config/interactions.toml`. The bundled definitions add Sam's armor shop in
-Henesys Weapon Store and the Henesys Regular Cab route to Lith Harbor. Buy
-prices and fares are project-authored. Sell prices come from each supported
-equipment item's WZ `info/price`; an absent or zero price makes an item
-unsellable. Buying and selling one item, paying a taxi fare, changing maps, and
-claiming a quest reward are all validated and persisted by the server.
+`data/interactions.toml`. The local definitions add Sam's armor shop in Henesys
+Weapon Store and the Henesys Regular Cab route to Lith Harbor. Buy prices and
+fares are project-authored. Sell prices come from each supported equipment
+item's WZ `info/price`; an absent or zero price makes an item unsellable. Buying
+and selling one item, paying a taxi fare, changing maps, and claiming a quest
+reward are all validated and persisted by the server.
 
 Place `Character.wz` beside the map archives to enable character creation. The
 server indexes the available skin, face, and hair styles, then composes idle,
@@ -406,8 +408,8 @@ The character plays the composed `swingO1` WZ animation for its configured
 frame duration when the attack begins.
 
 Each living-to-dead mob transition rolls the independent item entries in
-`config/loot.toml`. The local WZ archives provide some mob-to-item associations
-but not ordinary drop probabilities, so the bundled rates are project-authored.
+`data/loot.toml`. The local WZ archives provide some mob-to-item associations
+but not ordinary drop probabilities, so the local rates are project-authored.
 A rate is expressed per million; `1000000` is guaranteed. Generated items are
 temporary, belong to the final attacker, and use the existing server-authorized
 pickup and inventory pipeline. Combat and movement responses synchronize the

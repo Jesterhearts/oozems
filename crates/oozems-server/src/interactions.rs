@@ -389,12 +389,10 @@ fn invalid<T>(
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::path::Path;
 
     use oozems_proto::v1::ItemDefinition;
     use oozems_proto::v1::Map;
     use oozems_proto::v1::Npc;
-    use oozems_proto::v1::Portal;
 
     use super::InteractionContentLookup;
     use super::load_catalog;
@@ -424,52 +422,6 @@ mod tests {
                 .chain(&self.indexed_items)
                 .find(|definition| definition.item_id == item_id))
         }
-    }
-
-    #[test]
-    fn bundled_interaction_configuration_is_valid() {
-        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let content = FakeContent {
-            maps: vec![
-                map_with_npc(100_000_101, 1),
-                map_with_npc(100_000_000, 2),
-                Map {
-                    id: 104_000_000,
-                    portals: vec![Portal {
-                        name: "sp".to_owned(),
-                        ..Portal::default()
-                    }],
-                    ..Map::default()
-                },
-            ],
-            eager_items: Vec::new(),
-            indexed_items: [1_040_002, 1_040_003, 1_060_002, 1_072_000, 1_072_001]
-                .map(item_definition)
-                .to_vec(),
-        };
-
-        let interactions = load_catalog(
-            &manifest_dir.join("../../config/interactions.toml"),
-            &content,
-        )
-        .expect("interaction catalog");
-
-        assert_eq!(
-            interactions
-                .shop(100_000_101, 1)
-                .expect("Sam's shop")
-                .offers
-                .len(),
-            5
-        );
-        assert_eq!(
-            interactions
-                .taxi(100_000_000, 2)
-                .expect("Henesys taxi")
-                .destinations[0]
-                .map_id,
-            104_000_000
-        );
     }
 
     #[test]
