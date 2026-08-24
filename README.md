@@ -262,6 +262,17 @@ Quest 10272 retains its archive completion script name, `q10272e`. Runtime
 completion returns `ScriptRequired` until a deterministic replacement is added
 for the deployed WZ version.
 
+[`examples/v83/quest-scripts.toml`](examples/v83/quest-scripts.toml) is a
+project-authored catalog for the matching GMS v83 content. It covers all 663
+script names referenced by the 2,766 quest definitions supported by this
+server. Fifty-three programs add typed behavior reconstructed from exact local
+WZ evidence or behavior facts independently reconciled with the local WZ data.
+The other 610 are explicit WZ-only fallbacks: they allow the ordinary WZ
+checks, dialogue, and actions to run, but cannot reproduce unavailable or
+unsupported script behavior. The catalog is not a copy of the original server
+scripts and is not loaded automatically. Review it before using it as
+`${OOZEMS_DATA_DIR}/quest-scripts.toml` or with a different archive version.
+
 Each program has ANDed conditions, typed resource actions, and optional
 dialogue pages:
 
@@ -365,7 +376,7 @@ Record IDs must be nonzero, values must meet the persisted ASCII limit, numeric
 record predicates must be strictly decimal, and duplicate or incompatible
 record operations fail startup. Quest status targets must be nonzero loaded
 quest definitions and cannot be duplicated in one merged action plan. A
-catalog may contain at most 256 programs. One program may contain at most 64
+catalog may contain at most 1,024 programs. One program may contain at most 64
 conditions, actions, and pages in total, with at most 16 result pages and 16
 incomplete pages. Each page is limited to 4096 UTF-8 bytes, and each script name
 to 256 bytes.

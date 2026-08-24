@@ -19,7 +19,7 @@ use crate::content::QuestStateAction;
 use crate::content::QuestStateActionState;
 use crate::items::ItemDefinitionLookup;
 
-const MAXIMUM_PROGRAMS: usize = 256;
+const MAXIMUM_PROGRAMS: usize = 1_024;
 const MAXIMUM_PROGRAM_OPERATIONS: usize = 64;
 const MAXIMUM_PAGES_PER_BRANCH: usize = 16;
 const MAXIMUM_PAGE_BYTES: usize = 4_096;
@@ -1007,9 +1007,13 @@ mod tests {
     use oozems_proto::v1::ItemDefinition;
     use oozems_proto::v1::PlayerState;
 
+    use super::QuestScriptAction;
     use super::QuestScriptCatalog;
+    use super::QuestScriptFile;
     use super::QuestScriptPhase;
     use super::QuestScriptResolution;
+    use super::build_catalog;
+    use super::collect_item_reference_ids;
     use super::resolve;
     use crate::content::QuestActions;
     use crate::content::QuestCompletionRequirements;
@@ -1496,6 +1500,87 @@ mod tests {
             .expect("missing configuration");
 
         assert_eq!(catalog.len(), 0);
+    }
+
+    #[test]
+    fn v83_example_catalog_is_complete_and_valid() {
+        let source = include_str!("../../../examples/v83/quest-scripts.toml");
+        let file = toml::from_str::<QuestScriptFile>(source).expect("parse v83 example catalog");
+        assert_eq!(file.scripts.len(), 663);
+
+        let mut quests = file
+            .scripts
+            .iter()
+            .enumerate()
+            .map(|(index, program)| {
+                let mut quest = scripted_quest(&program.name);
+                quest.id = 1_000_000 + u32::try_from(index).expect("catalog index fits u32");
+                quest
+            })
+            .collect::<Vec<_>>();
+        let status_target_ids = file
+            .scripts
+            .iter()
+            .flat_map(|program| &program.actions)
+            .filter_map(|action| match action {
+                QuestScriptAction::SetQuestStatus { quest_id, .. } => Some(*quest_id),
+                _ => None,
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        quests.extend(status_target_ids.into_iter().map(|quest_id| {
+            let mut quest = scripted_quest("unconfigured_target");
+            quest.id = quest_id;
+            quest.start.script = None;
+            quest
+        }));
+        let item_definitions = collect_item_reference_ids(&file)
+            .into_iter()
+            .map(|item_id| ItemDefinition {
+                item_id,
+                ..ItemDefinition::default()
+            })
+            .collect::<Vec<_>>();
+        let quest_references = quests.iter().collect::<Vec<_>>();
+        let catalog = build_catalog(
+            std::path::Path::new("examples/v83/quest-scripts.toml"),
+            file,
+            &quest_references,
+            &item_definitions,
+        )
+        .expect("valid v83 example catalog");
+
+        assert_eq!(catalog.len(), 663);
+        assert_eq!(
+            catalog
+                .programs
+                .values()
+                .filter(|program| {
+                    !program.conditions.is_empty()
+                        || !program.plan.item_deltas.is_empty()
+                        || program.plan.mesos != 0
+                        || program.plan.experience != 0
+                        || program.plan.fame != 0
+                        || !program.plan.quest_state_actions.is_empty()
+                        || !program.plan.record_writes.is_empty()
+                        || !program.plan.result_pages.is_empty()
+                        || !program.incomplete_pages.is_empty()
+                })
+                .count(),
+            53
+        );
+        for script in ["q6030e", "q6031e", "q6032e", "q10272e"] {
+            let program = catalog.programs.get(script).expect("configured fallback");
+            assert!(program.conditions.is_empty());
+            assert!(program.plan.item_deltas.is_empty());
+            assert_eq!(program.plan.mesos, 0);
+        }
+        let medal = catalog
+            .programs
+            .get("q29900e")
+            .expect("configured medal completion");
+        assert_eq!(medal.plan.item_deltas.len(), 1);
+        assert_eq!(medal.plan.item_deltas[0].item_id, 1_142_107);
+        assert_eq!(medal.plan.item_deltas[0].count, 1);
     }
 
     fn load(
