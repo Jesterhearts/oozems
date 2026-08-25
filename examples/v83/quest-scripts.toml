@@ -1,128 +1,2125 @@
-# Project-authored replacements for the GMS v83 Quest.wz script references.
-# These are not recovered original server scripts. This catalog covers every
-# script referenced by the 2,766 quest definitions supported by oozems in the
-# matching local archive: 663 programs, including 53 with reconstructed typed
-# behavior and 610 intentional WZ-only fallbacks.
-#
-# Empty programs allow the normal WZ checks, dialogue, and actions to run. They
-# deliberately omit behavior that cannot be recovered or represented safely.
-
-# Reconstructed typed behavior.
-
-# Quest 20011 completion script.
 [[scripts]]
-name = "q20011e"
+name = "q1021s"
 
 [[scripts.actions]]
 type    = "item_delta"
-item_id = 1002869
-delta   = 1
+item_id = 2010007
+delta   = 7
 
-[[scripts.actions]]
-type    = "item_delta"
-item_id = 1052177
-delta   = 1
-
-[[scripts.actions]]
-type   = "experience"
-amount = 30
-
-# Quest 20012 completion script.
 [[scripts]]
-name = "q20012e"
+name = "q1021e"
 
-[[scripts.actions]]
-type    = "item_delta"
-item_id = 4000483
-delta   = -1
-
-[[scripts.actions]]
-type   = "experience"
-amount = 40
-
-# Quest 20013 completion script.
 [[scripts]]
-name = "q20013e"
+name = "q1028s"
 
-[[scripts.actions]]
-type    = "item_delta"
-item_id = 4032267
-delta   = -1
-
-[[scripts.actions]]
-type    = "item_delta"
-item_id = 4032268
-delta   = -1
-
-[[scripts.actions]]
-type    = "item_delta"
-item_id = 3010060
-delta   = 1
-
-[[scripts.actions]]
-type     = "set_quest_status"
-quest_id = 20000
-state    = "completed"
-
-[[scripts.actions]]
-type     = "set_quest_status"
-quest_id = 20001
-state    = "completed"
-
-[[scripts.actions]]
-type     = "set_quest_status"
-quest_id = 20002
-state    = "completed"
-
-[[scripts.actions]]
-type     = "set_quest_status"
-quest_id = 20015
-state    = "completed"
-
-[[scripts.actions]]
-type   = "experience"
-amount = 95
-
-# Quest 20017 start script.
 [[scripts]]
-name = "q20017s"
+name = "q1048s"
 
-[[scripts.actions]]
-type     = "set_quest_status"
-quest_id = 20020
-state    = "started"
-
-[[scripts.actions]]
-type     = "set_quest_status"
-quest_id = 20100
-state    = "completed"
-
-# Quest 20522 completion script.
 [[scripts]]
-name = "q20522e"
+name = "q1049s"
+
+[[scripts]]
+name = "q1050s"
+
+[[scripts]]
+name = "q1051s"
+
+[[scripts]]
+name = "q1052s"
+
+[[scripts]]
+name = "q1053s"
+
+[[scripts]]
+name = "q1054s"
+
+[[scripts]]
+name = "q2124e"
+
+[[scripts]]
+name = "q2126e"
+
+[[scripts]]
+name = "q2127e"
+
+[[scripts]]
+name = "q2147s"
+
+[[scripts]]
+name = "q2147e"
+
+[[scripts]]
+name = "q2148s"
+
+[[scripts]]
+name = "q2149s"
+
+[[scripts]]
+name = "q2150s"
+
+[[scripts]]
+name = "q2151s"
+
+[[scripts]]
+name = "q2152s"
+
+[[scripts]]
+name = "q2156e"
 
 [[scripts.conditions]]
 type     = "item_quantity"
-item_id  = 4220137
+item_id  = 2210006
 quantity = 1
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 2210006
+delta   = -1
+
+[[scripts]]
+name = "q2186e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4031853
+delta   = -1
+
+[[scripts]]
+name = "q2197e"
+
+[[scripts]]
+name = "q2214e"
+
+[[scripts]]
+name = "q2215e"
+
+[[scripts]]
+name = "q2216s"
+
+[[scripts]]
+name = "q2217s"
+
+[[scripts]]
+name = "q2218s"
+
+[[scripts]]
+name = "q2219s"
+
+[[scripts]]
+name = "q2228s"
+
+[[scripts]]
+name = "q2230e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4032086
+delta   = -1
+
+[[scripts]]
+name = "q2232e"
+
+[[scripts]]
+name = "q2233e"
+
+[[scripts]]
+name = "q2234e"
+
+[[scripts]]
+name = "q2238s"
+
+[[scripts]]
+name = "q2244e"
+
+[[scripts.actions]]
+type   = "experience"
+amount = 6800
+
+[[scripts]]
+name = "q2245s"
+
+[[scripts]]
+name = "q2254s"
+
+[[scripts]]
+name = "q2257e"
+
+[[scripts]]
+name = "q2258s"
+
+[[scripts]]
+name = "q2258e"
+
+[[scripts]]
+name = "q2259s"
+
+[[scripts]]
+name = "q2259e"
+
+[[scripts]]
+name = "q2260s"
+
+[[scripts.conditions]]
+type  = "minimum_level"
+level = 30
+
+[[scripts]]
+name = "q2260e"
+
+[[scripts]]
+name = "q2291e"
+
+[[scripts]]
+name = "q2293s"
+
+[[scripts]]
+name = "q2300s"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4032375
+delta   = 1
+
+[[scripts]]
+name = "q2300e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4032375
+delta   = -1
+
+[[scripts.actions]]
+type   = "experience"
+amount = 6000
+
+[[scripts]]
+name = "q2301s"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4032375
+delta   = 1
+
+[[scripts]]
+name = "q2301e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4032375
+delta   = -1
+
+[[scripts.actions]]
+type   = "experience"
+amount = 6000
+
+[[scripts]]
+name = "q2302s"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4032375
+delta   = 1
+
+[[scripts]]
+name = "q2302e"
+
+[[scripts.conditions]]
+type     = "item_quantity"
+item_id  = 4032375
+quantity = 1
+
+[[scripts.actions]]
+type   = "experience"
+amount = 6000
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4032375
+delta   = -1
+
+[[scripts]]
+name = "q2303s"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4032375
+delta   = 1
+
+[[scripts]]
+name = "q2303e"
+
+[[scripts.actions]]
+type   = "experience"
+amount = 6000
+
+[[scripts]]
+name = "q2304s"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4032375
+delta   = 1
+
+[[scripts]]
+name = "q2304e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4032375
+delta   = -1
+
+[[scripts.actions]]
+type   = "experience"
+amount = 6000
+
+[[scripts]]
+name = "q2305s"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4032375
+delta   = 1
+
+[[scripts]]
+name = "q2305e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4032375
+delta   = -1
+
+[[scripts.actions]]
+type   = "experience"
+amount = 6000
+
+[[scripts]]
+name = "q2306s"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4032375
+delta   = 1
+
+[[scripts]]
+name = "q2306e"
+
+[[scripts]]
+name = "q2307s"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4032375
+delta   = 1
+
+[[scripts]]
+name = "q2307e"
+
+[[scripts]]
+name = "q2308s"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4032375
+delta   = 1
+
+[[scripts]]
+name = "q2308e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4032375
+delta   = -1
+
+[[scripts.actions]]
+type   = "experience"
+amount = 6000
+
+[[scripts]]
+name = "q2309s"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4032375
+delta   = 1
+
+[[scripts]]
+name = "q2309e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4032375
+delta   = -1
+
+[[scripts.actions]]
+type   = "experience"
+amount = 6000
+
+[[scripts]]
+name = "q2310s"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4032375
+delta   = 1
+
+[[scripts]]
+name = "q2310e"
+
+[[scripts]]
+name = "q2314s"
+
+[[scripts]]
+name = "q2322s"
+
+[[scripts]]
+name = "q2325e"
+
+[[scripts]]
+name = "q2327s"
+
+[[scripts]]
+name = "q2332s"
+
+[[scripts]]
+name = "q2332e"
+
+[[scripts.actions]]
+type   = "experience"
+amount = 4400
+
+[[scripts]]
+name = "q2333s"
+
+[[scripts]]
+name = "q2333e"
+
+[[scripts.actions]]
+type   = "experience"
+amount = 15000
+
+[[scripts]]
+name = "q2334s"
+
+[[scripts]]
+name = "q2335s"
+
+[[scripts]]
+name = "q2338s"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 2430014
+delta   = 1
+
+[[scripts]]
+name = "q2342s"
+
+[[scripts]]
+name = "q3108s"
+
+[[scripts]]
+name = "q3250s"
+
+[[scripts]]
+name = "q3250e"
+
+[[scripts.actions]]
+type   = "experience"
+amount = 3000
+
+[[scripts]]
+name = "q3301e"
+
+[[scripts]]
+name = "q3303e"
+
+[[scripts]]
+name = "q3305s"
+
+[[scripts]]
+name = "q3306s"
+
+[[scripts]]
+name = "q3314e"
+
+[[scripts]]
+name = "q3320s"
+
+[[scripts]]
+name = "q3321s"
+
+[[scripts]]
+name = "q3353s"
+
+[[scripts]]
+name = "q3354s"
+
+[[scripts]]
+name = "q3360s"
+
+[[scripts]]
+name = "q3382e"
+
+[[scripts]]
+name = "q3452e"
+
+[[scripts]]
+name = "q3455s"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4031927
+delta   = 1
+
+[[scripts]]
+name = "q3514e"
+
+[[scripts]]
+name = "q3523s"
+
+[[scripts]]
+name = "q3524s"
+
+[[scripts]]
+name = "q3525s"
+
+[[scripts]]
+name = "q3526s"
+
+[[scripts]]
+name = "q3527s"
+
+[[scripts]]
+name = "q3529s"
+
+[[scripts]]
+name = "q3539s"
+
+[[scripts]]
+name = "q3714s"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4001094
+delta   = -1
+
+[[scripts]]
+name = "q3833e"
+
+[[scripts]]
+name = "q3933s"
+
+[[scripts]]
+name = "q3941s"
+
+[[scripts]]
+name = "q3941e"
+
+[[scripts]]
+name = "q3953e"
+
+[[scripts]]
+name = "q4482s"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4220022
+delta   = 1
+
+[[scripts]]
+name = "q4482e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4220022
+delta   = -1
+
+[[scripts]]
+name = "q4483e"
+
+[[scripts]]
+name = "q4490s"
+
+[[scripts]]
+name = "q4490e"
+
+[[scripts]]
+name = "q4647e"
+
+[[scripts]]
+name = "q4659e"
+
+[[scripts]]
+name = "4676e"
+
+[[scripts]]
+name = "q6030e"
+
+[[scripts]]
+name = "q6031e"
+
+[[scripts]]
+name = "q6032e"
+
+[[scripts]]
+name = "q6033e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4260003
+delta   = -1
+
+[[scripts]]
+name = "q6036e"
+
+[[scripts]]
+name = "q6700e"
+
+[[scripts]]
+name = "q8185e"
+
+[[scripts.conditions]]
+type   = "mesos_at_least"
+amount = 10000
+
+[[scripts.actions]]
+type  = "mesos"
+delta = -10000
+
+[[scripts]]
+name             = "q8189e"
+result_pages     = []
+incomplete_pages = []
+
+[[scripts.conditions]]
+type   = "mesos_at_least"
+amount = 10000
+
+[[scripts.actions]]
+type  = "mesos"
+delta = -10000
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 5380000
+delta   = -1
+
+[[scripts]]
+name = "q8219s"
+
+[[scripts]]
+name = "q8219e"
+
+[[scripts]]
+name = "q8221s"
+
+[[scripts]]
+name = "q8222s"
+
+[[scripts]]
+name = "q8222e"
+
+[[scripts]]
+name = "q8223s"
+
+[[scripts]]
+name = "q8224s"
+
+[[scripts]]
+name = "q8225s"
+
+[[scripts]]
+name = "q8226s"
+
+[[scripts]]
+name = "q8227s"
+
+[[scripts]]
+name = "q8228s"
+
+[[scripts]]
+name = "q8228e"
+
+[[scripts]]
+name = "q8229s"
+
+[[scripts]]
+name = "q8229e"
+
+[[scripts]]
+name             = "q8230s"
+result_pages     = []
+incomplete_pages = []
+
+[[scripts]]
+name = "q8230e"
+
+[[scripts]]
+name = "q8231s"
+
+[[scripts]]
+name = "q8232s"
+
+[[scripts]]
+name = "q8233s"
+
+[[scripts]]
+name = "q8234s"
+
+[[scripts]]
+name = "q8235s"
+
+[[scripts]]
+name = "q8236s"
+
+[[scripts]]
+name = "q8237s"
+
+[[scripts]]
+name = "q8238s"
+
+[[scripts]]
+name = "q8247e"
+
+[[scripts]]
+name = "q8251s"
+
+[[scripts]]
+name = "q8251e"
+
+[[scripts]]
+name = "q8255s"
+
+[[scripts]]
+name = "q8256s"
+
+[[scripts]]
+name = "q9432e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4031322
+delta   = -1
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4031323
+delta   = -1
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4000216
+delta   = -50
+
+[[scripts]]
+name = "q9633s"
+
+[[scripts]]
+name = "selectedMob"
+
+[[scripts]]
+name = "scrollchange1"
+
+[[scripts]]
+name = "scrollchange2"
+
+[[scripts]]
+name = "scrollchange3"
+
+[[scripts]]
+name = "scrollchange4"
+
+[[scripts]]
+name = "quiz1_1"
+
+[[scripts]]
+name = "quiz1_2"
+
+[[scripts]]
+name = "quiz1_3"
+
+[[scripts]]
+name = "quiz1_4"
+
+[[scripts]]
+name = "quiz1_5"
+
+[[scripts]]
+name = "quiz1_6"
+
+[[scripts]]
+name = "quiz1_7"
+
+[[scripts]]
+name = "quiz1_8"
+
+[[scripts]]
+name = "quiz1_9"
+
+[[scripts]]
+name = "quiz1_10"
+
+[[scripts]]
+name = "quiz1_11"
+
+[[scripts]]
+name = "quiz1_12"
+
+[[scripts]]
+name = "quiz1_13"
+
+[[scripts]]
+name = "quiz1_14"
+
+[[scripts]]
+name = "q9730e"
+
+[[scripts]]
+name = "q9731e"
+
+[[scripts]]
+name = "q9732e"
+
+[[scripts]]
+name = "q9733e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4031933
+delta   = -30
+
+[[scripts]]
+name = "q9734e"
+
+[[scripts]]
+name = "q9735e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4031935
+delta   = -30
+
+[[scripts]]
+name = "q9745e"
+
+[[scripts]]
+name = "q9746e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4031939
+delta   = -10
+
+[[scripts]]
+name = "q9747e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4031940
+delta   = -10
+
+[[scripts]]
+name = "huntUP1"
+
+[[scripts]]
+name = "huntUP2"
+
+[[scripts]]
+name = "huntUP3"
+
+[[scripts]]
+name = "huntUP4"
+
+[[scripts]]
+name = "huntUP5"
+
+[[scripts]]
+name         = "huntUP6"
+result_pages = ["d1"]
+
+[[scripts]]
+name = "huntUP7"
+
+[[scripts]]
+name = "huntUP8"
+
+[[scripts]]
+name = "huntUP9"
+
+[[scripts]]
+name = "q9851s"
+
+[[scripts]]
+name = "q9875s"
+
+[[scripts]]
+name = "q9875e"
+
+[[scripts]]
+name = "q9878e"
+
+[[scripts]]
+name = "q9880s"
+
+[[scripts]]
+name = "q9880e"
+
+[[scripts]]
+name = "q9881s"
+
+[[scripts]]
+name = "q9881e"
+
+[[scripts]]
+name = "q9882s"
+
+[[scripts]]
+name = "q9882e"
+
+[[scripts]]
+name = "q9883s"
+
+[[scripts]]
+name = "q9883e"
+
+[[scripts]]
+name = "q9884s"
+
+[[scripts]]
+name = "q9884e"
+
+[[scripts]]
+name = "q9885s"
+
+[[scripts]]
+name = "q9885e"
+
+[[scripts]]
+name = "eDay_join"
+
+[[scripts]]
+name = "selectedMob1"
+
+[[scripts]]
+name = "selectedMob2"
+
+[[scripts]]
+name = "selectedMob3"
+
+[[scripts]]
+name = "selectedMob4"
+
+[[scripts]]
+name = "eDay_join2"
+
+[[scripts]]
+name = "quiz2_start"
+
+[[scripts]]
+name = "q9902e"
+
+[[scripts]]
+name = "q9903e"
+
+[[scripts]]
+name = "q9904e"
+
+[[scripts]]
+name = "q9905e"
+
+[[scripts]]
+name = "q9906e"
+
+[[scripts]]
+name = "q9907e"
+
+[[scripts]]
+name = "q9908e"
+
+[[scripts]]
+name = "q9909e"
+
+[[scripts]]
+name = "q9920e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 2031000
+delta   = 1
+
+[[scripts]]
+name = "q9922s"
+
+[[scripts]]
+name = "q9922e"
+
+[[scripts]]
+name = "q9924s"
+
+[[scripts]]
+name = "q9925s"
+
+[[scripts]]
+name = "q9926s"
+
+[[scripts]]
+name = "q9927e"
+
+[[scripts]]
+name = "q9928e"
+
+[[scripts]]
+name = "q9929s"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4220021
+delta   = 1
+
+[[scripts]]
+name = "q9929e"
+
+[[scripts]]
+name = "q9930e"
+
+[[scripts]]
+name = "q9931e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4031832
+delta   = -1
+
+[[scripts]]
+name = "q9932e"
+
+[[scripts]]
+name = "q9933e"
+
+[[scripts]]
+name = "q9934e"
+
+[[scripts]]
+name = "q9935e"
+
+[[scripts]]
+name = "q9936e"
+
+[[scripts]]
+name = "q9937s"
+
+[[scripts]]
+name = "q9938s"
+
+[[scripts.actions]]
+type     = "set_quest_status"
+quest_id = 9929
+state    = "not_started"
+
+[[scripts]]
+name = "q9939s"
+
+[[scripts]]
+name = "q9943e"
+
+[[scripts]]
+name = "q9947s"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4220021
+delta   = -1
+
+[[scripts]]
+name = "q9950e"
+
+[[scripts]]
+name = "q9951e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 2210010
+delta   = 1
+
+[[scripts]]
+name = "q9961s"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4220023
+delta   = 1
+
+[[scripts]]
+name = "q9961e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4220023
+delta   = -1
+
+[[scripts]]
+name = "q9965s"
+
+[[scripts]]
+name = "q9970e"
+
+[[scripts]]
+name = "q9980s"
+
+[[scripts]]
+name = "q9981e"
+
+[[scripts]]
+name = "q9982s"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4220045
+delta   = 1
+
+[[scripts]]
+name = "q9983s"
+
+[[scripts]]
+name = "q9984e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4001126
+delta   = -50
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 1012098
+delta   = 1
+
+[[scripts]]
+name = "q9985e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 2022179
+delta   = 1
+
+[[scripts]]
+name = "q9990s"
+
+[[scripts]]
+name = "q9991s"
+
+[[scripts]]
+name = "q9997s"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 3994089
+delta   = 1
+
+[[scripts]]
+name = "q10002e"
+
+[[scripts]]
+name = "q10008s"
+
+[[scripts]]
+name = "q10010e"
+
+[[scripts]]
+name = "q10011e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4032000
+delta   = -20
+
+[[scripts]]
+name = "q10012e"
+
+[[scripts]]
+name = "q10014s"
+
+[[scripts]]
+name = "q10034s"
+
+[[scripts]]
+name = "q10036s"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4220067
+delta   = 1
+
+[[scripts]]
+name = "q10036e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4220067
+delta   = -1
+
+[[scripts]]
+name = "q10037e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4032042
+delta   = 1
+
+[[scripts]]
+name = "q10039e"
+
+[[scripts]]
+name = "q10043s"
+
+[[scripts]]
+name = "q10046s"
+
+[[scripts]]
+name = "q10050e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4032066
+delta   = -1
+
+[[scripts]]
+name = "q10052s"
+
+[[scripts]]
+name = "q10059s"
+
+[[scripts]]
+name = "q10066e"
+
+[[scripts]]
+name = "q10069e"
+
+[[scripts]]
+name = "q10074s"
+
+[[scripts]]
+name = "q10075e"
+
+[[scripts]]
+name = "q10076e"
+
+[[scripts]]
+name = "q10077e"
+
+[[scripts]]
+name = "q10078e"
+
+[[scripts]]
+name = "q10079e"
+
+[[scripts]]
+name = "q10082s"
+
+[[scripts]]
+name = "q10083e"
+
+[[scripts]]
+name = "q10084e"
+
+[[scripts]]
+name = "q10085e"
+
+[[scripts]]
+name = "q10086e"
+
+[[scripts]]
+name = "q10087e"
+
+[[scripts]]
+name         = "q10088e"
+result_pages = ["d0", "d1"]
+
+[[scripts]]
+name = "q10089e"
+
+[[scripts]]
+name = "q10090e"
+
+[[scripts]]
+name = "q10091e"
+
+[[scripts]]
+name = "q10092e"
+
+[[scripts]]
+name = "q10093e"
+
+[[scripts]]
+name = "q10094e"
+
+[[scripts]]
+name = "q10095e"
+
+[[scripts]]
+name = "q10096e"
+
+[[scripts]]
+name = "q10097e"
+
+[[scripts]]
+name = "q10098e"
+
+[[scripts]]
+name = "q10099e"
+
+[[scripts]]
+name = "q10100e"
+
+[[scripts]]
+name = "q10101e"
+
+[[scripts]]
+name = "q10102e"
+
+[[scripts]]
+name = "q10103e"
+
+[[scripts]]
+name = "q10104e"
+
+[[scripts]]
+name = "q10105e"
+
+[[scripts]]
+name = "q10106e"
+
+[[scripts]]
+name = "q10108s"
+
+[[scripts]]
+name = "q10110e"
+
+[[scripts]]
+name = "q10206s"
+
+[[scripts]]
+name = "q10206e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4001237
+delta   = -20
+
+[[scripts]]
+name = "q10207s"
+
+[[scripts]]
+name = "q10207e"
+
+[[scripts]]
+name = "q10208s"
+
+[[scripts]]
+name = "q10208e"
+
+[[scripts]]
+name = "q10209s"
+
+[[scripts]]
+name = "q10209e"
+
+[[scripts]]
+name = "q10210s"
+
+[[scripts]]
+name = "q10211s"
+
+[[scripts]]
+name = "q10212s"
+
+[[scripts]]
+name = "q10213s"
+
+[[scripts]]
+name = "q10214s"
+
+[[scripts]]
+name = "q10215s"
+
+[[scripts]]
+name = "q10216s"
+
+[[scripts]]
+name = "q10217s"
+
+[[scripts.conditions]]
+type  = "minimum_level"
+level = 91
+
+[[scripts.conditions]]
+type     = "quest_state"
+quest_id = 10217
+state    = "not_started"
+
+[[scripts]]
+name = "q10218s"
+
+[[scripts]]
+name = "q10218e"
+
+[[scripts]]
+name = "q10219s"
+
+[[scripts]]
+name = "q10220s"
+
+[[scripts]]
+name = "q10222s"
+
+[[scripts]]
+name = "q10224s"
+
+[[scripts.conditions]]
+type  = "minimum_level"
+level = 15
+
+[[scripts]]
+name = "q10231s"
+
+[[scripts]]
+name = "q10240e"
+
+[[scripts]]
+name = "q10241e"
+
+[[scripts]]
+name = "q10242e"
+
+[[scripts]]
+name = "q10243e"
+
+[[scripts]]
+name = "q10244e"
+
+[[scripts]]
+name = "q10245e"
+
+[[scripts]]
+name = "q10246e"
+
+[[scripts]]
+name         = "q10247e"
+result_pages = ["토끼풀꽃이군요! 감사해요~\r\n자~ 받아요. 토끼풀 스티커를 줄께요. \r\n토끼풀꽃은 ‘행운'을 상징해요! 이제 당신은 메이플월드의 행운을 가진 사람이군요."]
+
+[[scripts]]
+name = "q10248e"
+
+[[scripts]]
+name         = "q10249e"
+result_pages = ["yes"]
+
+[[scripts]]
+name = "q10250e"
+
+[[scripts]]
+name = "q10251e"
+
+[[scripts]]
+name = "q10252e"
+
+[[scripts]]
+name = "q10253e"
+
+[[scripts]]
+name = "q10254e"
+
+[[scripts]]
+name = "q10255e"
+
+[[scripts]]
+name = "q10256e"
+
+[[scripts]]
+name = "q10260e"
+
+[[scripts]]
+name = "q10261e"
+
+[[scripts]]
+name = "q10262e"
+
+[[scripts]]
+name = "q10263e"
+
+[[scripts]]
+name = "q10264s"
+
+[[scripts]]
+name = "q10264e"
+
+[[scripts]]
+name = "q10265s"
+
+[[scripts]]
+name = "q10265e"
+
+[[scripts]]
+name = "q10266s"
+
+[[scripts]]
+name = "q10266e"
+
+[[scripts]]
+name = "q10267s"
+
+[[scripts]]
+name = "q10267e"
+
+[[scripts]]
+name = "q10268e"
+
+[[scripts]]
+name = "q10270e"
+
+[[scripts]]
+name = "q10271e"
+
+[[scripts]]
+name = "q10272e"
+
+[[scripts]]
+name = "q10274e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4032298
+delta   = -20
+
+[[scripts]]
+name = "q10275e"
+
+[[scripts]]
+name = "q10276e"
+
+[[scripts]]
+name = "q10277e"
+
+[[scripts]]
+name = "q10278e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4001126
+delta   = 1000
+
+[[scripts]]
+name = "q10279e"
+
+[[scripts]]
+name = "q10280e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4001126
+delta   = 1000
+
+[[scripts]]
+name = "q10281e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4001126
+delta   = 1000
+
+[[scripts]]
+name = "q10282s"
+
+[[scripts]]
+name = "q10282e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 2022552
+delta   = 1
+
+[[scripts]]
+name = "q10283s"
+
+[[scripts]]
+name = "q10283e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4220149
+delta   = -1
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 2022552
+delta   = 1
+
+[[scripts]]
+name = "q10284s"
+
+[[scripts]]
+name = "q10284e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 2022552
+delta   = 1
+
+[[scripts]]
+name = "q10287s"
+
+[[scripts]]
+name = "q10300e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 1052202
+delta   = 1
+
+[[scripts]]
+name = "q10301e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 1002971
+delta   = 1
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 1052202
+delta   = 1
+
+[[scripts]]
+name = "q10302e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 1052202
+delta   = 1
+
+[[scripts]]
+name = "q10311e"
+
+[[scripts]]
+name = "q10312e"
+
+[[scripts]]
+name = "q10313e"
+
+[[scripts]]
+name = "q10314e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4001306
+delta   = -1
+
+[[scripts]]
+name = "q10315e"
+
+[[scripts]]
+name = "q10316e"
+
+[[scripts]]
+name = "q10317e"
+
+[[scripts]]
+name = "q10318e"
+
+[[scripts]]
+name = "q10319s"
+
+[[scripts]]
+name = "q10319e"
+
+[[scripts]]
+name = "q10320s"
+
+[[scripts]]
+name = "q10320e"
+
+[[scripts]]
+name = "q10321s"
+
+[[scripts]]
+name = "q10321e"
+
+[[scripts]]
+name = "q10324e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4001307
+delta   = -1
+
+[[scripts]]
+name = "q10325e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4001307
+delta   = -1
+
+[[scripts]]
+name = "q10326e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4001307
+delta   = -1
+
+[[scripts]]
+name = "q10327e"
+
+[[scripts]]
+name = "q10329s"
+
+[[scripts]]
+name = "q10330e"
+
+[[scripts]]
+name = "q10331s"
+
+[[scripts]]
+name = "q10331e"
+
+[[scripts]]
+name = "q10332s"
+
+[[scripts]]
+name = "q10332e"
+
+[[scripts]]
+name = "q10333s"
+
+[[scripts]]
+name = "q10340s"
+
+[[scripts]]
+name = "q10341s"
+
+[[scripts]]
+name = "q10342e"
+
+[[scripts]]
+name = "q10344e"
+
+[[scripts]]
+name = "q10345e"
+
+[[scripts]]
+name = "q10346e"
+
+[[scripts]]
+name = "q10347e"
+
+[[scripts]]
+name = "q10348e"
+
+[[scripts]]
+name = "q10349e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 1442000
+delta   = -1
+
+[[scripts]]
+name = "q10350e"
+
+[[scripts]]
+name = "q10351s"
+
+[[scripts]]
+name = "q10352e"
+
+[[scripts]]
+name = "q10353e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 3994133
+delta   = -1
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 3994126
+delta   = -1
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 3994131
+delta   = -1
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 3994132
+delta   = -1
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 3994134
+delta   = -1
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 3994127
+delta   = -1
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 3994135
+delta   = -1
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 3994128
+delta   = -1
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 3994136
+delta   = -1
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 3994129
+delta   = -1
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 3994137
+delta   = -1
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 3994130
+delta   = -1
+
+[[scripts]]
+name = "q10354s"
+
+[[scripts]]
+name = "q10355e"
+
+[[scripts]]
+name = "q10356e"
+
+[[scripts]]
+name = "q10360e"
+
+[[scripts]]
+name = "q10370e"
+
+[[scripts]]
+name = "q10380s"
+
+[[scripts]]
+name = "q10394e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4310000
+delta   = 1
+
+[[scripts]]
+name = "q10395s"
+
+[[scripts]]
+name             = "q10395e"
+incomplete_pages = ["stop"]
+
+[[scripts.conditions]]
+type  = "minimum_level"
+level = 20
+
+[[scripts]]
+name = "q10396s"
+
+[[scripts]]
+name             = "q10396e"
+incomplete_pages = ["약속된 30레벨을 달성하지 못하셨군요?"]
+
+[[scripts.conditions]]
+type  = "minimum_level"
+level = 30
+
+[[scripts]]
+name = "q10397s"
+
+[[scripts]]
+name             = "q10397e"
+incomplete_pages = ["1"]
+
+[[scripts.conditions]]
+type  = "minimum_level"
+level = 40
+
+[[scripts]]
+name = "q10398s"
+
+[[scripts]]
+name = "q10398e"
+
+[[scripts]]
+name = "q10400s"
+
+[[scripts]]
+name = "q10401s"
+
+[[scripts.conditions]]
+type     = "quest_record_at_least"
+quest_id = 10402
+index    = 0
+value    = "20"
+
+[[scripts]]
+name = "q10415e"
+
+[[scripts]]
+name = "q10417e"
+
+[[scripts]]
+name = "q10418e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4032420
+delta   = -20
+
+[[scripts]]
+name = "q10419e"
+
+[[scripts]]
+name = "q10420e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4032422
+delta   = -20
+
+[[scripts]]
+name = "q10450s"
+
+[[scripts]]
+name = "q10451s"
+
+[[scripts]]
+name = "q10452s"
+
+[[scripts]]
+name = "q10452e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4032434
+delta   = -10
+
+[[scripts]]
+name = "q10454e"
+
+[[scripts]]
+name = "q10455e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4032434
+delta   = -10
+
+[[scripts]]
+name = "q10456e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4032434
+delta   = -10
+
+[[scripts]]
+name = "q10457e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4032434
+delta   = -10
+
+[[scripts]]
+name = "q10470s"
+
+[[scripts]]
+name = "q19000s"
+
+[[scripts]]
+name = "q19001s"
+
+[[scripts]]
+name         = "q19002s"
+result_pages = ["n0", "n1"]
+
+[[scripts]]
+name = "q19005s"
+
+[[scripts]]
+name = "q19006s"
+
+[[scripts]]
+name = "q20000s"
+
+[[scripts]]
+name = "q20001s"
+
+[[scripts]]
+name = "q20002s"
+
+[[scripts]]
+name = "q20008s"
+
+[[scripts]]
+name = "q20010s"
+
+[[scripts]]
+name = "q20010e"
+
+[[scripts]]
+name = "q20011s"
+
+[[scripts]]
+name = "q20011e"
+
+[[scripts]]
+name = "q20012s"
+
+[[scripts]]
+name = "q20012e"
+
+[[scripts]]
+name = "q20013s"
+
+[[scripts]]
+name = "q20013e"
+
+[[scripts]]
+name = "q20015s"
+
+[[scripts]]
+name = "q20016s"
+
+[[scripts]]
+name = "q20017s"
+
+[[scripts]]
+name = "q20020s"
+
+[[scripts]]
+name = "q20100s"
+
+[[scripts]]
+name = "q20101e"
+
+[[scripts]]
+name = "q20102e"
+
+[[scripts]]
+name = "q20103e"
+
+[[scripts]]
+name = "q20104e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 1472000
+delta   = 1
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 2070000
+delta   = 50
+
+[[scripts]]
+name = "q20105e"
+
+[[scripts]]
+name = "q20200s"
+
+[[scripts]]
+name = "q20201e"
+
+[[scripts]]
+name = "q20202e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4032097
+delta   = -30
+
+[[scripts]]
+name = "q20203e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4032098
+delta   = -30
+
+[[scripts]]
+name = "q20204e"
+
+[[scripts]]
+name = "q20205e"
+
+[[scripts]]
+name = "q20311s"
+
+[[scripts]]
+name = "q20312s"
+
+[[scripts]]
+name = "q20313s"
+
+[[scripts]]
+name = "q20314s"
+
+[[scripts]]
+name = "q20315s"
+
+[[scripts]]
+name = "q20400s"
+
+[[scripts]]
+name = "q20401s"
+
+[[scripts]]
+name = "q20405s"
+
+[[scripts]]
+name = "q20406s"
+
+[[scripts]]
+name = "q20408s"
+
+[[scripts]]
+name = "q20500s"
+
+[[scripts]]
+name = "q20502s"
 
 [[scripts.actions]]
 type    = "item_delta"
 item_id = 4220137
-delta   = -1
+delta   = 1
+
+[[scripts]]
+name = "q20502e"
 
 [[scripts.actions]]
-type   = "experience"
-amount = 37600
+type    = "item_delta"
+item_id = 1902005
+delta   = 1
 
-# Quest 20526 completion script.
 [[scripts]]
-name = "q20526e"
+name = "q20506e"
 
-[[scripts.conditions]]
-type     = "item_quantity"
-item_id  = 4220137
-quantity = 1
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4220139
+delta   = -1
 
 [[scripts.actions]]
 type    = "item_delta"
@@ -131,91 +2128,177 @@ delta   = 1
 
 [[scripts.actions]]
 type    = "item_delta"
-item_id = 4220137
-delta   = -1
-
-[[scripts.actions]]
-type  = "mesos"
-delta = -10000000
-
-# Quest 21011 completion script.
-[[scripts]]
-name = "q21011e"
-
-[[scripts.actions]]
-type    = "item_delta"
-item_id = 1302000
+item_id = 1912005
 delta   = 1
 
-[[scripts.actions]]
-type   = "experience"
-amount = 35
-
-# Quest 21012 completion script.
 [[scripts]]
-name = "q21012e"
+name = "q20507s"
 
-[[scripts.actions]]
-type   = "experience"
-amount = 57
-
-[[scripts.actions]]
-type    = "item_delta"
-item_id = 2000022
-delta   = 10
-
-[[scripts.actions]]
-type    = "item_delta"
-item_id = 2000023
-delta   = 10
-
-# Quest 21013 completion script.
 [[scripts]]
-name = "q21013e"
+name = "q20509e"
 
-[[scripts.actions]]
-type   = "experience"
-amount = 95
+[[scripts]]
+name = "q20520s"
 
-[[scripts.actions]]
-type    = "item_delta"
-item_id = 4032309
-delta   = -1
+[[scripts]]
+name = "q20522s"
 
 [[scripts.actions]]
 type    = "item_delta"
-item_id = 4032310
-delta   = -1
-
-[[scripts.actions]]
-type    = "item_delta"
-item_id = 3010062
+item_id = 1902005
 delta   = 1
 
-# Quest 2124 completion script.
 [[scripts]]
-name = "q2124e"
-
-[[scripts.actions]]
-type    = "item_delta"
-item_id = 4031619
-delta   = -1
-
-# Quest 2126 completion script.
-[[scripts]]
-name = "q2126e"
+name = "q20522e"
 
 [[scripts.conditions]]
 type     = "item_quantity"
-item_id  = 4031619
+item_id  = 1902005
 quantity = 1
 
 [[scripts.actions]]
 type    = "item_delta"
-item_id = 4031619
+item_id = 1902005
 delta   = -1
 
-# Quest 21618 completion script.
+[[scripts]]
+name = "q20526s"
+
+[[scripts]]
+name = "q20526e"
+
+[[scripts]]
+name = "q20527s"
+
+[[scripts]]
+name = "q20600s"
+
+[[scripts]]
+name = "q20610s"
+
+[[scripts]]
+name = "q20700s"
+
+[[scripts]]
+name = "q20710s"
+
+[[scripts]]
+name = "q20720s"
+
+[[scripts]]
+name = "q21000s"
+
+[[scripts]]
+name = "q21001s"
+
+[[scripts]]
+name = "q21001e"
+
+[[scripts]]
+name = "q21010s"
+
+[[scripts]]
+name = "q21010e"
+
+[[scripts]]
+name = "q21011e"
+
+[[scripts]]
+name = "q21012s"
+
+[[scripts]]
+name = "q21012e"
+
+[[scripts]]
+name = "q21013s"
+
+[[scripts]]
+name = "q21013e"
+
+[[scripts]]
+name = "q21015s"
+
+[[scripts]]
+name = "q21016s"
+
+[[scripts]]
+name = "q21017s"
+
+[[scripts]]
+name = "q21018s"
+
+[[scripts]]
+name = "q21100s"
+
+[[scripts]]
+name = "q21101s"
+
+[[scripts]]
+name = "q21101e"
+
+[[scripts]]
+name = "q21200s"
+
+[[scripts]]
+name = "q21200e"
+
+[[scripts]]
+name = "q21201e"
+
+[[scripts]]
+name = "q21202s"
+
+[[scripts]]
+name = "q21202e"
+
+[[scripts.conditions]]
+type     = "item_quantity"
+item_id  = 4032311
+quantity = 30
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4032311
+delta   = -30
+
+[[scripts]]
+name = "q21300s"
+
+[[scripts]]
+name = "q21301e"
+
+[[scripts]]
+name = "q21302e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4032312
+delta   = -1
+
+[[scripts]]
+name = "q21303s"
+
+[[scripts]]
+name = "q21400s"
+
+[[scripts]]
+name = "q21401s"
+
+[[scripts]]
+name = "q21401e"
+
+[[scripts]]
+name = "q21600s"
+
+[[scripts]]
+name = "q21604s"
+
+[[scripts]]
+name = "q21613s"
+
+[[scripts]]
+name = "q21618s"
+
 [[scripts]]
 name = "q21618e"
 
@@ -229,63 +2312,116 @@ type    = "item_delta"
 item_id = 1902018
 delta   = 1
 
-# Quest 21700 start script.
 [[scripts]]
 name = "q21700s"
 
+[[scripts]]
+name = "q21703s"
+
+[[scripts]]
+name = "q21703e"
+
 [[scripts.actions]]
 type    = "item_delta"
-item_id = 1442000
-delta   = 1
+item_id = 2000022
+delta   = 30
 
-# Quest 21735 completion script.
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 2000023
+delta   = 30
+
+[[scripts]]
+name = "q21704s"
+
+[[scripts]]
+name = "q21712s"
+
+[[scripts]]
+name = "q21716s"
+
+[[scripts]]
+name = "q21719s"
+
+[[scripts]]
+name = "q21720e"
+
+[[scripts]]
+name = "q21729s"
+
+[[scripts]]
+name = "q21733s"
+
+[[scripts]]
+name = "q21733e"
+
+[[scripts]]
+name = "q21734s"
+
+[[scripts]]
+name = "q21734e"
+
+[[scripts]]
+name = "q21735s"
+
 [[scripts]]
 name = "q21735e"
 
-[[scripts.actions]]
-type    = "item_delta"
-item_id = 4032323
-delta   = -1
+[[scripts]]
+name = "q21736s"
 
-[[scripts.actions]]
-type   = "experience"
-amount = 6037
+[[scripts]]
+name = "q21738s"
 
-# Quest 21739 completion script.
 [[scripts]]
 name = "q21739e"
 
-[[scripts.actions]]
-type   = "experience"
-amount = 29500
-
-# Quest 21742 completion script.
 [[scripts]]
-name = "q21742e"
+name = "q21740s"
+
+[[scripts]]
+name = "q21740e"
+
+[[scripts]]
+name = "q21741s"
+
+[[scripts]]
+name = "q21742s"
 
 [[scripts.actions]]
 type    = "item_delta"
-item_id = 4032342
-delta   = -8
+item_id = 4220151
+delta   = 1
+
+[[scripts]]
+name = "q21742e"
 
 [[scripts.actions]]
 type    = "item_delta"
 item_id = 4220151
 delta   = -1
 
-[[scripts.actions]]
-type   = "experience"
-amount = 10000
+[[scripts]]
+name = "q21746s"
 
-# Quest 21747 completion script.
+[[scripts]]
+name = "q21747s"
+
 [[scripts]]
 name = "q21747e"
 
-[[scripts.actions]]
-type   = "experience"
-amount = 16000
+[[scripts]]
+name = "q21748e"
 
-# Quest 21754 start script.
+[[scripts]]
+name = "q21749s"
+
+[[scripts]]
+name = "q21750e"
+
+[[scripts]]
+name = "q21753s"
+
 [[scripts]]
 name = "q21754s"
 
@@ -294,240 +2430,181 @@ type    = "item_delta"
 item_id = 4032328
 delta   = 1
 
-# Quest 21766 completion script.
+[[scripts]]
+name = "q21757e"
+
+[[scripts]]
+name = "q21766s"
+
 [[scripts]]
 name = "q21766e"
 
-[[scripts.actions]]
-type   = "experience"
-amount = 200
-
-# Quest 2251 completion script.
 [[scripts]]
-name = "q2251e"
+name = "q21767s"
 
 [[scripts.actions]]
 type    = "item_delta"
-item_id = 4032399
-delta   = -20
-
-# Quest 2300 completion script.
-[[scripts]]
-name = "q2300e"
-
-[[scripts.actions]]
-type    = "item_delta"
-item_id = 4032375
-delta   = -1
-
-[[scripts.actions]]
-type   = "experience"
-amount = 6000
-
-[[scripts.actions]]
-type     = "set_quest_status"
-quest_id = 2312
-state    = "started"
-
-# Quest 2301 completion script.
-[[scripts]]
-name = "q2301e"
-
-[[scripts.actions]]
-type    = "item_delta"
-item_id = 4032375
-delta   = -1
-
-[[scripts.actions]]
-type   = "experience"
-amount = 6000
-
-[[scripts.actions]]
-type     = "set_quest_status"
-quest_id = 2312
-state    = "started"
-
-# Quest 2302 completion script.
-[[scripts]]
-name = "q2302e"
-
-[[scripts.actions]]
-type    = "item_delta"
-item_id = 4032375
-delta   = -1
-
-[[scripts.actions]]
-type   = "experience"
-amount = 6000
-
-[[scripts.actions]]
-type     = "set_quest_status"
-quest_id = 2312
-state    = "started"
-
-# Quest 2303 completion script.
-[[scripts]]
-name = "q2303e"
-
-[[scripts.actions]]
-type    = "item_delta"
-item_id = 4032375
-delta   = -1
-
-[[scripts.actions]]
-type   = "experience"
-amount = 6000
-
-[[scripts.actions]]
-type     = "set_quest_status"
-quest_id = 2312
-state    = "started"
-
-# Quest 2304 completion script.
-[[scripts]]
-name = "q2304e"
-
-[[scripts.actions]]
-type    = "item_delta"
-item_id = 4032375
-delta   = -1
-
-[[scripts.actions]]
-type   = "experience"
-amount = 6000
-
-[[scripts.actions]]
-type     = "set_quest_status"
-quest_id = 2312
-state    = "started"
-
-# Quest 2305 completion script.
-[[scripts]]
-name = "q2305e"
-
-[[scripts.actions]]
-type    = "item_delta"
-item_id = 4032375
-delta   = -1
-
-[[scripts.actions]]
-type   = "experience"
-amount = 6000
-
-[[scripts.actions]]
-type     = "set_quest_status"
-quest_id = 2312
-state    = "started"
-
-# Quest 2306 completion script.
-[[scripts]]
-name = "q2306e"
-
-[[scripts.actions]]
-type    = "item_delta"
-item_id = 4032375
-delta   = -1
-
-[[scripts.actions]]
-type   = "experience"
-amount = 6000
-
-[[scripts.actions]]
-type     = "set_quest_status"
-quest_id = 2312
-state    = "started"
-
-# Quest 2307 completion script.
-[[scripts]]
-name = "q2307e"
-
-[[scripts.actions]]
-type    = "item_delta"
-item_id = 4032375
-delta   = -1
-
-[[scripts.actions]]
-type   = "experience"
-amount = 6000
-
-[[scripts.actions]]
-type     = "set_quest_status"
-quest_id = 2312
-state    = "started"
-
-# Quest 2308 completion script.
-[[scripts]]
-name = "q2308e"
-
-[[scripts.actions]]
-type    = "item_delta"
-item_id = 4032375
-delta   = -1
-
-[[scripts.actions]]
-type   = "experience"
-amount = 6000
-
-[[scripts.actions]]
-type     = "set_quest_status"
-quest_id = 2312
-state    = "started"
-
-# Quest 2309 completion script.
-[[scripts]]
-name = "q2309e"
-
-[[scripts.actions]]
-type    = "item_delta"
-item_id = 4032375
-delta   = -1
-
-[[scripts.actions]]
-type   = "experience"
-amount = 6000
-
-[[scripts.actions]]
-type     = "set_quest_status"
-quest_id = 2312
-state    = "started"
-
-# Quest 2310 completion script.
-[[scripts]]
-name = "q2310e"
-
-[[scripts.actions]]
-type    = "item_delta"
-item_id = 4032375
-delta   = -1
-
-[[scripts.actions]]
-type   = "experience"
-amount = 6000
-
-[[scripts.actions]]
-type     = "set_quest_status"
-quest_id = 2312
-state    = "started"
-
-# Quest 2333 completion script.
-[[scripts]]
-name = "q2333e"
-
-[[scripts.actions]]
-type   = "experience"
-amount = 15000
-
-# Quest 2335 start script.
-[[scripts]]
-name = "q2335s"
-
-[[scripts.actions]]
-type    = "item_delta"
-item_id = 4032405
+item_id = 4032423
 delta   = 1
 
-# Reconstructed from exact local WZ evidence.
-# Quest 29002 completion script.
+[[scripts]]
+name = "q28004s"
+
+[[scripts]]
+name = "q28117s"
+
+[[scripts]]
+name = "q28118s"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4220074
+delta   = 1
+
+[[scripts]]
+name = "q28131e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 3010072
+delta   = 1
+
+[[scripts]]
+name = "q28137e"
+
+[[scripts]]
+name = "q28138e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 5040001
+delta   = 1
+
+# [[scripts]]
+# name = "q28139e"
+#
+# [[scripts.actions]]
+# type    = "item_delta"
+# item_id = 2020437
+# delta   = 1
+
+[[scripts]]
+name = "q28140e"
+
+[[scripts]]
+name = "q28141s"
+
+[[scripts]]
+name = "q28142s"
+
+[[scripts]]
+name = "q28143s"
+
+[[scripts]]
+name = "q28144s"
+
+[[scripts]]
+name = "q28145e"
+
+[[scripts]]
+name = "q28146e"
+
+[[scripts]]
+name = "q28147e"
+
+[[scripts]]
+name = "q28148e"
+
+[[scripts]]
+name = "q28149s"
+
+[[scripts]]
+name = "q28150s"
+
+[[scripts]]
+name = "q28151s"
+
+[[scripts]]
+name = "q28152s"
+
+[[scripts]]
+name = "q28153e"
+
+[[scripts]]
+name = "q28154s"
+
+[[scripts]]
+name = "q28155e"
+
+[[scripts]]
+name = "q28156s"
+
+[[scripts]]
+name = "q28157e"
+
+[[scripts]]
+name = "q28158e"
+
+[[scripts]]
+name = "q28159e"
+
+[[scripts]]
+name = "q28160e"
+
+[[scripts]]
+name = "q28161e"
+
+[[scripts]]
+name = "q28284e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4032444
+delta   = -31
+
+[[scripts]]
+name = "q28285e"
+
+[[scripts]]
+name = "q28286e"
+
+[[scripts]]
+name = "q28304e"
+
+[[scripts]]
+name = "q28311e"
+
+[[scripts]]
+name = "q28318e"
+
+[[scripts]]
+name = "q28326e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4032522
+delta   = -5
+
+[[scripts]]
+name = "q28327e"
+
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4032523
+delta   = -10
+
+[[scripts]]
+name = "q28328e"
+
+[[scripts]]
+name = "q28333s"
+
+[[scripts]]
+name = "q28337e"
+
+[[scripts]]
+name = "q29002s"
+
 [[scripts]]
 name = "q29002e"
 
@@ -536,8 +2613,9 @@ type    = "item_delta"
 item_id = 1142003
 delta   = 1
 
-# Reconstructed from exact local WZ evidence.
-# Quest 29400 completion script.
+[[scripts]]
+name = "q29400s"
+
 [[scripts]]
 name = "q29400e"
 
@@ -546,48 +2624,30 @@ type    = "item_delta"
 item_id = 1142004
 delta   = 1
 
-# Reconstructed from exact local WZ evidence.
-# Quest 29500 completion script.
 [[scripts]]
-name = "q29500e"
+name = "q29500s"
 
-[[scripts.actions]]
-type    = "item_delta"
-item_id = 1142006
-delta   = 1
+[[scripts]]
+name = "q29501s"
 
-# Reconstructed from exact local WZ evidence.
-# Quest 29501 completion script.
 [[scripts]]
 name = "q29501e"
 
-[[scripts.actions]]
-type    = "item_delta"
-item_id = 1142007
-delta   = 1
+[[scripts]]
+name = "q29502s"
 
-# Reconstructed from exact local WZ evidence.
-# Quest 29502 completion script.
 [[scripts]]
 name = "q29502e"
 
-[[scripts.actions]]
-type    = "item_delta"
-item_id = 1142008
-delta   = 1
+[[scripts]]
+name = "q29503s"
 
-# Reconstructed from exact local WZ evidence.
-# Quest 29503 completion script.
 [[scripts]]
 name = "q29503e"
 
-[[scripts.actions]]
-type    = "item_delta"
-item_id = 1142014
-delta   = 1
+[[scripts]]
+name = "q29505s"
 
-# Reconstructed from exact local WZ evidence.
-# Quest 29505 completion script.
 [[scripts]]
 name = "q29505e"
 
@@ -596,8 +2656,9 @@ type    = "item_delta"
 item_id = 1142077
 delta   = 1
 
-# Reconstructed from exact local WZ evidence.
-# Quest 29506 completion script.
+[[scripts]]
+name = "q29506s"
+
 [[scripts]]
 name = "q29506e"
 
@@ -606,8 +2667,6 @@ type    = "item_delta"
 item_id = 1142078
 delta   = 1
 
-# Reconstructed from exact local WZ evidence.
-# Quest 29508 completion script.
 [[scripts]]
 name = "q29508e"
 
@@ -616,7 +2675,12 @@ type    = "item_delta"
 item_id = 1142081
 delta   = 1
 
-# Quest 29900 completion script.
+[[scripts]]
+name = "q29510s"
+
+[[scripts]]
+name = "q29900s"
+
 [[scripts]]
 name = "q29900e"
 
@@ -625,7 +2689,9 @@ type    = "item_delta"
 item_id = 1142107
 delta   = 1
 
-# Quest 29901 completion script.
+[[scripts]]
+name = "q29901s"
+
 [[scripts]]
 name = "q29901e"
 
@@ -634,7 +2700,9 @@ type    = "item_delta"
 item_id = 1142108
 delta   = 1
 
-# Quest 29902 completion script.
+[[scripts]]
+name = "q29902s"
+
 [[scripts]]
 name = "q29902e"
 
@@ -643,7 +2711,9 @@ type    = "item_delta"
 item_id = 1142109
 delta   = 1
 
-# Quest 29903 completion script.
+[[scripts]]
+name = "q29903s"
+
 [[scripts]]
 name = "q29903e"
 
@@ -652,2534 +2722,141 @@ type    = "item_delta"
 item_id = 1142110
 delta   = 1
 
-# Quest 3452 completion script.
-[[scripts]]
-name = "q3452e"
-
-[[scripts.actions]]
-type    = "item_delta"
-item_id = 4000099
-delta   = -1
-
-[[scripts.actions]]
-type    = "item_delta"
-item_id = 2000011
-delta   = 50
-
-[[scripts.actions]]
-type   = "experience"
-amount = 8000
-
-# Quest 3953 completion script.
-[[scripts]]
-name = "q3953e"
-
-[[scripts.actions]]
-type    = "item_delta"
-item_id = 4011008
-delta   = -1
-
-[[scripts.actions]]
-type   = "experience"
-amount = 20000
-
-# Quest 8219 completion script.
-[[scripts]]
-name = "q8219e"
-
-[[scripts.actions]]
-type    = "item_delta"
-item_id = 3992040
-delta   = 1
-
-[[scripts.actions]]
-type   = "experience"
-amount = 175000
-
-# Quest 8227 start script.
-[[scripts]]
-name = "q8227s"
-
-[[scripts.actions]]
-type    = "item_delta"
-item_id = 4032032
-delta   = 1
-
-# Quest 8228 completion script.
-[[scripts]]
-name = "q8228e"
-
-[[scripts.conditions]]
-type     = "item_quantity"
-item_id  = 4032032
-quantity = 1
-
-[[scripts.actions]]
-type    = "item_delta"
-item_id = 4032032
-delta   = -1
-
-# Quest 8228 start script.
-[[scripts]]
-name = "q8228s"
-
-[[scripts.actions]]
-type    = "item_delta"
-item_id = 4032032
-delta   = 1
-
-# Quest 8229 completion script.
-[[scripts]]
-name = "q8229e"
-
-[[scripts.actions]]
-type    = "item_delta"
-item_id = 4032018
-delta   = -1
-
-[[scripts.actions]]
-type   = "experience"
-amount = 50000
-
-# WZ-only fallbacks. These programs intentionally add no conditions, actions,
-# or dialogue beyond the matching local WZ quest phase.
-
-# Quest 4676 completion script.
-[[scripts]]
-name = "4676e"
-
-# Quest 9887 completion script.
-[[scripts]]
-name = "eDay_join"
-
-# Quest 9900 completion script.
-[[scripts]]
-name = "eDay_join2"
-
-# Quest 9840 completion script.
-[[scripts]]
-name = "huntUP1"
-
-# Quest 9841 completion script.
-[[scripts]]
-name = "huntUP2"
-
-# Quest 9842 completion script.
-[[scripts]]
-name = "huntUP3"
-
-# Quest 9844 completion script.
-[[scripts]]
-name = "huntUP4"
-
-# Quest 9845 completion script.
-[[scripts]]
-name = "huntUP5"
-
-# Quest 9846 completion script.
-[[scripts]]
-name = "huntUP6"
-
-# Quest 9847 completion script.
-[[scripts]]
-name = "huntUP7"
-
-# Quest 9849 completion script.
-[[scripts]]
-name = "huntUP8"
-
-# Quest 9850 completion script.
-[[scripts]]
-name = "huntUP9"
-
-# Quest 10002 completion script.
-[[scripts]]
-name = "q10002e"
-
-# Quest 10008 start script.
-[[scripts]]
-name = "q10008s"
-
-# Quest 10010 completion script.
-[[scripts]]
-name = "q10010e"
-
-# Quest 10011 completion script.
-[[scripts]]
-name = "q10011e"
-
-# Quest 10012 completion script.
-[[scripts]]
-name = "q10012e"
-
-# Quest 10014 start script.
-[[scripts]]
-name = "q10014s"
-
-# Quest 10034 start script.
-[[scripts]]
-name = "q10034s"
-
-# Quest 10036 completion script.
-[[scripts]]
-name = "q10036e"
-
-# Quest 10036 start script.
-[[scripts]]
-name = "q10036s"
-
-# Quest 10037 completion script.
-[[scripts]]
-name = "q10037e"
-
-# Quest 10039 completion script.
-[[scripts]]
-name = "q10039e"
-
-# Quest 10043 start script.
-[[scripts]]
-name = "q10043s"
-
-# Quest 10046 start script.
-[[scripts]]
-name = "q10046s"
-
-# Quest 10050 completion script.
-[[scripts]]
-name = "q10050e"
-
-# Quest 10052 start script.
-[[scripts]]
-name = "q10052s"
-
-# Quest 10059 start script.
-[[scripts]]
-name = "q10059s"
-
-# Quest 10066 completion script.
-[[scripts]]
-name = "q10066e"
-
-# Quest 10069 completion script.
-[[scripts]]
-name = "q10069e"
-
-# Quest 10074 start script.
-[[scripts]]
-name = "q10074s"
-
-# Quest 10075 completion script.
-[[scripts]]
-name = "q10075e"
-
-# Quest 10076 completion script.
-[[scripts]]
-name = "q10076e"
-
-# Quest 10077 completion script.
-[[scripts]]
-name = "q10077e"
-
-# Quest 10078 completion script.
-[[scripts]]
-name = "q10078e"
-
-# Quest 10079 completion script.
-[[scripts]]
-name = "q10079e"
-
-# Quest 10082 start script.
-[[scripts]]
-name = "q10082s"
-
-# Quest 10083 completion script.
-[[scripts]]
-name = "q10083e"
-
-# Quest 10084 completion script.
-[[scripts]]
-name = "q10084e"
-
-# Quest 10085 completion script.
-[[scripts]]
-name = "q10085e"
-
-# Quest 10086 completion script.
-[[scripts]]
-name = "q10086e"
-
-# Quest 10087 completion script.
-[[scripts]]
-name = "q10087e"
-
-# Quest 10088 completion script.
-[[scripts]]
-name = "q10088e"
-
-# Quest 10089 completion script.
-[[scripts]]
-name = "q10089e"
-
-# Quest 10090 completion script.
-[[scripts]]
-name = "q10090e"
-
-# Quest 10091 completion script.
-[[scripts]]
-name = "q10091e"
-
-# Quest 10092 completion script.
-[[scripts]]
-name = "q10092e"
-
-# Quest 10093 completion script.
-[[scripts]]
-name = "q10093e"
-
-# Quest 10094 completion script.
-[[scripts]]
-name = "q10094e"
-
-# Quest 10095 completion script.
-[[scripts]]
-name = "q10095e"
-
-# Quest 10096 completion script.
-[[scripts]]
-name = "q10096e"
-
-# Quest 10097 completion script.
-[[scripts]]
-name = "q10097e"
-
-# Quest 10098 completion script.
-[[scripts]]
-name = "q10098e"
-
-# Quest 10099 completion script.
-[[scripts]]
-name = "q10099e"
-
-# Quest 10100 completion script.
-[[scripts]]
-name = "q10100e"
-
-# Quest 10101 completion script.
-[[scripts]]
-name = "q10101e"
-
-# Quest 10102 completion script.
-[[scripts]]
-name = "q10102e"
-
-# Quest 10103 completion script.
-[[scripts]]
-name = "q10103e"
-
-# Quest 10104 completion script.
-[[scripts]]
-name = "q10104e"
-
-# Quest 10105 completion script.
-[[scripts]]
-name = "q10105e"
-
-# Quest 10106 completion script.
-[[scripts]]
-name = "q10106e"
-
-# Quest 10108 start script.
-[[scripts]]
-name = "q10108s"
-
-# Quest 10110 completion script.
-[[scripts]]
-name = "q10110e"
-
-# Quest 10206 completion script.
-[[scripts]]
-name = "q10206e"
-
-# Quest 10206 start script.
-[[scripts]]
-name = "q10206s"
-
-# Quest 10207 completion script.
-[[scripts]]
-name = "q10207e"
-
-# Quest 10207 start script.
-[[scripts]]
-name = "q10207s"
-
-# Quest 10208 completion script.
-[[scripts]]
-name = "q10208e"
-
-# Quest 10208 start script.
-[[scripts]]
-name = "q10208s"
-
-# Quest 10209 completion script.
-[[scripts]]
-name = "q10209e"
-
-# Quest 10209 start script.
-[[scripts]]
-name = "q10209s"
-
-# Quest 10210 start script.
-[[scripts]]
-name = "q10210s"
-
-# Quest 10211 start script.
-[[scripts]]
-name = "q10211s"
-
-# Quest 10212 start script.
-[[scripts]]
-name = "q10212s"
-
-# Quest 10213 start script.
-[[scripts]]
-name = "q10213s"
-
-# Quest 10214 start script.
-[[scripts]]
-name = "q10214s"
-
-# Quest 10215 start script.
-[[scripts]]
-name = "q10215s"
-
-# Quest 10216 start script.
-[[scripts]]
-name = "q10216s"
-
-# Quest 10217 start script.
-[[scripts]]
-name = "q10217s"
-
-# Quest 10218 completion script.
-[[scripts]]
-name = "q10218e"
-
-# Quest 10218 start script.
-[[scripts]]
-name = "q10218s"
-
-# Quest 10219 start script.
-[[scripts]]
-name = "q10219s"
-
-# Quest 1021 completion script.
-[[scripts]]
-name = "q1021e"
-
-# Quest 1021 start script.
-[[scripts]]
-name = "q1021s"
-
-# Quest 10220 start script.
-[[scripts]]
-name = "q10220s"
-
-# Quest 10222 start script.
-[[scripts]]
-name = "q10222s"
-
-# Quest 10224 start script.
-[[scripts]]
-name = "q10224s"
-
-# Quest 10231 start script.
-[[scripts]]
-name = "q10231s"
-
-# Quest 10240 completion script.
-[[scripts]]
-name = "q10240e"
-
-# Quest 10241 completion script.
-[[scripts]]
-name = "q10241e"
-
-# Quest 10242 completion script.
-[[scripts]]
-name = "q10242e"
-
-# Quest 10243 completion script.
-[[scripts]]
-name = "q10243e"
-
-# Quest 10244 completion script.
-[[scripts]]
-name = "q10244e"
-
-# Quest 10245 completion script.
-[[scripts]]
-name = "q10245e"
-
-# Quest 10246 completion script.
-[[scripts]]
-name = "q10246e"
-
-# Quest 10247 completion script.
-[[scripts]]
-name = "q10247e"
-
-# Quest 10248 completion script.
-[[scripts]]
-name = "q10248e"
-
-# Quest 10249 completion script.
-[[scripts]]
-name = "q10249e"
-
-# Quest 10250 completion script.
-[[scripts]]
-name = "q10250e"
-
-# Quest 10251 completion script.
-[[scripts]]
-name = "q10251e"
-
-# Quest 10252 completion script.
-[[scripts]]
-name = "q10252e"
-
-# Quest 10253 completion script.
-[[scripts]]
-name = "q10253e"
-
-# Quest 10254 completion script.
-[[scripts]]
-name = "q10254e"
-
-# Quest 10255 completion script.
-[[scripts]]
-name = "q10255e"
-
-# Quest 10256 completion script.
-[[scripts]]
-name = "q10256e"
-
-# Quest 10260 completion script.
-[[scripts]]
-name = "q10260e"
-
-# Quest 10261 completion script.
-[[scripts]]
-name = "q10261e"
-
-# Quest 10262 completion script.
-[[scripts]]
-name = "q10262e"
-
-# Quest 10263 completion script.
-[[scripts]]
-name = "q10263e"
-
-# Quest 10264 completion script.
-[[scripts]]
-name = "q10264e"
-
-# Quest 10264 start script.
-[[scripts]]
-name = "q10264s"
-
-# Quest 10265 completion script.
-[[scripts]]
-name = "q10265e"
-
-# Quest 10265 start script.
-[[scripts]]
-name = "q10265s"
-
-# Quest 10266 completion script.
-[[scripts]]
-name = "q10266e"
-
-# Quest 10266 start script.
-[[scripts]]
-name = "q10266s"
-
-# Quest 10267 completion script.
-[[scripts]]
-name = "q10267e"
-
-# Quest 10267 start script.
-[[scripts]]
-name = "q10267s"
-
-# Quest 10268 completion script.
-[[scripts]]
-name = "q10268e"
-
-# Quest 10270 completion script.
-[[scripts]]
-name = "q10270e"
-
-# Quest 10271 completion script.
-[[scripts]]
-name = "q10271e"
-
-# Quest 10272 completion script.
-[[scripts]]
-name = "q10272e"
-
-# Quest 10274 completion script.
-[[scripts]]
-name = "q10274e"
-
-# Quest 10275 completion script.
-[[scripts]]
-name = "q10275e"
-
-# Quest 10276 completion script.
-[[scripts]]
-name = "q10276e"
-
-# Quest 10277 completion script.
-[[scripts]]
-name = "q10277e"
-
-# Quest 10278 completion script.
-[[scripts]]
-name = "q10278e"
-
-# Quest 10279 completion script.
-[[scripts]]
-name = "q10279e"
-
-# Quest 10280 completion script.
-[[scripts]]
-name = "q10280e"
-
-# Quest 10281 completion script.
-[[scripts]]
-name = "q10281e"
-
-# Quest 10282 completion script.
-[[scripts]]
-name = "q10282e"
-
-# Quest 10282 start script.
-[[scripts]]
-name = "q10282s"
-
-# Quest 10283 completion script.
-[[scripts]]
-name = "q10283e"
-
-# Quest 10283 start script.
-[[scripts]]
-name = "q10283s"
-
-# Quest 10284 completion script.
-[[scripts]]
-name = "q10284e"
-
-# Quest 10284 start script.
-[[scripts]]
-name = "q10284s"
-
-# Quest 10287 start script.
-[[scripts]]
-name = "q10287s"
-
-# Quest 1028 start script.
-[[scripts]]
-name = "q1028s"
-
-# Quest 10300 completion script.
-[[scripts]]
-name = "q10300e"
-
-# Quest 10301 completion script.
-[[scripts]]
-name = "q10301e"
-
-# Quest 10302 completion script.
-[[scripts]]
-name = "q10302e"
-
-# Quest 10311 completion script.
-[[scripts]]
-name = "q10311e"
-
-# Quest 10312 completion script.
-[[scripts]]
-name = "q10312e"
-
-# Quest 10313 completion script.
-[[scripts]]
-name = "q10313e"
-
-# Quest 10314 completion script.
-[[scripts]]
-name = "q10314e"
-
-# Quest 10315 completion script.
-[[scripts]]
-name = "q10315e"
-
-# Quest 10316 completion script.
-[[scripts]]
-name = "q10316e"
-
-# Quest 10317 completion script.
-[[scripts]]
-name = "q10317e"
-
-# Quest 10318 completion script.
-[[scripts]]
-name = "q10318e"
-
-# Quest 10319 completion script.
-[[scripts]]
-name = "q10319e"
-
-# Quest 10319 start script.
-[[scripts]]
-name = "q10319s"
-
-# Quest 10320 completion script.
-[[scripts]]
-name = "q10320e"
-
-# Quest 10320 start script.
-[[scripts]]
-name = "q10320s"
-
-# Quest 10321 completion script.
-[[scripts]]
-name = "q10321e"
-
-# Quest 10321 start script.
-[[scripts]]
-name = "q10321s"
-
-# Quest 10329 start script.
-[[scripts]]
-name = "q10329s"
-
-# Quest 10330 completion script.
-[[scripts]]
-name = "q10330e"
-
-# Quest 10331 completion script.
-[[scripts]]
-name = "q10331e"
-
-# Quest 10331 start script.
-[[scripts]]
-name = "q10331s"
-
-# Quest 10332 completion script.
-[[scripts]]
-name = "q10332e"
-
-# Quest 10332 start script.
-[[scripts]]
-name = "q10332s"
-
-# Quest 10333 start script.
-[[scripts]]
-name = "q10333s"
-
-# Quest 10340 start script.
-[[scripts]]
-name = "q10340s"
-
-# Quest 10341 start script.
-[[scripts]]
-name = "q10341s"
-
-# Quest 10342 completion script.
-[[scripts]]
-name = "q10342e"
-
-# Quest 10344 completion script.
-[[scripts]]
-name = "q10344e"
-
-# Quest 10345 completion script.
-[[scripts]]
-name = "q10345e"
-
-# Quest 10346 completion script.
-[[scripts]]
-name = "q10346e"
-
-# Quest 10347 completion script.
-[[scripts]]
-name = "q10347e"
-
-# Quest 10348 completion script.
-[[scripts]]
-name = "q10348e"
-
-# Quest 10349 completion script.
-[[scripts]]
-name = "q10349e"
-
-# Quest 10350 completion script.
-[[scripts]]
-name = "q10350e"
-
-# Quest 10351 start script.
-[[scripts]]
-name = "q10351s"
-
-# Quest 10352 completion script.
-[[scripts]]
-name = "q10352e"
-
-# Quest 10353 completion script.
-[[scripts]]
-name = "q10353e"
-
-# Quest 10354 start script.
-[[scripts]]
-name = "q10354s"
-
-# Quest 10355 completion script.
-[[scripts]]
-name = "q10355e"
-
-# Quest 10356 completion script.
-[[scripts]]
-name = "q10356e"
-
-# Quest 10360 completion script.
-[[scripts]]
-name = "q10360e"
-
-# Quest 10370 completion script.
-[[scripts]]
-name = "q10370e"
-
-# Quest 10380 start script.
-[[scripts]]
-name = "q10380s"
-
-# Quest 10394 completion script.
-[[scripts]]
-name = "q10394e"
-
-# Quest 10395 completion script.
-[[scripts]]
-name = "q10395e"
-
-# Quest 10395 start script.
-[[scripts]]
-name = "q10395s"
-
-# Quest 10396 completion script.
-[[scripts]]
-name = "q10396e"
-
-# Quest 10396 start script.
-[[scripts]]
-name = "q10396s"
-
-# Quest 10397 completion script.
-[[scripts]]
-name = "q10397e"
-
-# Quest 10397 start script.
-[[scripts]]
-name = "q10397s"
-
-# Quest 10398 completion script.
-[[scripts]]
-name = "q10398e"
-
-# Quest 10398 start script.
-[[scripts]]
-name = "q10398s"
-
-# Quest 10400 start script.
-[[scripts]]
-name = "q10400s"
-
-# Quest 10401 start script.
-[[scripts]]
-name = "q10401s"
-
-# Quest 10415 completion script.
-[[scripts]]
-name = "q10415e"
-
-# Quest 10417 completion script.
-[[scripts]]
-name = "q10417e"
-
-# Quest 10418 completion script.
-[[scripts]]
-name = "q10418e"
-
-# Quest 10419 completion script.
-[[scripts]]
-name = "q10419e"
-
-# Quest 10420 completion script.
-[[scripts]]
-name = "q10420e"
-
-# Quest 10452 completion script.
-[[scripts]]
-name = "q10452e"
-
-# Quest 10452 start script.
-[[scripts]]
-name = "q10452s"
-
-# Quest 10453 completion script.
-[[scripts]]
-name = "q10453e"
-
-# Quest 10454 completion script.
-[[scripts]]
-name = "q10454e"
-
-# Quest 10455 completion script.
-[[scripts]]
-name = "q10455e"
-
-# Quest 10456 completion script.
-[[scripts]]
-name = "q10456e"
-
-# Quest 10457 completion script.
-[[scripts]]
-name = "q10457e"
-
-# Quest 10470 start script.
-[[scripts]]
-name = "q10470s"
-
-# Quest 1048 start script.
-[[scripts]]
-name = "q1048s"
-
-# Quest 1049 start script.
-[[scripts]]
-name = "q1049s"
-
-# Quest 1050 start script.
-[[scripts]]
-name = "q1050s"
-
-# Quest 1051 start script.
-[[scripts]]
-name = "q1051s"
-
-# Quest 1052 start script.
-[[scripts]]
-name = "q1052s"
-
-# Quest 1053 start script.
-[[scripts]]
-name = "q1053s"
-
-# Quest 1054 start script.
-[[scripts]]
-name = "q1054s"
-
-# Quest 19000 start script.
-[[scripts]]
-name = "q19000s"
-
-# Quest 19001 start script.
-[[scripts]]
-name = "q19001s"
-
-# Quest 19002 start script.
-[[scripts]]
-name = "q19002s"
-
-# Quest 19005 start script.
-[[scripts]]
-name = "q19005s"
-
-# Quest 19006 start script.
-[[scripts]]
-name = "q19006s"
-
-# Quest 20000 start script.
-[[scripts]]
-name = "q20000s"
-
-# Quest 20001 start script.
-[[scripts]]
-name = "q20001s"
-
-# Quest 20002 start script.
-[[scripts]]
-name = "q20002s"
-
-# Quest 20008 start script.
-[[scripts]]
-name = "q20008s"
-
-# Quest 20010 completion script.
-[[scripts]]
-name = "q20010e"
-
-# Quest 20010 start script.
-[[scripts]]
-name = "q20010s"
-
-# Quest 20011 start script.
-[[scripts]]
-name = "q20011s"
-
-# Quest 20012 start script.
-[[scripts]]
-name = "q20012s"
-
-# Quest 20013 start script.
-[[scripts]]
-name = "q20013s"
-
-# Quest 20015 start script.
-[[scripts]]
-name = "q20015s"
-
-# Quest 20016 start script.
-[[scripts]]
-name = "q20016s"
-
-# Quest 20020 start script.
-[[scripts]]
-name = "q20020s"
-
-# Quest 20100 start script.
-[[scripts]]
-name = "q20100s"
-
-# Quest 20101 completion script.
-[[scripts]]
-name = "q20101e"
-
-# Quest 20102 completion script.
-[[scripts]]
-name = "q20102e"
-
-# Quest 20103 completion script.
-[[scripts]]
-name = "q20103e"
-
-# Quest 20104 completion script.
-[[scripts]]
-name = "q20104e"
-
-# Quest 20105 completion script.
-[[scripts]]
-name = "q20105e"
-
-# Quest 20200 start script.
-[[scripts]]
-name = "q20200s"
-
-# Quest 20201 completion script.
-[[scripts]]
-name = "q20201e"
-
-# Quest 20202 completion script.
-[[scripts]]
-name = "q20202e"
-
-# Quest 20203 completion script.
-[[scripts]]
-name = "q20203e"
-
-# Quest 20204 completion script.
-[[scripts]]
-name = "q20204e"
-
-# Quest 20205 completion script.
-[[scripts]]
-name = "q20205e"
-
-# Quest 20311 start script.
-[[scripts]]
-name = "q20311s"
-
-# Quest 20312 start script.
-[[scripts]]
-name = "q20312s"
-
-# Quest 20313 start script.
-[[scripts]]
-name = "q20313s"
-
-# Quest 20314 start script.
-[[scripts]]
-name = "q20314s"
-
-# Quest 20315 start script.
-[[scripts]]
-name = "q20315s"
-
-# Quest 20400 start script.
-[[scripts]]
-name = "q20400s"
-
-# Quest 20401 start script.
-[[scripts]]
-name = "q20401s"
-
-# Quest 20405 start script.
-[[scripts]]
-name = "q20405s"
-
-# Quest 20406 start script.
-[[scripts]]
-name = "q20406s"
-
-# Quest 20408 start script.
-[[scripts]]
-name = "q20408s"
-
-# Quest 20500 start script.
-[[scripts]]
-name = "q20500s"
-
-# Quest 20502 completion script.
-[[scripts]]
-name = "q20502e"
-
-# Quest 20502 start script.
-[[scripts]]
-name = "q20502s"
-
-# Quest 20506 completion script.
-[[scripts]]
-name = "q20506e"
-
-# Quest 20507 start script.
-[[scripts]]
-name = "q20507s"
-
-# Quest 20509 completion script.
-[[scripts]]
-name = "q20509e"
-
-# Quest 20520 start script.
-[[scripts]]
-name = "q20520s"
-
-# Quest 20522 start script.
-[[scripts]]
-name = "q20522s"
-
-# Quest 20526 start script.
-[[scripts]]
-name = "q20526s"
-
-# Quest 20527 start script.
-[[scripts]]
-name = "q20527s"
-
-# Quest 20600 start script.
-[[scripts]]
-name = "q20600s"
-
-# Quest 20610 start script.
-[[scripts]]
-name = "q20610s"
-
-# Quest 20700 start script.
-[[scripts]]
-name = "q20700s"
-
-# Quest 20710 start script.
-[[scripts]]
-name = "q20710s"
-
-# Quest 20720 start script.
-[[scripts]]
-name = "q20720s"
-
-# Quest 21000 start script.
-[[scripts]]
-name = "q21000s"
-
-# Quest 21001 completion script.
-[[scripts]]
-name = "q21001e"
-
-# Quest 21001 start script.
-[[scripts]]
-name = "q21001s"
-
-# Quest 21010 completion script.
-[[scripts]]
-name = "q21010e"
-
-# Quest 21010 start script.
-[[scripts]]
-name = "q21010s"
-
-# Quest 21012 start script.
-[[scripts]]
-name = "q21012s"
-
-# Quest 21013 start script.
-[[scripts]]
-name = "q21013s"
-
-# Quest 21015 start script.
-[[scripts]]
-name = "q21015s"
-
-# Quest 21016 start script.
-[[scripts]]
-name = "q21016s"
-
-# Quest 21017 start script.
-[[scripts]]
-name = "q21017s"
-
-# Quest 21018 start script.
-[[scripts]]
-name = "q21018s"
-
-# Quest 21100 start script.
-[[scripts]]
-name = "q21100s"
-
-# Quest 21101 completion script.
-[[scripts]]
-name = "q21101e"
-
-# Quest 21101 start script.
-[[scripts]]
-name = "q21101s"
-
-# Quest 21200 completion script.
-[[scripts]]
-name = "q21200e"
-
-# Quest 21200 start script.
-[[scripts]]
-name = "q21200s"
-
-# Quest 21201 completion script.
-[[scripts]]
-name = "q21201e"
-
-# Quest 21202 completion script.
-[[scripts]]
-name = "q21202e"
-
-# Quest 21202 start script.
-[[scripts]]
-name = "q21202s"
-
-# Quest 2127 completion script.
-[[scripts]]
-name = "q2127e"
-
-# Quest 21300 start script.
-[[scripts]]
-name = "q21300s"
-
-# Quest 21301 completion script.
-[[scripts]]
-name = "q21301e"
-
-# Quest 21302 completion script.
-[[scripts]]
-name = "q21302e"
-
-# Quest 21303 start script.
-[[scripts]]
-name = "q21303s"
-
-# Quest 21400 start script.
-[[scripts]]
-name = "q21400s"
-
-# Quest 21401 completion script.
-[[scripts]]
-name = "q21401e"
-
-# Quest 21401 start script.
-[[scripts]]
-name = "q21401s"
-
-# Quest 2147 completion script.
-[[scripts]]
-name = "q2147e"
-
-# Quest 2147 start script.
-[[scripts]]
-name = "q2147s"
-
-# Quest 2148 start script.
-[[scripts]]
-name = "q2148s"
-
-# Quest 2149 start script.
-[[scripts]]
-name = "q2149s"
-
-# Quest 2150 start script.
-[[scripts]]
-name = "q2150s"
-
-# Quest 2151 start script.
-[[scripts]]
-name = "q2151s"
-
-# Quest 2152 start script.
-[[scripts]]
-name = "q2152s"
-
-# Quest 2156 completion script.
-[[scripts]]
-name = "q2156e"
-
-# Quest 21600 start script.
-[[scripts]]
-name = "q21600s"
-
-# Quest 21604 start script.
-[[scripts]]
-name = "q21604s"
-
-# Quest 21613 start script.
-[[scripts]]
-name = "q21613s"
-
-# Quest 21618 start script.
-[[scripts]]
-name = "q21618s"
-
-# Quest 21703 completion script.
-[[scripts]]
-name = "q21703e"
-
-# Quest 21703 start script.
-[[scripts]]
-name = "q21703s"
-
-# Quest 21704 start script.
-[[scripts]]
-name = "q21704s"
-
-# Quest 21712 start script.
-[[scripts]]
-name = "q21712s"
-
-# Quest 21716 start script.
-[[scripts]]
-name = "q21716s"
-
-# Quest 21719 start script.
-[[scripts]]
-name = "q21719s"
-
-# Quest 21720 completion script.
-[[scripts]]
-name = "q21720e"
-
-# Quest 21729 start script.
-[[scripts]]
-name = "q21729s"
-
-# Quest 21733 completion script.
-[[scripts]]
-name = "q21733e"
-
-# Quest 21733 start script.
-[[scripts]]
-name = "q21733s"
-
-# Quest 21734 completion script.
-[[scripts]]
-name = "q21734e"
-
-# Quest 21734 start script.
-[[scripts]]
-name = "q21734s"
-
-# Quest 21735 start script.
-[[scripts]]
-name = "q21735s"
-
-# Quest 21736 start script.
-[[scripts]]
-name = "q21736s"
-
-# Quest 21738 start script.
-[[scripts]]
-name = "q21738s"
-
-# Quest 21740 completion script.
-[[scripts]]
-name = "q21740e"
-
-# Quest 21740 start script.
-[[scripts]]
-name = "q21740s"
-
-# Quest 21741 start script.
-[[scripts]]
-name = "q21741s"
-
-# Quest 21742 start script.
-[[scripts]]
-name = "q21742s"
-
-# Quest 21746 start script.
-[[scripts]]
-name = "q21746s"
-
-# Quest 21747 start script.
-[[scripts]]
-name = "q21747s"
-
-# Quest 21748 completion script.
-[[scripts]]
-name = "q21748e"
-
-# Quest 21749 start script.
-[[scripts]]
-name = "q21749s"
-
-# Quest 21750 completion script.
-[[scripts]]
-name = "q21750e"
-
-# Quest 21753 start script.
-[[scripts]]
-name = "q21753s"
-
-# Quest 21757 completion script.
-[[scripts]]
-name = "q21757e"
-
-# Quest 21766 start script.
-[[scripts]]
-name = "q21766s"
-
-# Quest 21767 start script.
-[[scripts]]
-name = "q21767s"
-
-# Quest 2186 completion script.
-[[scripts]]
-name = "q2186e"
-
-# Quest 2197 completion script.
-[[scripts]]
-name = "q2197e"
-
-# Quest 2214 completion script.
-[[scripts]]
-name = "q2214e"
-
-# Quest 2215 completion script.
-[[scripts]]
-name = "q2215e"
-
-# Quest 2216 start script.
-[[scripts]]
-name = "q2216s"
-
-# Quest 2217 start script.
-[[scripts]]
-name = "q2217s"
-
-# Quest 2218 start script.
-[[scripts]]
-name = "q2218s"
-
-# Quest 2219 start script.
-[[scripts]]
-name = "q2219s"
-
-# Quest 2228 start script.
-[[scripts]]
-name = "q2228s"
-
-# Quest 2230 completion script.
-[[scripts]]
-name = "q2230e"
-
-# Quest 2232 completion script.
-[[scripts]]
-name = "q2232e"
-
-# Quest 2233 completion script.
-[[scripts]]
-name = "q2233e"
-
-# Quest 2234 completion script.
-[[scripts]]
-name = "q2234e"
-
-# Quest 2238 start script.
-[[scripts]]
-name = "q2238s"
-
-# Quest 2244 completion script.
-[[scripts]]
-name = "q2244e"
-
-# Quest 2245 start script.
-[[scripts]]
-name = "q2245s"
-
-# Quest 2254 start script.
-[[scripts]]
-name = "q2254s"
-
-# Quest 2257 completion script.
-[[scripts]]
-name = "q2257e"
-
-# Quest 2258 completion script.
-[[scripts]]
-name = "q2258e"
-
-# Quest 2258 start script.
-[[scripts]]
-name = "q2258s"
-
-# Quest 2259 completion script.
-[[scripts]]
-name = "q2259e"
-
-# Quest 2259 start script.
-[[scripts]]
-name = "q2259s"
-
-# Quest 2260 completion script.
-[[scripts]]
-name = "q2260e"
-
-# Quest 2260 start script.
-[[scripts]]
-name = "q2260s"
-
-# Quest 2291 completion script.
-[[scripts]]
-name = "q2291e"
-
-# Quest 2293 start script.
-[[scripts]]
-name = "q2293s"
-
-# Quest 2300 start script.
-[[scripts]]
-name = "q2300s"
-
-# Quest 2301 start script.
-[[scripts]]
-name = "q2301s"
-
-# Quest 2302 start script.
-[[scripts]]
-name = "q2302s"
-
-# Quest 2303 start script.
-[[scripts]]
-name = "q2303s"
-
-# Quest 2304 start script.
-[[scripts]]
-name = "q2304s"
-
-# Quest 2305 start script.
-[[scripts]]
-name = "q2305s"
-
-# Quest 2306 start script.
-[[scripts]]
-name = "q2306s"
-
-# Quest 2307 start script.
-[[scripts]]
-name = "q2307s"
-
-# Quest 2308 start script.
-[[scripts]]
-name = "q2308s"
-
-# Quest 2309 start script.
-[[scripts]]
-name = "q2309s"
-
-# Quest 2310 start script.
-[[scripts]]
-name = "q2310s"
-
-# Quest 2314 start script.
-[[scripts]]
-name = "q2314s"
-
-# Quest 2322 start script.
-[[scripts]]
-name = "q2322s"
-
-# Quest 2325 completion script.
-[[scripts]]
-name = "q2325e"
-
-# Quest 2327 start script.
-[[scripts]]
-name = "q2327s"
-
-# Quest 2332 completion script.
-[[scripts]]
-name = "q2332e"
-
-# Quest 2332 start script.
-[[scripts]]
-name = "q2332s"
-
-# Quest 2333 start script.
-[[scripts]]
-name = "q2333s"
-
-# Quest 2334 start script.
-[[scripts]]
-name = "q2334s"
-
-# Quest 2338 start script.
-[[scripts]]
-name = "q2338s"
-
-# Quest 2342 start script.
-[[scripts]]
-name = "q2342s"
-
-# Quest 28004 start script.
-[[scripts]]
-name = "q28004s"
-
-# Quest 28117 start script.
-[[scripts]]
-name = "q28117s"
-
-# Quest 28118 start script.
-[[scripts]]
-name = "q28118s"
-
-# Quest 28131 completion script.
-[[scripts]]
-name = "q28131e"
-
-# Quest 28137 completion script.
-[[scripts]]
-name = "q28137e"
-
-# Quest 28138 completion script.
-[[scripts]]
-name = "q28138e"
-
-# Quest 28139 completion script.
-[[scripts]]
-name = "q28139e"
-
-# Quest 28140 completion script.
-[[scripts]]
-name = "q28140e"
-
-# Quest 28141 start script.
-[[scripts]]
-name = "q28141s"
-
-# Quest 28142 start script.
-[[scripts]]
-name = "q28142s"
-
-# Quest 28143 start script.
-[[scripts]]
-name = "q28143s"
-
-# Quest 28144 start script.
-[[scripts]]
-name = "q28144s"
-
-# Quest 28145 completion script.
-[[scripts]]
-name = "q28145e"
-
-# Quest 28146 completion script.
-[[scripts]]
-name = "q28146e"
-
-# Quest 28147 completion script.
-[[scripts]]
-name = "q28147e"
-
-# Quest 28148 completion script.
-[[scripts]]
-name = "q28148e"
-
-# Quest 28149 start script.
-[[scripts]]
-name = "q28149s"
-
-# Quest 28150 start script.
-[[scripts]]
-name = "q28150s"
-
-# Quest 28151 start script.
-[[scripts]]
-name = "q28151s"
-
-# Quest 28152 start script.
-[[scripts]]
-name = "q28152s"
-
-# Quest 28153 completion script.
-[[scripts]]
-name = "q28153e"
-
-# Quest 28154 start script.
-[[scripts]]
-name = "q28154s"
-
-# Quest 28155 completion script.
-[[scripts]]
-name = "q28155e"
-
-# Quest 28156 start script.
-[[scripts]]
-name = "q28156s"
-
-# Quest 28157 completion script.
-[[scripts]]
-name = "q28157e"
-
-# Quest 28158 completion script.
-[[scripts]]
-name = "q28158e"
-
-# Quest 28159 completion script.
-[[scripts]]
-name = "q28159e"
-
-# Quest 28160 completion script.
-[[scripts]]
-name = "q28160e"
-
-# Quest 28161 completion script.
-[[scripts]]
-name = "q28161e"
-
-# Quest 28284 completion script.
-[[scripts]]
-name = "q28284e"
-
-# Quest 28285 completion script.
-[[scripts]]
-name = "q28285e"
-
-# Quest 28286 completion script.
-[[scripts]]
-name = "q28286e"
-
-# Quest 28304 completion script.
-[[scripts]]
-name = "q28304e"
-
-# Quest 28311 completion script.
-[[scripts]]
-name = "q28311e"
-
-# Quest 28318 completion script.
-[[scripts]]
-name = "q28318e"
-
-# Quest 28326 completion script.
-[[scripts]]
-name = "q28326e"
-
-# Quest 28327 completion script.
-[[scripts]]
-name = "q28327e"
-
-# Quest 28328 completion script.
-[[scripts]]
-name = "q28328e"
-
-# Quest 28333 start script.
-[[scripts]]
-name = "q28333s"
-
-# Quest 28337 completion script.
-[[scripts]]
-name = "q28337e"
-
-# Quest 29002 start script.
-[[scripts]]
-name = "q29002s"
-
-# Quest 29400 start script.
-[[scripts]]
-name = "q29400s"
-
-# Quest 29500 start script.
-[[scripts]]
-name = "q29500s"
-
-# Quest 29501 start script.
-[[scripts]]
-name = "q29501s"
-
-# Quest 29502 start script.
-[[scripts]]
-name = "q29502s"
-
-# Quest 29503 start script.
-[[scripts]]
-name = "q29503s"
-
-# Quest 29505 start script.
-[[scripts]]
-name = "q29505s"
-
-# Quest 29506 start script.
-[[scripts]]
-name = "q29506s"
-
-# Quest 29510 start script.
-[[scripts]]
-name = "q29510s"
-
-# Quest 29900 start script.
-[[scripts]]
-name = "q29900s"
-
-# Quest 29901 start script.
-[[scripts]]
-name = "q29901s"
-
-# Quest 29902 start script.
-[[scripts]]
-name = "q29902s"
-
-# Quest 29903 start script.
-[[scripts]]
-name = "q29903s"
-
-# Quest 29904 start script.
 [[scripts]]
 name = "q29904s"
 
-# Quest 29905 start script.
 [[scripts]]
 name = "q29905s"
 
-# Quest 29906 start script.
 [[scripts]]
 name = "q29906s"
 
-# Quest 29907 start script.
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 1142066
+delta   = 1
+
 [[scripts]]
 name = "q29907s"
 
-# Quest 29908 start script.
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 1142067
+delta   = 1
+
 [[scripts]]
 name = "q29908s"
 
-# Quest 29909 start script.
 [[scripts]]
 name = "q29909s"
 
-# Quest 29910 start script.
+[[scripts.conditions]]
+type  = "minimum_level"
+level = 120
+
+[[scripts.conditions]]
+type = "job_ids"
+ids  = [1112, 1212, 1312, 1412, 1512]
+
 [[scripts]]
 name = "q29910s"
 
-# Quest 29911 start script.
+[[scripts.conditions]]
+type     = "quest_state"
+quest_id = 29300
+state    = "completed"
+
 [[scripts]]
 name = "q29911s"
 
-# Quest 29912 start script.
+[[scripts.conditions]]
+type  = "minimum_level"
+level = 200
+
+[[scripts.conditions]]
+type = "job_ids"
+ids  = [200, 210, 220, 230, 211, 221, 231, 212, 222, 232]
+
+[[scripts.conditions]]
+type     = "quest_state"
+quest_id = 29301
+state    = "completed"
+
 [[scripts]]
 name = "q29912s"
 
-# Quest 29913 start script.
 [[scripts]]
 name = "q29913s"
 
-# Quest 29914 start script.
 [[scripts]]
 name = "q29914s"
 
-# Quest 29915 start script.
+[[scripts.conditions]]
+type  = "minimum_level"
+level = 200
+
+[[scripts.conditions]]
+type     = "quest_state"
+quest_id = 29304
+state    = "completed"
+
 [[scripts]]
 name = "q29915s"
 
-# Quest 29916 start script.
 [[scripts]]
 name = "q29916s"
 
-# Quest 29917 start script.
 [[scripts]]
 name = "q29917s"
 
-# Quest 29918 start script.
 [[scripts]]
 name = "q29918s"
 
-# Quest 29919 start script.
 [[scripts]]
 name = "q29919s"
 
-# Quest 29920 start script.
 [[scripts]]
 name = "q29920s"
 
-# Quest 29921 start script.
 [[scripts]]
 name = "q29921s"
 
-# Quest 29922 start script.
 [[scripts]]
 name = "q29922s"
 
-# Quest 29923 start script.
 [[scripts]]
 name = "q29923s"
 
-# Quest 29924 start script.
 [[scripts]]
 name = "q29924s"
 
-# Quest 29925 start script.
 [[scripts]]
 name = "q29925s"
 
-# Quest 29926 start script.
 [[scripts]]
 name = "q29926s"
 
-# Quest 29927 start script.
 [[scripts]]
 name = "q29927s"
 
-# Quest 29928 start script.
 [[scripts]]
 name = "q29928s"
 
-# Quest 29933 start script.
 [[scripts]]
 name = "q29933s"
 
-# Quest 3108 start script.
 [[scripts]]
-name = "q3108s"
+name = "q29500e"
 
-# Quest 3250 completion script.
-[[scripts]]
-name = "q3250e"
-
-# Quest 3250 start script.
-[[scripts]]
-name = "q3250s"
-
-# Quest 3301 completion script.
-[[scripts]]
-name = "q3301e"
-
-# Quest 3303 completion script.
-[[scripts]]
-name = "q3303e"
-
-# Quest 3305 start script.
-[[scripts]]
-name = "q3305s"
-
-# Quest 3306 start script.
-[[scripts]]
-name = "q3306s"
-
-# Quest 3314 completion script.
-[[scripts]]
-name = "q3314e"
-
-# Quest 3320 start script.
-[[scripts]]
-name = "q3320s"
-
-# Quest 3321 start script.
-[[scripts]]
-name = "q3321s"
-
-# Quest 3353 start script.
-[[scripts]]
-name = "q3353s"
-
-# Quest 3354 start script.
-[[scripts]]
-name = "q3354s"
-
-# Quest 3360 start script.
-[[scripts]]
-name = "q3360s"
-
-# Quest 3382 completion script.
-[[scripts]]
-name = "q3382e"
-
-# Quest 3455 start script.
-[[scripts]]
-name = "q3455s"
-
-# Quest 3514 completion script.
-[[scripts]]
-name = "q3514e"
-
-# Quest 3523 start script.
-[[scripts]]
-name = "q3523s"
-
-# Quest 3524 start script.
-[[scripts]]
-name = "q3524s"
-
-# Quest 3525 start script.
-[[scripts]]
-name = "q3525s"
-
-# Quest 3526 start script.
-[[scripts]]
-name = "q3526s"
-
-# Quest 3527 start script.
-[[scripts]]
-name = "q3527s"
-
-# Quest 3529 start script.
-[[scripts]]
-name = "q3529s"
-
-# Quest 3539 start script.
-[[scripts]]
-name = "q3539s"
-
-# Quest 3714 start script.
-[[scripts]]
-name = "q3714s"
-
-# Quest 3833 completion script.
-[[scripts]]
-name = "q3833e"
-
-# Quest 3933 start script.
-[[scripts]]
-name = "q3933s"
-
-# Quest 3941 completion script.
-[[scripts]]
-name = "q3941e"
-
-# Quest 3941 start script.
-[[scripts]]
-name = "q3941s"
-
-# Quest 4482 completion script.
-[[scripts]]
-name = "q4482e"
-
-# Quest 4482 start script.
-[[scripts]]
-name = "q4482s"
-
-# Quest 4483 completion script.
-[[scripts]]
-name = "q4483e"
-
-# Quest 6030 completion script.
-[[scripts]]
-name = "q6030e"
-
-# Quest 6031 completion script.
-[[scripts]]
-name = "q6031e"
-
-# Quest 6032 completion script.
-[[scripts]]
-name = "q6032e"
-
-# Quest 6033 completion script.
-[[scripts]]
-name = "q6033e"
-
-# Quest 6036 completion script.
-[[scripts]]
-name = "q6036e"
-
-# Quest 6700 completion script.
-[[scripts]]
-name = "q6700e"
-
-# Quest 8219 start script.
-[[scripts]]
-name = "q8219s"
-
-# Quest 8221 start script.
-[[scripts]]
-name = "q8221s"
-
-# Quest 8222 completion script.
-[[scripts]]
-name = "q8222e"
-
-# Quest 8222 start script.
-[[scripts]]
-name = "q8222s"
-
-# Quest 8223 start script.
-[[scripts]]
-name = "q8223s"
-
-# Quest 8224 start script.
-[[scripts]]
-name = "q8224s"
-
-# Quest 8225 start script.
-[[scripts]]
-name = "q8225s"
-
-# Quest 8226 start script.
-[[scripts]]
-name = "q8226s"
-
-# Quest 8229 start script.
-[[scripts]]
-name = "q8229s"
-
-# Quest 8230 completion script.
-[[scripts]]
-name = "q8230e"
-
-# Quest 8230 start script.
-[[scripts]]
-name = "q8230s"
-
-# Quest 8231 start script.
-[[scripts]]
-name = "q8231s"
-
-# Quest 8232 start script.
-[[scripts]]
-name = "q8232s"
-
-# Quest 8233 start script.
-[[scripts]]
-name = "q8233s"
-
-# Quest 8234 start script.
-[[scripts]]
-name = "q8234s"
-
-# Quest 8235 start script.
-[[scripts]]
-name = "q8235s"
-
-# Quest 8236 start script.
-[[scripts]]
-name = "q8236s"
-
-# Quest 8237 start script.
-[[scripts]]
-name = "q8237s"
-
-# Quest 8238 start script.
-[[scripts]]
-name = "q8238s"
-
-# Quest 8247 completion script.
-[[scripts]]
-name = "q8247e"
-
-# Quest 8251 completion script.
-[[scripts]]
-name = "q8251e"
-
-# Quest 8251 start script.
-[[scripts]]
-name = "q8251s"
-
-# Quest 8255 start script.
-[[scripts]]
-name = "q8255s"
-
-# Quest 8256 start script.
-[[scripts]]
-name = "q8256s"
-
-# Quest 9432 completion script.
-[[scripts]]
-name = "q9432e"
-
-# Quest 9633 start script.
-[[scripts]]
-name = "q9633s"
-
-# Quest 9730 completion script.
-[[scripts]]
-name = "q9730e"
-
-# Quest 9731 completion script.
-[[scripts]]
-name = "q9731e"
-
-# Quest 9732 completion script.
-[[scripts]]
-name = "q9732e"
-
-# Quest 9733 completion script.
-[[scripts]]
-name = "q9733e"
-
-# Quest 9734 completion script.
-[[scripts]]
-name = "q9734e"
-
-# Quest 9735 completion script.
-[[scripts]]
-name = "q9735e"
-
-# Quest 9745 completion script.
-[[scripts]]
-name = "q9745e"
-
-# Quest 9746 completion script.
-[[scripts]]
-name = "q9746e"
-
-# Quest 9747 completion script.
-[[scripts]]
-name = "q9747e"
-
-# Quest 9851 start script.
-[[scripts]]
-name = "q9851s"
-
-# Quest 9875 completion script.
-[[scripts]]
-name = "q9875e"
-
-# Quest 9875 start script.
-[[scripts]]
-name = "q9875s"
-
-# Quest 9878 completion script.
-[[scripts]]
-name = "q9878e"
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 1142006
+delta   = 1
 
-# Quest 9880 completion script.
 [[scripts]]
-name = "q9880e"
+name = "q10453e"
 
-# Quest 9880 start script.
-[[scripts]]
-name = "q9880s"
-
-# Quest 9881 completion script.
-[[scripts]]
-name = "q9881e"
-
-# Quest 9881 start script.
-[[scripts]]
-name = "q9881s"
-
-# Quest 9882 completion script.
-[[scripts]]
-name = "q9882e"
-
-# Quest 9882 start script.
-[[scripts]]
-name = "q9882s"
-
-# Quest 9883 completion script.
-[[scripts]]
-name = "q9883e"
-
-# Quest 9883 start script.
-[[scripts]]
-name = "q9883s"
-
-# Quest 9884 completion script.
-[[scripts]]
-name = "q9884e"
-
-# Quest 9884 start script.
-[[scripts]]
-name = "q9884s"
-
-# Quest 9885 completion script.
-[[scripts]]
-name = "q9885e"
-
-# Quest 9885 start script.
-[[scripts]]
-name = "q9885s"
-
-# Quest 9902 completion script.
-[[scripts]]
-name = "q9902e"
-
-# Quest 9903 completion script.
-[[scripts]]
-name = "q9903e"
-
-# Quest 9904 completion script.
-[[scripts]]
-name = "q9904e"
-
-# Quest 9905 completion script.
-[[scripts]]
-name = "q9905e"
-
-# Quest 9906 completion script.
-[[scripts]]
-name = "q9906e"
-
-# Quest 9907 completion script.
-[[scripts]]
-name = "q9907e"
-
-# Quest 9908 completion script.
-[[scripts]]
-name = "q9908e"
-
-# Quest 9909 completion script.
-[[scripts]]
-name = "q9909e"
-
-# Quest 9920 completion script.
-[[scripts]]
-name = "q9920e"
-
-# Quest 9922 completion script.
-[[scripts]]
-name = "q9922e"
-
-# Quest 9922 start script.
-[[scripts]]
-name = "q9922s"
-
-# Quest 9924 start script.
-[[scripts]]
-name = "q9924s"
-
-# Quest 9925 start script.
-[[scripts]]
-name = "q9925s"
-
-# Quest 9926 start script.
-[[scripts]]
-name = "q9926s"
-
-# Quest 9927 completion script.
-[[scripts]]
-name = "q9927e"
-
-# Quest 9928 completion script.
-[[scripts]]
-name = "q9928e"
-
-# Quest 9929 completion script.
-[[scripts]]
-name = "q9929e"
-
-# Quest 9929 start script.
-[[scripts]]
-name = "q9929s"
-
-# Quest 9930 completion script.
-[[scripts]]
-name = "q9930e"
-
-# Quest 9931 completion script.
-[[scripts]]
-name = "q9931e"
-
-# Quest 9932 completion script.
-[[scripts]]
-name = "q9932e"
-
-# Quest 9933 completion script.
-[[scripts]]
-name = "q9933e"
-
-# Quest 9934 completion script.
-[[scripts]]
-name = "q9934e"
-
-# Quest 9935 completion script.
-[[scripts]]
-name = "q9935e"
-
-# Quest 9936 completion script.
-[[scripts]]
-name = "q9936e"
-
-# Quest 9937 start script.
-[[scripts]]
-name = "q9937s"
-
-# Quest 9938 start script.
-[[scripts]]
-name = "q9938s"
-
-# Quest 9939 start script.
-[[scripts]]
-name = "q9939s"
-
-# Quest 9943 completion script.
-[[scripts]]
-name = "q9943e"
-
-# Quest 9947 start script.
-[[scripts]]
-name = "q9947s"
-
-# Quest 9950 completion script.
-[[scripts]]
-name = "q9950e"
-
-# Quest 9951 completion script.
-[[scripts]]
-name = "q9951e"
-
-# Quest 9961 completion script.
-[[scripts]]
-name = "q9961e"
-
-# Quest 9961 start script.
-[[scripts]]
-name = "q9961s"
-
-# Quest 9965 start script.
-[[scripts]]
-name = "q9965s"
-
-# Quest 9970 completion script.
-[[scripts]]
-name = "q9970e"
-
-# Quest 9980 start script.
-[[scripts]]
-name = "q9980s"
-
-# Quest 9981 completion script.
-[[scripts]]
-name = "q9981e"
-
-# Quest 9982 start script.
-[[scripts]]
-name = "q9982s"
-
-# Quest 9983 start script.
-[[scripts]]
-name = "q9983s"
-
-# Quest 9984 completion script.
-[[scripts]]
-name = "q9984e"
-
-# Quest 9985 completion script.
-[[scripts]]
-name = "q9985e"
-
-# Quest 9990 start script.
-[[scripts]]
-name = "q9990s"
-
-# Quest 9991 start script.
-[[scripts]]
-name = "q9991s"
-
-# Quest 9997 start script.
-[[scripts]]
-name = "q9997s"
-
-# Quest 9690 completion script.
-[[scripts]]
-name = "quiz1_1"
-
-# Quest 9699 completion script.
-[[scripts]]
-name = "quiz1_10"
-
-# Quest 9700 completion script.
-[[scripts]]
-name = "quiz1_11"
-
-# Quest 9701 completion script.
-[[scripts]]
-name = "quiz1_12"
-
-# Quest 9702 completion script.
-[[scripts]]
-name = "quiz1_13"
-
-# Quest 9703 completion script.
-[[scripts]]
-name = "quiz1_14"
-
-# Quest 9691 completion script.
-[[scripts]]
-name = "quiz1_2"
-
-# Quest 9692 completion script.
-[[scripts]]
-name = "quiz1_3"
-
-# Quest 9693 completion script.
-[[scripts]]
-name = "quiz1_4"
-
-# Quest 9694 completion script.
-[[scripts]]
-name = "quiz1_5"
-
-# Quest 9695 completion script.
-[[scripts]]
-name = "quiz1_6"
-
-# Quest 9696 completion script.
-[[scripts]]
-name = "quiz1_7"
-
-# Quest 9697 completion script.
-[[scripts]]
-name = "quiz1_8"
-
-# Quest 9698 completion script.
-[[scripts]]
-name = "quiz1_9"
-
-# Quest 9901 completion script.
-[[scripts]]
-name = "quiz2_start"
-
-# Quest 9682 completion script.
-[[scripts]]
-name = "scrollchange1"
-
-# Quest 9683 completion script.
-[[scripts]]
-name = "scrollchange2"
-
-# Quest 9684 completion script.
-[[scripts]]
-name = "scrollchange3"
-
-# Quest 9685 completion script.
-[[scripts]]
-name = "scrollchange4"
+[[scripts.actions]]
+type    = "item_delta"
+item_id = 4032434
+delta   = -10
