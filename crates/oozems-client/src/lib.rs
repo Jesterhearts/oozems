@@ -8,6 +8,7 @@ mod character_create;
 mod character_render;
 mod game;
 mod game_gui;
+mod gui_dump;
 mod hit_test;
 mod interaction_ui;
 mod keymap;
@@ -17,6 +18,7 @@ mod movement;
 mod render;
 mod skill_effects;
 
+pub use gui_dump::dump_gui;
 use wasm_bindgen::JsValue;
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen_futures::spawn_local;

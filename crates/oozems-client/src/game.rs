@@ -431,6 +431,7 @@ fn build_game(
             gui: GuiRefreshState::default(),
         },
     }));
+    crate::gui_dump::install(&game);
     Ok(game)
 }
 

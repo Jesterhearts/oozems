@@ -16,14 +16,17 @@ thiserror                = "2.0.20"
 wasm-bindgen             = "0.2.127"
 wasm-bindgen-futures     = "0.4.77"
 web-sys                  = { version = "0.3.104", features = [
+  "Blob",
   "CanvasRenderingContext2d",
   "Document",
   "Element",
   "Event",
   "EventTarget",
+  "HtmlAnchorElement",
   "HtmlAudioElement",
   "HtmlButtonElement",
   "HtmlCanvasElement",
+  "HtmlElement",
   "HtmlImageElement",
   "HtmlInputElement",
   "HtmlMediaElement",
@@ -33,6 +36,7 @@ web-sys                  = { version = "0.3.104", features = [
   "Performance",
   "Response",
   "TextMetrics",
+  "Url",
   "Window",
   "console"
 ] }

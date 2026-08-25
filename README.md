@@ -21,6 +21,7 @@ general use. That release will probably still need polish and bug fixes.
 - [Configure formula profiles](#configure-formula-profiles)
 - [Configure XP curves](#configure-xp-curves)
 - [Use the workspace tools](#use-the-workspace-tools)
+- [Dump GUI rendering](#dump-gui-rendering)
 - [Understand the architecture](#understand-the-architecture)
 - [Verify changes](#verify-changes)
 
@@ -1101,6 +1102,52 @@ accumulated XP. It replaces only the requirement for advancing from the
 character's current level.
 
 ## Use the workspace tools
+
+### Dump GUI rendering
+
+The WASM client installs `window.oozemsDumpGui` after the game canvas starts.
+Use it from browser developer tools or browser automation to download an exact
+crop of the current backing canvas as a PNG:
+
+```js
+await window.oozemsDumpGui(
+  "inventory-window",
+  7,
+  50,
+  140,
+  180,
+  "inventory-items.png",
+);
+```
+
+The arguments after the element name are crop `x`, `y`, `width`, and `height`.
+They use backing-canvas pixels relative to the selected element. They are not
+CSS pixels or absolute game-canvas coordinates. Each value must be a whole,
+nonnegative number. The crop must have a positive size and fit within the
+visible part of the element. The last argument is a PNG download filename, not
+a filesystem path. The promise resolves after PNG encoding starts the download.
+Browser automation can capture the result as a normal download and write it to
+its chosen output directory.
+
+The supported element names are:
+
+| Element | Availability |
+| --- | --- |
+| `game` | Entire current game canvas |
+| `status-bar` | Main game view |
+| `stat-window` | Character window is open |
+| `equipment-window` | Equipment window is open |
+| `inventory-window` | Inventory window is open |
+| `key-config-window` | Key Settings window is open |
+| `skill-window` | Skills window is open |
+| `npc-dialog-window` | NPC dialogue or taxi window is open |
+| `shop-window` | NPC shop is open |
+| `cash-shop-window` | Cash Shop is open |
+
+The dumper rejects an unavailable, invalid, or hidden element instead of
+capturing unrelated pixels at its expected position. Cash Shop crops account
+for the screen's active centering and scale transform. The Rust library also
+exports the same function as `dumpGui` from its generated WASM module.
 
 ### Inspect WZ archives
 
