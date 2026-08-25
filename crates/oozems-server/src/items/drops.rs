@@ -1,13 +1,17 @@
-use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::MutexGuard;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU8;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
+use crossbeam_skiplist::SkipMap;
 use oozems_proto::v1::DroppedItem;
 use oozems_proto::v1::PlayerState;
 use oozems_proto::v1::Vec2;
@@ -20,30 +24,36 @@ use super::inventory::apply_item_grant;
 use super::inventory::canonicalize_inventory;
 
 pub const PICK_UP_RADIUS: f32 = 80.0;
+const BATCH_PREPARING: u8 = 0;
+const BATCH_COMMITTED: u8 = 1;
 
 pub struct DropStore {
-    drops: Mutex<DropIndex>,
+    maps: SkipMap<u32, Arc<MapDrops>>,
+    ids: SkipMap<String, Arc<MapDrop>>,
+    expirations: SkipMap<(u32, u64, u64), Arc<MapDrop>>,
     lifespan: Duration,
     next_id: AtomicU64,
 }
 
-#[derive(Default)]
-struct DropIndex {
-    maps: HashMap<u32, MapDropIndex>,
-    drop_maps: HashMap<String, u32>,
-    expirations: BTreeMap<u64, HashSet<String>>,
+struct MapDrops {
+    order: SkipMap<u64, Arc<MapDrop>>,
+    mutation: Mutex<()>,
+    version: AtomicU64,
+    next_order: AtomicU64,
 }
 
-#[derive(Default)]
-struct MapDropIndex {
-    drops: HashMap<String, MapDrop>,
-    order: Vec<String>,
+struct DropBatch {
+    mutation: Mutex<()>,
+    state: AtomicU8,
 }
 
-#[derive(Clone, Debug, PartialEq)]
 struct MapDrop {
+    map_id: u32,
     item: DroppedItem,
     owner_player_id: Option<String>,
+    order: u64,
+    batch: Arc<DropBatch>,
+    active: AtomicBool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -74,6 +84,8 @@ pub enum DropStoreError {
     ExpiryOverflow,
     #[error("the dropped-item store lock was poisoned")]
     Lock,
+    #[error("the dropped-item map order is exhausted")]
+    OrderOverflow,
     #[error("dropped items changed during a player transaction")]
     Conflict,
 }
@@ -89,9 +101,31 @@ pub enum PickUpError {
 impl DropStore {
     pub fn new(lifespan: Duration) -> Self {
         Self {
-            drops: Mutex::new(DropIndex::default()),
+            maps: SkipMap::new(),
+            ids: SkipMap::new(),
+            expirations: SkipMap::new(),
             lifespan,
             next_id: AtomicU64::new(0),
+        }
+    }
+}
+
+impl Default for MapDrops {
+    fn default() -> Self {
+        Self {
+            order: SkipMap::new(),
+            mutation: Mutex::new(()),
+            version: AtomicU64::new(0),
+            next_order: AtomicU64::new(0),
+        }
+    }
+}
+
+impl DropBatch {
+    fn preparing() -> Self {
+        Self {
+            mutation: Mutex::new(()),
+            state: AtomicU8::new(BATCH_PREPARING),
         }
     }
 }
@@ -142,9 +176,8 @@ fn create_drop_at(
         now_ms,
         despawn_at_unix_ms,
     );
-    let mut drops = store.drops.lock().map_err(|_| DropStoreError::Lock)?;
-    retain_active_drops(&mut drops, now_ms);
-    insert_drop(&mut drops, removed.map_id, item.clone(), None);
+    retain_active_map(store, removed.map_id, now_ms)?;
+    insert_single_drop(store, removed.map_id, item.clone(), None, true)?;
     Ok(item)
 }
 
@@ -219,31 +252,7 @@ pub fn commit_staged_drops(
     if staged.is_empty() {
         return Ok(());
     }
-    let mut drops = store.drops.lock().map_err(|_| DropStoreError::Lock)?;
-    if staged.iter().any(|grant| {
-        drops
-            .drop_maps
-            .get(&grant.item.id)
-            .is_some_and(|map_id| *map_id != grant.map_id)
-            || drops
-                .maps
-                .get(&grant.map_id)
-                .and_then(|map| map.drops.get(&grant.item.id))
-                .is_some_and(|drop| {
-                    drop.item != grant.item || drop.owner_player_id != grant.owner_player_id
-                })
-    }) {
-        return Err(DropStoreError::Conflict);
-    }
-    for grant in staged {
-        insert_drop(
-            &mut drops,
-            grant.map_id,
-            grant.item.clone(),
-            grant.owner_player_id.clone(),
-        );
-    }
-    Ok(())
+    commit_drop_batch(store, staged, true)
 }
 
 pub fn commit_new_staged_drops(
@@ -253,28 +262,14 @@ pub fn commit_new_staged_drops(
     if staged.is_empty() {
         return Ok(());
     }
-    let mut drops = store.drops.lock().map_err(|_| DropStoreError::Lock)?;
     let unique_ids = staged
         .iter()
         .map(|grant| grant.item.id.as_str())
         .collect::<HashSet<_>>();
-    if unique_ids.len() != staged.len()
-        || staged
-            .iter()
-            .any(|grant| drops.drop_maps.contains_key(&grant.item.id))
-    {
+    if unique_ids.len() != staged.len() {
         return Err(DropStoreError::Conflict);
     }
-    for grant in staged {
-        let inserted = insert_drop(
-            &mut drops,
-            grant.map_id,
-            grant.item.clone(),
-            grant.owner_player_id.clone(),
-        );
-        debug_assert!(inserted);
-    }
-    Ok(())
+    commit_drop_batch(store, staged, false)
 }
 
 pub fn rollback_staged_drops(
@@ -284,26 +279,14 @@ pub fn rollback_staged_drops(
     if staged.is_empty() {
         return Ok(());
     }
-    let mut drops = store.drops.lock().map_err(|_| DropStoreError::Lock)?;
-    let all_match = staged.iter().all(|grant| {
-        let current = drops
-            .maps
-            .get(&grant.map_id)
-            .and_then(|map| map.drops.get(&grant.item.id));
-        let expected = MapDrop {
-            item: grant.item.clone(),
-            owner_player_id: grant.owner_player_id.clone(),
-        };
-        current == Some(&expected)
-    });
-    if !all_match {
+    let unique_ids = staged
+        .iter()
+        .map(|grant| grant.item.id.as_str())
+        .collect::<HashSet<_>>();
+    if unique_ids.len() != staged.len() {
         return Err(DropStoreError::Conflict);
     }
-    for grant in staged.iter().rev() {
-        remove_drop(&mut drops, grant.map_id, &grant.item.id)
-            .expect("the checked staged drop remains indexed");
-    }
-    Ok(())
+    rollback_drop_batch(store, staged)
 }
 
 pub fn map_drops(
@@ -316,82 +299,29 @@ pub fn map_drops(
 
 pub fn pick_up_nearest(
     store: &DropStore,
-    mut player: PlayerState,
+    player: PlayerState,
     position: Vec2,
     definitions: &(impl ItemDefinitionLookup + ?Sized),
 ) -> Result<PickedUpItem, PickUpError> {
     if !position.x.is_finite() || !position.y.is_finite() {
         return Err(ItemRuleError::MissingPosition.into());
     }
-    let player_id = player.id.clone();
     let now_ms = unix_time_ms()?;
-    let mut drops = store.drops.lock().map_err(|_| DropStoreError::Lock)?;
-    retain_active_drops(&mut drops, now_ms);
-    let radius_squared = PICK_UP_RADIUS * PICK_UP_RADIUS;
-    let drop_id = drops
-        .maps
-        .get(&player.map_id)
-        .and_then(|map_drops| {
-            map_drops
-                .order
-                .iter()
-                .filter_map(|drop_id| {
-                    let drop = map_drops.drops.get(drop_id)?;
-                    if drop
-                        .owner_player_id
-                        .as_deref()
-                        .is_some_and(|owner| owner != player_id)
-                    {
-                        return None;
-                    }
-                    let drop_position = drop.item.position.as_ref()?;
-                    let dx = drop_position.x - position.x;
-                    let dy = drop_position.y - position.y;
-                    let distance_squared = dx * dx + dy * dy;
-                    (distance_squared <= radius_squared).then_some((drop_id, distance_squared))
-                })
-                .min_by(|(_, left), (_, right)| left.total_cmp(right))
-                .map(|(drop_id, _)| drop_id.clone())
-        })
-        .ok_or(ItemRuleError::NoNearbyDrop)?;
-    let selected = drops
-        .maps
-        .get(&player.map_id)
-        .and_then(|map_drops| map_drops.drops.get(&drop_id))
-        .cloned()
-        .expect("the selected drop is indexed on its map");
-    let item_id = selected.item.item_id;
-    let quantity = selected.item.quantity;
-    if quantity == 0 {
-        return Err(ItemRuleError::InvalidQuantity { item_id }.into());
+    retain_active_map(store, player.map_id, now_ms)?;
+    loop {
+        let selected = select_nearest_drop(store, player.map_id, &player.id, position, now_ms)?
+            .ok_or(ItemRuleError::NoNearbyDrop)?;
+        let updated_player =
+            apply_picked_up_item(player.clone(), &selected, position, definitions)?;
+        let Some(removed) = remove_drop_if_unchanged(store, player.map_id, &selected)? else {
+            continue;
+        };
+        return Ok(PickedUpItem {
+            drop: removed.item.clone(),
+            owner_player_id: removed.owner_player_id.clone(),
+            player: updated_player,
+        });
     }
-    if let Some(card) = definitions.monster_book_card(item_id) {
-        debug_assert_eq!(card.item_id, item_id);
-        debug_assert_eq!(card.max_count, crate::monster_book::MAX_CARD_COUNT);
-        crate::monster_book::add_card(&mut player.monster_book_cards, item_id);
-    } else {
-        let inventory = player
-            .inventory
-            .as_mut()
-            .ok_or(ItemRuleError::MissingInventory)?;
-        canonicalize_inventory(inventory, definitions)?;
-        apply_item_grant(
-            inventory,
-            definitions,
-            item_id,
-            u64::from(quantity),
-            selected.item.expires_at_unix_ms,
-        )?;
-    }
-    let removed = remove_drop(&mut drops, player.map_id, &drop_id)
-        .expect("the selected drop is indexed on its map");
-    let drop = removed.item;
-    player.position = Some(position);
-    Ok(PickedUpItem {
-        drop,
-        owner_player_id: removed.owner_player_id,
-        player,
-    })
 }
 
 #[cfg(test)]
@@ -401,8 +331,7 @@ pub fn restore_drop(
     item: DroppedItem,
     owner_player_id: Option<String>,
 ) -> Result<(), DropStoreError> {
-    let mut drops = store.drops.lock().map_err(|_| DropStoreError::Lock)?;
-    insert_drop(&mut drops, map_id, item, owner_player_id);
+    insert_single_drop(store, map_id, item, owner_player_id, true)?;
     Ok(())
 }
 
@@ -412,11 +341,7 @@ pub fn restore_picked_up_drop(
     item: DroppedItem,
     owner_player_id: Option<String>,
 ) -> Result<(), DropStoreError> {
-    let mut drops = store.drops.lock().map_err(|_| DropStoreError::Lock)?;
-    if drops.drop_maps.contains_key(&item.id) {
-        return Err(DropStoreError::Conflict);
-    }
-    insert_drop(&mut drops, map_id, item, owner_player_id);
+    insert_single_drop(store, map_id, item, owner_player_id, false)?;
     Ok(())
 }
 
@@ -425,17 +350,13 @@ fn map_drops_at(
     map_id: u32,
     now_ms: u64,
 ) -> Result<Vec<DroppedItem>, DropStoreError> {
-    let mut drops = store.drops.lock().map_err(|_| DropStoreError::Lock)?;
-    retain_active_drops(&mut drops, now_ms);
-    let Some(map_drops) = drops.maps.get(&map_id) else {
-        return Ok(Vec::new());
-    };
-    Ok(map_drops
-        .order
-        .iter()
-        .filter_map(|drop_id| map_drops.drops.get(drop_id))
-        .map(|drop| drop.item.clone())
-        .collect())
+    if map_has_expired_drops(store, map_id, now_ms) {
+        retain_active_map(store, map_id, now_ms)?;
+    }
+    Ok(store
+        .maps
+        .get(&map_id)
+        .map_or_else(Vec::new, |entry| map_items(entry.value(), now_ms)))
 }
 
 fn drop_expiry(
@@ -483,91 +404,501 @@ fn spread_position(
     }
 }
 
-fn insert_drop(
-    drops: &mut DropIndex,
+struct MapWrite<'a> {
+    maps: &'a [(u32, Arc<MapDrops>)],
+}
+
+impl<'a> MapWrite<'a> {
+    fn begin(maps: &'a [(u32, Arc<MapDrops>)]) -> Self {
+        for (_, map) in maps {
+            let previous = map.version.fetch_add(1, Ordering::AcqRel);
+            debug_assert_eq!(previous & 1, 0);
+        }
+        Self { maps }
+    }
+}
+
+impl Drop for MapWrite<'_> {
+    fn drop(&mut self) {
+        for (_, map) in self.maps {
+            let previous = map.version.fetch_add(1, Ordering::Release);
+            debug_assert_eq!(previous & 1, 1);
+        }
+    }
+}
+
+fn commit_drop_batch(
+    store: &DropStore,
+    staged: &[StagedDropGrant],
+    allow_existing: bool,
+) -> Result<(), DropStoreError> {
+    let staged = canonical_grants(staged)?;
+    let maps = map_cells(store, staged.iter().map(|grant| grant.map_id));
+    let _map_guards = lock_maps(&maps)?;
+
+    let mut new_grants = Vec::new();
+    for grant in staged {
+        let Some(existing) = store.ids.get(&grant.item.id) else {
+            new_grants.push(grant);
+            continue;
+        };
+        if !allow_existing
+            || !drop_is_visible(existing.value())
+            || !drop_matches_grant(existing.value(), grant)
+        {
+            return Err(DropStoreError::Conflict);
+        }
+    }
+    if new_grants.is_empty() {
+        return Ok(());
+    }
+
+    check_order_capacity(&maps, &new_grants)?;
+    let batch = Arc::new(DropBatch::preparing());
+    let records = new_grants
+        .into_iter()
+        .map(|grant| {
+            let map = map_by_id(&maps, grant.map_id);
+            let order = map.next_order.fetch_add(1, Ordering::Relaxed);
+            Arc::new(MapDrop {
+                map_id: grant.map_id,
+                item: grant.item.clone(),
+                owner_player_id: grant.owner_player_id.clone(),
+                order,
+                batch: batch.clone(),
+                active: AtomicBool::new(true),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let mut reserved = Vec::with_capacity(records.len());
+    for record in &records {
+        let entry = store
+            .ids
+            .get_or_insert(record.item.id.clone(), record.clone());
+        if !Arc::ptr_eq(entry.value(), record) {
+            release_id_reservations(store, &reserved);
+            return Err(DropStoreError::Conflict);
+        }
+        reserved.push(record.clone());
+    }
+
+    let _write = MapWrite::begin(&maps);
+    for record in &records {
+        let map = map_by_id(&maps, record.map_id);
+        map.order.insert(record.order, record.clone());
+        store.expirations.insert(
+            (record.map_id, drop_deadline(&record.item), record.order),
+            record.clone(),
+        );
+    }
+    batch.state.store(BATCH_COMMITTED, Ordering::Release);
+    Ok(())
+}
+
+fn rollback_drop_batch(
+    store: &DropStore,
+    staged: &[StagedDropGrant],
+) -> Result<(), DropStoreError> {
+    let records = staged
+        .iter()
+        .map(|grant| {
+            store
+                .ids
+                .get(&grant.item.id)
+                .map(|entry| entry.value().clone())
+                .ok_or(DropStoreError::Conflict)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let maps = existing_map_cells(store, staged.iter().map(|grant| grant.map_id))?;
+    let _map_guards = lock_maps(&maps)?;
+    let batches = unique_batches(&records);
+    let _batch_guards = lock_batches(&batches)?;
+    if records.iter().zip(staged).any(|(record, grant)| {
+        record.batch.state.load(Ordering::Acquire) != BATCH_COMMITTED
+            || !record_is_indexed(store, record)
+            || !record.active.load(Ordering::Acquire)
+            || !drop_matches_grant(record, grant)
+    }) {
+        return Err(DropStoreError::Conflict);
+    }
+
+    let _write = MapWrite::begin(&maps);
+    for record in records.iter().rev() {
+        remove_record_indexes(store, map_by_id(&maps, record.map_id), record);
+    }
+    Ok(())
+}
+
+fn insert_single_drop(
+    store: &DropStore,
     map_id: u32,
     item: DroppedItem,
     owner_player_id: Option<String>,
-) -> bool {
-    if drops.drop_maps.contains_key(&item.id) {
-        return false;
+    allow_existing: bool,
+) -> Result<(), DropStoreError> {
+    let grant = StagedDropGrant {
+        map_id,
+        item,
+        owner_player_id,
+    };
+    match commit_drop_batch(store, &[grant], false) {
+        Err(DropStoreError::Conflict) if allow_existing => Ok(()),
+        result => result,
     }
-    let drop_id = item.id.clone();
-    let deadline = drop_deadline(&item);
-    let map_drops = drops.maps.entry(map_id).or_default();
-    map_drops.order.push(drop_id.clone());
-    let previous = map_drops.drops.insert(
-        drop_id.clone(),
-        MapDrop {
-            item,
-            owner_player_id,
-        },
-    );
-    debug_assert!(previous.is_none());
-    drops.drop_maps.insert(drop_id.clone(), map_id);
-    drops
-        .expirations
-        .entry(deadline)
-        .or_default()
-        .insert(drop_id);
-    true
 }
 
-fn remove_drop(
-    drops: &mut DropIndex,
-    map_id: u32,
-    drop_id: &str,
-) -> Option<MapDrop> {
-    if drops.drop_maps.get(drop_id) != Some(&map_id) {
-        return None;
-    }
-    drops.drop_maps.remove(drop_id);
-    let map_drops = drops
-        .maps
-        .get_mut(&map_id)
-        .expect("a globally indexed drop has a map index");
-    let removed = map_drops
-        .drops
-        .remove(drop_id)
-        .expect("a globally indexed drop exists on its map");
-    let map_is_empty = map_drops.drops.is_empty();
-    if !map_is_empty && map_drops.order.len() > map_drops.drops.len().saturating_mul(2) + 16 {
-        map_drops
-            .order
-            .retain(|candidate| map_drops.drops.contains_key(candidate));
-    }
-    if map_is_empty {
-        drops.maps.remove(&map_id);
-    }
-    let deadline = drop_deadline(&removed.item);
-    let expiration_is_empty = drops
-        .expirations
-        .get_mut(&deadline)
-        .is_some_and(|drop_ids| {
-            drop_ids.remove(drop_id);
-            drop_ids.is_empty()
-        });
-    if expiration_is_empty {
-        drops.expirations.remove(&deadline);
-    }
-    Some(removed)
-}
-
-fn retain_active_drops(
-    drops: &mut DropIndex,
-    now_ms: u64,
-) {
-    let expired_drop_ids = drops
-        .expirations
-        .range(..=now_ms)
-        .flat_map(|(_, drop_ids)| drop_ids.iter().cloned())
-        .collect::<Vec<_>>();
-    for drop_id in expired_drop_ids {
-        if let Some(map_id) = drops.drop_maps.get(&drop_id).copied() {
-            remove_drop(drops, map_id, &drop_id)
-                .expect("an expiration entry refers to an indexed drop");
+fn canonical_grants(staged: &[StagedDropGrant]) -> Result<Vec<&StagedDropGrant>, DropStoreError> {
+    let mut by_id = HashMap::with_capacity(staged.len());
+    let mut canonical = Vec::with_capacity(staged.len());
+    for grant in staged {
+        match by_id.get(grant.item.id.as_str()) {
+            Some(existing) if *existing == grant => {}
+            Some(_) => return Err(DropStoreError::Conflict),
+            None => {
+                by_id.insert(grant.item.id.as_str(), grant);
+                canonical.push(grant);
+            }
         }
     }
+    Ok(canonical)
+}
+
+fn map_cells(
+    store: &DropStore,
+    map_ids: impl IntoIterator<Item = u32>,
+) -> Vec<(u32, Arc<MapDrops>)> {
+    let mut map_ids = map_ids.into_iter().collect::<Vec<_>>();
+    map_ids.sort_unstable();
+    map_ids.dedup();
+    map_ids
+        .into_iter()
+        .map(|map_id| {
+            let map = store
+                .maps
+                .get_or_insert_with(map_id, || Arc::new(MapDrops::default()))
+                .value()
+                .clone();
+            (map_id, map)
+        })
+        .collect()
+}
+
+fn existing_map_cells(
+    store: &DropStore,
+    map_ids: impl IntoIterator<Item = u32>,
+) -> Result<Vec<(u32, Arc<MapDrops>)>, DropStoreError> {
+    let mut map_ids = map_ids.into_iter().collect::<Vec<_>>();
+    map_ids.sort_unstable();
+    map_ids.dedup();
+    map_ids
+        .into_iter()
+        .map(|map_id| {
+            store
+                .maps
+                .get(&map_id)
+                .map(|entry| (map_id, entry.value().clone()))
+                .ok_or(DropStoreError::Conflict)
+        })
+        .collect()
+}
+
+fn lock_maps(maps: &[(u32, Arc<MapDrops>)]) -> Result<Vec<MutexGuard<'_, ()>>, DropStoreError> {
+    maps.iter()
+        .map(|(_, map)| map.mutation.lock().map_err(|_| DropStoreError::Lock))
+        .collect()
+}
+
+fn map_by_id(
+    maps: &[(u32, Arc<MapDrops>)],
+    map_id: u32,
+) -> &MapDrops {
+    maps.binary_search_by_key(&map_id, |(candidate, _)| *candidate)
+        .map(|index| maps[index].1.as_ref())
+        .expect("a locked map batch contains every requested map")
+}
+
+fn check_order_capacity(
+    maps: &[(u32, Arc<MapDrops>)],
+    grants: &[&StagedDropGrant],
+) -> Result<(), DropStoreError> {
+    let mut counts = HashMap::<u32, u64>::new();
+    for grant in grants {
+        *counts.entry(grant.map_id).or_default() += 1;
+    }
+    for (map_id, count) in counts {
+        map_by_id(maps, map_id)
+            .next_order
+            .load(Ordering::Relaxed)
+            .checked_add(count)
+            .ok_or(DropStoreError::OrderOverflow)?;
+    }
+    Ok(())
+}
+
+fn release_id_reservations(
+    store: &DropStore,
+    records: &[Arc<MapDrop>],
+) {
+    for record in records {
+        if store
+            .ids
+            .get(&record.item.id)
+            .is_some_and(|entry| Arc::ptr_eq(entry.value(), record))
+        {
+            store.ids.remove(&record.item.id);
+        }
+    }
+}
+
+fn record_is_indexed(
+    store: &DropStore,
+    record: &Arc<MapDrop>,
+) -> bool {
+    store
+        .ids
+        .get(&record.item.id)
+        .is_some_and(|entry| Arc::ptr_eq(entry.value(), record))
+}
+
+fn drop_matches_grant(
+    drop: &MapDrop,
+    grant: &StagedDropGrant,
+) -> bool {
+    drop.map_id == grant.map_id
+        && drop.item == grant.item
+        && drop.owner_player_id == grant.owner_player_id
+}
+
+fn drop_is_visible(drop: &MapDrop) -> bool {
+    drop.active.load(Ordering::Acquire)
+        && drop.batch.state.load(Ordering::Acquire) == BATCH_COMMITTED
+}
+
+fn map_items(
+    map: &MapDrops,
+    now_ms: u64,
+) -> Vec<DroppedItem> {
+    read_stable_map(map, || {
+        map.order
+            .iter()
+            .filter_map(|entry| {
+                let drop = entry.value();
+                (drop_is_visible(drop) && drop_deadline(&drop.item) > now_ms)
+                    .then(|| drop.item.clone())
+            })
+            .collect()
+    })
+}
+
+fn select_nearest_drop(
+    store: &DropStore,
+    map_id: u32,
+    player_id: &str,
+    position: Vec2,
+    now_ms: u64,
+) -> Result<Option<Arc<MapDrop>>, DropStoreError> {
+    let Some(map) = store.maps.get(&map_id) else {
+        return Ok(None);
+    };
+    Ok(read_stable_map(map.value(), || {
+        map.value()
+            .order
+            .iter()
+            .filter_map(|entry| {
+                let drop = entry.value();
+                if !drop_is_visible(drop)
+                    || drop_deadline(&drop.item) <= now_ms
+                    || drop
+                        .owner_player_id
+                        .as_deref()
+                        .is_some_and(|owner| owner != player_id)
+                {
+                    return None;
+                }
+                let drop_position = drop.item.position?;
+                let distance_squared = squared_distance(position, drop_position);
+                (distance_squared <= PICK_UP_RADIUS * PICK_UP_RADIUS)
+                    .then(|| (distance_squared, drop.clone()))
+            })
+            .min_by(|(left, _), (right, _)| left.total_cmp(right))
+            .map(|(_, drop)| drop)
+    }))
+}
+
+fn remove_drop_if_unchanged(
+    store: &DropStore,
+    map_id: u32,
+    selected: &Arc<MapDrop>,
+) -> Result<Option<Arc<MapDrop>>, DropStoreError> {
+    let Some(map_entry) = store.maps.get(&map_id) else {
+        return Ok(None);
+    };
+    let map = map_entry.value().clone();
+    drop(map_entry);
+    let _map_guard = map.mutation.lock().map_err(|_| DropStoreError::Lock)?;
+    let _batch_guard = selected
+        .batch
+        .mutation
+        .lock()
+        .map_err(|_| DropStoreError::Lock)?;
+    if selected.map_id != map_id
+        || !drop_is_visible(selected)
+        || !record_is_indexed(store, selected)
+    {
+        return Ok(None);
+    }
+
+    let maps = [(map_id, map.clone())];
+    let _write = MapWrite::begin(&maps);
+    selected.active.store(false, Ordering::Release);
+    remove_record_indexes(store, &map, selected);
+    Ok(Some(selected.clone()))
+}
+
+fn remove_record_indexes(
+    store: &DropStore,
+    map: &MapDrops,
+    record: &Arc<MapDrop>,
+) {
+    store.ids.remove(&record.item.id);
+    map.order.remove(&record.order);
+    store
+        .expirations
+        .remove(&(record.map_id, drop_deadline(&record.item), record.order));
+    record.active.store(false, Ordering::Release);
+}
+
+fn retain_active_map(
+    store: &DropStore,
+    map_id: u32,
+    now_ms: u64,
+) -> Result<(), DropStoreError> {
+    let Some(map_entry) = store.maps.get(&map_id) else {
+        return Ok(());
+    };
+    let map = map_entry.value().clone();
+    drop(map_entry);
+    let _map_guard = map.mutation.lock().map_err(|_| DropStoreError::Lock)?;
+    let expired = store
+        .expirations
+        .range((map_id, 0, 0)..=(map_id, now_ms, u64::MAX))
+        .map(|entry| entry.value().clone())
+        .collect::<Vec<_>>();
+    if expired.is_empty() {
+        return Ok(());
+    }
+
+    let batches = unique_batches(&expired);
+    let _batch_guards = lock_batches(&batches)?;
+    let expired = expired
+        .into_iter()
+        .filter(|record| {
+            record.map_id == map_id
+                && record.active.load(Ordering::Acquire)
+                && record.batch.state.load(Ordering::Acquire) == BATCH_COMMITTED
+                && drop_deadline(&record.item) <= now_ms
+                && record_is_indexed(store, record)
+        })
+        .collect::<Vec<_>>();
+    if expired.is_empty() {
+        return Ok(());
+    }
+
+    let maps = [(map_id, map.clone())];
+    let _write = MapWrite::begin(&maps);
+    for record in expired {
+        remove_record_indexes(store, &map, &record);
+    }
+    Ok(())
+}
+
+fn unique_batches(records: &[Arc<MapDrop>]) -> Vec<Arc<DropBatch>> {
+    let mut batches = records
+        .iter()
+        .map(|record| record.batch.clone())
+        .collect::<Vec<_>>();
+    batches.sort_unstable_by_key(|batch| Arc::as_ptr(batch) as usize);
+    batches.dedup_by(|left, right| Arc::ptr_eq(left, right));
+    batches
+}
+
+fn lock_batches(batches: &[Arc<DropBatch>]) -> Result<Vec<MutexGuard<'_, ()>>, DropStoreError> {
+    batches
+        .iter()
+        .map(|batch| batch.mutation.lock().map_err(|_| DropStoreError::Lock))
+        .collect()
+}
+
+fn map_has_expired_drops(
+    store: &DropStore,
+    map_id: u32,
+    now_ms: u64,
+) -> bool {
+    store
+        .expirations
+        .range((map_id, 0, 0)..=(map_id, now_ms, u64::MAX))
+        .next()
+        .is_some()
+}
+
+fn read_stable_map<T>(
+    map: &MapDrops,
+    read: impl Fn() -> T,
+) -> T {
+    loop {
+        let before = map.version.load(Ordering::Acquire);
+        if before & 1 != 0 {
+            std::thread::yield_now();
+            continue;
+        }
+        let value = read();
+        if map.version.load(Ordering::Acquire) == before {
+            return value;
+        }
+    }
+}
+
+fn apply_picked_up_item(
+    mut player: PlayerState,
+    selected: &MapDrop,
+    position: Vec2,
+    definitions: &(impl ItemDefinitionLookup + ?Sized),
+) -> Result<PlayerState, ItemRuleError> {
+    let item_id = selected.item.item_id;
+    let quantity = selected.item.quantity;
+    if quantity == 0 {
+        return Err(ItemRuleError::InvalidQuantity { item_id });
+    }
+    if let Some(card) = definitions.monster_book_card(item_id) {
+        debug_assert_eq!(card.item_id, item_id);
+        debug_assert_eq!(card.max_count, crate::monster_book::MAX_CARD_COUNT);
+        crate::monster_book::add_card(&mut player.monster_book_cards, item_id);
+    } else {
+        let inventory = player
+            .inventory
+            .as_mut()
+            .ok_or(ItemRuleError::MissingInventory)?;
+        canonicalize_inventory(inventory, definitions)?;
+        apply_item_grant(
+            inventory,
+            definitions,
+            item_id,
+            u64::from(quantity),
+            selected.item.expires_at_unix_ms,
+        )?;
+    }
+    player.position = Some(position);
+    Ok(player)
+}
+
+fn squared_distance(
+    left: Vec2,
+    right: Vec2,
+) -> f32 {
+    let x = left.x - right.x;
+    let y = left.y - right.y;
+    x * x + y * y
 }
 
 fn drop_deadline(item: &DroppedItem) -> u64 {
@@ -590,6 +921,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::Arc;
     use std::sync::Barrier;
+    use std::sync::mpsc;
     use std::time::Duration;
 
     use oozems_proto::v1::DroppedItem;
@@ -605,6 +937,7 @@ mod tests {
     use super::PickUpError;
     use super::StagedDropGrant;
     use super::commit_new_staged_drops;
+    use super::commit_staged_drops;
     use super::create_drop;
     use super::create_drop_at;
     use super::create_mob_drops;
@@ -612,6 +945,7 @@ mod tests {
     use super::map_drops_at;
     use super::pick_up_nearest;
     use super::restore_drop;
+    use super::rollback_staged_drops;
     use crate::items::ItemDefinitionLookup;
     use crate::items::ItemRuleError;
     use crate::items::SPARE_BOTTOM_ID;
@@ -691,6 +1025,156 @@ mod tests {
         ));
         assert!(map_drops(&store, 1).expect("first map drops").is_empty());
         assert!(map_drops(&store, 2).expect("second map drops").is_empty());
+    }
+
+    #[test]
+    fn multi_map_batch_commit_is_idempotent_and_rollback_removes_every_drop() {
+        let store = DropStore::new(Duration::from_secs(60));
+        let staged = [staged_drop(1, "first"), staged_drop(2, "second")];
+
+        commit_staged_drops(&store, &staged).expect("commit drops");
+        commit_staged_drops(&store, &staged).expect("repeat commit");
+
+        assert_eq!(map_drops(&store, 1).expect("first map drops").len(), 1);
+        assert_eq!(map_drops(&store, 2).expect("second map drops").len(), 1);
+
+        rollback_staged_drops(&store, &staged).expect("roll back drops");
+
+        assert!(map_drops(&store, 1).expect("first map drops").is_empty());
+        assert!(map_drops(&store, 2).expect("second map drops").is_empty());
+    }
+
+    #[test]
+    fn rollback_accepts_a_batch_subset_and_drops_from_multiple_batches() {
+        let store = DropStore::new(Duration::from_secs(60));
+        let first_batch = [staged_drop(1, "first"), staged_drop(2, "second")];
+        let third = staged_drop(3, "third");
+        commit_new_staged_drops(&store, &first_batch).expect("commit first batch");
+        commit_new_staged_drops(&store, std::slice::from_ref(&third)).expect("commit third drop");
+
+        rollback_staged_drops(&store, &[first_batch[0].clone(), third])
+            .expect("roll back selected drops");
+
+        assert!(map_drops(&store, 1).expect("first map drops").is_empty());
+        assert_eq!(
+            map_drops(&store, 2).expect("second map drops"),
+            vec![first_batch[1].item.clone()]
+        );
+        assert!(map_drops(&store, 3).expect("third map drops").is_empty());
+        rollback_staged_drops(&store, &first_batch[1..]).expect("roll back remaining drop");
+    }
+
+    #[test]
+    fn conflicting_batch_does_not_insert_its_new_drops() {
+        let store = DropStore::new(Duration::from_secs(60));
+        let existing = staged_drop(1, "existing");
+        commit_new_staged_drops(&store, std::slice::from_ref(&existing))
+            .expect("commit existing drop");
+
+        assert!(matches!(
+            commit_new_staged_drops(&store, &[existing.clone(), staged_drop(2, "new")]),
+            Err(DropStoreError::Conflict)
+        ));
+        assert_eq!(
+            map_drops(&store, 1).expect("first map drops"),
+            vec![existing.item]
+        );
+        assert!(map_drops(&store, 2).expect("second map drops").is_empty());
+    }
+
+    #[test]
+    fn batch_rollback_conflict_does_not_remove_the_unchanged_drops() {
+        let definitions = vec![stackable_definition()];
+        let store = DropStore::new(Duration::from_secs(60));
+        let staged = [staged_drop(1, "picked"), staged_drop(2, "unchanged")];
+        commit_new_staged_drops(&store, &staged).expect("commit drops");
+        let mut picker = player();
+        picker.map_id = 1;
+        picker.inventory = Some(InventoryState {
+            capacity: 1,
+            ..InventoryState::default()
+        });
+
+        pick_up_nearest(&store, picker, Vec2 { x: 10.0, y: 20.0 }, &definitions)
+            .expect("pick up first drop");
+
+        assert!(matches!(
+            rollback_staged_drops(&store, &staged),
+            Err(DropStoreError::Conflict)
+        ));
+        assert!(map_drops(&store, 1).expect("first map drops").is_empty());
+        assert_eq!(
+            map_drops(&store, 2).expect("second map drops"),
+            vec![staged[1].item.clone()]
+        );
+    }
+
+    #[test]
+    fn a_blocked_map_mutation_does_not_block_another_map() {
+        let store = Arc::new(DropStore::new(Duration::from_secs(60)));
+        restore_drop(&store, 1, staged_drop(1, "first-map").item, None).expect("create first map");
+        let first_map = store.maps.get(&1).expect("first map").value().clone();
+        let first_map_guard = first_map.mutation.lock().expect("lock first map");
+        let (completed_tx, completed_rx) = mpsc::channel();
+        let worker_store = store.clone();
+        let worker = std::thread::spawn(move || {
+            let result = restore_drop(&worker_store, 2, staged_drop(2, "second-map").item, None);
+            completed_tx.send(result).expect("report completion");
+        });
+
+        completed_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("the second map must make independent progress")
+            .expect("mutate second map");
+
+        drop(first_map_guard);
+        worker.join().expect("map worker");
+        assert_eq!(map_drops(&store, 2).expect("second map drops").len(), 1);
+    }
+
+    #[test]
+    fn concurrent_pickups_consume_one_drop_exactly_once() {
+        let definitions = Arc::new(vec![stackable_definition()]);
+        let store = Arc::new(DropStore::new(Duration::from_secs(60)));
+        let drop = staged_drop(100, "contested");
+        restore_drop(&store, 100, drop.item, None).expect("restore drop");
+        let barrier = Arc::new(Barrier::new(3));
+        let workers = ["first", "second"].map(|player_id| {
+            let definitions = definitions.clone();
+            let store = store.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                let mut picker = player();
+                picker.id = player_id.to_owned();
+                picker.inventory = Some(InventoryState {
+                    capacity: 1,
+                    ..InventoryState::default()
+                });
+                barrier.wait();
+                pick_up_nearest(
+                    &store,
+                    picker,
+                    Vec2 { x: 10.0, y: 20.0 },
+                    definitions.as_ref(),
+                )
+            })
+        });
+
+        barrier.wait();
+        let results = workers.map(|worker| worker.join().expect("pickup worker"));
+
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| matches!(
+                    result,
+                    Err(PickUpError::Rule(ItemRuleError::NoNearbyDrop))
+                ))
+                .count(),
+            1
+        );
+        assert!(map_drops(&store, 100).expect("map drops").is_empty());
     }
 
     #[test]
