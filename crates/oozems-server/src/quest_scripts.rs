@@ -83,9 +83,37 @@ pub enum QuestScriptConfigError {
 
 #[derive(Clone, Debug)]
 struct QuestScriptProgram {
-    conditions: Vec<QuestScriptCondition>,
+    conditions: CompiledConditions,
     plan: QuestScriptPlan,
     incomplete_pages: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct CompiledConditions {
+    minimum_level: Option<u32>,
+    maximum_level: Option<u32>,
+    allowed_jobs: Option<BTreeSet<u32>>,
+    map_id: Option<u32>,
+    minimum_mesos: Option<u64>,
+    maximum_mesos: Option<u64>,
+    item_quantities: BTreeMap<u32, u64>,
+    quest_states: BTreeMap<u32, QuestScriptQuestState>,
+    record_limits: BTreeMap<(u32, u32), RecordLimits>,
+}
+
+impl CompiledConditions {
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.minimum_level.is_none()
+            && self.maximum_level.is_none()
+            && self.allowed_jobs.is_none()
+            && self.map_id.is_none()
+            && self.minimum_mesos.is_none()
+            && self.maximum_mesos.is_none()
+            && self.item_quantities.is_empty()
+            && self.quest_states.is_empty()
+            && self.record_limits.is_empty()
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -250,11 +278,7 @@ pub fn resolve(
             script: script.to_owned(),
         };
     };
-    if !program
-        .conditions
-        .iter()
-        .all(|condition| condition_matches(condition, player, item_definitions))
-    {
+    if !conditions_match(&program.conditions, player, item_definitions) {
         return QuestScriptResolution::ConditionsNotMet {
             script: script.to_owned(),
             incomplete_pages: program.incomplete_pages.clone(),
@@ -304,7 +328,8 @@ fn build_catalog(
             );
         };
         item_reference_ids.extend(program_item_reference_ids(&program));
-        validate_conditions(path, &program.name, &program.conditions, item_definitions)?;
+        let conditions =
+            compile_conditions(path, &program.name, &program.conditions, item_definitions)?;
         let plan = build_plan(
             path,
             &program.name,
@@ -318,7 +343,7 @@ fn build_catalog(
         }
         let name = program.name;
         let script_program = QuestScriptProgram {
-            conditions: program.conditions,
+            conditions,
             plan,
             incomplete_pages: program.incomplete_pages,
         };
@@ -427,33 +452,34 @@ fn validate_pages(
     Ok(())
 }
 
-fn validate_conditions(
+fn compile_conditions(
     path: &Path,
     script: &str,
     conditions: &[QuestScriptCondition],
     item_definitions: &(impl ItemDefinitionLookup + ?Sized),
-) -> Result<(), QuestScriptConfigError> {
-    let mut minimum_level = None;
-    let mut maximum_level = None;
-    let mut minimum_mesos = None;
-    let mut maximum_mesos = None;
-    let mut allowed_jobs: Option<BTreeSet<u32>> = None;
-    let mut map_id = None;
-    let mut quest_states = BTreeMap::new();
-    let mut record_limits = BTreeMap::<(u32, u32), RecordLimits>::new();
+) -> Result<CompiledConditions, QuestScriptConfigError> {
+    let mut compiled = CompiledConditions::default();
     for condition in conditions {
         match condition {
             QuestScriptCondition::MinimumLevel { level } => {
                 if *level == 0 {
                     return invalid(path, format!("script {script:?} has a zero level limit"));
                 }
-                minimum_level = Some(minimum_level.map_or(*level, |value: u32| value.max(*level)));
+                compiled.minimum_level = Some(
+                    compiled
+                        .minimum_level
+                        .map_or(*level, |value| value.max(*level)),
+                );
             }
             QuestScriptCondition::MaximumLevel { level } => {
                 if *level == 0 {
                     return invalid(path, format!("script {script:?} has a zero level limit"));
                 }
-                maximum_level = Some(maximum_level.map_or(*level, |value: u32| value.min(*level)));
+                compiled.maximum_level = Some(
+                    compiled
+                        .maximum_level
+                        .map_or(*level, |value| value.min(*level)),
+                );
             }
             QuestScriptCondition::JobIds { ids } => {
                 if ids.is_empty() {
@@ -463,7 +489,7 @@ fn validate_conditions(
                 if jobs.len() != ids.len() {
                     return invalid(path, format!("script {script:?} has duplicate job IDs"));
                 }
-                allowed_jobs = Some(match allowed_jobs {
+                compiled.allowed_jobs = Some(match compiled.allowed_jobs {
                     Some(existing) => existing.intersection(&jobs).copied().collect(),
                     None => jobs,
                 });
@@ -471,27 +497,38 @@ fn validate_conditions(
             QuestScriptCondition::MapId {
                 map_id: required_map,
             } => {
-                if map_id.is_some_and(|existing| existing != *required_map) {
+                if compiled
+                    .map_id
+                    .is_some_and(|existing| existing != *required_map)
+                {
                     return invalid(
                         path,
                         format!("script {script:?} requires different map IDs"),
                     );
                 }
-                map_id = Some(*required_map);
+                compiled.map_id = Some(*required_map);
             }
             QuestScriptCondition::MesosAtLeast { amount } => {
-                minimum_mesos =
-                    Some(minimum_mesos.map_or(*amount, |value: u64| value.max(*amount)));
+                compiled.minimum_mesos = Some(
+                    compiled
+                        .minimum_mesos
+                        .map_or(*amount, |value| value.max(*amount)),
+                );
             }
             QuestScriptCondition::MesosAtMost { amount } => {
-                maximum_mesos =
-                    Some(maximum_mesos.map_or(*amount, |value: u64| value.min(*amount)));
+                compiled.maximum_mesos = Some(
+                    compiled
+                        .maximum_mesos
+                        .map_or(*amount, |value| value.min(*amount)),
+                );
             }
             QuestScriptCondition::ItemQuantity { item_id, quantity } => {
                 validate_item(path, script, *item_id, item_definitions)?;
                 if *quantity == 0 {
                     return invalid(path, format!("script {script:?} has a zero item quantity"));
                 }
+                let required = compiled.item_quantities.entry(*item_id).or_default();
+                *required = (*required).max(*quantity);
             }
             QuestScriptCondition::QuestState { quest_id, state } => {
                 crate::quest_records::validate_quest_id(*quest_id).map_err(|error| {
@@ -500,7 +537,8 @@ fn validate_conditions(
                         message: format!("script {script:?} has an invalid quest state: {error}"),
                     }
                 })?;
-                if quest_states
+                if compiled
+                    .quest_states
                     .insert(*quest_id, *state)
                     .is_some_and(|existing| existing != *state)
                 {
@@ -518,7 +556,10 @@ fn validate_conditions(
                 value,
             } => {
                 validate_record_value(path, script, *quest_id, value)?;
-                let limits = record_limits.entry((*quest_id, *index)).or_default();
+                let limits = compiled
+                    .record_limits
+                    .entry((*quest_id, *index))
+                    .or_default();
                 if limits
                     .equal
                     .replace(value.clone())
@@ -539,7 +580,10 @@ fn validate_conditions(
                 value,
             } => {
                 let value = validate_numeric_record_value(path, script, *quest_id, value)?;
-                let limits = record_limits.entry((*quest_id, *index)).or_default();
+                let limits = compiled
+                    .record_limits
+                    .entry((*quest_id, *index))
+                    .or_default();
                 limits.minimum = Some(limits.minimum.map_or(value, |current| current.max(value)));
             }
             QuestScriptCondition::QuestRecordAtMost {
@@ -548,30 +592,39 @@ fn validate_conditions(
                 value,
             } => {
                 let value = validate_numeric_record_value(path, script, *quest_id, value)?;
-                let limits = record_limits.entry((*quest_id, *index)).or_default();
+                let limits = compiled
+                    .record_limits
+                    .entry((*quest_id, *index))
+                    .or_default();
                 limits.maximum = Some(limits.maximum.map_or(value, |current| current.min(value)));
             }
         }
     }
-    if minimum_level
-        .zip(maximum_level)
+    if compiled
+        .minimum_level
+        .zip(compiled.maximum_level)
         .is_some_and(|(minimum, maximum)| minimum > maximum)
     {
         return invalid(path, format!("script {script:?} has invalid level limits"));
     }
-    if minimum_mesos
-        .zip(maximum_mesos)
+    if compiled
+        .minimum_mesos
+        .zip(compiled.maximum_mesos)
         .is_some_and(|(minimum, maximum)| minimum > maximum)
     {
         return invalid(path, format!("script {script:?} has invalid mesos limits"));
     }
-    if allowed_jobs.is_some_and(|jobs| jobs.is_empty()) {
+    if compiled
+        .allowed_jobs
+        .as_ref()
+        .is_some_and(BTreeSet::is_empty)
+    {
         return invalid(
             path,
             format!("script {script:?} has mutually exclusive job ID conditions"),
         );
     }
-    for ((quest_id, index), limits) in record_limits {
+    for ((quest_id, index), limits) in &compiled.record_limits {
         if limits
             .minimum
             .zip(limits.maximum)
@@ -585,8 +638,8 @@ fn validate_conditions(
                 ),
             );
         }
-        if let Some(equal) = limits.equal {
-            let numeric = crate::quest_records::strict_decimal(&equal);
+        if let Some(equal) = &limits.equal {
+            let numeric = crate::quest_records::strict_decimal(equal);
             if (limits.minimum.is_some() || limits.maximum.is_some())
                 && numeric.is_none_or(|value| {
                     limits.minimum.is_some_and(|minimum| value < minimum)
@@ -603,10 +656,10 @@ fn validate_conditions(
             }
         }
     }
-    Ok(())
+    Ok(compiled)
 }
 
-#[derive(Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct RecordLimits {
     equal: Option<String>,
     minimum: Option<u64>,
@@ -943,58 +996,78 @@ fn referenced_script(
     }
 }
 
-fn condition_matches(
-    condition: &QuestScriptCondition,
+fn conditions_match(
+    conditions: &CompiledConditions,
     player: &PlayerState,
     item_definitions: &[ItemDefinition],
 ) -> bool {
-    match condition {
-        QuestScriptCondition::MinimumLevel { level } => player.level >= *level,
-        QuestScriptCondition::MaximumLevel { level } => player.level <= *level,
-        QuestScriptCondition::JobIds { ids } => {
-            ids.contains(&player.stats.as_ref().map_or(0, |stats| stats.job_id))
-        }
-        QuestScriptCondition::MapId { map_id } => player.map_id == *map_id,
-        QuestScriptCondition::MesosAtLeast { amount } => player.mesos >= *amount,
-        QuestScriptCondition::MesosAtMost { amount } => player.mesos <= *amount,
-        QuestScriptCondition::ItemQuantity { item_id, quantity } => {
+    if conditions
+        .minimum_level
+        .is_some_and(|minimum| player.level < minimum)
+        || conditions
+            .maximum_level
+            .is_some_and(|maximum| player.level > maximum)
+        || conditions.allowed_jobs.as_ref().is_some_and(|jobs| {
+            !jobs.contains(&player.stats.as_ref().map_or(0, |stats| stats.job_id))
+        })
+        || conditions
+            .map_id
+            .is_some_and(|map_id| player.map_id != map_id)
+        || conditions
+            .minimum_mesos
+            .is_some_and(|minimum| player.mesos < minimum)
+        || conditions
+            .maximum_mesos
+            .is_some_and(|maximum| player.mesos > maximum)
+    {
+        return false;
+    }
+
+    let items_match = conditions
+        .item_quantities
+        .iter()
+        .all(|(item_id, quantity)| {
             player.inventory.as_ref().is_some_and(|inventory| {
                 crate::items::count_inventory_item(inventory, item_definitions, *item_id)
                     .is_ok_and(|current| current >= *quantity)
             })
-        }
-        QuestScriptCondition::QuestState { quest_id, state } => {
-            player_quest_state(player, *quest_id) == *state
-        }
-        QuestScriptCondition::QuestRecordEquals {
-            quest_id,
-            index,
-            value,
-        } => crate::quest_records::get(player, *quest_id, *index) == Some(value),
-        QuestScriptCondition::QuestRecordAtLeast {
-            quest_id,
-            index,
-            value,
-        } => record_numeric_matches(player, *quest_id, *index, value, u64::ge),
-        QuestScriptCondition::QuestRecordAtMost {
-            quest_id,
-            index,
-            value,
-        } => record_numeric_matches(player, *quest_id, *index, value, u64::le),
-    }
+        });
+    let quest_states_match = conditions
+        .quest_states
+        .iter()
+        .all(|(quest_id, state)| player_quest_state(player, *quest_id) == *state);
+    let records_match = conditions
+        .record_limits
+        .iter()
+        .all(|((quest_id, index), limits)| record_matches(player, *quest_id, *index, limits));
+
+    items_match && quest_states_match && records_match
 }
 
-fn record_numeric_matches(
+fn record_matches(
     player: &PlayerState,
     quest_id: u32,
     index: u32,
-    expected: &str,
-    compare: impl FnOnce(&u64, &u64) -> bool,
+    limits: &RecordLimits,
 ) -> bool {
-    crate::quest_records::get(player, quest_id, index)
-        .and_then(crate::quest_records::strict_decimal)
-        .zip(crate::quest_records::strict_decimal(expected))
-        .is_some_and(|(current, expected)| compare(&current, &expected))
+    let Some(current) = crate::quest_records::get(player, quest_id, index) else {
+        return false;
+    };
+    if limits
+        .equal
+        .as_deref()
+        .is_some_and(|expected| current != expected)
+    {
+        return false;
+    }
+    if limits.minimum.is_none() && limits.maximum.is_none() {
+        return true;
+    }
+    let Some(current) = crate::quest_records::strict_decimal(current) else {
+        return false;
+    };
+    limits.minimum.is_none_or(|minimum| current >= minimum)
+        && limits.maximum.is_none_or(|maximum| current <= maximum)
 }
 
 fn player_quest_state(
@@ -1030,17 +1103,24 @@ mod tests {
     use std::fs;
 
     use oozems_proto::v1::CharacterStats;
+    use oozems_proto::v1::InventoryItemStack;
     use oozems_proto::v1::InventoryState;
     use oozems_proto::v1::ItemDefinition;
+    use oozems_proto::v1::PlayerQuest;
     use oozems_proto::v1::PlayerState;
+    use oozems_proto::v1::QuestStatus;
 
     use super::QuestScriptAction;
     use super::QuestScriptCatalog;
+    use super::QuestScriptCondition;
     use super::QuestScriptFile;
     use super::QuestScriptPhase;
+    use super::QuestScriptQuestState;
     use super::QuestScriptResolution;
     use super::build_catalog;
     use super::collect_item_reference_ids;
+    use super::compile_conditions;
+    use super::conditions_match;
     use super::resolve;
     use crate::content::QuestActions;
     use crate::content::QuestCompletionRequirements;
@@ -1157,6 +1237,272 @@ mod tests {
         assert_eq!(plan.experience, 10);
         assert_eq!(plan.fame, 1);
         assert_eq!(plan.result_pages, vec!["The script result is ready."]);
+    }
+
+    #[test]
+    fn repeated_compatible_conditions_compile_to_equivalent_runtime_conditions() {
+        let equivalent = vec![
+            QuestScriptCondition::MinimumLevel { level: 5 },
+            QuestScriptCondition::MaximumLevel { level: 8 },
+            QuestScriptCondition::JobIds { ids: vec![0] },
+            QuestScriptCondition::MapId { map_id: 10 },
+            QuestScriptCondition::MesosAtLeast { amount: 100 },
+            QuestScriptCondition::MesosAtMost { amount: 150 },
+            QuestScriptCondition::ItemQuantity {
+                item_id: ITEM_ID,
+                quantity: 3,
+            },
+            QuestScriptCondition::QuestState {
+                quest_id: 800,
+                state: QuestScriptQuestState::Started,
+            },
+            QuestScriptCondition::QuestRecordEquals {
+                quest_id: 900,
+                index: 2,
+                value: "007".to_owned(),
+            },
+            QuestScriptCondition::QuestRecordAtLeast {
+                quest_id: 900,
+                index: 2,
+                value: "7".to_owned(),
+            },
+            QuestScriptCondition::QuestRecordAtMost {
+                quest_id: 900,
+                index: 2,
+                value: "7".to_owned(),
+            },
+            QuestScriptCondition::QuestRecordAtLeast {
+                quest_id: 901,
+                index: 0,
+                value: "10".to_owned(),
+            },
+            QuestScriptCondition::QuestRecordAtMost {
+                quest_id: 901,
+                index: 0,
+                value: "20".to_owned(),
+            },
+        ];
+        let mut repeated = equivalent.clone();
+        repeated.extend([
+            QuestScriptCondition::MinimumLevel { level: 2 },
+            QuestScriptCondition::MaximumLevel { level: 10 },
+            QuestScriptCondition::JobIds { ids: vec![0, 100] },
+            QuestScriptCondition::MapId { map_id: 10 },
+            QuestScriptCondition::MesosAtLeast { amount: 50 },
+            QuestScriptCondition::MesosAtMost { amount: 200 },
+            QuestScriptCondition::ItemQuantity {
+                item_id: ITEM_ID,
+                quantity: 1,
+            },
+            QuestScriptCondition::QuestState {
+                quest_id: 800,
+                state: QuestScriptQuestState::Started,
+            },
+            QuestScriptCondition::QuestRecordEquals {
+                quest_id: 900,
+                index: 2,
+                value: "007".to_owned(),
+            },
+            QuestScriptCondition::QuestRecordAtLeast {
+                quest_id: 900,
+                index: 2,
+                value: "5".to_owned(),
+            },
+            QuestScriptCondition::QuestRecordAtMost {
+                quest_id: 900,
+                index: 2,
+                value: "9".to_owned(),
+            },
+            QuestScriptCondition::QuestRecordAtLeast {
+                quest_id: 901,
+                index: 0,
+                value: "5".to_owned(),
+            },
+            QuestScriptCondition::QuestRecordAtMost {
+                quest_id: 901,
+                index: 0,
+                value: "25".to_owned(),
+            },
+        ]);
+        let path = std::path::Path::new("quest-scripts.toml");
+        let item_definitions = item_definitions();
+        let repeated = compile_conditions(path, "repeated", &repeated, &item_definitions)
+            .expect("compatible repeated conditions");
+        let equivalent = compile_conditions(path, "equivalent", &equivalent, &item_definitions)
+            .expect("equivalent conditions");
+        assert_eq!(repeated, equivalent);
+
+        let mut eligible = player();
+        eligible.level = 5;
+        eligible.map_id = 10;
+        eligible.mesos = 100;
+        eligible.stats = None;
+        eligible.inventory = Some(InventoryState {
+            capacity: 10,
+            stacks: vec![InventoryItemStack {
+                item_id: ITEM_ID,
+                quantity: 3,
+                ..InventoryItemStack::default()
+            }],
+            ..InventoryState::default()
+        });
+        eligible.quests.push(PlayerQuest {
+            quest_id: 800,
+            status: QuestStatus::Started as i32,
+            ..PlayerQuest::default()
+        });
+        crate::quest_records::set(&mut eligible, 900, 2, "007".to_owned()).expect("exact record");
+        crate::quest_records::set(&mut eligible, 901, 0, "0015".to_owned())
+            .expect("numeric record");
+
+        assert!(conditions_match(&repeated, &eligible, &item_definitions));
+
+        let mut ineligible = Vec::new();
+        let mut state = eligible.clone();
+        state.level = 4;
+        ineligible.push(("strongest minimum level", state));
+        let mut state = eligible.clone();
+        state.level = 9;
+        ineligible.push(("strongest maximum level", state));
+        let mut state = eligible.clone();
+        state.map_id = 11;
+        ineligible.push(("repeated map", state));
+        let mut state = eligible.clone();
+        state.mesos = 99;
+        ineligible.push(("strongest minimum mesos", state));
+        let mut state = eligible.clone();
+        state.mesos = 151;
+        ineligible.push(("strongest maximum mesos", state));
+        let mut state = eligible.clone();
+        state.stats = Some(CharacterStats {
+            job_id: 100,
+            ..CharacterStats::default()
+        });
+        ineligible.push(("intersected jobs", state));
+        let mut state = eligible.clone();
+        state.inventory.as_mut().expect("inventory").stacks[0].quantity = 2;
+        ineligible.push(("strongest item quantity", state));
+        let mut state = eligible.clone();
+        state.inventory = None;
+        ineligible.push(("missing inventory", state));
+        let mut state = eligible.clone();
+        state.inventory.as_mut().expect("inventory").stacks[0].quantity = 0;
+        ineligible.push(("invalid inventory", state));
+        let mut state = eligible.clone();
+        state.quests.clear();
+        ineligible.push(("repeated quest state", state));
+        let mut state = eligible.clone();
+        crate::quest_records::set(&mut state, 900, 2, "7".to_owned())
+            .expect("different exact record");
+        ineligible.push(("record equality", state));
+        let mut state = eligible.clone();
+        crate::quest_records::set(&mut state, 901, 0, "invalid".to_owned())
+            .expect("nonnumeric record");
+        ineligible.push(("numeric record limits", state));
+        let mut state = eligible.clone();
+        state.quest_records.clear();
+        ineligible.push(("missing records", state));
+
+        for (case, player) in ineligible {
+            assert!(
+                !conditions_match(&repeated, &player, &item_definitions),
+                "conditions unexpectedly matched {case}"
+            );
+        }
+    }
+
+    #[test]
+    fn repeated_conditions_resolve_through_the_loaded_catalog() {
+        let quest = scripted_quest("repeated");
+        let item_definitions = item_definitions();
+        let catalog = load(
+            r#"
+                [[scripts]]
+                name = "repeated"
+
+                [[scripts.conditions]]
+                type = "mesos_at_least"
+                amount = 50
+
+                [[scripts.conditions]]
+                type = "mesos_at_least"
+                amount = 100
+
+                [[scripts.conditions]]
+                type = "item_quantity"
+                item_id = 4000000
+                quantity = 1
+
+                [[scripts.conditions]]
+                type = "item_quantity"
+                item_id = 4000000
+                quantity = 3
+
+                [[scripts.conditions]]
+                type = "quest_record_at_least"
+                quest_id = 900
+                index = 0
+                value = "10"
+
+                [[scripts.conditions]]
+                type = "quest_record_at_least"
+                quest_id = 900
+                index = 0
+                value = "15"
+            "#,
+            &[&quest],
+            &item_definitions,
+        )
+        .expect("repeated condition catalog");
+        let mut eligible = player();
+        eligible.inventory = Some(InventoryState {
+            capacity: 1,
+            stacks: vec![InventoryItemStack {
+                item_id: ITEM_ID,
+                quantity: 3,
+                ..InventoryItemStack::default()
+            }],
+            ..InventoryState::default()
+        });
+        crate::quest_records::set(&mut eligible, 900, 0, "15".to_owned())
+            .expect("numeric helper record");
+
+        assert!(matches!(
+            resolve(
+                &catalog,
+                &quest,
+                QuestScriptPhase::Start,
+                &eligible,
+                &item_definitions,
+            ),
+            QuestScriptResolution::Ready(_)
+        ));
+
+        let mut insufficient_mesos = eligible.clone();
+        insufficient_mesos.mesos = 99;
+        let mut insufficient_items = eligible.clone();
+        insufficient_items
+            .inventory
+            .as_mut()
+            .expect("inventory")
+            .stacks[0]
+            .quantity = 2;
+        let mut insufficient_record = eligible;
+        crate::quest_records::set(&mut insufficient_record, 900, 0, "14".to_owned())
+            .expect("numeric helper record");
+
+        for player in [insufficient_mesos, insufficient_items, insufficient_record] {
+            assert!(matches!(
+                resolve(
+                    &catalog,
+                    &quest,
+                    QuestScriptPhase::Start,
+                    &player,
+                    &item_definitions,
+                ),
+                QuestScriptResolution::ConditionsNotMet { .. }
+            ));
+        }
     }
 
     #[test]

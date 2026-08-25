@@ -11,11 +11,17 @@ use oozems_proto::v1::InventoryItemStack;
 use oozems_proto::v1::InventoryState;
 use oozems_proto::v1::ItemCategory;
 use oozems_proto::v1::ItemDefinition;
-use oozems_proto::v1::KeyAction;
-use oozems_proto::v1::KeyBinding;
 use oozems_proto::v1::SkillBook;
 
-use crate::keymap::BindingTarget;
+mod key_config;
+
+pub use key_config::KeyDrag;
+pub use key_config::KeyIconPlacement;
+pub use key_config::begin_key_drag;
+pub use key_config::bound_key_icons;
+pub use key_config::dragged_key_icon;
+pub use key_config::finish_key_drag;
+pub use key_config::move_key_drag;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum InventoryTab {
@@ -71,22 +77,6 @@ pub struct GaugeFill {
     pub filled_width: f64,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct KeyDrag {
-    pub target: BindingTarget,
-    pub point: CanvasPoint,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct KeyIconPlacement {
-    pub target: BindingTarget,
-    pub asset_id: String,
-    pub x: f32,
-    pub y: f32,
-    pub width: f32,
-    pub height: f32,
-}
-
 pub(crate) struct InventorySlot<'a> {
     pub inventory_index: u32,
     pub visual_index: usize,
@@ -105,12 +95,6 @@ struct CanvasRect {
 struct InventoryHit {
     inventory_index: u32,
     can_equip: bool,
-}
-
-struct BindingIcon {
-    asset_id: String,
-    width: f32,
-    height: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -276,84 +260,6 @@ pub fn status_sprite_visible(
         "skills-pressed" => state.skills_open,
         _ => true,
     }
-}
-
-pub fn begin_key_drag(
-    state: GuiState,
-    gui: &GameGui,
-    skill_book: &SkillBook,
-    bindings: &[KeyBinding],
-    point: CanvasPoint,
-) -> Option<KeyDrag> {
-    let target = skill_at_point(state, gui, skill_book, point)
-        .map(BindingTarget::Skill)
-        .or_else(|| palette_action_at(gui, point).map(BindingTarget::Action))
-        .or_else(|| bound_target_at(gui, bindings, point))?;
-    Some(KeyDrag { target, point })
-}
-
-pub fn move_key_drag(
-    drag: &mut KeyDrag,
-    point: CanvasPoint,
-) {
-    drag.point = point;
-}
-
-pub fn finish_key_drag(
-    gui: &GameGui,
-    bindings: &[KeyBinding],
-    drag: &KeyDrag,
-    point: CanvasPoint,
-) -> Option<Vec<KeyBinding>> {
-    let code = key_code_at(gui, point)?;
-    Some(crate::keymap::assign_target(bindings, code, drag.target))
-}
-
-pub fn bound_key_icons(
-    gui: &GameGui,
-    skill_book: &SkillBook,
-    bindings: &[KeyBinding],
-) -> Vec<KeyIconPlacement> {
-    let Some(window) = valid_key_config_window(gui) else {
-        return Vec::new();
-    };
-    let Some(layout) = window.layout.as_ref() else {
-        return Vec::new();
-    };
-    bindings
-        .iter()
-        .filter_map(|binding| {
-            let target = crate::keymap::target_for_code(bindings, &binding.code)?;
-            let icon = target_icon(gui, skill_book, target)?;
-            let slot = gui.key_slots.iter().find(|slot| {
-                slot.code == binding.code && valid_key_slot(slot, layout.width, layout.height)
-            })?;
-            Some(KeyIconPlacement {
-                target,
-                asset_id: icon.asset_id,
-                x: window.x + slot.x + (slot.width - icon.width) / 2.0,
-                y: window.y + slot.y + (slot.height - icon.height) / 2.0,
-                width: icon.width,
-                height: icon.height,
-            })
-        })
-        .collect()
-}
-
-pub fn dragged_key_icon(
-    gui: &GameGui,
-    skill_book: &SkillBook,
-    drag: &KeyDrag,
-) -> Option<KeyIconPlacement> {
-    let icon = target_icon(gui, skill_book, drag.target)?;
-    Some(KeyIconPlacement {
-        target: drag.target,
-        asset_id: icon.asset_id,
-        x: drag.point.x - icon.width / 2.0,
-        y: drag.point.y - icon.height / 2.0,
-        width: icon.width,
-        height: icon.height,
-    })
 }
 
 pub fn inventory_slot_position(index: usize) -> (f32, f32) {
@@ -598,31 +504,6 @@ fn status_action(
     })
 }
 
-fn palette_action_at(
-    gui: &GameGui,
-    point: CanvasPoint,
-) -> Option<KeyAction> {
-    let window = valid_key_config_window(gui)?;
-    let layout = window.layout.as_ref()?;
-    gui.key_actions.iter().find_map(|definition| {
-        let icon = definition.icon.as_ref()?;
-        if !valid_sprite(icon, layout.width, layout.height) {
-            return None;
-        }
-        rect_contains(
-            CanvasRect {
-                x: window.x + icon.x,
-                y: window.y + icon.y,
-                width: icon.width,
-                height: icon.height,
-            },
-            point,
-        )
-        .then(|| KeyAction::try_from(definition.action).ok())
-        .flatten()
-    })
-}
-
 pub fn can_allocate_skill(
     book: &SkillBook,
     skill_id: u32,
@@ -768,106 +649,6 @@ fn skill_row_at<'a>(
             };
             rect_contains(rect, point).then_some((skill, rect))
         })
-}
-
-fn bound_target_at(
-    gui: &GameGui,
-    bindings: &[KeyBinding],
-    point: CanvasPoint,
-) -> Option<BindingTarget> {
-    let code = key_code_at(gui, point)?;
-    crate::keymap::target_for_code(bindings, code)
-}
-
-fn target_icon(
-    gui: &GameGui,
-    skill_book: &SkillBook,
-    target: BindingTarget,
-) -> Option<BindingIcon> {
-    match target {
-        BindingTarget::Action(action) => {
-            let icon = action_definition(gui, action)?.icon.as_ref()?;
-            Some(BindingIcon {
-                asset_id: icon.asset_id.clone(),
-                width: icon.width,
-                height: icon.height,
-            })
-        }
-        BindingTarget::Skill(skill_id) => {
-            let definition = skill_book
-                .skills
-                .iter()
-                .filter_map(|skill| skill.definition.as_ref())
-                .find(|definition| definition.skill_id == skill_id)?;
-            Some(BindingIcon {
-                asset_id: definition.icon_asset_id.clone(),
-                width: definition.icon_width,
-                height: definition.icon_height,
-            })
-        }
-    }
-}
-
-fn key_code_at(
-    gui: &GameGui,
-    point: CanvasPoint,
-) -> Option<&str> {
-    let window = valid_key_config_window(gui)?;
-    let layout = window.layout.as_ref()?;
-    gui.key_slots.iter().find_map(|slot| {
-        if !valid_key_slot(slot, layout.width, layout.height) {
-            return None;
-        }
-        rect_contains(
-            CanvasRect {
-                x: window.x + slot.x,
-                y: window.y + slot.y,
-                width: slot.width,
-                height: slot.height,
-            },
-            point,
-        )
-        .then_some(slot.code.as_str())
-    })
-}
-
-fn action_definition(
-    gui: &GameGui,
-    action: KeyAction,
-) -> Option<&oozems_proto::v1::KeyActionDefinition> {
-    let layout = valid_key_config_window(gui)?.layout.as_ref()?;
-    gui.key_actions.iter().find(|definition| {
-        definition.action == action as i32
-            && definition
-                .icon
-                .as_ref()
-                .is_some_and(|icon| valid_sprite(icon, layout.width, layout.height))
-    })
-}
-
-fn valid_key_config_window(gui: &GameGui) -> Option<&oozems_proto::v1::GuiWindow> {
-    let window = gui.key_config_window.as_ref()?;
-    window
-        .layout
-        .as_ref()
-        .filter(|layout| valid_layout(layout))?;
-    Some(window)
-}
-
-fn valid_key_slot(
-    slot: &oozems_proto::v1::KeySlot,
-    layout_width: f32,
-    layout_height: f32,
-) -> bool {
-    let values = [slot.x, slot.y, slot.width, slot.height];
-    !slot.code.is_empty()
-        && values.iter().all(|value| value.is_finite())
-        && slot.x >= 0.0
-        && slot.y >= 0.0
-        && slot.width > 0.0
-        && slot.height > 0.0
-        && slot.x + slot.width <= layout_width
-        && slot.y + slot.height <= layout_height
 }
 
 fn gauge_fill(
@@ -1129,9 +910,6 @@ mod tests {
     use oozems_proto::v1::InventoryState;
     use oozems_proto::v1::ItemCategory;
     use oozems_proto::v1::ItemDefinition;
-    use oozems_proto::v1::KeyAction;
-    use oozems_proto::v1::KeyActionDefinition;
-    use oozems_proto::v1::KeySlot;
     use oozems_proto::v1::PlayerSkill;
     use oozems_proto::v1::SkillBook;
     use oozems_proto::v1::SkillDefinition;
@@ -1142,11 +920,8 @@ mod tests {
     use super::InventoryTab;
     use super::PointerButton;
     use super::apply_local_action;
-    use super::begin_key_drag;
-    use super::bound_key_icons;
     use super::canvas_point;
     use super::click_action;
-    use super::finish_key_drag;
     use super::gauge_fills;
     use super::gauge_labels;
     use super::inventory_slots;
@@ -1156,7 +931,6 @@ mod tests {
     use super::sprite_screen_x;
     use super::status_sprite_visible;
     use super::valid_layout;
-    use crate::keymap::BindingTarget;
 
     #[test]
     fn stat_button_toggles_the_window_and_close_hides_it() {
@@ -1491,26 +1265,6 @@ mod tests {
     }
 
     #[test]
-    fn key_actions_drag_from_the_wz_palette_onto_a_keyboard_slot() {
-        let gui = gui_fixture();
-        let skill_book = SkillBook::default();
-        let point = CanvasPoint { x: 175.0, y: 330.0 };
-        let drag = begin_key_drag(GuiState::default(), &gui, &skill_book, &[], point)
-            .expect("pickup palette icon");
-
-        assert_eq!(drag.target, BindingTarget::Action(KeyAction::PickUp));
-        let bindings = finish_key_drag(&gui, &[], &drag, CanvasPoint { x: 250.0, y: 197.0 })
-            .expect("KeyA target");
-        assert_eq!(bindings.len(), 1);
-        assert_eq!(bindings[0].code, "KeyA");
-        assert_eq!(bindings[0].action, KeyAction::PickUp as i32);
-
-        let icons = bound_key_icons(&gui, &skill_book, &bindings);
-        assert_eq!(icons.len(), 1);
-        assert_eq!((icons[0].x, icons[0].y), (246.0, 193.0));
-    }
-
-    #[test]
     fn key_settings_button_opens_and_closes_the_native_editor() {
         let gui = gui_fixture();
         let mut state = GuiState::default();
@@ -1598,7 +1352,7 @@ mod tests {
     }
 
     #[test]
-    fn learned_skills_allocate_use_and_drag_from_native_rows() {
+    fn learned_skills_allocate_and_use_from_native_rows() {
         let gui = gui_fixture();
         let mut book = skill_book_fixture(0, 1);
         let state = GuiState {
@@ -1633,23 +1387,6 @@ mod tests {
             ),
             Some(GuiAction::UseSkill { skill_id: 1_000 })
         );
-
-        let drag = begin_key_drag(
-            GuiState {
-                key_config_open: true,
-                ..state
-            },
-            &gui,
-            &book,
-            &[],
-            CanvasPoint { x: 40.0, y: 180.0 },
-        )
-        .expect("learned skill drag");
-        assert_eq!(drag.target, BindingTarget::Skill(1_000));
-        let bindings = finish_key_drag(&gui, &[], &drag, CanvasPoint { x: 250.0, y: 197.0 })
-            .expect("KeyA target");
-        assert_eq!(bindings[0].skill_id, 1_000);
-        assert_eq!(bindings[0].action, KeyAction::Unspecified as i32);
     }
 
     #[test]
@@ -1760,25 +1497,10 @@ mod tests {
                     width: 629.0,
                     height: 373.0,
                     background: Some(sprite("key-config-background", 0.0, 0.0, 629.0, 373.0)),
-                    sprites: vec![
-                        sprite("key-config-close", 612.0, 6.0, 12.0, 12.0),
-                        sprite("key-action-50", 7.0, 267.0, 32.0, 32.0),
-                    ],
+                    sprites: vec![sprite("key-config-close", 612.0, 6.0, 12.0, 12.0)],
                     ..GuiLayout::default()
                 }),
             }),
-            key_actions: vec![KeyActionDefinition {
-                action: KeyAction::PickUp as i32,
-                label: "Pick up".to_owned(),
-                icon: Some(sprite("key-action-50", 7.0, 267.0, 32.0, 32.0)),
-            }],
-            key_slots: vec![KeySlot {
-                code: "KeyA".to_owned(),
-                x: 81.0,
-                y: 133.0,
-                width: 32.0,
-                height: 32.0,
-            }],
             items: vec![item_definition(1_040_003, ItemCategory::Equipment)],
             ..GameGui::default()
         }

@@ -24,19 +24,17 @@ use super::character::CharacterContent;
 use super::wz;
 use super::wz::WzContentError;
 
+mod consume;
+mod monster_book;
+
+pub(crate) use consume::ConsumeEffectDefinition;
+pub(crate) use monster_book::MonsterBookCardDefinition;
+
 const ITEM_ARCHIVE: &str = "Item.wz";
 const CHARACTER_ARCHIVE: &str = "Character.wz";
 const STRING_ARCHIVE: &str = "String.wz";
 const DEFAULT_STACK_MAX: u32 = 100;
 const INSTALL_STACK_MAX: u32 = 1;
-const MAX_CONSUME_EFFECT_DURATION_MS: u64 = 24 * 60 * 60 * 1_000;
-const SUPPORTED_CONSUME_EFFECT_IDS: [u32; 9] = [
-    2_022_070, 2_022_109, 2_022_152, 2_022_239, 2_022_631, 2_022_632, 2_022_633, 2_210_003,
-    2_210_034,
-];
-const MAP_PROTECTION_EFFECT_ID: u32 = 2_022_187;
-const MONSTER_BOOK_CATEGORY: u32 = 238;
-const MONSTER_BOOK_IMAGE_PATH: &str = "Item.wz/Consume/0238.img";
 
 const ORDINARY_SOURCES: [OrdinarySource; 5] = [
     OrdinarySource {
@@ -104,29 +102,6 @@ pub struct ItemContent {
     assets: RwLock<HashMap<String, Arc<WzAsset>>>,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct ConsumeEffectDefinition {
-    pub item_id: u32,
-    pub weapon_attack: i32,
-    pub magic_attack: i32,
-    pub weapon_defense: i32,
-    pub magic_defense: i32,
-    pub accuracy: i32,
-    pub avoidability: i32,
-    pub speed: i32,
-    pub jump: i32,
-    pub hp: u32,
-    pub morph_id: Option<u32>,
-    pub duration_ms: u64,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct MonsterBookCardDefinition {
-    pub item_id: u32,
-    pub source_mob_id: u32,
-    pub max_count: u32,
-}
-
 #[derive(Debug, Error)]
 pub enum ItemContentError {
     #[error(transparent)]
@@ -171,6 +146,14 @@ struct ItemSource {
     definition: OnceLock<ItemDefinition>,
 }
 
+#[derive(Clone, Copy)]
+struct ItemSourceData<'a> {
+    category: ItemCategory,
+    image: &'a WzNodeArc,
+    inner_path: Option<&'a str>,
+    source_path: &'a str,
+}
+
 #[derive(Default)]
 struct SourceFingerprints {
     item: Option<String>,
@@ -207,15 +190,14 @@ impl ItemContent {
         if sources.is_empty() {
             return Ok(None);
         }
-        let consume_effects = if fingerprints.item.is_some() {
-            load_consume_effects(&sources)?
+        let (consume_effects, monster_book_cards) = if fingerprints.item.is_some() {
+            let source_data = item_source_data(&sources);
+            (
+                consume::load(&source_data)?,
+                monster_book::load(&source_data)?,
+            )
         } else {
-            BTreeMap::new()
-        };
-        let monster_book_cards = if fingerprints.item.is_some() {
-            load_monster_book_cards(&sources)?
-        } else {
-            BTreeMap::new()
+            (BTreeMap::new(), BTreeMap::new())
         };
 
         tracing::info!(indexed_items = sources.len(), "WZ item source index ready");
@@ -429,339 +411,6 @@ impl ItemContent {
     }
 }
 
-fn load_monster_book_cards(
-    sources: &BTreeMap<u32, ItemSource>
-) -> Result<BTreeMap<u32, MonsterBookCardDefinition>, ItemContentError> {
-    let card_sources = sources
-        .iter()
-        .filter(|(item_id, _)| **item_id / 10_000 == MONSTER_BOOK_CATEGORY)
-        .collect::<Vec<_>>();
-    let Some((_, first)) = card_sources.first() else {
-        return invalid(format!(
-            "{MONSTER_BOOK_IMAGE_PATH} has no indexed Monster Book cards"
-        ));
-    };
-    let image = Arc::clone(&first.image);
-    wz::parse(&image, MONSTER_BOOK_IMAGE_PATH.to_owned())?;
-    let result = card_sources
-        .into_iter()
-        .map(|(item_id, source)| {
-            validate_monster_book_source(*item_id, source)?;
-            let inner_path = source
-                .inner_path
-                .as_deref()
-                .expect("validated Monster Book source has an inner path");
-            let item = required_child(&source.image, inner_path, &source.source_path)?;
-            read_monster_book_card(*item_id, source.category, &source.source_path, &item)
-                .map(|definition| (*item_id, definition))
-        })
-        .collect::<Result<BTreeMap<_, _>, _>>();
-    image
-        .write()
-        .map_err(|_| ItemContentError::Lock {
-            context: "Monster Book item source image",
-        })?
-        .unparse();
-    result
-}
-
-fn validate_monster_book_source(
-    item_id: u32,
-    source: &ItemSource,
-) -> Result<(), ItemContentError> {
-    let expected_inner_path = format!("{item_id:08}");
-    let expected_path = format!("{MONSTER_BOOK_IMAGE_PATH}/{expected_inner_path}");
-    if source.category != ItemCategory::Consume
-        || source.inner_path.as_deref() != Some(expected_inner_path.as_str())
-        || source.source_path != expected_path
-    {
-        return invalid(format!(
-            "Monster Book card {item_id} is not an exact Consume/0238.img item source"
-        ));
-    }
-    Ok(())
-}
-
-fn read_monster_book_card(
-    item_id: u32,
-    category: ItemCategory,
-    source_path: &str,
-    item: &WzNodeArc,
-) -> Result<MonsterBookCardDefinition, ItemContentError> {
-    if item_id / 10_000 != MONSTER_BOOK_CATEGORY
-        || category != ItemCategory::Consume
-        || source_path != format!("{MONSTER_BOOK_IMAGE_PATH}/{item_id:08}")
-    {
-        return invalid(format!(
-            "Monster Book card {item_id} has an invalid item category or source"
-        ));
-    }
-    let info = required_child(item, "info", source_path)?;
-    let spec = required_child(item, "spec", source_path)?;
-    if strict_monster_book_integer(item_id, &info, "monsterBook")? != 1 {
-        return invalid(format!(
-            "Monster Book card {item_id} property \"monsterBook\" must equal 1"
-        ));
-    }
-    if strict_monster_book_integer(item_id, &spec, "consumeOnPickup")? != 1 {
-        return invalid(format!(
-            "Monster Book card {item_id} property \"consumeOnPickup\" must equal 1"
-        ));
-    }
-    let source_mob_id = u32::try_from(strict_monster_book_integer(item_id, &info, "mob")?)
-        .ok()
-        .filter(|mob_id| *mob_id > 0)
-        .ok_or_else(|| ItemContentError::Invalid {
-            message: format!("Monster Book card {item_id} property \"mob\" must be positive"),
-        })?;
-    Ok(MonsterBookCardDefinition {
-        item_id,
-        source_mob_id,
-        max_count: crate::monster_book::MAX_CARD_COUNT,
-    })
-}
-
-fn strict_monster_book_integer(
-    item_id: u32,
-    info: &WzNodeArc,
-    name: &str,
-) -> Result<i32, ItemContentError> {
-    let value = required_child(info, name, &format!("Monster Book card {item_id} info"))?;
-    let read = value.read().map_err(|_| ItemContentError::Lock {
-        context: "Monster Book item property",
-    })?;
-    read.try_as_int()
-        .copied()
-        .ok_or_else(|| ItemContentError::Invalid {
-            message: format!(
-                "Monster Book card {item_id} property {name:?} is not an exact WZ int"
-            ),
-        })
-}
-
-fn load_consume_effects(
-    sources: &BTreeMap<u32, ItemSource>
-) -> Result<BTreeMap<u32, ConsumeEffectDefinition>, ItemContentError> {
-    let mut effects = BTreeMap::new();
-    for item_id in SUPPORTED_CONSUME_EFFECT_IDS {
-        let source = sources
-            .get(&item_id)
-            .ok_or_else(|| ItemContentError::Invalid {
-                message: format!("required consume effect item {item_id} is absent from Item.wz"),
-            })?;
-        effects.insert(item_id, read_consume_effect(item_id, source)?);
-    }
-    let map_protection =
-        sources
-            .get(&MAP_PROTECTION_EFFECT_ID)
-            .ok_or_else(|| ItemContentError::Invalid {
-                message: format!(
-                    "required map protection item {MAP_PROTECTION_EFFECT_ID} is absent from \
-                     Item.wz"
-                ),
-            })?;
-    validate_map_protection_effect(map_protection)?;
-    Ok(effects)
-}
-
-fn effect_node(
-    item_id: u32,
-    source: &ItemSource,
-) -> Result<WzNodeArc, ItemContentError> {
-    if source.category != ItemCategory::Consume {
-        return invalid(format!(
-            "consume effect source {item_id} has category {:?}, not consume",
-            source.category
-        ));
-    }
-    wz::parse(&source.image, source.source_path.clone())?;
-    let item = match source.inner_path.as_deref() {
-        Some(path) => required_child(&source.image, path, &source.source_path)?,
-        None => Arc::clone(&source.image),
-    };
-    wz::child(&item, "specEx")?
-        .or(wz::child(&item, "spec")?)
-        .ok_or_else(|| ItemContentError::Invalid {
-            message: format!("consume effect item {item_id} has neither specEx nor spec"),
-        })
-}
-
-fn read_consume_effect(
-    item_id: u32,
-    source: &ItemSource,
-) -> Result<ConsumeEffectDefinition, ItemContentError> {
-    let effect = effect_node(item_id, source)?;
-    let mut values = BTreeMap::new();
-    for field in wz::sorted_children(&effect)? {
-        let name = wz::node_name(&field)?;
-        if ![
-            "pad", "mad", "pdd", "mdd", "acc", "eva", "speed", "jump", "hp", "morph", "time",
-        ]
-        .contains(&name.as_str())
-        {
-            return invalid(format!(
-                "consume effect item {item_id} has unsupported property {name:?}"
-            ));
-        }
-        if values
-            .insert(name.clone(), strict_effect_integer(item_id, &name, &field)?)
-            .is_some()
-        {
-            return invalid(format!(
-                "consume effect item {item_id} property {name:?} appears more than once"
-            ));
-        }
-    }
-    let duration = take_required_positive(&mut values, item_id, "time")?;
-    let duration_ms = u64::try_from(duration).map_err(|_| ItemContentError::Invalid {
-        message: format!("consume effect item {item_id} duration is outside the u64 range"),
-    })?;
-    if duration_ms > MAX_CONSUME_EFFECT_DURATION_MS {
-        return invalid(format!(
-            "consume effect item {item_id} duration {duration_ms} exceeds the supported maximum"
-        ));
-    }
-    let hp = take_nonnegative_u32(&mut values, item_id, "hp")?;
-    let morph_id = take_optional_positive_u32(&mut values, item_id, "morph")?;
-    let definition = ConsumeEffectDefinition {
-        item_id,
-        weapon_attack: take_modifier(&mut values, item_id, "pad")?,
-        magic_attack: take_modifier(&mut values, item_id, "mad")?,
-        weapon_defense: take_modifier(&mut values, item_id, "pdd")?,
-        magic_defense: take_modifier(&mut values, item_id, "mdd")?,
-        accuracy: take_modifier(&mut values, item_id, "acc")?,
-        avoidability: take_modifier(&mut values, item_id, "eva")?,
-        speed: take_modifier(&mut values, item_id, "speed")?,
-        jump: take_modifier(&mut values, item_id, "jump")?,
-        hp,
-        morph_id,
-        duration_ms,
-    };
-    if !values.is_empty() {
-        return invalid(format!(
-            "consume effect item {item_id} contains unconsumed properties: {:?}",
-            values.keys().collect::<Vec<_>>()
-        ));
-    }
-    Ok(definition)
-}
-
-fn validate_map_protection_effect(source: &ItemSource) -> Result<(), ItemContentError> {
-    let effect = effect_node(MAP_PROTECTION_EFFECT_ID, source)?;
-    let fields = wz::sorted_children(&effect)?;
-    if fields.len() != 2 {
-        return invalid(format!(
-            "map protection item {MAP_PROTECTION_EFFECT_ID} must define exactly thaw and time"
-        ));
-    }
-    let thaw = wz::child(&effect, "thaw")?.ok_or_else(|| ItemContentError::Invalid {
-        message: format!("map protection item {MAP_PROTECTION_EFFECT_ID} has no thaw property"),
-    })?;
-    let time = wz::child(&effect, "time")?.ok_or_else(|| ItemContentError::Invalid {
-        message: format!("map protection item {MAP_PROTECTION_EFFECT_ID} has no time property"),
-    })?;
-    if strict_effect_integer(MAP_PROTECTION_EFFECT_ID, "thaw", &thaw)? != -6
-        || strict_effect_integer(MAP_PROTECTION_EFFECT_ID, "time", &time)? != 1_800_000
-    {
-        return invalid(format!(
-            "map protection item {MAP_PROTECTION_EFFECT_ID} does not match audited thaw=-6, \
-             time=1800000"
-        ));
-    }
-    Ok(())
-}
-
-fn strict_effect_integer(
-    item_id: u32,
-    name: &str,
-    node: &WzNodeArc,
-) -> Result<i64, ItemContentError> {
-    let read = node.read().map_err(|_| ItemContentError::Lock {
-        context: "consume effect property",
-    })?;
-    if let Some(value) = read.try_as_int() {
-        Ok(i64::from(*value))
-    } else if let Some(value) = read.try_as_short() {
-        Ok(i64::from(*value))
-    } else if let Some(value) = read.try_as_long() {
-        Ok(*value)
-    } else {
-        invalid(format!(
-            "consume effect item {item_id} property {name:?} is not an integer WZ value"
-        ))
-    }
-}
-
-fn take_required_positive(
-    values: &mut BTreeMap<String, i64>,
-    item_id: u32,
-    name: &str,
-) -> Result<i64, ItemContentError> {
-    values
-        .remove(name)
-        .filter(|value| *value > 0)
-        .ok_or_else(|| ItemContentError::Invalid {
-            message: format!("consume effect item {item_id} property {name:?} must be positive"),
-        })
-}
-
-fn take_modifier(
-    values: &mut BTreeMap<String, i64>,
-    item_id: u32,
-    name: &str,
-) -> Result<i32, ItemContentError> {
-    let Some(value) = values.remove(name) else {
-        return Ok(0);
-    };
-    let value = i32::try_from(value).map_err(|_| ItemContentError::Invalid {
-        message: format!("consume effect item {item_id} property {name:?} is outside i32"),
-    })?;
-    if !(-1_000..=1_000).contains(&value) {
-        return invalid(format!(
-            "consume effect item {item_id} property {name:?} is outside -1000..=1000"
-        ));
-    }
-    Ok(value)
-}
-
-fn take_nonnegative_u32(
-    values: &mut BTreeMap<String, i64>,
-    item_id: u32,
-    name: &str,
-) -> Result<u32, ItemContentError> {
-    values
-        .remove(name)
-        .map(|value| {
-            u32::try_from(value).map_err(|_| ItemContentError::Invalid {
-                message: format!(
-                    "consume effect item {item_id} property {name:?} must be a nonnegative u32"
-                ),
-            })
-        })
-        .transpose()
-        .map(Option::unwrap_or_default)
-}
-
-fn take_optional_positive_u32(
-    values: &mut BTreeMap<String, i64>,
-    item_id: u32,
-    name: &str,
-) -> Result<Option<u32>, ItemContentError> {
-    values
-        .remove(name)
-        .map(|value| {
-            u32::try_from(value)
-                .ok()
-                .filter(|value| *value > 0)
-                .ok_or_else(|| ItemContentError::Invalid {
-                    message: format!(
-                        "consume effect item {item_id} property {name:?} must be a positive u32"
-                    ),
-                })
-        })
-        .transpose()
-}
-
 fn open_optional_archive(path: &Path) -> Result<Option<OpenArchive>, ItemContentError> {
     if !archive_exists(path)? {
         return Ok(None);
@@ -774,6 +423,23 @@ fn open_optional_archive(path: &Path) -> Result<Option<OpenArchive>, ItemContent
         root,
         fingerprint: wz::archive_fingerprint(path)?,
     }))
+}
+
+fn item_source_data(sources: &BTreeMap<u32, ItemSource>) -> BTreeMap<u32, ItemSourceData<'_>> {
+    sources
+        .iter()
+        .map(|(item_id, source)| {
+            (
+                *item_id,
+                ItemSourceData {
+                    category: source.category,
+                    image: &source.image,
+                    inner_path: source.inner_path.as_deref(),
+                    source_path: &source.source_path,
+                },
+            )
+        })
+        .collect()
 }
 
 fn archive_exists(path: &Path) -> Result<bool, WzContentError> {
@@ -1198,11 +864,8 @@ mod tests {
     use wz_reader::WzNode;
     use wz_reader::WzObjectType;
     use wz_reader::property::WzPng;
-    use wz_reader::property::WzString;
     use wz_reader::property::WzSubProperty;
-    use wz_reader::property::WzValue;
 
-    use super::ConsumeEffectDefinition;
     use super::ItemContent;
     use super::ItemSource;
     use super::ItemText;
@@ -1210,9 +873,6 @@ mod tests {
     use super::SourceFingerprints;
     use super::normalize_sale_price;
     use super::normalize_stack_max;
-    use super::read_consume_effect;
-    use super::read_monster_book_card;
-    use super::validate_map_protection_effect;
 
     #[test]
     fn stack_max_uses_category_defaults_and_explicit_limits() {
@@ -1233,35 +893,6 @@ mod tests {
         assert_eq!(normalize_sale_price(None, false), Ok(0));
         assert_eq!(normalize_sale_price(Some(500), true), Ok(0));
         assert!(normalize_sale_price(Some(-1), false).is_err());
-    }
-
-    #[test]
-    fn consume_effects_parse_synthetic_integer_properties() {
-        let source = consume_effect_source([
-            ("time", WzValue::Long(40_000)),
-            ("pad", WzValue::Short(20)),
-            ("speed", WzValue::Int(-5)),
-            ("hp", WzValue::Int(50)),
-            ("morph", WzValue::Int(4)),
-        ]);
-        assert_eq!(
-            read_consume_effect(2_000_000, &source).expect("synthetic consume effect"),
-            ConsumeEffectDefinition {
-                item_id: 2_000_000,
-                weapon_attack: 20,
-                speed: -5,
-                hp: 50,
-                morph_id: Some(4),
-                duration_ms: 40_000,
-                ..ConsumeEffectDefinition::default()
-            }
-        );
-
-        let map_protection = consume_effect_source([
-            ("thaw", WzValue::Int(-6)),
-            ("time", WzValue::Int(1_800_000)),
-        ]);
-        validate_map_protection_effect(&map_protection).expect("synthetic map protection effect");
     }
 
     #[test]
@@ -1299,143 +930,6 @@ mod tests {
             .gui_projection(&BTreeSet::from([u32::MAX]))
             .expect_err("unknown projected item must fail");
         assert!(error.to_string().contains("absent from the item index"));
-    }
-
-    #[test]
-    fn monster_book_fields_require_exact_values_types_and_source() {
-        let item = monster_book_item([
-            ("monsterBook", WzValue::Int(1)),
-            ("mob", WzValue::Int(100_100)),
-            ("consumeOnPickup", WzValue::Int(1)),
-        ]);
-        let definition = read_monster_book_card(
-            2_380_000,
-            ItemCategory::Consume,
-            "Item.wz/Consume/0238.img/02380000",
-            &item,
-        )
-        .expect("exact card fields");
-        assert_eq!(definition.source_mob_id, 100_100);
-
-        let wrong_type = monster_book_item([
-            (
-                "monsterBook",
-                WzValue::String(WzString::from_str("1", [0; 4])),
-            ),
-            ("mob", WzValue::Int(100_100)),
-            ("consumeOnPickup", WzValue::Int(1)),
-        ]);
-        assert!(
-            read_monster_book_card(
-                2_380_000,
-                ItemCategory::Consume,
-                "Item.wz/Consume/0238.img/02380000",
-                &wrong_type,
-            )
-            .is_err()
-        );
-
-        let invalid_mob = monster_book_item([
-            ("monsterBook", WzValue::Int(1)),
-            ("mob", WzValue::Int(0)),
-            ("consumeOnPickup", WzValue::Int(1)),
-        ]);
-        assert!(
-            read_monster_book_card(
-                2_380_000,
-                ItemCategory::Consume,
-                "Item.wz/Consume/0238.img/02380000",
-                &invalid_mob,
-            )
-            .is_err()
-        );
-        assert!(
-            read_monster_book_card(
-                2_380_000,
-                ItemCategory::Etc,
-                "Item.wz/Etc/0238.img/2380000",
-                &item,
-            )
-            .is_err()
-        );
-    }
-
-    fn monster_book_item<const N: usize>(fields: [(&str, WzValue); N]) -> wz_reader::WzNodeArc {
-        let item = WzNode::from_str(
-            "2380000",
-            WzObjectType::Property(WzSubProperty::Property),
-            None,
-        )
-        .into_lock();
-        let info = WzNode::from_str(
-            "info",
-            WzObjectType::Property(WzSubProperty::Property),
-            Some(&item),
-        )
-        .into_lock();
-        item.write()
-            .expect("item lock")
-            .children
-            .insert("info".into(), info.clone());
-        let spec = WzNode::from_str(
-            "spec",
-            WzObjectType::Property(WzSubProperty::Property),
-            Some(&item),
-        )
-        .into_lock();
-        item.write()
-            .expect("item lock")
-            .children
-            .insert("spec".into(), spec.clone());
-        for (name, value) in fields {
-            let parent = if name == "consumeOnPickup" {
-                &spec
-            } else {
-                &info
-            };
-            let child =
-                WzNode::from_str(name, WzObjectType::Value(value), Some(parent)).into_lock();
-            parent
-                .write()
-                .expect("property lock")
-                .children
-                .insert(name.into(), child);
-        }
-        item
-    }
-
-    fn consume_effect_source<const N: usize>(fields: [(&str, WzValue); N]) -> ItemSource {
-        let item = WzNode::from_str(
-            "2000000",
-            WzObjectType::Property(WzSubProperty::Property),
-            None,
-        )
-        .into_lock();
-        let spec = WzNode::from_str(
-            "spec",
-            WzObjectType::Property(WzSubProperty::Property),
-            Some(&item),
-        )
-        .into_lock();
-        item.write()
-            .expect("item lock")
-            .children
-            .insert("spec".into(), spec.clone());
-        for (name, value) in fields {
-            let child = WzNode::from_str(name, WzObjectType::Value(value), Some(&spec)).into_lock();
-            spec.write()
-                .expect("effect lock")
-                .children
-                .insert(name.into(), child);
-        }
-        ItemSource {
-            archive: SourceArchive::Item,
-            category: ItemCategory::Consume,
-            image: item,
-            inner_path: None,
-            source_path: "synthetic consume effect".to_owned(),
-            definition: OnceLock::new(),
-        }
     }
 
     fn synthetic_item_content(item_id: u32) -> ItemContent {
