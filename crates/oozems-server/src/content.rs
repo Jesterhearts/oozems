@@ -337,6 +337,14 @@ impl ContentCatalog {
         self.quests.iter().flat_map(|quests| quests.definitions())
     }
 
+    pub(crate) fn quest_script_reference_names(
+        &self
+    ) -> Option<&std::collections::BTreeSet<String>> {
+        self.quests
+            .as_ref()
+            .map(QuestContent::script_reference_names)
+    }
+
     pub(crate) fn quests_for_npc(
         &self,
         npc_id: u32,

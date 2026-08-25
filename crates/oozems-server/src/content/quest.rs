@@ -26,6 +26,7 @@ pub(crate) struct QuestContent {
     _base: WzNodeArc,
     definitions: HashMap<u32, QuestDefinition>,
     item_reference_ids: BTreeSet<u32>,
+    script_reference_names: BTreeSet<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -94,6 +95,7 @@ impl QuestContent {
 
         let strict = quest_ids.is_some();
         let archive_quest_ids = discover_quest_ids([&check, &act, &say, &info])?;
+        let script_reference_names = importer::script_reference_names(&check)?;
         let quest_ids = match quest_ids {
             Some(quest_ids) => quest_ids.clone(),
             None => archive_quest_ids.clone(),
@@ -171,6 +173,7 @@ impl QuestContent {
             _base: base,
             definitions,
             item_reference_ids,
+            script_reference_names,
         }))
     }
 
@@ -187,6 +190,10 @@ impl QuestContent {
 
     pub fn item_reference_ids(&self) -> &BTreeSet<u32> {
         &self.item_reference_ids
+    }
+
+    pub fn script_reference_names(&self) -> &BTreeSet<String> {
+        &self.script_reference_names
     }
 }
 

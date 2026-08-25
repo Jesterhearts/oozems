@@ -94,8 +94,10 @@ the output immediately, so programs completed before a later failure remain in
 the output file. The output file is replaced when a new run starts.
 
 `--all` can make hundreds of paid requests. The bundled v83 archive currently
-contains 680 unique script names. Review the model and provider's pricing before
-starting a complete batch.
+contains 680 unique script names. The server loads quests that reference 663 of
+those names; generated programs for the remaining unsupported quests are valid
+configuration entries but are ignored at runtime. Review the model and
+provider's pricing before starting a complete batch.
 
 The harness makes up to two model calls per program by default. If the first
 response is invalid, the second call includes the validation error and asks for

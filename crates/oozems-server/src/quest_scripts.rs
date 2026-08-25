@@ -29,6 +29,7 @@ const MAXIMUM_SCRIPT_NAME_BYTES: usize = 256;
 pub struct QuestScriptCatalog {
     programs: HashMap<String, QuestScriptProgram>,
     item_reference_ids: BTreeSet<u32>,
+    ignored_programs: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -192,6 +193,7 @@ impl QuestScriptCatalog {
     pub fn load<'a>(
         path: &Path,
         quest_definitions: impl IntoIterator<Item = &'a QuestDefinition>,
+        archive_script_references: &BTreeSet<String>,
         item_definitions: &(impl ItemDefinitionLookup + ?Sized),
     ) -> Result<Self, QuestScriptConfigError> {
         let source = match fs::read_to_string(path) {
@@ -211,7 +213,13 @@ impl QuestScriptCatalog {
             }
         })?;
         let quest_definitions = quest_definitions.into_iter().collect::<Vec<_>>();
-        build_catalog(path, file, &quest_definitions, item_definitions)
+        build_catalog(
+            path,
+            file,
+            &quest_definitions,
+            archive_script_references,
+            item_definitions,
+        )
     }
 
     pub fn len(&self) -> usize {
@@ -220,6 +228,10 @@ impl QuestScriptCatalog {
 
     pub fn item_reference_ids(&self) -> &BTreeSet<u32> {
         &self.item_reference_ids
+    }
+
+    pub fn ignored_len(&self) -> usize {
+        self.ignored_programs
     }
 }
 
@@ -255,6 +267,7 @@ fn build_catalog(
     path: &Path,
     file: QuestScriptFile,
     quest_definitions: &[&QuestDefinition],
+    archive_script_references: &BTreeSet<String>,
     item_definitions: &(impl ItemDefinitionLookup + ?Sized),
 ) -> Result<QuestScriptCatalog, QuestScriptConfigError> {
     if file.scripts.len() > MAXIMUM_PROGRAMS {
@@ -268,19 +281,29 @@ fn build_catalog(
         .iter()
         .map(|quest| quest.id)
         .collect::<BTreeSet<_>>();
-    let item_reference_ids = collect_item_reference_ids(&file);
+    let mut item_reference_ids = BTreeSet::new();
+    let mut configured_names = BTreeSet::new();
     let mut programs = HashMap::new();
+    let mut ignored_programs = 0;
     for program in file.scripts {
         validate_program_shape(path, &program)?;
-        let Some(uses) = references.get(&program.name) else {
+        if !configured_names.insert(program.name.clone()) {
             return invalid(
                 path,
-                format!(
-                    "script {:?} is not referenced by a loaded quest definition",
-                    program.name
-                ),
+                format!("script name {:?} is duplicated", program.name),
+            );
+        }
+        let Some(uses) = references.get(&program.name) else {
+            if archive_script_references.contains(&program.name) {
+                ignored_programs += 1;
+                continue;
+            }
+            return invalid(
+                path,
+                format!("script {:?} is not referenced by Quest.wz", program.name),
             );
         };
+        item_reference_ids.extend(program_item_reference_ids(&program));
         validate_conditions(path, &program.name, &program.conditions, item_definitions)?;
         let plan = build_plan(
             path,
@@ -299,36 +322,39 @@ fn build_catalog(
             plan,
             incomplete_pages: program.incomplete_pages,
         };
-        if programs.insert(name.clone(), script_program).is_some() {
-            return invalid(path, format!("script name {name:?} is duplicated"));
-        }
+        programs.insert(name, script_program);
     }
     Ok(QuestScriptCatalog {
         programs,
         item_reference_ids,
+        ignored_programs,
     })
 }
 
+#[cfg(test)]
 fn collect_item_reference_ids(file: &QuestScriptFile) -> BTreeSet<u32> {
-    let condition_ids = file.scripts.iter().flat_map(|program| {
-        program.conditions.iter().filter_map(|condition| {
-            if let QuestScriptCondition::ItemQuantity { item_id, .. } = condition {
-                Some(*item_id)
-            } else {
-                None
-            }
-        })
+    file.scripts
+        .iter()
+        .flat_map(program_item_reference_ids)
+        .collect()
+}
+
+fn program_item_reference_ids(program: &QuestScriptFileProgram) -> impl Iterator<Item = u32> + '_ {
+    let condition_ids = program.conditions.iter().filter_map(|condition| {
+        if let QuestScriptCondition::ItemQuantity { item_id, .. } = condition {
+            Some(*item_id)
+        } else {
+            None
+        }
     });
-    let action_ids = file.scripts.iter().flat_map(|program| {
-        program.actions.iter().filter_map(|action| {
-            if let QuestScriptAction::ItemDelta { item_id, .. } = action {
-                Some(*item_id)
-            } else {
-                None
-            }
-        })
+    let action_ids = program.actions.iter().filter_map(|action| {
+        if let QuestScriptAction::ItemDelta { item_id, .. } = action {
+            Some(*item_id)
+        } else {
+            None
+        }
     });
-    condition_ids.chain(action_ids).collect()
+    condition_ids.chain(action_ids)
 }
 
 fn validate_program_shape(
@@ -1000,6 +1026,7 @@ fn invalid<T>(
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
+    use std::collections::BTreeSet;
     use std::fs;
 
     use oozems_proto::v1::CharacterStats;
@@ -1496,10 +1523,81 @@ mod tests {
     #[test]
     fn missing_configuration_file_is_an_empty_catalog() {
         let directory = tempfile::tempdir().expect("temporary directory");
-        let catalog = QuestScriptCatalog::load(&directory.path().join("missing.toml"), [], &[])
-            .expect("missing configuration");
+        let catalog = QuestScriptCatalog::load(
+            &directory.path().join("missing.toml"),
+            [],
+            &BTreeSet::new(),
+            &[],
+        )
+        .expect("missing configuration");
 
         assert_eq!(catalog.len(), 0);
+    }
+
+    #[test]
+    fn archive_referenced_scripts_for_unloaded_quests_are_ignored() {
+        let archive_references = BTreeSet::from(["raw_only".to_owned()]);
+        let catalog = load_with_archive_references(
+            r#"
+                [[scripts]]
+                name = "raw_only"
+
+                [[scripts.actions]]
+                type = "item_delta"
+                item_id = 9999999
+                delta = 1
+            "#,
+            &[],
+            &archive_references,
+            &[],
+        )
+        .expect("inactive archive script");
+
+        assert_eq!(catalog.len(), 0);
+        assert_eq!(catalog.ignored_len(), 1);
+        assert!(catalog.item_reference_ids().is_empty());
+
+        let error = load("[[scripts]]\nname = \"not_in_archive\"", &[], &[])
+            .expect_err("unknown script name");
+        assert!(error.to_string().contains("not referenced by Quest.wz"));
+
+        let duplicate = load_with_archive_references(
+            concat!(
+                "[[scripts]]\nname = \"raw_only\"\n",
+                "[[scripts]]\nname = \"raw_only\"\n",
+            ),
+            &[],
+            &archive_references,
+            &[],
+        )
+        .expect_err("duplicate inactive script");
+        assert!(duplicate.to_string().contains("duplicated"));
+
+        let malformed_references = BTreeSet::from([" raw_only".to_owned()]);
+        let malformed = load_with_archive_references(
+            "[[scripts]]\nname = \" raw_only\"",
+            &[],
+            &malformed_references,
+            &[],
+        )
+        .expect_err("malformed inactive script");
+        assert!(malformed.to_string().contains("surrounding whitespace"));
+    }
+
+    #[test]
+    fn loaded_reference_takes_precedence_over_archive_reference() {
+        let quest = scripted_quest("active");
+        let archive_references = BTreeSet::from(["active".to_owned()]);
+        let catalog = load_with_archive_references(
+            "[[scripts]]\nname = \"active\"",
+            &[&quest],
+            &archive_references,
+            &[],
+        )
+        .expect("active archive script");
+
+        assert_eq!(catalog.len(), 1);
+        assert_eq!(catalog.ignored_len(), 0);
     }
 
     #[test]
@@ -1545,6 +1643,7 @@ mod tests {
             std::path::Path::new("examples/v83/quest-scripts.toml"),
             file,
             &quest_references,
+            &BTreeSet::new(),
             &item_definitions,
         )
         .expect("valid v83 example catalog");
@@ -1588,10 +1687,24 @@ mod tests {
         quests: &[&QuestDefinition],
         item_definitions: &(impl ItemDefinitionLookup + ?Sized),
     ) -> Result<QuestScriptCatalog, super::QuestScriptConfigError> {
+        load_with_archive_references(source, quests, &BTreeSet::new(), item_definitions)
+    }
+
+    fn load_with_archive_references(
+        source: &str,
+        quests: &[&QuestDefinition],
+        archive_script_references: &BTreeSet<String>,
+        item_definitions: &(impl ItemDefinitionLookup + ?Sized),
+    ) -> Result<QuestScriptCatalog, super::QuestScriptConfigError> {
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("quest-scripts.toml");
         fs::write(&path, source).expect("write quest scripts");
-        QuestScriptCatalog::load(&path, quests.iter().copied(), item_definitions)
+        QuestScriptCatalog::load(
+            &path,
+            quests.iter().copied(),
+            archive_script_references,
+            item_definitions,
+        )
     }
 
     fn scripted_quest(script: &str) -> QuestDefinition {

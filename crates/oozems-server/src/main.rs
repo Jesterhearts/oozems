@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+use std::collections::BTreeSet;
+
 mod api;
 mod app;
 mod attacks;
@@ -91,14 +93,20 @@ async fn main() -> anyhow::Result<()> {
     let interactions =
         InteractionCatalog::load(&config.data_dir.join("interactions.toml"), &catalog)?;
     catalog.project_item_definitions(&interactions.item_reference_ids().collect())?;
+    let empty_script_references = BTreeSet::new();
+    let archive_script_references = catalog
+        .quest_script_reference_names()
+        .unwrap_or(&empty_script_references);
     let quest_scripts = QuestScriptCatalog::load(
         &config.data_dir.join("quest-scripts.toml"),
         catalog.quest_definitions(),
+        archive_script_references,
         &catalog,
     )?;
     catalog.project_item_definitions(quest_scripts.item_reference_ids())?;
     info!(
         program_count = quest_scripts.len(),
+        ignored_program_count = quest_scripts.ignored_len(),
         "quest script configuration ready"
     );
     let loot = LootCatalog::load(&config.data_dir.join("loot.toml"), &catalog)?;

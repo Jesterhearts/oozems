@@ -2805,6 +2805,7 @@ fn require_npc(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::collections::HashMap;
     use std::fs;
     use std::num::NonZeroU32;
@@ -5410,8 +5411,9 @@ mod tests {
             "#,
         )
         .expect("write quest script");
-        let scripts = QuestScriptCatalog::load(&path, [&producer, &target], &definitions)
-            .expect("quest status script catalog");
+        let scripts =
+            QuestScriptCatalog::load(&path, [&producer, &target], &BTreeSet::new(), &definitions)
+                .expect("quest status script catalog");
         let mut original = player(Vec::new(), 1);
         original.quests.push(PlayerQuest {
             quest_id: 200,
@@ -8338,7 +8340,8 @@ mod tests {
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("quest-scripts.toml");
         fs::write(&path, source).expect("write quest scripts");
-        QuestScriptCatalog::load(&path, [quest], item_definitions).expect("quest script catalog")
+        QuestScriptCatalog::load(&path, [quest], &BTreeSet::new(), item_definitions)
+            .expect("quest script catalog")
     }
 
     fn item_count(

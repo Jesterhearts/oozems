@@ -282,8 +282,9 @@ script bodies. A script-backed start or completion phase remains unresolved
 until `data/quest-scripts.toml` defines a deterministic replacement with the
 exact WZ name. If the file is absent, the catalog is empty. Missing replacements
 are never treated as successful checks. A configured name must be referenced by
-at least one loaded quest definition, and one exact name may intentionally be
-shared by the loaded definitions that reference it.
+`Quest.wz`, and one exact name may intentionally be shared by multiple quest
+definitions. Programs referenced only by quests that the server cannot load are
+accepted but ignored.
 
 Quest 10272 retains its archive completion script name, `q10272e`. Runtime
 completion returns `ScriptRequired` until a deterministic replacement is added
@@ -395,18 +396,19 @@ own quest record. `started` replaces stale mob progress and timestamps with a
 clean acceptance at the action time. `completed` clears mob progress, completes
 at the action time, and preserves a valid existing acceptance time.
 
-The file uses strict tagged records. Unknown fields and capability names fail
-startup, as do duplicate or empty script names, unreferenced names, unknown
-item IDs, zero item quantities or action amounts, contradictory limits, and
-numeric combinations that cannot be represented by the quest action model.
-Record IDs must be nonzero, values must meet the persisted ASCII limit, numeric
-record predicates must be strictly decimal, and duplicate or incompatible
-record operations fail startup. Quest status targets must be nonzero loaded
-quest definitions and cannot be duplicated in one merged action plan. A
-catalog may contain at most 1,024 programs. One program may contain at most 64
-conditions, actions, and pages in total, with at most 16 result pages and 16
-incomplete pages. Each page is limited to 4096 UTF-8 bytes, and each script name
-to 256 bytes.
+The file uses strict tagged records. Unknown fields and capability names,
+duplicate or empty script names, names absent from `Quest.wz`, and shape limits
+fail startup for every program. Programs referenced by loaded quest definitions
+also reject unknown item IDs, zero item quantities or action amounts,
+contradictory limits, and numeric combinations that cannot be represented by
+the quest action model. Their record IDs must be nonzero, values must meet the
+persisted ASCII limit, numeric record predicates must be strictly decimal, and
+duplicate or incompatible record operations fail startup. Quest status targets
+must be nonzero loaded quest definitions and cannot be duplicated in one merged
+action plan. A catalog may contain at most 1,024 programs. One program may
+contain at most 64 conditions, actions, and pages in total, with at most 16
+result pages and 16 incomplete pages. Each page is limited to 4096 UTF-8 bytes,
+and each script name to 256 bytes.
 
 Quest scripts have no filesystem, network, clock, random, loop, callback,
 generic NPC script, portal script, mob-kill integration, or dynamic branching

@@ -697,6 +697,30 @@ fn validate_audited_10272_dialogue(
     Ok(())
 }
 
+pub(super) fn script_reference_names(
+    checks: &WzNodeArc
+) -> Result<BTreeSet<String>, QuestContentError> {
+    let mut names = BTreeSet::new();
+    for quest in wz::sorted_children(checks)? {
+        if wz::node_name(&quest)?.parse::<u32>().is_err() {
+            continue;
+        }
+        for (phase_name, field_name) in [("0", "startscript"), ("1", "endscript")] {
+            let Some(phase) = wz::child(&quest, phase_name)? else {
+                continue;
+            };
+            let Some(name) = optional_string(&phase, field_name)? else {
+                continue;
+            };
+            let name = name.trim();
+            if !name.is_empty() {
+                names.insert(name.to_owned());
+            }
+        }
+    }
+    Ok(names)
+}
+
 pub(super) fn item_reference_ids(
     quest_id: u32,
     checks: &WzNodeArc,
@@ -3676,6 +3700,32 @@ mod tests {
             Err(QuestContentError::Unsupported { category, .. })
                 if category == "quest info mechanic"
         ));
+    }
+
+    #[test]
+    fn script_reference_scan_includes_quests_the_importer_may_reject() {
+        let checks = property("checks");
+        let quest = property("4490");
+        let start = property("0");
+        add_string(&start, "startscript", "q4490s");
+        let completion = property("1");
+        add_string(&completion, "endscript", "q4490e");
+        add_integer(&completion, "userInteract", 1);
+        add_child(&quest, &start);
+        add_child(&quest, &completion);
+        add_child(&checks, &quest);
+        let metadata = property("metadata");
+        let metadata_start = property("0");
+        add_string(&metadata_start, "startscript", "not_a_quest");
+        add_child(&metadata, &metadata_start);
+        add_child(&checks, &metadata);
+
+        let names = super::script_reference_names(&checks).expect("script references");
+
+        assert_eq!(
+            names,
+            BTreeSet::from(["q4490e".to_owned(), "q4490s".to_owned()])
+        );
     }
 
     #[test]
