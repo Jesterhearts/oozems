@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -62,9 +63,15 @@ const MAX_CATCH_UP: Duration = Duration::from_secs(1);
 const PLAYER_PRESENCE_TIMEOUT_MS: u64 = 5_000;
 const MOB_TICK_WORKLOAD: &str = "mob simulation tick";
 
+#[derive(Default)]
+struct PlayerRoutes {
+    maps: Mutex<HashMap<String, u32>>,
+}
+
 struct Simulation {
     maps: HashMap<u32, MobMapState>,
     player_maps: HashMap<String, u32>,
+    player_routes: Arc<PlayerRoutes>,
     pending_updates: HashMap<u64, mailbox::PendingUpdate>,
     next_pending_update: u64,
     rules: CombatConfig,
@@ -91,7 +98,7 @@ pub struct MobUpdate {
     pub staged_drops: Vec<crate::items::StagedDropGrant>,
     pub sequence: u64,
     player_attack_transaction: Option<PlayerAttackTransaction>,
-    delivery_id: Option<u64>,
+    delivery_id: Option<mailbox::UpdateDelivery>,
 }
 
 #[derive(Clone)]
@@ -153,6 +160,8 @@ impl MobUpdate {
 pub enum MobStoreError {
     #[error("the mob simulation mailbox is unavailable")]
     Unavailable,
+    #[error(transparent)]
+    PlayerLock(#[from] crate::player_lock::PlayerLockError),
     #[error("the Shipyard simulation could not be built: {message}")]
     Build { message: String },
     #[error("the Shipyard simulation workload failed: {message}")]
@@ -169,16 +178,56 @@ pub enum MobStoreError {
     Drops(#[from] crate::items::DropStoreError),
 }
 
+impl PlayerRoutes {
+    fn map_for(
+        &self,
+        player_id: &str,
+    ) -> Option<u32> {
+        self.maps
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(player_id)
+            .copied()
+    }
+
+    fn set_map(
+        &self,
+        player_id: &str,
+        map_id: u32,
+    ) {
+        self.maps
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(player_id.to_owned(), map_id);
+    }
+
+    fn remove_map(
+        &self,
+        player_id: &str,
+        map_id: u32,
+    ) {
+        let mut maps = self
+            .maps
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if maps.get(player_id) == Some(&map_id) {
+            maps.remove(player_id);
+        }
+    }
+}
+
 impl Simulation {
     fn new(
         rules: CombatConfig,
         formulas: Arc<FormulaCatalog>,
         loot: Arc<LootCatalog>,
         drops: Arc<DropStore>,
+        player_routes: Arc<PlayerRoutes>,
     ) -> Self {
         Self {
             maps: HashMap::new(),
             player_maps: HashMap::new(),
+            player_routes,
             pending_updates: HashMap::new(),
             next_pending_update: 1,
             rules,
@@ -465,14 +514,23 @@ fn remove_player_from_previous_map(
     let Some(previous_map_id) = previous_map_id.filter(|map_id| *map_id != current_map_id) else {
         return;
     };
-    if let Some(previous_state) = simulation.maps.get_mut(&previous_map_id)
-        && let Some(entity) = previous_state.player_entities.remove(player_id)
+    apply_remove_player(simulation, previous_map_id, player_id);
+}
+
+fn apply_remove_player(
+    simulation: &mut Simulation,
+    map_id: u32,
+    player_id: &str,
+) {
+    if let Some(state) = simulation.maps.get_mut(&map_id)
+        && let Some(entity) = state.player_entities.remove(player_id)
     {
-        previous_state.world.delete_entity(entity);
+        state.world.delete_entity(entity);
     }
-    if simulation.player_maps.get(player_id) == Some(&previous_map_id) {
+    if simulation.player_maps.get(player_id) == Some(&map_id) {
         simulation.player_maps.remove(player_id);
     }
+    simulation.player_routes.remove_map(player_id, map_id);
 }
 
 fn record_player_map(
@@ -483,8 +541,12 @@ fn record_player_map(
 ) {
     if player_is_present {
         simulation.player_maps.insert(player_id.to_owned(), map_id);
-    } else if simulation.player_maps.get(player_id) == Some(&map_id) {
-        simulation.player_maps.remove(player_id);
+        simulation.player_routes.set_map(player_id, map_id);
+    } else {
+        if simulation.player_maps.get(player_id) == Some(&map_id) {
+            simulation.player_maps.remove(player_id);
+        }
+        simulation.player_routes.remove_map(player_id, map_id);
     }
 }
 
@@ -496,6 +558,7 @@ fn clean_stale_player_maps(
     for player_id in stale_player_ids {
         if simulation.player_maps.get(player_id) == Some(&map_id) {
             simulation.player_maps.remove(player_id);
+            simulation.player_routes.remove_map(player_id, map_id);
         }
     }
 }
@@ -1006,13 +1069,19 @@ mod tests {
     use super::MobStoreError;
     use super::MobUpdate;
     use super::PlayerAttack;
+    use super::PlayerRoutes;
     use super::Simulation;
     use super::apply_map_snapshot as map_snapshot_at;
     use super::apply_restore_player_effects as restore_player_effects;
     use super::apply_rollback_player_attack;
     use super::commit_player_attack;
     use super::evaluate_player_stat;
+    use super::mailbox::block_worker_for_map;
+    use super::mailbox::delivery_coordinates;
     use super::mailbox::expire_pending_updates;
+    use super::mailbox::map_contains_player;
+    use super::mailbox::signal_next_player_enqueue;
+    use super::mailbox::worker_index_for_map;
     use super::map_snapshot as mailbox_map_snapshot;
     use super::observe_player_at;
     use super::observe_player_with_effects;
@@ -1064,6 +1133,297 @@ mod tests {
             sequences,
             (first_expected..first_expected + REQUESTS as u64).collect::<Vec<_>>()
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn mailbox_runs_independent_map_shards_in_parallel() {
+        let store = Arc::new(mailbox_store());
+        let blocked_map_id = 1;
+        let parallel_map_id = map_id_on_different_worker(&store, blocked_map_id);
+        let (started_sender, started_receiver) = std::sync::mpsc::channel();
+        let (release_sender, release_receiver) = std::sync::mpsc::channel();
+        let blocking_store = store.clone();
+        let blocking = tokio::spawn(async move {
+            block_worker_for_map(
+                &blocking_store,
+                blocked_map_id,
+                started_sender,
+                release_receiver,
+            )
+            .await
+        });
+        started_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("blocked worker started");
+
+        let mut parallel_map = map();
+        parallel_map.id = parallel_map_id;
+        let parallel_store = store.clone();
+        let (finished_sender, finished_receiver) = std::sync::mpsc::channel();
+        let parallel = tokio::spawn(async move {
+            let result = mailbox_map_snapshot(&parallel_store, &parallel_map).await;
+            let _ = finished_sender.send(());
+            result
+        });
+
+        finished_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("independent shard completed while the first was blocked");
+        release_sender.send(()).expect("release blocked worker");
+        blocking
+            .await
+            .expect("blocking task")
+            .expect("blocking command");
+        parallel
+            .await
+            .expect("parallel task")
+            .expect("parallel snapshot");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelled_player_request_finishes_enqueued_relocation() {
+        let store = Arc::new(mailbox_store());
+        let first_map = Arc::new(map());
+        let mut second_map = map();
+        second_map.id = map_id_on_different_worker(&store, first_map.id);
+        let second_map = Arc::new(second_map);
+        let (started_sender, started_receiver) = std::sync::mpsc::channel();
+        let (release_sender, release_receiver) = std::sync::mpsc::channel();
+        let blocking_store = store.clone();
+        let blocked_map_id = first_map.id;
+        let blocking = tokio::spawn(async move {
+            block_worker_for_map(
+                &blocking_store,
+                blocked_map_id,
+                started_sender,
+                release_receiver,
+            )
+            .await
+        });
+        started_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("blocked worker started");
+        let enqueued = signal_next_player_enqueue(&store, "player", first_map.id);
+
+        let cancelled_store = store.clone();
+        let cancelled_map = first_map.clone();
+        let cancelled = tokio::spawn(async move {
+            observe_player_with_effects(
+                &cancelled_store,
+                &cancelled_map,
+                &player(90.0, 100.0),
+                crate::effects::ProjectedEffects::default(),
+            )
+            .await
+        });
+        enqueued
+            .recv_timeout(Duration::from_secs(1))
+            .expect("cancelled player command enqueued");
+        cancelled.abort();
+        assert!(matches!(cancelled.await, Err(error) if error.is_cancelled()));
+
+        let destination_store = store.clone();
+        let destination_map = second_map.clone();
+        let destination = tokio::spawn(async move {
+            let mut player = player(90.0, 100.0);
+            player.map_id = destination_map.id;
+            observe_player_with_effects(
+                &destination_store,
+                &destination_map,
+                &player,
+                crate::effects::ProjectedEffects::default(),
+            )
+            .await
+        });
+        release_sender.send(()).expect("release blocked worker");
+        blocking
+            .await
+            .expect("blocking task")
+            .expect("blocking command");
+        let mut destination = destination
+            .await
+            .expect("destination task")
+            .expect("destination observation");
+        commit_player_attack(&store, &mut destination)
+            .await
+            .expect("acknowledge destination observation");
+
+        assert!(
+            !map_contains_player(&store, first_map.id, "player")
+                .await
+                .expect("query first map")
+        );
+        assert!(
+            map_contains_player(&store, second_map.id, "player")
+                .await
+                .expect("query second map")
+        );
+    }
+
+    #[tokio::test]
+    async fn mailbox_moves_player_presence_between_map_shards() {
+        let store = mailbox_store();
+        let first_map = map();
+        let mut second_map = map();
+        second_map.id = map_id_on_different_worker(&store, first_map.id);
+        let mut player = player(90.0, 100.0);
+        let mut first = observe_player_with_effects(
+            &store,
+            &first_map,
+            &player,
+            crate::effects::ProjectedEffects::default(),
+        )
+        .await
+        .expect("observe first map");
+        commit_player_attack(&store, &mut first)
+            .await
+            .expect("acknowledge first observation");
+
+        player.map_id = second_map.id;
+        let mut second = observe_player_with_effects(
+            &store,
+            &second_map,
+            &player,
+            crate::effects::ProjectedEffects::default(),
+        )
+        .await
+        .expect("observe second map");
+        commit_player_attack(&store, &mut second)
+            .await
+            .expect("acknowledge second observation");
+
+        assert!(
+            !map_contains_player(&store, first_map.id, &player.id)
+                .await
+                .expect("query first map")
+        );
+        assert!(
+            map_contains_player(&store, second_map.id, &player.id)
+                .await
+                .expect("query second map")
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_player_relocations_leave_presence_on_exactly_one_map() {
+        let store = Arc::new(mailbox_store());
+        let first_map = Arc::new(map());
+        let mut second_map = map();
+        second_map.id = map_id_on_different_worker(&store, first_map.id);
+        let second_map = Arc::new(second_map);
+        let first_player = player(90.0, 100.0);
+        let mut second_player = first_player.clone();
+        second_player.map_id = second_map.id;
+
+        let first_store = store.clone();
+        let first_request_map = first_map.clone();
+        let first = tokio::spawn(async move {
+            observe_player_with_effects(
+                &first_store,
+                &first_request_map,
+                &first_player,
+                crate::effects::ProjectedEffects::default(),
+            )
+            .await
+        });
+        let second_store = store.clone();
+        let second_request_map = second_map.clone();
+        let second = tokio::spawn(async move {
+            observe_player_with_effects(
+                &second_store,
+                &second_request_map,
+                &second_player,
+                crate::effects::ProjectedEffects::default(),
+            )
+            .await
+        });
+        let mut first = first.await.expect("first task").expect("first observation");
+        let mut second = second
+            .await
+            .expect("second task")
+            .expect("second observation");
+        commit_player_attack(&store, &mut first)
+            .await
+            .expect("acknowledge first observation");
+        commit_player_attack(&store, &mut second)
+            .await
+            .expect("acknowledge second observation");
+
+        let first_present = map_contains_player(&store, first_map.id, "player")
+            .await
+            .expect("query first map");
+        let second_present = map_contains_player(&store, second_map.id, "player")
+            .await
+            .expect("query second map");
+        assert_ne!(first_present, second_present);
+    }
+
+    #[tokio::test]
+    async fn delivery_coordinates_route_worker_local_sequences_to_their_maps() {
+        let store = mailbox_store();
+        let first_map = map();
+        let mut second_map = map();
+        second_map.id = map_id_on_different_worker(&store, first_map.id);
+        let first_player = player(90.0, 100.0);
+        let mut second_player = player(90.0, 100.0);
+        second_player.id = "second-player".to_owned();
+        second_player.map_id = second_map.id;
+
+        let mut first = mailbox_attack(&store, &first_map, &first_player, 10).await;
+        let mut second = mailbox_attack(&store, &second_map, &second_player, 10).await;
+        let first_delivery = delivery_coordinates(&first).expect("first delivery");
+        let second_delivery = delivery_coordinates(&second).expect("second delivery");
+        assert_eq!(first_delivery.1, second_delivery.1);
+        assert_ne!(first_delivery.0, second_delivery.0);
+
+        commit_player_attack(&store, &mut first)
+            .await
+            .expect("commit first map attack");
+        assert!(
+            rollback_player_update(&store, &mut second)
+                .await
+                .expect("roll back second map attack")
+        );
+        let first_snapshot = mailbox_map_snapshot(&store, &first_map)
+            .await
+            .expect("first map snapshot");
+        let second_snapshot = mailbox_map_snapshot(&store, &second_map)
+            .await
+            .expect("second map snapshot");
+
+        assert_eq!(first_snapshot.mobs[0].current_hp, 90);
+        assert_eq!(second_snapshot.mobs[0].current_hp, 100);
+    }
+
+    #[tokio::test]
+    async fn delivery_remains_routable_after_the_player_changes_shards() {
+        let store = mailbox_store();
+        let first_map = map();
+        let mut second_map = map();
+        second_map.id = map_id_on_different_worker(&store, first_map.id);
+        let mut player = player(90.0, 100.0);
+        let mut attack = mailbox_attack(&store, &first_map, &player, 10).await;
+
+        player.map_id = second_map.id;
+        let mut observation = observe_player_with_effects(
+            &store,
+            &second_map,
+            &player,
+            crate::effects::ProjectedEffects::default(),
+        )
+        .await
+        .expect("observe destination map");
+        commit_player_attack(&store, &mut observation)
+            .await
+            .expect("acknowledge destination observation");
+        commit_player_attack(&store, &mut attack)
+            .await
+            .expect("commit source map attack after relocation");
+
+        let source = mailbox_map_snapshot(&store, &first_map)
+            .await
+            .expect("source map snapshot");
+        assert_eq!(source.mobs[0].current_hp, 90);
     }
 
     #[tokio::test]
@@ -1224,6 +1584,21 @@ mod tests {
         let first_state = store.maps.get(&first_map.id).expect("first map state");
         assert!(!first_state.player_entities.contains_key(&player.id));
         assert_eq!(store.player_maps.get(&player.id), Some(&second_map.id));
+    }
+
+    #[test]
+    fn stale_player_pruning_releases_the_shared_route() {
+        let mut store = store();
+        let map = map();
+        let player = player(90.0, 100.0);
+        let now = Instant::now();
+        observe_player_at(&mut store, &map, &player, now).expect("observe player");
+        assert_eq!(store.player_routes.map_for(&player.id), Some(map.id));
+
+        map_snapshot_at(&mut store, &map, now + Duration::from_secs(6))
+            .expect("advance beyond presence timeout");
+
+        assert_eq!(store.player_routes.map_for(&player.id), None);
     }
 
     #[test]
@@ -1906,7 +2281,7 @@ mod tests {
             map,
             player,
             PlayerAttack {
-                target_mob_id: "1:1:0",
+                target_mob_id: "",
                 source_skill_id: None,
                 facing_left: false,
                 minimum_damage: damage,
@@ -1959,18 +2334,30 @@ mod tests {
             Arc::new(formulas),
             Arc::new(LootCatalog::default()),
             Arc::new(DropStore::new(Duration::from_secs(600))),
+            Arc::new(PlayerRoutes::default()),
         )
     }
 
     fn mailbox_store() -> MobStore {
         let formulas = FormulaCatalog::load(Path::new("../../config/skill-formulas.toml"))
             .expect("formula catalog");
-        MobStore::new(
+        MobStore::new_with_worker_count(
             combat_config(),
             Arc::new(formulas),
             Arc::new(LootCatalog::default()),
             Arc::new(DropStore::new(Duration::from_secs(600))),
+            2,
         )
+    }
+
+    fn map_id_on_different_worker(
+        store: &MobStore,
+        map_id: u32,
+    ) -> u32 {
+        let source_worker = worker_index_for_map(store, map_id);
+        (map_id + 1..)
+            .find(|candidate| worker_index_for_map(store, *candidate) != source_worker)
+            .expect("map ID routed to a different worker")
     }
 
     fn combat_config() -> CombatConfig {

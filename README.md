@@ -167,11 +167,14 @@ spawn points, snaps each initial position to its supporting foothold, and
 creates the live instances. It loads each distinct mob definition once for the
 requested map, including combat stats and all available animation metadata.
 The browser requests only the animation frames that it renders. Mob state is
-owned by the server and resets when the server restarts. Each map uses a
-Shipyard ECS world with separate movement, combat, player-presence, and
-projectile components. An ordered workload runs respawn, targeting, aggro,
-movement, contact damage, and projectile systems. Mobs randomly idle or move
-within the roaming range recorded by the map. They turn at unsafe edges.
+owned by the server and resets when the server restarts. Map worlds are
+distributed across a fixed set of owner threads based on the server's available
+parallelism. Commands for one map remain ordered on one owner, while independent
+maps on different owners can simulate concurrently. Each map uses a Shipyard
+ECS world with separate movement, combat, player-presence, and projectile
+components. An ordered workload runs respawn, targeting, aggro, movement,
+contact damage, and projectile systems. Mobs randomly idle or move within the
+roaming range recorded by the map. They turn at unsafe edges.
 A mob with a nonempty WZ `jump` animation can jump toward a nearby higher
 foothold that its jump arc can reach. The existing movement heartbeat returns
 authoritative mob and projectile snapshots, which the client interpolates
