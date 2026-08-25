@@ -3,149 +3,145 @@
 Oozems is an original old-school side-scrolling RPG foundation for personal
 use. It does not include MapleStory code or assets.
 
-## Not Ready For General Use
+> **Status: not ready for general use.** Combat is limited to basic player
+> attacks, player skills, mob contact attacks, and basic mob projectiles. Player
+> death handling is not implemented. Quest support covers a typed subset of
+> `Quest.wz`.
 
-The current version of the server is not yet ready for general use. Combat is
-still limited to basic player attacks, player skills, mob contact attacks, and
-basic mob projectiles.
-Player death handling is not implemented. Quest support currently covers a
-typed subset of `Quest.wz`.
+A future version 0.1 release tag will mark the first version intended for
+general use. That release will probably still need polish and bug fixes.
 
-When it is ready, a release tag will be posted for a version 0.1. That will
-indicate general usage availability, although polish and bug fixes will
-likely be needed after such a release.
+## Contents
 
-## Run it
+- [Quick start](#quick-start)
+- [Run and play](#run-and-play)
+- [Choose WZ content](#choose-wz-content)
+- [Configure content and interactions](#configure-content-and-interactions)
+- [Configure gameplay rules](#configure-gameplay-rules)
+- [Configure formula profiles](#configure-formula-profiles)
+- [Configure XP curves](#configure-xp-curves)
+- [Use the workspace tools](#use-the-workspace-tools)
+- [Understand the architecture](#understand-the-architecture)
+- [Verify changes](#verify-changes)
 
-Install Rust, the `wasm32-unknown-unknown` target, and Trunk. Local interaction
-definitions require matching `Map.wz`, `Npc.wz`, and `Character.wz` archives in
-`./data`. `Quest.wz` is optional. Add `UI.wz` to display the configured native
-interaction windows and Cash Shop screen, then run:
+## Quick start
+
+### Install the tools
+
+Install these tools before you build Oozems:
+
+- Rust
+- The Rust `wasm32-unknown-unknown` target
+- Trunk
+
+### Add the game data
+
+Place `Map.wz` in `./data`. The server requires this archive and stops at
+startup if it is missing.
+
+If you use local definitions in `data/interactions.toml`, add matching `Npc.wz`
+and `Character.wz` archives beside `Map.wz`. See
+[Configure shops and taxi routes](#configure-shops-and-taxi-routes). `Quest.wz`
+is optional. Add `UI.wz` if you want the configured native interaction windows
+and Cash Shop screen.
+
+> **Existing player data:** SurrealKV accepts only the current persisted player
+> schema. Startup backfills a missing `cash_points` field from
+> `characters.initial_cash_points`. It does not otherwise upgrade or fill
+> missing fields from older schemas. A record that does not satisfy the current
+> schema fails to load.
+
+See [Choose WZ content](#choose-wz-content) for the behavior that each optional
+archive enables.
+
+### Start the server
+
+From the workspace root, run:
 
 ```sh
 make run
 ```
 
-Open <http://127.0.0.1:3000>. The Make target builds the WASM client into the
-server's generated `public` directory before starting the server.
+Then open <http://127.0.0.1:3000>.
 
-The default data directory is `./data`. It contains the local WZ archives,
-SurrealKV state, and version-specific `cash-shop.toml`, `interactions.toml`,
-`loot.toml`, and `quest-scripts.toml` files. It is ignored by Git. These
-environment variables override the defaults:
+The Make target builds the WASM client in the server's generated `public`
+directory before it starts the server. The first server build is relatively
+large because the embedded SurrealDB dependency includes its database engine in
+the server binary.
 
-| Variable             | Default                             |
-| -------------------- | ----------------------------------- |
-| `OOZEMS_BIND`        | `127.0.0.1:3000`                    |
-| `OOZEMS_DATA_DIR`    | `./data`                            |
-| `OOZEMS_CONFIG_DIR`  | `./config`                          |
-| `OOZEMS_PUBLIC_DIR`  | `crates/oozems-server/public`       |
-| `OOZEMS_WZ_DIR`      | `./data`                            |
+## Run and play
 
-## Inspect and edit WZ archives
+### Use the controls
 
-The workspace includes `oozems-wz`, a JSON-first CLI for repeatable WZ
-inspection and safe PKG1 property edits. It inspects standard PKG1 and PKG2
-archives, paginates large node lists, and emits typed values without embedding
-large media payloads.
+| Action | Default control |
+| --- | --- |
+| Walk | Left Arrow or Right Arrow |
+| Climb a ladder or rope | Up Arrow or Down Arrow |
+| Enter a direct portal | Up Arrow while standing at the portal |
+| Drop through a platform | When another foothold is below you, hold Down Arrow and press the configured Jump key |
+| Basic Attack | Left Control |
+| Jump | Left Alt |
+| Pick Up | Z |
+| Open Character | C |
+| Open Equipment | E |
+| Open Inventory | I |
+| Open Key Settings | K |
+| Open Skills | S |
+| Interact with an NPC | Double-click a nearby NPC |
 
-```sh
-cargo run --package oozems-wz -- info data/Quest.wz
-cargo run --package oozems-wz -- list data/Quest.wz /Act.img --limit 25
-cargo run --package oozems-wz -- get data/Quest.wz /Act.img/1000/1/nextQuest
-```
+Arrow keys remain reserved for movement and interaction. Script portals remain
+inactive because their behavior requires a future server-side scripting system.
 
-Edits always require a separate output path. The tool copies every unchanged
-image blob byte-for-byte, rebuilds archive offsets and checksums, validates the
-complete output with two independent WZ readers, and then atomically installs
-it:
+### Change key bindings
 
-```sh
-cargo run --package oozems-wz -- set \
-  data/Quest.wz /Act.img/1000/1/nextQuest \
-  --value 1002 \
-  --output data/Quest.edited.wz
-```
+Click the KeySet status-bar button, or press K with the default bindings, to
+open the original `UIWindow.img/KeyConfig` keyboard settings window. Drag an
+action icon from the lower palette, or from an assigned key, onto another key.
 
-See [`crates/oozems-wz/README.md`](crates/oozems-wz/README.md) for path rules,
-pagination, JSON fields, supported value types, and safety details.
+Each action can have one assignment. Moving an action removes its previous
+assignment and replaces any action on the target key. The palette contains
+Basic Attack, Jump, Pick Up, Character, Equipment, Inventory, Key Settings, and
+Skills. New characters have Basic Attack assigned to left Control. Oozems stores
+changes with the player in SurrealKV.
 
-## Infer quest script replacements
+### Change runtime paths
 
-The workspace also includes `oozems-quest-harness`, a CLI that discovers
-scripted quests and assembles model evidence directly from `Quest.wz`, `Npc.wz`,
-and `String.wz`. It sends that evidence to an OpenRouter-compatible model and
-validates the guessed `quest-scripts.toml` programs against the server's
-supported schema. OpenRouter login uses a localhost PKCE callback and never
-stores the resulting API key in the repository.
+The default data directory is `./data`. Git ignores this directory. It contains
+the local WZ archives, SurrealKV state, and these version-specific files:
 
-```sh
-cargo run --package oozems-quest-harness -- login
-cargo run --package oozems-quest-harness -- quests \
-  data/Quest.wz --search q10272e
-cargo run --package oozems-quest-harness -- generate \
-  --model openai/gpt-5.2 \
-  data/Quest.wz \
-  q10272e
-```
+- `cash-shop.toml`
+- `interactions.toml`
+- `loot.toml`
+- `quest-scripts.toml`
 
-Pass `--all --output generated-quest-scripts.toml` instead of a quest selector
-to generate every unique script referenced by the archive. A complete batch can
-make hundreds of paid model requests.
+Set these environment variables to override the default runtime locations:
 
-See
-[`crates/oozems-quest-harness/README.md`](crates/oozems-quest-harness/README.md)
-for input rules, compatible endpoints, credential behavior, and limitations.
+| Variable | Default |
+| --- | --- |
+| `OOZEMS_BIND` | `127.0.0.1:3000` |
+| `OOZEMS_DATA_DIR` | `./data` |
+| `OOZEMS_CONFIG_DIR` | `./config` |
+| `OOZEMS_PUBLIC_DIR` | `crates/oozems-server/public` |
+| `OOZEMS_WZ_DIR` | `./data` |
 
-## Data flow
+## Choose WZ content
 
-```text
-browser
-  -> GET /                         WASM shell
-  -> POST /api/v1/bootstrap       saved player or creation options
-  -> POST /api/v1/characters/...  create a character or get sprite metadata
-  -> POST /api/v1/gui/get         current GUI layout and asset metadata
-  -> POST /api/v1/maps/get        current map protobuf
-  -> POST /api/v1/movement/rules server-configured movement constants and caps
-  -> POST /api/v1/movement/submit movement correction, combat, and world snapshot
-  -> POST /api/v1/movement/portal server-authorized portal transition
-  -> POST /api/v1/items/...       equip, unequip, drop, or pick up an item
-  -> POST /api/v1/cash-shop/...   list offers or buy an authoritative cash item
-  -> POST /api/v1/npcs/interact   open or act on an authoritative NPC interaction
-  -> POST /api/v1/combat/...      use a server-authoritative basic attack
-  -> POST /api/v1/skills/...      allocate a skill point or use a skill
-  -> POST /api/v1/players/recover apply one rate-limited natural recovery tick
-  -> GET /wz-assets/...           requested WZ PNG and skill audio assets
-  -> POST /api/v1/players/save    key bindings and authoritative session state
+`Map.wz` is the only archive required for startup. Each archive enables this
+content:
 
-server
-  -> config/xp-curves.toml        validated game progression rules
-  -> config/gameplay.toml         validated world, item, skill, and movement rules
-  -> config/content.toml          WZ content inclusion rules
-  -> config/skill-formulas.toml   validated combat formulas
-  -> data/interactions.toml       version-specific shop stock and taxi routes
-  -> data/cash-shop.toml          global Cash Shop offers, prices, and lifetimes
-  -> data/loot.toml               version-specific mob item drop rates
-  -> data/quest-scripts.toml      version-specific replacements for WZ quest scripts
-  -> data/Map.wz                  required, lazy WZ map source
-  -> data/Npc.wz                  optional NPC placement animation source
-  -> data/Quest.wz                enabled quest conditions, dialog, and rewards
-  -> data/Mob.wz                  optional mob stats and animation source
-  -> data/Character.wz            optional character sprite source
-  -> data/UI.wz                   optional GUI sprite source
-  -> data/Skill.wz                optional skill data, icons, and effects
-  -> data/Sound.wz                optional skill sounds
-  -> data/String.wz               optional map, NPC, and skill text
-  -> SurrealDB -> SurrealKV       mutable player state
-```
+| Archive | Purpose |
+| --- | --- |
+| `Map.wz` | Required map, foothold, ladder, rope, portal, and sprite source |
+| `String.wz` | Map, NPC, and skill text |
+| `Mob.wz` | Mob stats, combat data, and animations |
+| `Npc.wz` | NPC placement animations and ambient speech references |
+| `Quest.wz` | Supported quest conditions, dialogue, and rewards |
+| `Character.wz` | Character creation choices, composed sprites, and equipment icons |
+| `UI.wz` | Classic HUD, windows, controls, and Cash Shop screen |
+| `Skill.wz` | Skill books, properties, icons, and effects |
+| `Sound.wz` | Skill sounds |
 
-The API schema is in
-`crates/oozems-proto/proto/oozems.proto`. Image and audio files keep their
-native formats instead of being wrapped in protobuf. This lets the browser
-stream, cache, and decode them directly. Asset URLs include a SHA-256-derived
-version, so changing one file invalidates only that cached file.
-
-## Use classic WZ maps
+### Maps and assets
 
 `Map.wz` is required. Place the matching `String.wz` beside it to use the
 original map names. The server fails at startup when `Map.wz` is absent. It
@@ -162,35 +158,200 @@ URL. The server then decodes that sprite, returns a normal PNG, and caches it
 for later requests. WZ files and extracted assets are not added to the client
 bundle.
 
-Place `Mob.wz` beside `Map.wz` to enable mobs. The server reads map-local mob
-spawn points, snaps each initial position to its supporting foothold, and
-creates the live instances. It loads each distinct mob definition once for the
-requested map, including combat stats and all available animation metadata.
-The browser requests only the animation frames that it renders. Mob state is
-owned by the server and resets when the server restarts. Map worlds are
-distributed across a fixed set of owner threads based on the server's available
-parallelism. Commands for one map remain ordered on one owner, while independent
-maps on different owners can simulate concurrently. Each map uses a Shipyard
-ECS world with separate movement, combat, player-presence, and projectile
-components. An ordered workload runs respawn, targeting, aggro, movement,
-contact damage, and projectile systems. Mobs randomly idle or move within the
-roaming range recorded by the map. They turn at unsafe edges.
-A mob with a nonempty WZ `jump` animation can jump toward a nearby higher
-foothold that its jump arc can reach. The existing movement heartbeat returns
-authoritative mob and projectile snapshots, which the client interpolates
-between updates. Mobs remain passive until attacked. Damage makes a mob target
-and chase the attacking player. Mobs with WZ body attack data deal contact
-damage, while mobs with positive magic attack launch projectiles after they are
-provoked.
+### Mobs and combat
 
-Place `Npc.wz` beside `Map.wz` to display the map's NPC life entries. The
-server loads each referenced NPC's displayable named animations when the map is
-first requested, places the NPC on its supporting foothold and WZ layer, and
-includes their frame assets in the map response. The client renders `stand`, or
-the first nonempty animation when `stand` is absent, while preserving the WZ
-frame timing, origin, and facing direction. PNG data stays compressed until the
-NPC first enters the viewport. A matching `String.wz` adds NPC names,
-functions, and the ambient lines selected by `Npc.wz/info/speak`.
+Place `Mob.wz` beside `Map.wz` to enable mobs. The server reads map-local spawn
+points, snaps each initial position to its supporting foothold, and creates the
+live instances. It loads each distinct mob definition once for the requested
+map, including combat stats and all available animation metadata. The browser
+requests only the animation frames that it renders.
+
+The server owns mob state, which resets when the server restarts. It distributes
+map worlds across a fixed set of owner threads based on the available
+parallelism. Commands for one map remain ordered on one owner. Independent maps
+on different owners can simulate concurrently.
+
+Each map uses a Shipyard ECS world with separate movement, combat,
+player-presence, and projectile components. An ordered workload runs respawn,
+targeting, aggro, movement, contact damage, and projectile systems.
+
+Mobs randomly idle or move within the roaming range recorded by the map. They
+turn at unsafe edges. A mob with a nonempty WZ `jump` animation can jump toward
+a nearby higher foothold if its jump arc can reach it.
+
+The movement heartbeat returns authoritative mob and projectile snapshots. The
+client interpolates between these updates. Mobs remain passive until attacked.
+Damage makes a mob target and chase the attacking player. Mobs with WZ body
+attack data deal contact damage. Mobs with positive magic attack launch
+projectiles after they are provoked.
+
+A basic attack selects the nearest living mob in front of the character and
+uses the configured bare-hands damage profile. It follows the same server-owned
+mob HP, defense, aggro, and death pipeline as a damaging skill. The character
+plays the composed `swingO1` WZ animation for its configured frame duration when
+the attack begins.
+
+Each living-to-dead mob transition rolls the independent item entries in
+`data/loot.toml`. See [Configure loot](#configure-loot) for the rate format.
+
+Generated items are temporary and belong to the final attacker. They use the
+server-authorized pickup and inventory pipeline. Combat and movement responses
+synchronize the current map drops so that other clients see item creation,
+pickup, and expiry.
+
+### NPCs
+
+Place `Npc.wz` beside `Map.wz` to display the map's NPC life entries. When a map
+is first requested, the server loads each referenced NPC's displayable named
+animations. It places the NPC on its supporting foothold and WZ layer, then
+includes the frame assets in the map response.
+
+The client renders `stand`, or the first nonempty animation if `stand` is
+absent. It preserves the WZ frame timing, origin, and facing direction. PNG data
+stays compressed until the NPC first enters the viewport. A matching `String.wz`
+adds NPC names, functions, and the ambient lines selected by
+`Npc.wz/info/speak`.
+
+Double-click a nearby NPC to interact. The server resolves the map-local spawn
+ID and checks the authoritative player position. It returns WZ dialogue, a quest
+prompt, a shop, or a taxi list.
+
+The client uses `UIWindow.img/UtilDlgEx` and `UIWindow.img/Shop`. You need
+`UI.wz` to display these NPC interaction windows. Movement, attacks, item
+pickup, and recovery pause while a modal window is open. Movement heartbeats
+continue.
+
+### Character appearance
+
+Place `Character.wz` beside the map archives to enable character creation. The
+server indexes the available skin, face, and hair styles. It then composes idle,
+walk, jump, ladder, and rope frames from each sprite's WZ anchor points and z
+layer.
+
+The browser initially receives only frame metadata. It requests individual PNG
+layers when the preview or game renderer needs them. Oozems stores the chosen
+name and appearance with the player in SurrealKV.
+
+### User interface
+
+Place `UI.wz` beside the other archives to use its classic `StatusBar.img`,
+`UIWindow.img`, and `CashShop.img` sprites. The server sends the layouts through
+protobuf. The browser then requests backgrounds, gauges, quick-slot panels,
+buttons, and open windows as normal versioned PNG assets. Without `UI.wz`, the
+client uses its built-in fallback HUD.
+
+GUI sprite metadata retains the WZ dimensions and origins. Dynamic components
+are sent as named sprite templates. Named regions record destinations that the
+original client supplied instead of storing in the archive. The Skill window
+uses its native 141 by 35 row component to size and render visible skill rows.
+The browser does not duplicate that geometry.
+
+The HP, MP, and EXP gauges use persisted character values for their fill levels.
+They display bracketed current and maximum values over the WZ artwork.
+
+New characters start on the map selected by `characters.initial_map_id`. The
+bundled configuration selects `Mushroom Town` (map `10000`).
+
+Click the stat button in the status bar to open the `UIWindow.img` character
+stat window. Its background, close control, and job label remain unloaded until
+you first open the window. New characters receive server-owned Beginner stats,
+which their persisted player records require.
+
+### Skills and audio
+
+Place `Skill.wz` and its matching `String.wz` beside the other archives to use
+the original skill books. New characters receive the configured initial skill
+points. Open the Skills window and click the WZ plus button beside a skill to
+spend one point. Click a learned skill icon to use it directly.
+
+To bind a learned skill, leave the Skills window open and open Key Settings.
+Drag the skill icon onto a key. A skill can have one key assignment, like each
+built-in action.
+
+Quest Act skill rewards raise learned and master levels independently. They do
+not spend skill points or lower either value. Their authored job IDs are exact.
+Beginner-family skill IDs retain the original cross-job bypass.
+
+`Skill.wz` is the authoritative global index, including invisible definitions.
+An invisible real skill enters the player's skill book after a positive learned
+or master-level unlock. Its positive master level limits later point allocation.
+
+An invisible definition with maximum level zero behaves differently. An
+authored level-1 record may persist as an acquisition marker for quest checks.
+The marker remains hidden, non-allocatable, non-bindable, and non-usable.
+
+The server owns skill use. It confirms the learned level, reads that level's WZ
+properties, checks and spends HP and MP, enforces WZ cooldowns, and applies
+immediate HP recovery. It returns temporary speed and jump effects to the
+client.
+
+A damaging skill targets the nearest living mob in front of the character. The
+server verifies the target map, foothold layer, facing direction, horizontal
+reach, and vertical reach. It then chooses damage from the calculated range.
+The server owns mob HP, death, aggro, and respawn state. The client displays the
+resulting damage, mob HP bar, attack animation, and projectile state.
+
+Temporary effects from different skill and item sources coexist. Reapplying the
+same source replaces its previous holder. Each numeric combat or movement
+modifier uses the highest nonzero value among the active holders. Oozems does
+not add these values together. A new morph replaces any active morph from
+another source.
+
+When `Sound.wz` is present, a successful skill use also returns the matching
+`Skill.img/<skill ID>/Use` sound. The server reads caster `effect`, projectile
+`ball`, and target `hit` animation frames from the active skill level in
+`Skill.wz`. The use response includes only their versioned descriptors.
+
+The browser requests the PNG and MP3 or WAV data on first use. It then relies on
+its normal cache. Projectile effects travel in the character's facing direction
+and are followed by their target effect.
+
+### Items and inventory
+
+Click the equipment or inventory button to open its `UIWindow.img` window. The
+inventory uses the native Equip, Use, Setup, Etc, and Cash tabs. Pet items appear
+under Cash.
+
+Left-click an item on the Equip tab to equip it. Left-click an equipped item to
+move it back to inventory. Right-click an item on any inventory tab to drop it
+at the server-owned player position. Oozems persists equipment and inventory
+changes in SurrealKV.
+
+The browser requests an equipment icon from `Character.wz` only when the icon
+first becomes visible. Equipping or removing an item refreshes the composed
+character layers. An empty top or bottom slot uses the gender-specific pajama
+layers from `Character.wz` instead of leaving the body unclothed.
+
+Oozems persists inventory stack deadlines with each stack. Zero means
+permanent. Only matching item IDs and deadlines merge. Item consumption uses
+the earliest deadline before permanent stacks.
+
+The server removes expired stacks at the locked player-load boundary. It saves
+a new player revision only if pruning changes the inventory.
+
+Dropped items are transient and scoped to their map. The map protobuf includes
+their item ID, position, normal despawn deadline, and preserved item deadline. A
+drop expires at the earlier active deadline. Expired drops are removed from the
+server drop store and stop rendering in the client.
+
+The Pick Up action moves the nearest drop within pickup range into the
+character's inventory. The server removes the drop and saves the inventory as
+one item action. It restores the drop if the player save fails.
+
+## Configure content and interactions
+
+Project-wide configuration files are under `config`. Configuration tied to a
+specific WZ version belongs in the runtime data directory, which is `./data` by
+default.
+
+### Configure loot
+
+`data/loot.toml` defines the independent item entries rolled when a mob dies.
+The local WZ archives provide some mob-to-item associations, but they do not
+provide ordinary drop probabilities. The configured rates are therefore
+project-authored. A rate is expressed per million, and `1000000` is guaranteed.
+
+### Limit NPC content
 
 NPC inclusion is controlled by `config/content.toml`:
 
@@ -200,20 +361,23 @@ allowed_limited_names = []
 # allowed_ids = [1012000, 1012003]
 ```
 
-WZ `limitedname` data normally identifies seasonal or event NPCs. Omit
-`allowed_limited_names` to permit every limited name. Set it to a list to permit
-only those event scopes, or to an empty list to exclude all limited NPCs. Omit
-`allowed_ids` to permit all remaining NPC IDs. Set it to a list to render only
-those IDs, or to an empty list to render no NPCs. Both allowlists apply when
-both settings are present. If `content.toml` is absent, NPC loading remains
-unrestricted. Restart the server after changing these settings.
+WZ `limitedname` data normally identifies seasonal or event NPCs. Use the
+settings as follows:
 
-Double-click a nearby NPC to interact. The server resolves the map-local spawn
-ID, checks the authoritative player position, and returns either WZ dialog, a
-quest prompt, a shop, or a taxi list. The client uses
-`UIWindow.img/UtilDlgEx` and `UIWindow.img/Shop`, so `UI.wz` is required for NPC
-interaction windows. Movement, attacks, item pickup, and recovery pause while
-one of these modal windows is open, but movement heartbeats continue.
+- Omit `allowed_limited_names` to permit every limited name.
+- List `allowed_limited_names` to permit only those event scopes.
+- Set `allowed_limited_names = []` to exclude all limited NPCs.
+- Omit `allowed_ids` to permit all remaining NPC IDs.
+- List `allowed_ids` to render only those IDs.
+- Set `allowed_ids = []` to render no NPCs.
+
+Both allowlists apply when both settings are present. If `content.toml` is
+absent, NPC loading remains unrestricted. Restart the server after changing
+these settings.
+
+### Configure quests
+
+#### Limit loaded quests
 
 When `Quest.wz` is present, every quest compatible with the implemented typed
 mechanics is enabled automatically. Unsupported definitions are skipped and
@@ -225,11 +389,17 @@ allowed_ids = [1009]
 ```
 
 When an allowlist is present, startup fails if one of its quests is absent or
-uses data outside the supported subset. Rain's real `Quest.wz` quiz in Amherst
-is one compatible quest. It exercises job and NPC conditions, accept and
-decline dialog, list answers, persistent started/completed state, EXP rewards,
-and retained next-quest metadata. `autoAccept`, `normalAutoStart`, and
-`autoStart` accept a quest when its normal availability checks pass.
+uses data outside the supported subset.
+
+Rain's real `Quest.wz` quiz in Amherst is one compatible quest. It exercises job
+and NPC conditions, accept and decline dialogue, list answers, persistent
+started/completed state, EXP rewards, and retained next-quest metadata.
+
+#### Understand automatic transitions
+
+`autoAccept`, `normalAutoStart`, and `autoStart` accept a quest when its normal
+availability checks pass.
+
 `autoComplete` completes a normally ready quest, while
 `autoPreComplete` bypasses ordinary objectives but still preflights scripts and
 actions. Automatic transitions repeat to a stable state so dependency chains
@@ -239,13 +409,10 @@ therefore take precedence over automatic-start metadata. They remain available
 through their authoritative start NPC; a start question without an NPC is
 rejected as unreachable.
 
-`gameplay.toml` defines one authoritative nonnegative server world ID. The
-bundled configuration uses world `0`:
+#### Understand conditions and persistence
 
-```toml
-[world]
-id = 0
-```
+Quest checks use the authoritative world ID from `gameplay.toml`. See
+[Configure the world ID](#configure-the-world-id).
 
 Quest `worldmin` and `worldmax` start checks use this value with inclusive
 bounds. Quest fame checks read the authoritative character stats. Completion
@@ -254,15 +421,15 @@ from current player state. Completed-quest counts exclude quest IDs
 `9000..=10999`, QuestInfo area `51`, malformed statuses, and player records for
 definitions that are not loaded.
 
+#### Apply quest time limits
+
 Quest `timeLimit` and `timeLimit2` values are seconds. The server converts both
-to checked milliseconds, expires an active quest at its
-accepted time plus that duration, and resets it without rewards. An expired
-quest cannot be reaccepted during the same automatic transition pass. Mesos,
-cash points, and quest state are stored with the player. SurrealKV accepts one
-current persisted player schema. Startup backfills only a missing `cash_points`
-field as described below. It does not otherwise upgrade or fill missing fields
-from older schemas. A record that does not satisfy the current schema fails to
-load.
+to checked milliseconds. It expires an active quest at its accepted time plus
+that duration and resets the quest without rewards. An expired quest cannot be
+reaccepted during the same automatic transition pass. Oozems stores mesos, cash
+points, and quest state with the player.
+
+#### Store quest records
 
 Quest record progress is stored as canonical, typed quest records. Record IDs
 are nonzero and unique, entry indices are unique, and both levels are sorted
@@ -276,6 +443,8 @@ SurrealKV stores quest records as required nested records and entries. They must
 be unique and valid. Missing, malformed, duplicate, or invalid data fails
 player load; valid entries are sorted into canonical order.
 
+#### Apply reward deadlines
+
 Quest item-action `period` values are relative lifetimes in minutes. Their
 deadline starts when that start, completion, or restoration action executes.
 `dateExpire` is an absolute `yyyyMMddHH` civil deadline from the GMS archive.
@@ -283,6 +452,8 @@ The server interprets it in `America/Los_Angeles` with Jiff's bundled timezone
 database, including PST and PDT transitions. Expiring equipment rewards remain
 unsupported because every response path does not yet refresh composed character
 sprites authoritatively.
+
+#### Replace quest scripts
 
 `Quest.wz` contains quest script names but does not contain their executable
 script bodies. A script-backed start or completion phase remains unresolved
@@ -297,6 +468,9 @@ Quest 10272 retains its archive completion script name, `q10272e`. Runtime
 completion returns `ScriptRequired` until a deterministic replacement is added
 for the deployed WZ version.
 
+> **WZ version warning:** Review the example before you use it as
+> `${OOZEMS_DATA_DIR}/quest-scripts.toml` or with a different archive version.
+
 [`examples/v83/quest-scripts.toml`](examples/v83/quest-scripts.toml) is a
 project-authored catalog for the matching GMS v83 content. It covers all 663
 script names referenced by the 2,766 quest definitions supported by this
@@ -305,11 +479,10 @@ WZ evidence or behavior facts independently reconciled with the local WZ data.
 The other 610 are explicit WZ-only fallbacks: they allow the ordinary WZ
 checks, dialogue, and actions to run, but cannot reproduce unavailable or
 unsupported script behavior. The catalog is not a copy of the original server
-scripts and is not loaded automatically. Review it before using it as
-`${OOZEMS_DATA_DIR}/quest-scripts.toml` or with a different archive version.
+scripts and is not loaded automatically.
 
-Each program has ANDed conditions, typed resource actions, and optional
-dialogue pages:
+Every condition in a program must pass. A program can also contain typed
+resource actions and optional dialogue pages:
 
 ```toml
 [[scripts]]
@@ -384,42 +557,65 @@ quest_id = 1001
 state = "completed"
 ```
 
-The complete condition capability list is `minimum_level`, `maximum_level`,
-`job_ids`, `map_id`, `mesos_at_least`, `mesos_at_most`, `item_quantity`, and
-`quest_state`, plus `quest_record_equals`, `quest_record_at_least`, and
-`quest_record_at_most`. Quest states are `not_started`, `started`, and
-`completed`. Record conditions can read any canonical helper or redirected
-record. The
-complete action capability list is signed `item_delta`, signed `mesos`,
-unsigned `experience`, signed `fame`, `set_record`, and `set_quest_status`.
+The configuration supports these capabilities:
+
+| Kind | Capabilities |
+| --- | --- |
+| Conditions | `minimum_level`, `maximum_level`, `job_ids`, `map_id`, `mesos_at_least`, `mesos_at_most`, `item_quantity`, `quest_state`, `quest_record_equals`, `quest_record_at_least`, `quest_record_at_most` |
+| Actions | Signed `item_delta`, signed `mesos`, unsigned `experience`, signed `fame`, `set_record`, `set_quest_status` |
+
+Quest states are `not_started`, `started`, and `completed`. Record conditions
+can read any canonical helper or redirected record.
+
 Script actions are merged with the WZ actions for the server-selected start or
 completion phase, then the combined set uses the same atomic in-memory
 inventory, mesos, EXP, fame, record, and cross-quest status transform as an
-ordinary quest. A cross-quest status action changes only the target's stored
-status and timestamps. It does not run the target quest's checks, scripts,
-dialogue, actions, or rewards. A script cannot target the quest whose phase is
-currently transitioning. `not_started` removes the target quest entry and its
-own quest record. `started` replaces stale mob progress and timestamps with a
-clean acceptance at the action time. `completed` clears mob progress, completes
-at the action time, and preserves a valid existing acceptance time.
+ordinary quest.
 
-The file uses strict tagged records. Unknown fields and capability names,
-duplicate or empty script names, names absent from `Quest.wz`, and shape limits
-fail startup for every program. Programs referenced by loaded quest definitions
-also reject unknown item IDs, zero item quantities or action amounts,
-contradictory limits, and numeric combinations that cannot be represented by
-the quest action model. Their record IDs must be nonzero, values must meet the
-persisted ASCII limit, numeric record predicates must be strictly decimal, and
-duplicate or incompatible record operations fail startup. Quest status targets
-must be nonzero loaded quest definitions and cannot be duplicated in one merged
-action plan. A catalog may contain at most 1,024 programs. One program may
-contain at most 64 conditions, actions, and pages in total, with at most 16
-result pages and 16 incomplete pages. Each page is limited to 4096 UTF-8 bytes,
-and each script name to 256 bytes.
+A cross-quest status action changes only the target's stored status and
+timestamps. It does not run the target quest's checks, scripts, dialogue,
+actions, or rewards. A script cannot target the quest whose phase is currently
+transitioning.
+
+Cross-quest states have these effects:
+
+| State | Effect |
+| --- | --- |
+| `not_started` | Removes the target quest entry and its own quest record |
+| `started` | Replaces stale mob progress and timestamps with a clean acceptance at the action time |
+| `completed` | Clears mob progress, completes at the action time, and preserves a valid existing acceptance time |
+
+The file uses strict tagged records. These errors stop startup for every
+program:
+
+- Unknown fields or capability names
+- Duplicate or empty script names
+- Script names absent from `Quest.wz`
+- Values that exceed the shape limits
+
+Programs referenced by loaded quest definitions also reject these errors:
+
+- Unknown item IDs
+- Zero item quantities or action amounts
+- Contradictory limits
+- Numeric combinations that the quest action model cannot represent
+- Zero record IDs
+- Record values that exceed the persisted ASCII limit
+- Numeric record predicates that are not strictly decimal
+- Duplicate or incompatible record operations
+- Quest status targets that are zero, unloaded, or duplicated in one merged
+  action plan
+
+A catalog may contain at most 1,024 programs. One program may contain at most
+64 conditions, actions, and pages in total. It may have at most 16 result pages
+and 16 incomplete pages. Each page is limited to 4096 UTF-8 bytes. Each script
+name is limited to 256 bytes.
 
 Quest scripts have no filesystem, network, clock, random, loop, callback,
 generic NPC script, portal script, mob-kill integration, or dynamic branching
 capability. Restart the server after changing `quest-scripts.toml`.
+
+### Configure shops and taxi routes
 
 The local archives contain NPC script names but not their executable bodies.
 Shop stock, buy prices, taxi destinations, and fares therefore come from
@@ -450,6 +646,8 @@ grants one permanent item. Packages, gifting, timed purchases, and cash-shop
 storage are not part of this pseudo shop. An item with a WZ sale price can still
 be sold for mesos at a normal shop.
 
+### Configure the Cash Shop
+
 The status bar's original Cash Shop button opens a separate fixed 800 by 600
 screen from `UI.wz/CashShop.img`. It is global and does not require an NPC or a
 specific map. Offers come from `data/cash-shop.toml`:
@@ -472,141 +670,35 @@ duration = "permanent"
 
 The optional `currency_name` controls the premium-currency label in both the
 global Cash Shop and cash-point NPC shops. It defaults to `"Ooze"` when omitted
-and may contain at most 24 characters. The catalogue may contain at most 10
-offers. Each `offer_id` must be unique and positive, each price must be positive,
-and every item must exist in the local WZ item catalogue. A duration is either
-the exact value `"permanent"` or a positive humantime value such as `"7d"` or
-`"12h"`. The browser submits only the stable offer ID. The server resolves its
-item, price, and lifetime, computes the expiration deadline at purchase time,
-and persists the item and remaining Cash Points together. An absent
-`cash-shop.toml` creates an empty Cash Shop that uses the `"Ooze"` label.
+and may contain at most 24 characters.
+
+The catalog has these constraints:
+
+- It may contain at most 10 offers.
+- Each `offer_id` must be unique and positive.
+- Each price must be positive.
+- Each item must exist in the local WZ item catalog.
+- Each duration must be `"permanent"` or a positive humantime value such as
+  `"7d"` or `"12h"`.
+
+The browser submits only the stable offer ID. The server resolves its item,
+price, and lifetime. It computes the expiration deadline at purchase time and
+persists the item and remaining Cash Points together.
+
+An absent `cash-shop.toml` creates an empty Cash Shop that uses the `"Ooze"`
+label.
 
 The current screen is intentionally limited to listing and buying one item at a
 time. It does not implement packages, gifting, wishlists, search, try-on, or
 cash storage.
 
-Place `Character.wz` beside the map archives to enable character creation. The
-server indexes the available skin, face, and hair styles, then composes idle,
-walk, jump, ladder, and rope frames from each sprite's WZ anchor points and z
-layer. The browser receives only frame metadata at first. It requests the
-individual PNG layers while the preview or game renderer needs them. The
-chosen name and appearance are stored with the player in SurrealKV.
-
-Place `UI.wz` beside the other archives to use its classic `StatusBar.img`,
-`UIWindow.img`, and `CashShop.img` sprites for the in-game UI. The server sends
-the layouts through protobuf. The browser then requests backgrounds, gauges,
-quick-slot panels, buttons, and open windows as normal versioned PNG assets. If
-`UI.wz` is absent, the client keeps using its built-in fallback HUD.
-
-GUI sprite metadata retains the WZ dimensions and origins. Dynamic components
-are sent as named sprite templates, while named regions record destinations
-that were supplied by the original client rather than stored in the archive.
-The Skill window uses its native 141 by 35 row component to size and render the
-visible skill rows instead of duplicating that geometry in the browser.
-
-Click the KeySet status-bar button, or press K with the default bindings, to
-open the original `UIWindow.img/KeyConfig` keyboard settings window. Drag an
-action icon from the lower palette, or from an assigned key, onto another key.
-Each action has one assignment, so moving an action removes its previous
-assignment and replaces any action already on the target key. The supported
-palette contains Basic Attack, Jump, Pick Up, Character, Equipment, Inventory,
-Key Settings, and Skills. Basic Attack is assigned to left Control for new
-characters. Changes are stored with the player in SurrealKV.
-
-Place `Skill.wz` and its matching `String.wz` beside the other archives to use
-the original skill books. New characters receive the configured initial skill
-points. Open the Skills window and click the WZ plus button beside a skill to
-spend one point. Click a learned skill icon to use it directly. To bind a
-learned skill, leave the Skills window open, open Key Settings, and drag the
-skill icon onto a key. A skill can have one key assignment, like each built-in
-action.
-
-Quest Act skill rewards raise learned and master levels independently without
-spending skill points or lowering either value. Their authored job IDs are exact;
-beginner-family skill IDs retain the original cross-job bypass. `Skill.wz` is the
-authoritative global index, including invisible definitions. An invisible real
-skill enters the player's skill book after a positive learned or master-level
-unlock, and its positive master level limits later point allocation. An
-invisible definition with maximum level zero is different: an authored level-1
-record may persist as an acquisition marker for quest checks, but the marker
-remains hidden, non-allocatable, non-bindable, and non-usable.
-
-A basic attack selects the nearest living mob in front of the character and
-uses the configured bare-hands damage profile. Its result follows the same
-server-owned mob HP, defense, aggro, and death pipeline as a damaging skill.
-The character plays the composed `swingO1` WZ animation for its configured
-frame duration when the attack begins.
-
-Each living-to-dead mob transition rolls the independent item entries in
-`data/loot.toml`. The local WZ archives provide some mob-to-item associations
-but not ordinary drop probabilities, so the local rates are project-authored.
-A rate is expressed per million; `1000000` is guaranteed. Generated items are
-temporary, belong to the final attacker, and use the existing server-authorized
-pickup and inventory pipeline. Combat and movement responses synchronize the
-current map drops so other clients see item creation, pickup, and expiry.
-
-Skill use is server-owned. The server confirms the learned level, reads that
-level's WZ properties, checks and spends HP and MP, enforces WZ cooldowns,
-applies immediate HP recovery, and returns temporary speed and jump effects to
-the client. A damaging skill targets the nearest living mob in front of the
-character. The server verifies the target map, foothold layer, facing direction,
-horizontal reach, and vertical reach before choosing damage from the calculated
-range. It owns mob HP, death, aggro, and respawn state. The client displays the
-resulting damage, mob HP bar, attack animation, and projectile state.
-
-Temporary effects from different skill and item sources coexist. Reapplying the
-same source replaces its previous holder. Each numeric combat or movement
-modifier uses the highest nonzero value among the active holders; values are not
-added together. A new morph replaces any active morph from another source.
-
-When `Sound.wz` is present, a successful use also returns the matching
-`Skill.img/<skill ID>/Use` sound. The server reads caster `effect`, projectile
-`ball`, and target `hit` animation frames from the active skill level in
-`Skill.wz`. Only their versioned descriptors are included in the use response.
-The browser requests the PNG and MP3 or WAV data on first use, then relies on
-its normal cache for later uses. Projectile effects travel in the character's
-facing direction, followed by their target effect.
-
-The HP, MP, and EXP gauges use the persisted character values for their fill
-levels and display bracketed current and maximum values over the WZ artwork.
-
-New characters start on the map selected by `characters.initial_map_id`. The
-bundled configuration selects `Mushroom Town` (map `10000`).
-
-Click the stat button in the status bar to open the `UIWindow.img` character
-stat window. Its background, close control, and job label remain unloaded until
-the window is first opened. New characters receive server-owned Beginner stats,
-which are required in their persisted player records.
-
-Click the equipment or inventory button to open its `UIWindow.img` window.
-The inventory uses the native Equip, Use, Setup, Etc, and Cash tabs; pet items
-appear under Cash. Left-click an item on the Equip tab to equip it. Left-click
-an equipped item to move it back to inventory. Right-click an item on any
-inventory tab to drop it at the server-owned player position. Equipment and
-inventory changes are persisted in SurrealKV. The browser requests each
-equipment icon from `Character.wz` only
-when the icon is first visible. Equipping or removing an item also refreshes
-the composed character layers. An empty top or bottom slot uses the
-gender-specific pajama layers from `Character.wz` instead of leaving the body
-unclothed.
-
-Inventory stack deadlines are persisted with the stack. Zero means permanent.
-Only matching item IDs and deadlines merge, and item consumption uses the
-earliest deadline before permanent stacks. The server removes expired stacks at
-the locked player-load boundary and saves a new player revision only when that
-pruning changes the inventory.
-
-Dropped items are transient and scoped to their map. Their item ID, position,
-normal despawn deadline, and preserved item deadline are sent in the map
-protobuf. A drop expires at the earlier active deadline. Expired drops are
-removed from the server drop store and stop rendering in the client. The Pick
-Up action moves the nearest drop within pickup range into the character's
-inventory. The server removes the drop and saves the inventory as one item
-action, restoring the drop if the player save fails.
-
 ## Configure gameplay rules
 
-Gameplay rules are configured in `config/gameplay.toml`:
+Gameplay rules are configured in `config/gameplay.toml`.
+
+> **Required fields:** Every section and field shown below is required. A
+> missing or unknown section or field stops server startup. The server does not
+> load defaults from an older layout.
 
 ```toml
 # See README.md for configuration reference.
@@ -657,13 +749,14 @@ portal_horizontal_reach = 48.0
 portal_vertical_reach = 64.0
 ```
 
-Every section and field shown above is required. Missing or unknown sections and
-fields stop server startup instead of loading defaults from an older layout.
+### Configure item lifetime
 
 `items.drop_despawn` controls how long a dropped item remains in a map. It must
 be a positive human-readable duration, such as `30s`, `10m`, `2h`, or
 `1h 30m`. Restart the server after changing it. Drops are intentionally not
 persisted across a server restart.
+
+### Configure new characters
 
 `skills.initial_points` is the number of unspent skill points assigned to a new
 character. Learned levels and later point changes are persisted and are not
@@ -680,6 +773,14 @@ first introduced to an existing database, startup also assigns its value to
 players that do not yet have a `cash_points` field. Later setting changes do not
 replace existing balances.
 
+### Configure the world ID
+
+The `[world]` section defines one authoritative nonnegative server world ID.
+The bundled configuration uses world `0`. Quest `worldmin` and `worldmax` start
+checks use this value with inclusive bounds.
+
+### Configure combat
+
 Combat distances are measured in map pixels. Mobs acquire an aggro target when
 that player damages them. `disengage_range` controls how far a mob can remain
 interested in that target. `player_attack_range` and `attack_vertical_reach` are
@@ -695,6 +796,8 @@ contact and projectile hits from applying on every movement heartbeat.
 `default_respawn` applies when a WZ spawn point does not define `mobTime`. All
 combat numbers must be finite and positive. Combat durations accept the same
 human-readable syntax as item despawn durations.
+
+### Configure movement
 
 Movement speeds are measured in map pixels per second, and gravity is measured
 in map pixels per second squared. `speed_cap` and `jump_cap` are percentage
@@ -727,6 +830,8 @@ before the server permits a transition. All numeric movement values and
 durations must be positive, and `maximum_snapshot_gap` must not be shorter than
 `snapshot_interval`. Restart the server after changing these rules.
 
+### Understand movement authority
+
 Rejected snapshots return the last authoritative server position and the WASM
 client resynchronizes to it. Purely visual movement inside a modified client is
 not observable, but it cannot change the server position used for recovery,
@@ -734,9 +839,16 @@ pickups, drops, portals, persistence, or later gameplay calculations.
 
 ## Configure formula profiles
 
-Combat formulas are configured in `config/skill-formulas.toml`. The bundled
-file records its source and groups formulas into reusable profiles. Each
-selector table maps a stable game identifier to one profile:
+Combat formulas are configured in `config/skill-formulas.toml`.
+
+> **Startup validation:** The server parses and validates every configured
+> formula before it serves players. An invalid formula or selector stops
+> startup. Restart the server after changing this file.
+
+### Define profiles and selectors
+
+The bundled file records its source and groups formulas into reusable profiles.
+Each selector table maps a stable game identifier to one profile:
 
 ```toml
 # See README.md for configuration reference.
@@ -793,6 +905,8 @@ Use the selector only when that skill ID exists in the loaded WZ version. If the
 archives do not contain Battleship, the default file keeps this profile
 available without selecting it.
 
+### Use the supported tables
+
 The supported profile and selector table pairs are:
 
 | Profile table         | Selector table | Selector key                                                    |
@@ -817,6 +931,8 @@ constants are useful for properties such as `primary_modifier`,
 `swing_modifier`, and `stab_modifier`; they use the same evaluation path as
 expressions.
 
+### Understand current formula use
+
 Basic attacks read `attack`, `minimum`, and `maximum` from the profile selected
 by `weapons.bare_hands`. Non-Pirate jobs use a standard `JobMultiplier` of 4.0;
 Pirate jobs retain their existing job-specific multipliers. The skill damage
@@ -830,6 +946,8 @@ profile selected by `weapons.bare_hands`. This provides one clear input point
 for real weapon stats when weapon equipment is added later. Other profile
 categories are parsed, validated, and routed now so their combat pipelines can
 consume the same configuration model later.
+
+### Configure natural recovery
 
 Natural recovery uses the same profile pipeline:
 
@@ -860,6 +978,8 @@ interval. Jobs from 200 through 299 select `recovery.mage`; other jobs select
 is the current character level, and `SkillLevel` is learned skill `2000000`.
 Recovery results are truncated to whole points and capped by maximum HP and MP.
 Every selected recovery profile must define both `hp` and `mp`.
+
+### Write profile formulas
 
 Profile formulas use decimal arithmetic and support these elements:
 
@@ -896,12 +1016,13 @@ pipelines that will be connected as their combat inputs are implemented.
 Selecting a profile that needs an unavailable variable returns an explicit
 request error instead of substituting a value.
 
+### Handle formula errors
+
 The server parses every configured formula and rejects unknown identifiers,
 unknown functions, invalid syntax, non-ASCII text, invalid numeric IDs, invalid
 profile or property names, empty profiles, and selectors that name unknown
 profiles before it starts serving players. Evaluation also rejects missing
-properties, missing inputs, division by zero, and non-finite results. Restart
-the server after changing the file.
+properties, missing inputs, division by zero, and non-finite results.
 
 The defaults group formulas from the linked 2009 Ayumilove compilation by the
 game concepts that consume them while preserving its constants and caps. This
@@ -910,14 +1031,16 @@ expression when targeting a different version or interpretation.
 
 ## Configure XP curves
 
-XP curves are configured in `config/xp-curves.toml`. Every configuration file
-must start with a comment directing readers to this reference:
+XP curves are configured in `config/xp-curves.toml`.
 
-```toml
-# See README.md for configuration reference.
-```
+> **Startup validation:** The server parses and validates every curve at
+> startup, including curves that are not selected. An invalid curve stops
+> startup.
 
-The bundled configuration has this shape:
+### Define a curve
+
+Every XP curve configuration file must start with a comment that directs
+readers to this reference. The bundled configuration has this shape:
 
 ```toml
 # See README.md for configuration reference.
@@ -939,13 +1062,14 @@ formula = "atLevel(10) + (Level - 10) * 500"
 ```
 
 `default_curve` selects the curve applied to all current characters. Additional
-named curves may be defined for future game modes. The server parses and
-validates every curve at startup, including curves that are not selected.
+named curves may be defined for future game modes.
 
 Each `curves.ranges` entry defines an inclusive level range. Ranges within one
 curve must start at level 1, remain contiguous, and must not overlap. The
 highest supported configured level is 10,000. A character level outside the
 selected curve is treated as a server configuration error.
+
+### Write XP formulas
 
 Formulas contain integer literals and these elements:
 
@@ -967,25 +1091,140 @@ be a positive 64-bit integer.
 in the same curve. References may point forward or backward and may cross
 range boundaries. The server resolves all references at startup. A missing
 level, arithmetic error, overflow, or direct or indirect reference cycle stops
-startup with a configuration error. Restart the server after changing a curve.
+startup with a configuration error.
+
+### Change the selected curve
+
+Restart the server after changing a curve.
 Changing the selected curve does not recalculate character levels or discard
 accumulated XP. It replaces only the requirement for advancing from the
 character's current level.
 
-Use the left and right arrow keys to walk. Use the up and down arrow keys to
-climb. Hold Down and press the configured Jump key to drop through a platform
-when another foothold is below the character. Press Up while standing at a
-direct portal to enter it. Arrow keys stay reserved for movement and
-interaction. The default action bindings are left Alt for Jump, Z for Pick Up, C
-for Character, E for Equipment, I for Inventory, K for Key Settings, and S for
-Skills. Script portals remain inactive because their behavior belongs to a
-future server-side scripting system. Double-click an NPC to open its dialog.
+## Use the workspace tools
 
-## Verify it
+### Inspect WZ archives
+
+The workspace includes `oozems-wz`, a JSON-first CLI for repeatable WZ
+inspection and safe PKG1 property edits. It inspects standard PKG1 and PKG2
+archives, paginates large node lists, and emits typed values without embedding
+large media payloads.
+
+Run these commands from the workspace root:
+
+```sh
+cargo run --package oozems-wz -- info data/Quest.wz
+cargo run --package oozems-wz -- list data/Quest.wz /Act.img --limit 25
+cargo run --package oozems-wz -- get data/Quest.wz /Act.img/1000/1/nextQuest
+```
+
+### Edit a WZ archive
+
+> **Archive safety:** An edit requires a separate output path. The tool never
+> overwrites the input archive. It copies every unchanged image blob
+> byte-for-byte, rebuilds archive offsets and checksums, validates the complete
+> output with two independent WZ readers, and then installs it atomically.
+
+```sh
+cargo run --package oozems-wz -- set \
+  data/Quest.wz /Act.img/1000/1/nextQuest \
+  --value 1002 \
+  --output data/Quest.edited.wz
+```
+
+See [`crates/oozems-wz/README.md`](crates/oozems-wz/README.md) for path rules,
+pagination, JSON fields, supported value types, and safety details.
+
+### Infer quest script replacements
+
+The workspace also includes `oozems-quest-harness`. This CLI discovers scripted
+quests and assembles model evidence directly from `Quest.wz`, `Npc.wz`, and
+`String.wz`. It sends the evidence to an OpenRouter-compatible model. It then
+validates the guessed `quest-scripts.toml` programs against the schema that the
+server supports.
+
+OpenRouter login uses a localhost PKCE callback. It never stores the resulting
+API key in the repository.
+
+Log in, find a quest, and generate one replacement:
+
+```sh
+cargo run --package oozems-quest-harness -- login
+cargo run --package oozems-quest-harness -- quests \
+  data/Quest.wz --search q10272e
+cargo run --package oozems-quest-harness -- generate \
+  --model openai/gpt-5.2 \
+  data/Quest.wz \
+  q10272e
+```
+
+> **Potential cost:** A complete batch can make hundreds of paid model
+> requests. Review the model and provider pricing before you start one.
+
+To generate every unique script referenced by the archive, pass
+`--all --output generated-quest-scripts.toml` instead of a quest selector.
+
+See
+[`crates/oozems-quest-harness/README.md`](crates/oozems-quest-harness/README.md)
+for input rules, compatible endpoints, credential behavior, and limitations.
+
+## Understand the architecture
+
+### Follow the data flow
+
+```text
+browser
+  -> GET /                         WASM shell
+  -> POST /api/v1/bootstrap       saved player or creation options
+  -> POST /api/v1/characters/...  create a character or get sprite metadata
+  -> POST /api/v1/gui/get         current GUI layout and asset metadata
+  -> POST /api/v1/maps/get        current map protobuf
+  -> POST /api/v1/movement/rules server-configured movement constants and caps
+  -> POST /api/v1/movement/submit movement correction, combat, and world snapshot
+  -> POST /api/v1/movement/portal server-authorized portal transition
+  -> POST /api/v1/items/...       equip, unequip, drop, or pick up an item
+  -> POST /api/v1/cash-shop/...   list offers or buy an authoritative cash item
+  -> POST /api/v1/npcs/interact   open or act on an authoritative NPC interaction
+  -> POST /api/v1/combat/...      use a server-authoritative basic attack
+  -> POST /api/v1/skills/...      allocate a skill point or use a skill
+  -> POST /api/v1/players/recover apply one rate-limited natural recovery tick
+  -> GET /wz-assets/...           requested WZ PNG and skill audio assets
+  -> POST /api/v1/players/save    key bindings and authoritative session state
+
+server
+  -> config/xp-curves.toml        validated game progression rules
+  -> config/gameplay.toml         validated world, item, skill, and movement rules
+  -> config/content.toml          WZ content inclusion rules
+  -> config/skill-formulas.toml   validated combat formulas
+  -> data/interactions.toml       version-specific shop stock and taxi routes
+  -> data/cash-shop.toml          global Cash Shop offers, prices, and lifetimes
+  -> data/loot.toml               version-specific mob item drop rates
+  -> data/quest-scripts.toml      version-specific replacements for WZ quest scripts
+  -> data/Map.wz                  required, lazy WZ map source
+  -> data/Npc.wz                  optional NPC placement animation source
+  -> data/Quest.wz                enabled quest conditions, dialogue, and rewards
+  -> data/Mob.wz                  optional mob stats and animation source
+  -> data/Character.wz            optional character sprite source
+  -> data/UI.wz                   optional GUI sprite source
+  -> data/Skill.wz                optional skill data, icons, and effects
+  -> data/Sound.wz                optional skill sounds
+  -> data/String.wz               optional map, NPC, and skill text
+  -> SurrealDB -> SurrealKV       mutable player state
+```
+
+The API schema is in `crates/oozems-proto/proto/oozems.proto`. Image and audio
+files keep their native formats instead of being wrapped in protobuf. This lets
+the browser stream, cache, and decode them directly.
+
+Asset URLs include a SHA-256-derived version. Changing one file therefore
+invalidates only that cached file.
+
+## Verify changes
+
+Run the workspace formatting checks, Rust checks, tests, and WASM client check:
 
 ```sh
 make check
 ```
 
-The first server build is relatively large because embedded SurrealDB includes
-its database engine in the server binary.
+The formatting step uses the Rust nightly toolchain. The other checks cover all
+workspace targets and the `wasm32-unknown-unknown` client target.

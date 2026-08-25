@@ -1,14 +1,38 @@
 # oozems-wz
 
-`oozems-wz` is a JSON-first command-line tool for inspecting and safely editing
-WZ archives. Its output is deterministic and suitable for terminal use,
-scripts, and language-model tools.
+Use `oozems-wz` to inspect WZ archives from a terminal or script. You can show
+archive information, list nodes, and get one node. You can also change one
+existing scalar or vector property in a new archive.
 
-The tool inspects standard PKG1 and PKG2 archives and edits PKG1 archives. GMS
-encryption is the default; use `--region` for EMS or BMS archives. `List.wz`,
-hotfix `Data.wz`, custom IVs, and custom user keys are not supported.
+The tool produces deterministic JSON for scripts and other tools.
 
-## Run
+## Check archive support
+
+You can inspect standard PKG1 and PKG2 archives. You can edit only PKG1
+archives.
+
+| Operation | PKG1 | PKG2 |
+| --------- | ---- | ---- |
+| `info`    | Yes  | Yes  |
+| `list`    | Yes  | Yes  |
+| `get`     | Yes  | Yes  |
+| `set`     | Yes  | No   |
+
+GMS encryption is the default. Use `--region ems` or `--region bms` for EMS or
+BMS archives. The tool detects the patch version by default. Use `--wz-version`
+when you need to provide the expected version:
+
+```sh
+oozems-wz --region gms --wz-version 83 info data/Quest.wz
+```
+
+`--region` accepts `gms`, `ems`, or `bms`. Global options can appear before or
+after the subcommand.
+
+The tool does not support `List.wz`, hotfix `Data.wz`, custom IVs, or custom
+user keys.
+
+## Run the tool
 
 Run the tool from the workspace root:
 
@@ -23,18 +47,39 @@ cargo build --release --package oozems-wz
 target/release/oozems-wz info data/Quest.wz
 ```
 
-Successful archive commands write one JSON document to standard output. Errors
-are written as `{"error":"..."}` to standard error and return a nonzero
-status. Help and version output remain plain text. JSON is indented by default.
-Add `--compact` to emit one line.
+## Read command output
 
-## Inspect
+Each successful archive command writes one JSON document to standard output.
+JSON is indented by default. Add `--compact` to write the document on one line.
+
+Errors write `{"error":"..."}` to standard error and return a nonzero status.
+Help and version output use plain text.
+
+## Inspect an archive
+
+### Check archive information
 
 Show the archive format, detected version, encryption region, and entry counts:
 
 ```sh
 oozems-wz info data/Quest.wz
 ```
+
+### Use valid WZ paths
+
+WZ paths are absolute and start at the archive directory root:
+
+```text
+/
+/Act.img
+/Act.img/1000/1/nextQuest
+```
+
+Each segment between slashes must exactly match the case-sensitive WZ node
+name. The tool rejects empty segments, `.`, and `..`. It also rejects a trailing
+slash. This version cannot address a node whose name contains `/`.
+
+### List child nodes
 
 List the archive root or the children of any directory, image, or property:
 
@@ -49,32 +94,41 @@ JSON contains `total`, `offset`, `count`, and `next_offset`. Omitted
 `next_offset` means that the current page is the last page. `ls` is an alias for
 `list`.
 
+### Get one node
+
 Show one node without expanding its children:
 
 ```sh
 oozems-wz get data/Quest.wz /Act.img/1000/1/nextQuest
 ```
 
-Scalar and vector nodes include a `value`. Parsed container and media nodes
-include `child_count` and relevant metadata, but never include large canvas,
-sound, or video byte arrays. Images returned by a directory listing omit
-`child_count` because `list` does not parse each image; `get` reports it.
+Scalar and vector nodes include `value`. Parsed properties include
+`child_count`. Container and media nodes include relevant metadata. The output
+does not include canvas, sound, Lua, raw-data, or video payload bytes.
 
-## Paths
+Images in a directory listing omit `child_count` because `list` does not parse
+each image. Use `get` to report that count.
 
-WZ paths are absolute and start at the archive directory root:
+## Review edit safety
 
-```text
-/
-/Act.img
-/Act.img/1000/1/nextQuest
-```
+Read these constraints before you edit an archive:
 
-Each slash-delimited segment is an exact, case-sensitive WZ node name. Empty,
-`.` and `..` segments are rejected. Node names that contain `/` cannot be
-addressed by this version of the tool.
+- `set` supports PKG1 archives only.
+- You must provide an output path that differs from the input path. The tool
+  rejects direct in-place edits.
+- The output directory must already exist.
+- The tool rejects an existing output file unless you use `--force`.
+- The input archive path must use valid UTF-8 for the independent `wz_reader`
+  validator.
+- The independent validator must be able to open the input archive. It cannot
+  open an archive whose first directory entry has a non-ASCII name.
+- The tool holds the complete source and rebuilt archives in memory while it
+  edits.
 
-## Edit
+The tool cannot add or remove nodes. It cannot replace canvas, sound, Lua,
+raw-data, or video payloads.
+
+## Set a property
 
 `set` changes one existing scalar or vector property and writes a new archive:
 
@@ -110,38 +164,20 @@ The new value must match the existing WZ type:
 | `vector`              | Object with only integer `x` and `y`  |
 | `null`                | `null`                                |
 
-Adding or removing nodes and replacing canvas, sound, Lua, raw-data, or video
-payloads are not supported. PKG1 editing also requires the independent
-`wz_reader` validator to open the archive. That validator cannot open archives
-whose first directory entry has a non-ASCII name.
+## Understand edit validation
 
-### Safety
+The tool validates an edit before it installs the output:
 
-Editing follows these rules:
-
-- The output path is required and must differ from the input path. Direct
-  in-place editing is rejected.
-- Existing output files are rejected unless `--force` is present.
-- The edited image is parsed and serialized. Every other image blob is copied
+- It opens the input with `wzlib-rs` and the independent `wz_reader` validator.
+- It checks the complete directory and image entry tree with both readers.
+- It parses and serializes the edited image. It copies every other image blob
   byte-for-byte from the source archive.
-- Directory offsets, image sizes, and checksums are rebuilt.
-- The complete output tree is parsed with both `wzlib-rs` and the server's
-  `wz_reader`. The edited image property structure and types, complete semantic
-  property tree, requested value, checksums, and every unchanged image blob are
-  verified before the output is installed.
-- The output is written to a temporary file in the destination directory and
-  renamed into place only after it has been flushed.
-
-The complete source and rebuilt archive are held in memory while editing.
-
-## Version Options
-
-The bundled archives use GMS encryption, which is the default. Patch versions
-are detected automatically. Specify either value when opening other archives:
-
-```sh
-oozems-wz --region gms --wz-version 83 info data/Quest.wz
-```
-
-`--region` accepts `gms`, `ems`, or `bms`. Global options may appear before or
-after the subcommand.
+- It rebuilds directory offsets, image sizes, and checksums.
+- It reparses the rebuilt archive with `wzlib-rs`. It checks the edited image's
+  complete semantic property tree, the requested type and value, every image
+  checksum, and every unchanged image blob.
+- It opens the rebuilt archive with `wz_reader`. It checks the complete entry
+  tree and confirms that the edited image kept its property structure and
+  types.
+- It writes the output to a temporary file in the destination directory. It
+  flushes and validates that file before it renames the file into place.
