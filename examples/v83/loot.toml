@@ -25859,6 +25859,13 @@ item_id = 4031013
 chance_per_million = 700000
 
 [[mobs]]
+mob_id = 9300018 # Tutorial Jr. Sentinel
+
+[[mobs.drops]]
+item_id = 4031802
+chance_per_million = 1000000
+
+[[mobs]]
 mob_id = 9300038 # Ghost Pixie
 
 [[mobs.drops]]
