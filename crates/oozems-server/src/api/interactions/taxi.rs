@@ -40,7 +40,7 @@ pub(super) async fn take_taxi(
         .ok_or_else(|| invalid("the taxi destination map does not exist"))?;
     let position = crate::movement::authorized_destination(&target_map, &destination.portal_name)?;
     target_map.dropped_items = crate::items::map_drops(&state.drops, target_map.id)?;
-    let simulation = crate::mobs::map_snapshot(&state.mobs, &target_map)?;
+    let simulation = crate::mobs::map_snapshot(&state.mobs, &target_map).await?;
     target_map.mobs = simulation.mobs;
     target_map.mob_projectiles = simulation.mob_projectiles;
     target_map.simulation_sequence = simulation.sequence;

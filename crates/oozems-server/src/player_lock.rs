@@ -14,7 +14,12 @@ pub struct PlayerLocks {
     locks: Arc<StoredLocks>,
 }
 
+#[derive(Clone)]
 pub struct PlayerGuard {
+    lease: Arc<PlayerGuardLease>,
+}
+
+struct PlayerGuardLease {
     player_id: String,
     guard: Option<OwnedMutexGuard<()>>,
     locks: Weak<StoredLocks>,
@@ -50,9 +55,11 @@ pub async fn acquire_player(
     };
     let guard = lock.lock_owned().await;
     Ok(PlayerGuard {
-        player_id: player_id.to_owned(),
-        guard: Some(guard),
-        locks: Arc::downgrade(&locks.locks),
+        lease: Arc::new(PlayerGuardLease {
+            player_id: player_id.to_owned(),
+            guard: Some(guard),
+            locks: Arc::downgrade(&locks.locks),
+        }),
     })
 }
 
@@ -61,13 +68,17 @@ pub(crate) fn validate_player_guard(
     guard: &PlayerGuard,
     player_id: &str,
 ) -> Result<(), PlayerLockError> {
-    let guard_locks = guard.locks.upgrade().ok_or(PlayerLockError::ForeignStore)?;
+    let guard_locks = guard
+        .lease
+        .locks
+        .upgrade()
+        .ok_or(PlayerLockError::ForeignStore)?;
     if !Arc::ptr_eq(&guard_locks, &locks.locks) {
         return Err(PlayerLockError::ForeignStore);
     }
     if !guard.holds_player(player_id) {
         return Err(PlayerLockError::WrongPlayer {
-            held_player_id: guard.player_id.clone(),
+            held_player_id: guard.lease.player_id.clone(),
             requested_player_id: player_id.to_owned(),
         });
     }
@@ -79,11 +90,11 @@ impl PlayerGuard {
         &self,
         player_id: &str,
     ) -> bool {
-        self.player_id == player_id
+        self.lease.player_id == player_id
     }
 }
 
-impl Drop for PlayerGuard {
+impl Drop for PlayerGuardLease {
     fn drop(&mut self) {
         drop(self.guard.take());
         let Some(locks) = self.locks.upgrade() else {
@@ -123,6 +134,25 @@ mod tests {
         tokio::task::yield_now().await;
         assert!(!waiting.is_finished());
         drop(first);
+        waiting.await.expect("waiting task");
+    }
+
+    #[tokio::test]
+    async fn cloned_guards_hold_the_player_lock_until_the_last_clone_drops() {
+        let locks = Arc::new(PlayerLocks::default());
+        let first = acquire_player(&locks, "player").await.expect("first lock");
+        let retained = first.clone();
+        let waiting_locks = locks.clone();
+        let waiting = tokio::spawn(async move {
+            acquire_player(&waiting_locks, "player")
+                .await
+                .expect("second lock")
+        });
+
+        drop(first);
+        tokio::task::yield_now().await;
+        assert!(!waiting.is_finished());
+        drop(retained);
         waiting.await.expect("waiting task");
     }
 

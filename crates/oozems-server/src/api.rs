@@ -244,7 +244,7 @@ pub async fn get_map(
         )
     })?;
     map.dropped_items = crate::items::map_drops(&state.drops, map.id)?;
-    let simulation = crate::mobs::map_snapshot(&state.mobs, &map)?;
+    let simulation = crate::mobs::map_snapshot(&state.mobs, &map).await?;
     map.mobs = simulation.mobs;
     map.mob_projectiles = simulation.mob_projectiles;
     map.simulation_sequence = simulation.sequence;
@@ -592,7 +592,9 @@ pub async fn use_skill(
             attack_type: prepared.attack_type,
         },
         effects.projected(),
-    ) {
+    )
+    .await
+    {
         Ok(simulation) => simulation,
         Err(error) => {
             crate::player_transaction::abort_player_transaction(

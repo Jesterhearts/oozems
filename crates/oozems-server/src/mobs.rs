@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -8,10 +7,8 @@ use oozems_proto::v1::CombatEvent;
 use oozems_proto::v1::CombatEventKind;
 use oozems_proto::v1::Map;
 use oozems_proto::v1::Mob;
-use oozems_proto::v1::MobDefinition;
 use oozems_proto::v1::MobMovementMode;
 use oozems_proto::v1::MobProjectile;
-use oozems_proto::v1::MobSpawnPoint;
 use oozems_proto::v1::PlayerState;
 use oozems_proto::v1::Vec2;
 use shipyard::IntoIter;
@@ -34,6 +31,9 @@ use crate::skill_formula::evaluate_profile_property;
 mod ai;
 mod combat;
 mod components;
+mod mailbox;
+mod snapshot;
+mod spawn;
 
 use components::CombatFormulas;
 use components::CombatRules;
@@ -49,19 +49,24 @@ use components::SimulationErrors;
 use components::TargetCache;
 use components::Terrain;
 use components::Tick;
+pub use mailbox::MobStore;
+pub use mailbox::commit_player_attack;
+pub use mailbox::map_snapshot;
+pub use mailbox::observe_player_with_effects;
+pub use mailbox::rollback_player_update;
+pub use mailbox::use_player_attack_with_effects;
+use snapshot::snapshot;
+use spawn::spawn_mob_components;
 
-const BASE_MOVE_SPEED: f32 = 80.0;
 const MAX_CATCH_UP: Duration = Duration::from_secs(1);
 const PLAYER_PRESENCE_TIMEOUT_MS: u64 = 5_000;
 const MOB_TICK_WORKLOAD: &str = "mob simulation tick";
-const PLAYER_MAP_LOCK_COUNT: usize = 64;
 
-type SharedMobMapState = Arc<Mutex<MobMapState>>;
-
-pub struct MobStore {
-    maps: Mutex<HashMap<u32, SharedMobMapState>>,
-    player_maps: Mutex<HashMap<String, u32>>,
-    player_map_locks: [Mutex<()>; PLAYER_MAP_LOCK_COUNT],
+struct Simulation {
+    maps: HashMap<u32, MobMapState>,
+    player_maps: HashMap<String, u32>,
+    pending_updates: HashMap<u64, mailbox::PendingUpdate>,
+    next_pending_update: u64,
     rules: CombatConfig,
     formulas: Arc<FormulaCatalog>,
     loot: Arc<LootCatalog>,
@@ -86,6 +91,7 @@ pub struct MobUpdate {
     pub staged_drops: Vec<crate::items::StagedDropGrant>,
     pub sequence: u64,
     player_attack_transaction: Option<PlayerAttackTransaction>,
+    delivery_id: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -145,8 +151,8 @@ impl MobUpdate {
 
 #[derive(Debug, Error)]
 pub enum MobStoreError {
-    #[error("the mob store lock was poisoned")]
-    Lock,
+    #[error("the mob simulation mailbox is unavailable")]
+    Unavailable,
     #[error("the Shipyard simulation could not be built: {message}")]
     Build { message: String },
     #[error("the Shipyard simulation workload failed: {message}")]
@@ -155,23 +161,26 @@ pub enum MobStoreError {
     Borrow { message: String },
     #[error("the player attack transaction is inconsistent: {message}")]
     PlayerAttackTransaction { message: String },
+    #[error("the simulation update delivery is inconsistent: {message}")]
+    UpdateDelivery { message: String },
     #[error("a combat formula failed: {message}")]
     Formula { message: String },
     #[error(transparent)]
     Drops(#[from] crate::items::DropStoreError),
 }
 
-impl MobStore {
-    pub fn new(
+impl Simulation {
+    fn new(
         rules: CombatConfig,
         formulas: Arc<FormulaCatalog>,
         loot: Arc<LootCatalog>,
         drops: Arc<DropStore>,
     ) -> Self {
         Self {
-            maps: Mutex::new(HashMap::new()),
-            player_maps: Mutex::new(HashMap::new()),
-            player_map_locks: std::array::from_fn(|_| Mutex::new(())),
+            maps: HashMap::new(),
+            player_maps: HashMap::new(),
+            pending_updates: HashMap::new(),
+            next_pending_update: 1,
             rules,
             formulas,
             loot,
@@ -180,34 +189,119 @@ impl MobStore {
     }
 }
 
-pub fn map_snapshot(
-    store: &MobStore,
+fn apply_map_snapshot(
+    simulation: &mut Simulation,
     map: &Map,
+    now: Instant,
 ) -> Result<MobUpdate, MobStoreError> {
-    map_snapshot_at(store, map, Instant::now())
+    ensure_map_state(simulation, map, now)?;
+    let (update, stale_players) = {
+        let state = simulation
+            .maps
+            .get_mut(&map.id)
+            .expect("the map simulation was just ensured");
+        advance_map_to(state, now)?;
+        let stale_players = prune_stale_players(state)?;
+        (snapshot(state, None), stale_players)
+    };
+    clean_stale_player_maps(simulation, map.id, &stale_players);
+    update
 }
 
-pub fn observe_player_with_effects(
-    store: &MobStore,
+fn apply_observe_player(
+    simulation: &mut Simulation,
     map: &Map,
     player: &PlayerState,
     effects: ProjectedEffects,
+    now: Instant,
 ) -> Result<MobUpdate, MobStoreError> {
-    observe_player_at_with_effects(store, map, player, effects, Instant::now())
+    ensure_map_state(simulation, map, now)?;
+    remove_player_from_previous_map(simulation, map.id, &player.id);
+    let formulas = simulation.formulas.clone();
+    let (update, player_is_present, stale_players) = {
+        let state = simulation
+            .maps
+            .get_mut(&map.id)
+            .expect("the map simulation was just ensured");
+        let mut stale_players = Vec::new();
+        let update = (|| {
+            sync_player(state, player, effects, &formulas)?;
+            advance_map_to(state, now)?;
+            mark_player_seen(state, &player.id)?;
+            stale_players = prune_stale_players(state)?;
+            snapshot(state, Some(&player.id))
+        })();
+        let player_is_present = state.player_entities.contains_key(&player.id);
+        (update, player_is_present, stale_players)
+    };
+    record_player_map(simulation, map.id, &player.id, player_is_present);
+    clean_stale_player_maps(simulation, map.id, &stale_players);
+    update
 }
 
-pub fn use_player_attack_with_effects(
-    store: &MobStore,
+fn apply_use_player_attack(
+    simulation: &mut Simulation,
     map: &Map,
     player: &PlayerState,
     attack: PlayerAttack<'_>,
     effects: ProjectedEffects,
+    now: Instant,
 ) -> Result<MobUpdate, MobStoreError> {
-    use_player_attack_at_with_effects(store, map, player, attack, effects, Instant::now())
+    ensure_map_state(simulation, map, now)?;
+    remove_player_from_previous_map(simulation, map.id, &player.id);
+    let formulas = simulation.formulas.clone();
+    let loot = simulation.loot.clone();
+    let drops = simulation.drops.clone();
+    let rules = simulation.rules;
+    let (update, player_is_present, stale_players) = {
+        let state = simulation
+            .maps
+            .get_mut(&map.id)
+            .expect("the map simulation was just ensured");
+        let mut stale_players = Vec::new();
+        let update = (|| {
+            sync_player(state, player, effects, &formulas)?;
+            advance_map_to(state, now)?;
+            mark_player_seen(state, &player.id)?;
+            stale_players = prune_stale_players(state)?;
+            let player_attack_transaction = if attack.maximum_damage > 0 {
+                let transaction = prepare_player_attack(
+                    state,
+                    map.id,
+                    &player.id,
+                    PlayerAttack {
+                        target_mob_id: attack.target_mob_id,
+                        source_skill_id: attack.source_skill_id,
+                        facing_left: attack.facing_left,
+                        minimum_damage: attack.minimum_damage.max(1),
+                        maximum_damage: attack.maximum_damage.max(attack.minimum_damage).max(1),
+                        fixed_damage: attack.fixed_damage,
+                        attack_type: attack.attack_type,
+                    },
+                    rules,
+                    &formulas,
+                    &loot,
+                    &drops,
+                )?;
+                state.snapshot_sequence = state.snapshot_sequence.saturating_add(1);
+                transaction
+            } else {
+                None
+            };
+            let mut update = snapshot(state, Some(&player.id))?;
+            update.player_attack_transaction = player_attack_transaction;
+            Ok(update)
+        })();
+        let player_is_present = state.player_entities.contains_key(&player.id);
+        (update, player_is_present, stale_players)
+    };
+    record_player_map(simulation, map.id, &player.id, player_is_present);
+    clean_stale_player_maps(simulation, map.id, &stale_players);
+    update
 }
 
-pub fn restore_player_effects(
-    store: &MobStore,
+fn apply_restore_player_effects(
+    simulation: &mut Simulation,
     map_id: u32,
     player_id: &str,
     mut combat_events: Vec<CombatEvent>,
@@ -217,10 +311,9 @@ pub fn restore_player_effects(
     if combat_events.is_empty() && mob_deaths.is_empty() && staged_drops.is_empty() {
         return Ok(());
     }
-    let Some(state) = existing_map_state(store, map_id)? else {
+    let Some(state) = simulation.maps.get_mut(&map_id) else {
         return Ok(());
     };
-    let state = state.lock().map_err(|_| MobStoreError::Lock)?;
     state
         .world
         .run(|mut pending: UniqueViewMut<PendingEvents>| {
@@ -243,19 +336,15 @@ pub fn restore_player_effects(
     Ok(())
 }
 
-pub fn commit_player_attack(
-    store: &MobStore,
-    update: &mut MobUpdate,
+fn apply_commit_player_attack(
+    simulation: &mut Simulation,
+    transaction: &PlayerAttackTransaction,
 ) -> Result<(), MobStoreError> {
-    let Some(transaction) = update.player_attack_transaction.clone() else {
-        return Ok(());
-    };
-    let state = existing_map_state(store, transaction.map_id)?.ok_or_else(|| {
+    let state = simulation.maps.get(&transaction.map_id).ok_or_else(|| {
         MobStoreError::PlayerAttackTransaction {
             message: format!("map {} no longer exists", transaction.map_id),
         }
     })?;
-    let state = state.lock().map_err(|_| MobStoreError::Lock)?;
     let mut combat = state
         .world
         .get::<&mut MobCombat>(transaction.target)
@@ -268,31 +357,19 @@ pub fn commit_player_attack(
         });
     }
     combat.player_attack_transaction = None;
-    update.player_attack_transaction = None;
     Ok(())
 }
 
-pub fn rollback_player_attack(
-    store: &MobStore,
-    update: &mut MobUpdate,
+fn apply_rollback_player_attack(
+    simulation: &mut Simulation,
+    transaction: &PlayerAttackTransaction,
 ) -> Result<bool, MobStoreError> {
-    let Some(transaction) = update.player_attack_transaction.clone() else {
-        return Ok(false);
-    };
-    if update.combat_events.len() < transaction.generated_combat_events
-        || update.mob_deaths.len() < transaction.generated_mob_deaths
-        || update.staged_drops.len() < transaction.generated_staged_drops
-    {
-        return Err(MobStoreError::PlayerAttackTransaction {
-            message: format!("transaction {} effects are incomplete", transaction.id),
-        });
-    }
-    let state = existing_map_state(store, transaction.map_id)?.ok_or_else(|| {
-        MobStoreError::PlayerAttackTransaction {
+    let state = simulation
+        .maps
+        .get_mut(&transaction.map_id)
+        .ok_or_else(|| MobStoreError::PlayerAttackTransaction {
             message: format!("map {} no longer exists", transaction.map_id),
-        }
-    })?;
-    let mut state = state.lock().map_err(|_| MobStoreError::Lock)?;
+        })?;
     let (mut motion, mut combat) = state
         .world
         .get::<(&mut MobMotion, &mut MobCombat)>(transaction.target)
@@ -307,7 +384,7 @@ pub fn rollback_player_attack(
     combat.current_hp = transaction.before.current_hp;
     combat.dead_until_ms = transaction.before.dead_until_ms;
     if combat.aggro_target == transaction.after.aggro_target {
-        combat.aggro_target = transaction.before.aggro_target;
+        combat.aggro_target = transaction.before.aggro_target.clone();
     }
     if motion.random_state == transaction.after.random_state {
         motion.random_state = transaction.before.random_state;
@@ -319,250 +396,108 @@ pub fn rollback_player_attack(
     drop(motion);
     drop(combat);
     state.snapshot_sequence = state.snapshot_sequence.saturating_add(1);
-    update
-        .combat_events
-        .truncate(update.combat_events.len() - transaction.generated_combat_events);
-    update
-        .mob_deaths
-        .truncate(update.mob_deaths.len() - transaction.generated_mob_deaths);
-    update
-        .staged_drops
-        .truncate(update.staged_drops.len() - transaction.generated_staged_drops);
-    update.player_attack_transaction = None;
     Ok(true)
-}
-
-fn map_snapshot_at(
-    store: &MobStore,
-    map: &Map,
-    now: Instant,
-) -> Result<MobUpdate, MobStoreError> {
-    let state = ensure_map_state(store, map, now)?;
-    let mut state_guard = state.lock().map_err(|_| MobStoreError::Lock)?;
-    advance_map_to(&mut state_guard, now)?;
-    let stale_players = prune_stale_players(&mut state_guard)?;
-    let update = snapshot(&state_guard, None);
-    drop(state_guard);
-    clean_stale_player_maps(store, map.id, &state, &stale_players)?;
-    update
 }
 
 #[cfg(test)]
 fn observe_player_at(
-    store: &MobStore,
+    simulation: &mut Simulation,
     map: &Map,
     player: &PlayerState,
     now: Instant,
 ) -> Result<MobUpdate, MobStoreError> {
-    observe_player_at_with_effects(store, map, player, ProjectedEffects::default(), now)
-}
-
-fn observe_player_at_with_effects(
-    store: &MobStore,
-    map: &Map,
-    player: &PlayerState,
-    effects: ProjectedEffects,
-    now: Instant,
-) -> Result<MobUpdate, MobStoreError> {
-    let player_map_lock = lock_player_map(store, &player.id)?;
-    let state = ensure_map_state(store, map, now)?;
-    remove_player_from_previous_map(store, map.id, &player.id)?;
-    let mut state_guard = state.lock().map_err(|_| MobStoreError::Lock)?;
-    let mut stale_players = Vec::new();
-    let update = (|| {
-        sync_player(&mut state_guard, player, effects, &store.formulas)?;
-        advance_map_to(&mut state_guard, now)?;
-        mark_player_seen(&mut state_guard, &player.id)?;
-        stale_players = prune_stale_players(&mut state_guard)?;
-        snapshot(&state_guard, Some(&player.id))
-    })();
-    let player_is_present = state_guard.player_entities.contains_key(&player.id);
-    drop(state_guard);
-    record_player_map(store, map.id, &player.id, player_is_present)?;
-    drop(player_map_lock);
-    clean_stale_player_maps(store, map.id, &state, &stale_players)?;
-    update
+    apply_observe_player(simulation, map, player, ProjectedEffects::default(), now)
 }
 
 #[cfg(test)]
 fn use_player_attack_at(
-    store: &MobStore,
+    simulation: &mut Simulation,
     map: &Map,
     player: &PlayerState,
     attack: PlayerAttack<'_>,
     now: Instant,
 ) -> Result<MobUpdate, MobStoreError> {
-    let mut update = use_player_attack_at_uncommitted(store, map, player, attack, now)?;
-    commit_player_attack(store, &mut update)?;
+    let mut update = use_player_attack_at_uncommitted(simulation, map, player, attack, now)?;
+    if let Some(transaction) = update.player_attack_transaction.clone() {
+        apply_commit_player_attack(simulation, &transaction)?;
+        update.player_attack_transaction = None;
+    }
     Ok(update)
 }
 
 #[cfg(test)]
 fn use_player_attack_at_uncommitted(
-    store: &MobStore,
+    simulation: &mut Simulation,
     map: &Map,
     player: &PlayerState,
     attack: PlayerAttack<'_>,
     now: Instant,
 ) -> Result<MobUpdate, MobStoreError> {
-    use_player_attack_at_with_effects(store, map, player, attack, ProjectedEffects::default(), now)
-}
-
-fn use_player_attack_at_with_effects(
-    store: &MobStore,
-    map: &Map,
-    player: &PlayerState,
-    attack: PlayerAttack<'_>,
-    effects: ProjectedEffects,
-    now: Instant,
-) -> Result<MobUpdate, MobStoreError> {
-    let player_map_lock = lock_player_map(store, &player.id)?;
-    let state = ensure_map_state(store, map, now)?;
-    remove_player_from_previous_map(store, map.id, &player.id)?;
-    let mut state_guard = state.lock().map_err(|_| MobStoreError::Lock)?;
-    let mut stale_players = Vec::new();
-    let update = (|| {
-        sync_player(&mut state_guard, player, effects, &store.formulas)?;
-        advance_map_to(&mut state_guard, now)?;
-        mark_player_seen(&mut state_guard, &player.id)?;
-        stale_players = prune_stale_players(&mut state_guard)?;
-        let player_attack_transaction = if attack.maximum_damage > 0 {
-            let transaction = apply_player_attack(
-                &mut state_guard,
-                map.id,
-                &player.id,
-                PlayerAttack {
-                    target_mob_id: attack.target_mob_id,
-                    source_skill_id: attack.source_skill_id,
-                    facing_left: attack.facing_left,
-                    minimum_damage: attack.minimum_damage.max(1),
-                    maximum_damage: attack.maximum_damage.max(attack.minimum_damage).max(1),
-                    fixed_damage: attack.fixed_damage,
-                    attack_type: attack.attack_type,
-                },
-                store.rules,
-                &store.formulas,
-                &store.loot,
-                &store.drops,
-            )?;
-            state_guard.snapshot_sequence = state_guard.snapshot_sequence.saturating_add(1);
-            transaction
-        } else {
-            None
-        };
-        let mut update = snapshot(&state_guard, Some(&player.id))?;
-        update.player_attack_transaction = player_attack_transaction;
-        Ok(update)
-    })();
-    let player_is_present = state_guard.player_entities.contains_key(&player.id);
-    drop(state_guard);
-    record_player_map(store, map.id, &player.id, player_is_present)?;
-    drop(player_map_lock);
-    clean_stale_player_maps(store, map.id, &state, &stale_players)?;
-    update
+    apply_use_player_attack(
+        simulation,
+        map,
+        player,
+        attack,
+        ProjectedEffects::default(),
+        now,
+    )
 }
 
 fn ensure_map_state(
-    store: &MobStore,
+    simulation: &mut Simulation,
     map: &Map,
     now: Instant,
-) -> Result<SharedMobMapState, MobStoreError> {
-    if let Some(state) = existing_map_state(store, map.id)? {
-        return Ok(state);
+) -> Result<(), MobStoreError> {
+    if simulation.maps.contains_key(&map.id) {
+        return Ok(());
     }
-    let candidate = Arc::new(Mutex::new(build_map_state(
-        map,
-        store.rules,
-        store.formulas.clone(),
-        now,
-    )?));
-    let mut maps = store.maps.lock().map_err(|_| MobStoreError::Lock)?;
-    Ok(maps.entry(map.id).or_insert(candidate).clone())
-}
-
-fn existing_map_state(
-    store: &MobStore,
-    map_id: u32,
-) -> Result<Option<SharedMobMapState>, MobStoreError> {
-    let maps = store.maps.lock().map_err(|_| MobStoreError::Lock)?;
-    Ok(maps.get(&map_id).cloned())
-}
-
-fn lock_player_map<'a>(
-    store: &'a MobStore,
-    player_id: &str,
-) -> Result<std::sync::MutexGuard<'a, ()>, MobStoreError> {
-    store.player_map_locks[player_map_lock_index(player_id)]
-        .lock()
-        .map_err(|_| MobStoreError::Lock)
-}
-
-fn player_map_lock_index(player_id: &str) -> usize {
-    player_id.bytes().fold(0_usize, |hash, byte| {
-        hash.wrapping_mul(16777619) ^ usize::from(byte)
-    }) % PLAYER_MAP_LOCK_COUNT
+    let state = build_map_state(map, simulation.rules, simulation.formulas.clone(), now)?;
+    simulation.maps.insert(map.id, state);
+    Ok(())
 }
 
 fn remove_player_from_previous_map(
-    store: &MobStore,
+    simulation: &mut Simulation,
     current_map_id: u32,
     player_id: &str,
-) -> Result<(), MobStoreError> {
-    let previous_map_id = store
-        .player_maps
-        .lock()
-        .map_err(|_| MobStoreError::Lock)?
-        .get(player_id)
-        .copied();
+) {
+    let previous_map_id = simulation.player_maps.get(player_id).copied();
     let Some(previous_map_id) = previous_map_id.filter(|map_id| *map_id != current_map_id) else {
-        return Ok(());
+        return;
     };
-    if let Some(previous_state) = existing_map_state(store, previous_map_id)? {
-        let mut previous_state = previous_state.lock().map_err(|_| MobStoreError::Lock)?;
-        if let Some(entity) = previous_state.player_entities.remove(player_id) {
-            previous_state.world.delete_entity(entity);
-        }
+    if let Some(previous_state) = simulation.maps.get_mut(&previous_map_id)
+        && let Some(entity) = previous_state.player_entities.remove(player_id)
+    {
+        previous_state.world.delete_entity(entity);
     }
-    let mut player_maps = store.player_maps.lock().map_err(|_| MobStoreError::Lock)?;
-    if player_maps.get(player_id) == Some(&previous_map_id) {
-        player_maps.remove(player_id);
+    if simulation.player_maps.get(player_id) == Some(&previous_map_id) {
+        simulation.player_maps.remove(player_id);
     }
-    Ok(())
 }
 
 fn record_player_map(
-    store: &MobStore,
+    simulation: &mut Simulation,
     map_id: u32,
     player_id: &str,
     player_is_present: bool,
-) -> Result<(), MobStoreError> {
-    let mut player_maps = store.player_maps.lock().map_err(|_| MobStoreError::Lock)?;
+) {
     if player_is_present {
-        player_maps.insert(player_id.to_owned(), map_id);
-    } else if player_maps.get(player_id) == Some(&map_id) {
-        player_maps.remove(player_id);
+        simulation.player_maps.insert(player_id.to_owned(), map_id);
+    } else if simulation.player_maps.get(player_id) == Some(&map_id) {
+        simulation.player_maps.remove(player_id);
     }
-    Ok(())
 }
 
 fn clean_stale_player_maps(
-    store: &MobStore,
+    simulation: &mut Simulation,
     map_id: u32,
-    state: &SharedMobMapState,
     stale_player_ids: &[String],
-) -> Result<(), MobStoreError> {
+) {
     for player_id in stale_player_ids {
-        let _player_map_lock = lock_player_map(store, player_id)?;
-        let player_is_present = state
-            .lock()
-            .map_err(|_| MobStoreError::Lock)?
-            .player_entities
-            .contains_key(player_id);
-        if !player_is_present {
-            record_player_map(store, map_id, player_id, false)?;
+        if simulation.player_maps.get(player_id) == Some(&map_id) {
+            simulation.player_maps.remove(player_id);
         }
     }
-    Ok(())
 }
 
 fn build_map_state(
@@ -786,7 +721,7 @@ fn mark_player_seen(
     Ok(())
 }
 
-fn apply_player_attack(
+fn prepare_player_attack(
     state: &mut MobMapState,
     map_id: u32,
     player_id: &str,
@@ -1004,78 +939,6 @@ fn valid_attack_target(
         }
 }
 
-fn snapshot(
-    state: &MobMapState,
-    player_id: Option<&str>,
-) -> Result<MobUpdate, MobStoreError> {
-    let mobs = state.world.run(
-        |positions: View<Position>,
-         identities: View<MobIdentity>,
-         motions: View<MobMotion>,
-         combats: View<MobCombat>| {
-            (&positions, &identities, &motions, &combats)
-                .iter()
-                .map(|(position, identity, motion, combat)| Mob {
-                    id: identity.public_id.clone(),
-                    definition_id: identity.definition_id,
-                    position: Some(position.vector()),
-                    flip_x: motion.flip_x,
-                    layer: position.layer,
-                    current_hp: combat.current_hp,
-                    spawn_id: identity.spawn_id,
-                    movement_mode: motion.mode as i32,
-                })
-                .collect()
-        },
-    );
-    let mob_projectiles =
-        state
-            .world
-            .run(|positions: View<Position>, projectiles: View<Projectile>| {
-                (&positions, &projectiles)
-                    .iter()
-                    .filter(|(_, projectile)| !projectile.impacted)
-                    .map(|(position, projectile)| MobProjectile {
-                        id: projectile.public_id.clone(),
-                        source_mob_id: projectile.source_mob_id.clone(),
-                        target_player_id: projectile.target_player_id.clone(),
-                        position: Some(position.vector()),
-                        layer: position.layer,
-                    })
-                    .collect()
-            });
-    let combat_events = player_id.map_or_else(Vec::new, |player_id| {
-        state.world.run(|mut events: UniqueViewMut<PendingEvents>| {
-            events.by_player.remove(player_id).unwrap_or_default()
-        })
-    });
-    let mob_deaths = player_id.map_or_else(Vec::new, |player_id| {
-        state.world.run(|mut events: UniqueViewMut<PendingEvents>| {
-            events
-                .mob_deaths_by_player
-                .remove(player_id)
-                .unwrap_or_default()
-        })
-    });
-    let staged_drops = player_id.map_or_else(Vec::new, |player_id| {
-        state.world.run(|mut events: UniqueViewMut<PendingEvents>| {
-            events
-                .staged_drops_by_player
-                .remove(player_id)
-                .unwrap_or_default()
-        })
-    });
-    Ok(MobUpdate {
-        mobs,
-        mob_projectiles,
-        combat_events,
-        mob_deaths,
-        staged_drops,
-        sequence: state.snapshot_sequence,
-        player_attack_transaction: None,
-    })
-}
-
 fn remove_impacted_projectiles(state: &mut MobMapState) -> Result<(), MobStoreError> {
     let impacted = state.world.run(|projectiles: View<Projectile>| {
         projectiles
@@ -1108,147 +971,8 @@ fn prune_stale_players(state: &mut MobMapState) -> Result<Vec<String>, MobStoreE
     Ok(stale.into_iter().map(|(_, player_id)| player_id).collect())
 }
 
-fn spawn_mob_components(
-    map: &Map,
-    default_respawn: Duration,
-) -> Vec<(MobIdentity, Position, MobMotion, MobCombat)> {
-    let definitions = map
-        .mob_definitions
-        .iter()
-        .map(|definition| (definition.id, definition))
-        .collect::<HashMap<_, _>>();
-    map.mob_spawn_points
-        .iter()
-        .filter_map(|spawn| {
-            spawn_mob(
-                map,
-                spawn,
-                definitions.get(&spawn.mob_id).copied(),
-                default_respawn,
-            )
-        })
-        .collect()
-}
-
-fn spawn_mob(
-    map: &Map,
-    spawn: &MobSpawnPoint,
-    definition: Option<&MobDefinition>,
-    default_respawn: Duration,
-) -> Option<(MobIdentity, Position, MobMotion, MobCombat)> {
-    let definition = definition.filter(|definition| {
-        definition
-            .animations
-            .iter()
-            .any(|animation| !animation.frames.is_empty())
-    })?;
-    let source_position = spawn.position.filter(finite_position)?;
-    let position = Position {
-        x: source_position.x,
-        y: source_position.y,
-        layer: spawn.layer,
-    };
-    let (roam_left, roam_right) = roam_bounds(map, spawn, position.x);
-    let spawn_support = map
-        .platforms
-        .iter()
-        .position(|platform| spawn.foothold_id != 0 && platform.id == spawn.foothold_id)
-        .or_else(|| {
-            ai::nearest_platform(&map.platforms, position.x, position.y, Some(position.layer))
-        });
-    let flies = has_animation(definition, "fly");
-    let can_move = has_animation(definition, "move") || flies;
-    let respawn_delay_ms = if spawn.respawn_seconds == 0 {
-        u64::try_from(default_respawn.as_millis()).unwrap_or(u64::MAX)
-    } else {
-        u64::from(spawn.respawn_seconds).saturating_mul(1_000)
-    };
-    Some((
-        MobIdentity {
-            public_id: format!("{}:{}:0", map.id, spawn.spawn_id),
-            definition_id: definition.id,
-            spawn_id: spawn.spawn_id,
-        },
-        position,
-        MobMotion {
-            spawn_position: position,
-            spawn_support,
-            support: spawn_support,
-            roam_left,
-            roam_right,
-            move_speed: movement_speed(definition.speed),
-            can_move,
-            can_jump: definition.can_jump,
-            flies,
-            flip_x: spawn.flip_x,
-            direction: 0,
-            velocity_y: 0.0,
-            decision_seconds: 0.0,
-            random_state: random_seed(map.id, spawn.spawn_id),
-            mode: MobMovementMode::Idle,
-        },
-        MobCombat {
-            level: definition.level,
-            maximum_hp: definition.max_hp.max(1),
-            current_hp: definition.max_hp.max(1),
-            physical_attack: definition.physical_attack,
-            physical_defense: definition.physical_defense,
-            magic_attack: definition.magic_attack,
-            magic_defense: definition.magic_defense,
-            accuracy: definition.accuracy,
-            avoidability: definition.avoidability,
-            body_attack: definition.body_attack,
-            aggro_target: None,
-            next_attack_ms: 0,
-            attack_until_ms: 0,
-            movement_resume_ms: 0,
-            dead_until_ms: None,
-            respawn_delay_ms,
-            player_attack_transaction: None,
-        },
-    ))
-}
-
-fn roam_bounds(
-    map: &Map,
-    spawn: &MobSpawnPoint,
-    spawn_x: f32,
-) -> (f32, f32) {
-    let map_right = map.width as f32;
-    let left = spawn.roam_left.min(spawn.roam_right);
-    let right = spawn.roam_left.max(spawn.roam_right);
-    if !left.is_finite() || !right.is_finite() || left >= right {
-        let x = spawn_x.clamp(0.0, map_right);
-        return (x, x);
-    }
-    (left.clamp(0.0, map_right), right.clamp(0.0, map_right))
-}
-
-fn movement_speed(wz_speed: i32) -> f32 {
-    let percentage = (100_i64 + i64::from(wz_speed)).clamp(0, 200) as f32;
-    BASE_MOVE_SPEED * percentage / 100.0
-}
-
-fn has_animation(
-    definition: &MobDefinition,
-    name: &str,
-) -> bool {
-    definition
-        .animations
-        .iter()
-        .any(|animation| animation.name == name && !animation.frames.is_empty())
-}
-
 fn finite_position(position: &Vec2) -> bool {
     position.x.is_finite() && position.y.is_finite()
-}
-
-fn random_seed(
-    map_id: u32,
-    spawn_id: u32,
-) -> u64 {
-    let seed = (u64::from(map_id) << 32) | u64::from(spawn_id);
-    seed ^ 0x9e37_79b9_7f4a_7c15
 }
 
 fn borrow_error(message: String) -> MobStoreError {
@@ -1260,7 +984,6 @@ mod tests {
     use std::fs;
     use std::path::Path;
     use std::sync::Arc;
-    use std::sync::mpsc;
     use std::time::Duration;
     use std::time::Instant;
 
@@ -1280,15 +1003,23 @@ mod tests {
 
     use super::MobDeath;
     use super::MobStore;
+    use super::MobStoreError;
+    use super::MobUpdate;
     use super::PlayerAttack;
+    use super::Simulation;
+    use super::apply_map_snapshot as map_snapshot_at;
+    use super::apply_restore_player_effects as restore_player_effects;
+    use super::apply_rollback_player_attack;
+    use super::commit_player_attack;
     use super::evaluate_player_stat;
-    use super::existing_map_state;
-    use super::map_snapshot_at;
+    use super::mailbox::expire_pending_updates;
+    use super::map_snapshot as mailbox_map_snapshot;
     use super::observe_player_at;
-    use super::restore_player_effects;
-    use super::rollback_player_attack;
+    use super::observe_player_with_effects;
+    use super::rollback_player_update;
     use super::use_player_attack_at;
     use super::use_player_attack_at_uncommitted;
+    use super::use_player_attack_with_effects;
     use crate::gameplay::CombatConfig;
     use crate::items::DropStore;
     use crate::items::SPARE_TOP_ID;
@@ -1297,85 +1028,214 @@ mod tests {
     use crate::loot::LootCatalog;
     use crate::skill_formula::FormulaCatalog;
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn mailbox_serializes_concurrent_commands_and_routes_each_response() {
+        const REQUESTS: usize = 64;
+
+        let store = Arc::new(mailbox_store());
+        let map = Arc::new(map());
+        let first = mailbox_map_snapshot(&store, &map)
+            .await
+            .expect("initialize map");
+        let barrier = Arc::new(tokio::sync::Barrier::new(REQUESTS + 1));
+        let mut tasks = Vec::with_capacity(REQUESTS);
+        for _ in 0..REQUESTS {
+            let store = store.clone();
+            let map = map.clone();
+            let barrier = barrier.clone();
+            tasks.push(tokio::spawn(async move {
+                barrier.wait().await;
+                mailbox_map_snapshot(&store, &map)
+                    .await
+                    .expect("mailbox response")
+                    .sequence
+            }));
+        }
+        barrier.wait().await;
+
+        let mut sequences = Vec::with_capacity(REQUESTS);
+        for task in tasks {
+            sequences.push(task.await.expect("request task"));
+        }
+        sequences.sort_unstable();
+
+        let first_expected = first.sequence + 1;
+        assert_eq!(
+            sequences,
+            (first_expected..first_expected + REQUESTS as u64).collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn mailbox_rolls_back_an_uncommitted_attack_before_responding() {
+        let store = mailbox_store();
+        let map = map();
+        let player = player(90.0, 100.0);
+        let mut update = use_player_attack_with_effects(
+            &store,
+            &map,
+            &player,
+            PlayerAttack {
+                target_mob_id: "1:1:0",
+                source_skill_id: None,
+                facing_left: false,
+                minimum_damage: 10,
+                maximum_damage: 10,
+                fixed_damage: true,
+                attack_type: SkillAttackType::Physical,
+            },
+            crate::effects::ProjectedEffects::default(),
+        )
+        .await
+        .expect("uncommitted attack");
+        assert_eq!(update.mobs[0].current_hp, 90);
+
+        assert!(
+            rollback_player_update(&store, &mut update)
+                .await
+                .expect("rollback response")
+        );
+        let restored = mailbox_map_snapshot(&store, &map)
+            .await
+            .expect("restored snapshot");
+
+        assert_eq!(restored.mobs[0].current_hp, 100);
+        assert!(update.combat_events.is_empty());
+    }
+
+    #[tokio::test]
+    async fn mailbox_commits_an_attack_delivery_and_releases_its_reservation() {
+        let store = mailbox_store();
+        let map = map();
+        let player = player(90.0, 100.0);
+        let mut first = mailbox_attack(&store, &map, &player, 10).await;
+
+        commit_player_attack(&store, &mut first)
+            .await
+            .expect("commit attack delivery");
+        let mut second = mailbox_attack(&store, &map, &player, 10).await;
+
+        assert_eq!(second.mobs[0].current_hp, 80);
+        assert!(
+            rollback_player_update(&store, &mut second)
+                .await
+                .expect("rollback second attack")
+        );
+    }
+
+    #[tokio::test]
+    async fn abandoned_attack_deliveries_expire_and_release_their_reservation() {
+        let store = mailbox_store();
+        let map = map();
+        let player = player(90.0, 100.0);
+        let mut abandoned = mailbox_attack(&store, &map, &player, 10).await;
+        assert_eq!(abandoned.mobs[0].current_hp, 90);
+
+        expire_pending_updates(&store)
+            .await
+            .expect("expire abandoned delivery");
+        assert!(
+            !rollback_player_update(&store, &mut abandoned)
+                .await
+                .expect("expired rollback is idempotent")
+        );
+        let restored = mailbox_map_snapshot(&store, &map)
+            .await
+            .expect("restored snapshot");
+        let mut retried = mailbox_attack(&store, &map, &player, 10).await;
+
+        assert_eq!(restored.mobs[0].current_hp, 100);
+        assert_eq!(retried.mobs[0].current_hp, 90);
+        assert!(
+            rollback_player_update(&store, &mut retried)
+                .await
+                .expect("rollback retried attack")
+        );
+    }
+
+    #[tokio::test]
+    async fn abandoned_observation_deliveries_restore_drained_combat_events() {
+        let store = mailbox_store();
+        let map = map();
+        let player = player(100.0, 100.0);
+        let abandoned = observe_player_with_effects(
+            &store,
+            &map,
+            &player,
+            crate::effects::ProjectedEffects::default(),
+        )
+        .await
+        .expect("initial observation");
+        let expected_damage = abandoned.player_damage();
+        assert!(expected_damage > 0);
+
+        expire_pending_updates(&store)
+            .await
+            .expect("expire abandoned delivery");
+        let mut retried = observe_player_with_effects(
+            &store,
+            &map,
+            &player,
+            crate::effects::ProjectedEffects::default(),
+        )
+        .await
+        .expect("retried observation");
+
+        assert_eq!(retried.player_damage(), expected_damage);
+        commit_player_attack(&store, &mut retried)
+            .await
+            .expect("acknowledge retried observation");
+    }
+
     #[test]
-    fn simulation_ticks_on_different_maps_do_not_share_a_lock() {
-        let store = store();
+    fn simulation_owns_all_map_worlds_without_map_locks() {
+        let mut store = store();
         let first_map = map();
         let mut second_map = map();
         second_map.id = 2;
         let now = Instant::now();
-        map_snapshot_at(&store, &first_map, now).expect("initialize first map");
-        map_snapshot_at(&store, &second_map, now).expect("initialize second map");
-        let first_state = existing_map_state(&store, first_map.id)
-            .expect("map registry")
-            .expect("first map state");
-        let first_state_guard = first_state.lock().expect("first map state");
+        map_snapshot_at(&mut store, &first_map, now).expect("initialize first map");
+        map_snapshot_at(&mut store, &second_map, now).expect("initialize second map");
 
-        let result = std::thread::scope(|scope| {
-            let (sender, receiver) = mpsc::channel();
-            scope.spawn(move || {
-                sender
-                    .send(map_snapshot_at(
-                        &store,
-                        &second_map,
-                        now + Duration::from_millis(1),
-                    ))
-                    .expect("send second map result");
-            });
-            let result = receiver.recv_timeout(Duration::from_secs(1));
-            drop(first_state_guard);
-            result
-        });
-
-        result
-            .expect("the second map tick must not wait for the first map lock")
-            .expect("tick second map");
+        assert_eq!(store.maps.len(), 2);
+        assert!(store.maps.contains_key(&first_map.id));
+        assert!(store.maps.contains_key(&second_map.id));
     }
 
     #[test]
     fn observing_a_player_on_a_new_map_removes_the_old_presence() {
-        let store = store();
+        let mut store = store();
         let first_map = map();
         let mut second_map = map();
         second_map.id = 2;
         let mut player = player(90.0, 100.0);
         let now = Instant::now();
-        observe_player_at(&store, &first_map, &player, now).expect("observe first map");
+        observe_player_at(&mut store, &first_map, &player, now).expect("observe first map");
 
         player.map_id = second_map.id;
-        observe_player_at(&store, &second_map, &player, now + Duration::from_millis(1))
-            .expect("observe second map");
+        observe_player_at(
+            &mut store,
+            &second_map,
+            &player,
+            now + Duration::from_millis(1),
+        )
+        .expect("observe second map");
 
-        let first_state = existing_map_state(&store, first_map.id)
-            .expect("map registry")
-            .expect("first map state");
-        assert!(
-            !first_state
-                .lock()
-                .expect("first map state")
-                .player_entities
-                .contains_key(&player.id)
-        );
-        assert_eq!(
-            store
-                .player_maps
-                .lock()
-                .expect("player map index")
-                .get(&player.id),
-            Some(&second_map.id)
-        );
+        let first_state = store.maps.get(&first_map.id).expect("first map state");
+        assert!(!first_state.player_entities.contains_key(&player.id));
+        assert_eq!(store.player_maps.get(&player.id), Some(&second_map.id));
     }
 
     #[test]
     fn an_untargeted_player_attack_hits_an_in_range_mob_and_sets_aggro() {
-        let store = store();
+        let mut store = store();
         let map = map();
         let player = player(90.0, 100.0);
         let now = Instant::now();
 
-        map_snapshot_at(&store, &map, now).expect("initialize map");
+        map_snapshot_at(&mut store, &map, now).expect("initialize map");
         let update = use_player_attack_at(
-            &store,
+            &mut store,
             &map,
             &player,
             PlayerAttack {
@@ -1397,13 +1257,13 @@ mod tests {
 
     #[test]
     fn inaccurate_player_attacks_emit_misses_without_damaging_the_mob() {
-        let store = store();
+        let mut store = store();
         let mut map = map();
         map.mob_definitions[0].avoidability = 10;
         let player = player(90.0, 100.0);
 
         let update = use_player_attack_at(
-            &store,
+            &mut store,
             &map,
             &player,
             PlayerAttack {
@@ -1428,7 +1288,7 @@ mod tests {
 
     #[test]
     fn magical_attacks_use_authoritative_intelligence_and_luck() {
-        let store = store();
+        let mut store = store();
         let mut map = map();
         map.mob_definitions[0].avoidability = 10;
         let mut player = player(90.0, 100.0);
@@ -1438,7 +1298,7 @@ mod tests {
         stats.luck = 10;
 
         let update = use_player_attack_at(
-            &store,
+            &mut store,
             &map,
             &player,
             PlayerAttack {
@@ -1463,12 +1323,12 @@ mod tests {
 
     #[test]
     fn attacks_cannot_damage_a_mob_behind_the_player() {
-        let store = store();
+        let mut store = store();
         let map = map();
         let player = player(140.0, 100.0);
 
         let update = use_player_attack_at(
-            &store,
+            &mut store,
             &map,
             &player,
             PlayerAttack {
@@ -1490,13 +1350,13 @@ mod tests {
 
     #[test]
     fn body_contact_damages_a_player_once_during_invulnerability() {
-        let store = store();
+        let mut store = store();
         let map = map();
         let player = player(100.0, 100.0);
         let now = Instant::now();
 
-        let first = observe_player_at(&store, &map, &player, now).expect("first observation");
-        let second = observe_player_at(&store, &map, &player, now + Duration::from_millis(100))
+        let first = observe_player_at(&mut store, &map, &player, now).expect("first observation");
+        let second = observe_player_at(&mut store, &map, &player, now + Duration::from_millis(100))
             .expect("invulnerable observation");
 
         assert!(first.player_damage() > 0);
@@ -1505,12 +1365,12 @@ mod tests {
 
     #[test]
     fn inaccurate_body_contact_emits_a_miss_without_damaging_the_player() {
-        let store = store();
+        let mut store = store();
         let map = map();
         let mut player = player(100.0, 100.0);
         player.stats.as_mut().expect("stats").dexterity = 40;
 
-        let update = observe_player_at(&store, &map, &player, Instant::now())
+        let update = observe_player_at(&mut store, &map, &player, Instant::now())
             .expect("observe evasive player");
 
         assert_eq!(update.player_damage(), 0);
@@ -1518,14 +1378,7 @@ mod tests {
             CombatEventKind::try_from(event.kind) == Ok(CombatEventKind::MobMissedPlayer)
                 && event.damage == 0
         }));
-        let state = store
-            .maps
-            .lock()
-            .expect("mob maps")
-            .get(&map.id)
-            .expect("map simulation")
-            .clone();
-        let state = state.lock().expect("map simulation");
+        let state = store.maps.get(&map.id).expect("map simulation");
         let (invulnerable_until_ms, contact_attempt_after_ms) =
             state
                 .world
@@ -1552,12 +1405,12 @@ mod tests {
         player.stats.as_mut().expect("stats").dexterity = 40;
         let now = Instant::now();
 
-        let frequent = store();
+        let mut frequent = store();
         let frequent_events = [0, 100, 200, 999, 1_000]
             .into_iter()
             .map(|offset| {
                 observe_player_at(
-                    &frequent,
+                    &mut frequent,
                     &map,
                     &player,
                     now + Duration::from_millis(offset),
@@ -1567,14 +1420,19 @@ mod tests {
                 .len()
             })
             .sum::<usize>();
-        let sparse = store();
+        let mut sparse = store();
         let sparse_events = [0, 1_000]
             .into_iter()
             .map(|offset| {
-                observe_player_at(&sparse, &map, &player, now + Duration::from_millis(offset))
-                    .expect("sparse observation")
-                    .combat_events
-                    .len()
+                observe_player_at(
+                    &mut sparse,
+                    &map,
+                    &player,
+                    now + Duration::from_millis(offset),
+                )
+                .expect("sparse observation")
+                .combat_events
+                .len()
             })
             .sum::<usize>();
 
@@ -1584,7 +1442,7 @@ mod tests {
 
     #[test]
     fn projectile_miss_events_use_the_target_player_position() {
-        let store = store();
+        let mut store = store();
         let mut map = map();
         map.mob_definitions[0].body_attack = false;
         map.mob_definitions[0].magic_attack = 20;
@@ -1593,7 +1451,7 @@ mod tests {
         let now = Instant::now();
 
         use_player_attack_at(
-            &store,
+            &mut store,
             &map,
             &player,
             PlayerAttack {
@@ -1608,8 +1466,13 @@ mod tests {
             now,
         )
         .expect("provoke magic mob");
-        let update = observe_player_at(&store, &map, &player, now + Duration::from_millis(1_600))
-            .expect("missed projectile observation");
+        let update = observe_player_at(
+            &mut store,
+            &map,
+            &player,
+            now + Duration::from_millis(1_600),
+        )
+        .expect("missed projectile observation");
         let missed = update
             .combat_events
             .iter()
@@ -1648,15 +1511,15 @@ mod tests {
 
     #[test]
     fn combat_events_can_be_restored_after_a_persistence_failure() {
-        let store = store();
+        let mut store = store();
         let map = map();
         let player = player(100.0, 100.0);
         let now = Instant::now();
 
-        let first = observe_player_at(&store, &map, &player, now).expect("first observation");
+        let first = observe_player_at(&mut store, &map, &player, now).expect("first observation");
         let expected_damage = first.player_damage();
         restore_player_effects(
-            &store,
+            &mut store,
             map.id,
             &player.id,
             first.combat_events,
@@ -1664,8 +1527,9 @@ mod tests {
             first.staged_drops,
         )
         .expect("restore events");
-        let retried = observe_player_at(&store, &map, &player, now + Duration::from_millis(100))
-            .expect("retry observation");
+        let retried =
+            observe_player_at(&mut store, &map, &player, now + Duration::from_millis(100))
+                .expect("retry observation");
 
         assert!(expected_damage > 0);
         assert_eq!(retried.player_damage(), expected_damage);
@@ -1673,7 +1537,7 @@ mod tests {
 
     #[test]
     fn failed_player_attack_transactions_restore_hp_before_retry() {
-        let store = store();
+        let mut store = store();
         let map = map();
         let player = player(90.0, 100.0);
         let now = Instant::now();
@@ -1687,10 +1551,10 @@ mod tests {
             attack_type: SkillAttackType::Physical,
         };
 
-        let mut failed = use_player_attack_at_uncommitted(&store, &map, &player, attack, now)
+        let mut failed = use_player_attack_at_uncommitted(&mut store, &map, &player, attack, now)
             .expect("uncommitted attack");
         let blocked = use_player_attack_at_uncommitted(
-            &store,
+            &mut store,
             &map,
             &player,
             attack,
@@ -1701,12 +1565,12 @@ mod tests {
         assert_eq!(blocked.mobs[0].current_hp, 90);
         assert!(blocked.combat_events.is_empty());
 
-        assert!(rollback_player_attack(&store, &mut failed).expect("roll back attack"));
+        assert!(rollback_player_attack(&mut store, &mut failed).expect("roll back attack"));
         assert!(failed.combat_events.iter().all(|event| {
             CombatEventKind::try_from(event.kind) != Ok(CombatEventKind::PlayerHitMob)
         }));
         let retried = use_player_attack_at(
-            &store,
+            &mut store,
             &map,
             &player,
             attack,
@@ -1729,12 +1593,12 @@ mod tests {
 
     #[test]
     fn failed_lethal_attacks_restore_the_mob_and_discard_their_staged_death() {
-        let store = store_with_guaranteed_loot();
+        let mut store = store_with_guaranteed_loot();
         let map = map();
         let player = player(90.0, 100.0);
         let now = Instant::now();
         let mut failed = use_player_attack_at_uncommitted(
-            &store,
+            &mut store,
             &map,
             &player,
             PlayerAttack {
@@ -1753,8 +1617,8 @@ mod tests {
         assert_eq!(failed.mob_deaths.len(), 1);
         assert_eq!(failed.staged_drops.len(), 1);
 
-        assert!(rollback_player_attack(&store, &mut failed).expect("roll back lethal attack"));
-        let restored = map_snapshot_at(&store, &map, now + Duration::from_millis(1))
+        assert!(rollback_player_attack(&mut store, &mut failed).expect("roll back lethal attack"));
+        let restored = map_snapshot_at(&mut store, &map, now + Duration::from_millis(1))
             .expect("restored mob snapshot");
 
         assert_eq!(restored.mobs[0].current_hp, 100);
@@ -1769,12 +1633,12 @@ mod tests {
 
     #[test]
     fn mob_deaths_can_be_restored_after_a_persistence_failure() {
-        let store = store_with_guaranteed_loot();
+        let mut store = store_with_guaranteed_loot();
         let map = map();
         let player = player(90.0, 100.0);
         let now = Instant::now();
         let killed = use_player_attack_at(
-            &store,
+            &mut store,
             &map,
             &player,
             PlayerAttack {
@@ -1793,7 +1657,7 @@ mod tests {
         let expected_drops = killed.staged_drops.clone();
 
         restore_player_effects(
-            &store,
+            &mut store,
             map.id,
             &player.id,
             killed.combat_events,
@@ -1806,9 +1670,9 @@ mod tests {
                 .expect("drops after simulated save failure")
                 .is_empty()
         );
-        let retried = observe_player_at(&store, &map, &player, now + Duration::from_millis(1))
+        let retried = observe_player_at(&mut store, &map, &player, now + Duration::from_millis(1))
             .expect("retry observation");
-        let consumed = observe_player_at(&store, &map, &player, now + Duration::from_millis(2))
+        let consumed = observe_player_at(&mut store, &map, &player, now + Duration::from_millis(2))
             .expect("consume restored effects");
 
         assert_eq!(retried.mob_deaths, expected);
@@ -1819,7 +1683,7 @@ mod tests {
 
     #[test]
     fn aggroed_mobs_chase_a_nearby_player() {
-        let store = store();
+        let mut store = store();
         let mut map = map();
         map.mob_definitions[0].animations.push(MobAnimation {
             name: "move".to_owned(),
@@ -1829,7 +1693,7 @@ mod tests {
         let now = Instant::now();
 
         use_player_attack_at(
-            &store,
+            &mut store,
             &map,
             &player,
             PlayerAttack {
@@ -1844,7 +1708,7 @@ mod tests {
             now,
         )
         .expect("provoking attack");
-        let update = observe_player_at(&store, &map, &player, now + Duration::from_millis(500))
+        let update = observe_player_at(&mut store, &map, &player, now + Duration::from_millis(500))
             .expect("aggro observation");
 
         assert!(update.mobs[0].position.expect("mob position").x > 100.0);
@@ -1852,15 +1716,15 @@ mod tests {
 
     #[test]
     fn nearby_magic_mobs_do_not_attack_unprovoked() {
-        let store = store();
+        let mut store = store();
         let mut map = map();
         map.mob_definitions[0].body_attack = false;
         map.mob_definitions[0].magic_attack = 20;
         let player = player(300.0, 100.0);
         let now = Instant::now();
 
-        observe_player_at(&store, &map, &player, now).expect("first observation");
-        let update = observe_player_at(&store, &map, &player, now + Duration::from_secs(2))
+        observe_player_at(&mut store, &map, &player, now).expect("first observation");
+        let update = observe_player_at(&mut store, &map, &player, now + Duration::from_secs(2))
             .expect("nearby observation");
 
         assert!(update.mob_projectiles.is_empty());
@@ -1869,7 +1733,7 @@ mod tests {
 
     #[test]
     fn magic_mobs_launch_projectiles_that_damage_their_target() {
-        let store = store();
+        let mut store = store();
         let mut map = map();
         map.mob_definitions[0].body_attack = false;
         map.mob_definitions[0].magic_attack = 20;
@@ -1877,7 +1741,7 @@ mod tests {
         let now = Instant::now();
 
         use_player_attack_at(
-            &store,
+            &mut store,
             &map,
             &player,
             PlayerAttack {
@@ -1895,7 +1759,7 @@ mod tests {
         let damage = (1..=10)
             .map(|step| {
                 observe_player_at(
-                    &store,
+                    &mut store,
                     &map,
                     &player,
                     now + Duration::from_millis(step * 100),
@@ -1910,7 +1774,7 @@ mod tests {
 
     #[test]
     fn dead_mobs_return_after_their_respawn_deadline() {
-        let store = store();
+        let mut store = store();
         let mut map = map();
         map.mob_definitions[0].animations.push(MobAnimation {
             name: "move".to_owned(),
@@ -1920,7 +1784,7 @@ mod tests {
         let now = Instant::now();
 
         use_player_attack_at(
-            &store,
+            &mut store,
             &map,
             &player,
             PlayerAttack {
@@ -1935,12 +1799,12 @@ mod tests {
             now,
         )
         .expect("provoking attack");
-        let moved = observe_player_at(&store, &map, &player, now + Duration::from_millis(500))
+        let moved = observe_player_at(&mut store, &map, &player, now + Duration::from_millis(500))
             .expect("mob movement");
         assert!(moved.mobs[0].position.expect("moved position").x > 100.0);
 
         let killed = use_player_attack_at(
-            &store,
+            &mut store,
             &map,
             &player,
             PlayerAttack {
@@ -1957,7 +1821,7 @@ mod tests {
         .expect("lethal skill");
         assert_eq!(killed.mobs[0].current_hp, 0);
 
-        let respawned = observe_player_at(&store, &map, &player, now + Duration::from_secs(8))
+        let respawned = observe_player_at(&mut store, &map, &player, now + Duration::from_secs(8))
             .expect("respawn observation");
         assert_eq!(respawned.mobs[0].current_hp, 100);
         assert_eq!(
@@ -1968,13 +1832,13 @@ mod tests {
 
     #[test]
     fn a_mob_death_creates_its_loot_exactly_once() {
-        let store = store_with_guaranteed_loot();
+        let mut store = store_with_guaranteed_loot();
         let map = map();
         let player = player(90.0, 100.0);
         let now = Instant::now();
 
         let killed = use_player_attack_at(
-            &store,
+            &mut store,
             &map,
             &player,
             PlayerAttack {
@@ -2000,7 +1864,7 @@ mod tests {
         );
 
         let repeated = use_player_attack_at(
-            &store,
+            &mut store,
             &map,
             &player,
             PlayerAttack {
@@ -2031,31 +1895,102 @@ mod tests {
         assert_eq!(drops[0].item_id, SPARE_TOP_ID);
     }
 
-    fn store() -> MobStore {
+    async fn mailbox_attack(
+        store: &MobStore,
+        map: &Map,
+        player: &PlayerState,
+        damage: u32,
+    ) -> MobUpdate {
+        use_player_attack_with_effects(
+            store,
+            map,
+            player,
+            PlayerAttack {
+                target_mob_id: "1:1:0",
+                source_skill_id: None,
+                facing_left: false,
+                minimum_damage: damage,
+                maximum_damage: damage,
+                fixed_damage: true,
+                attack_type: SkillAttackType::Physical,
+            },
+            crate::effects::ProjectedEffects::default(),
+        )
+        .await
+        .expect("mailbox attack")
+    }
+
+    fn rollback_player_attack(
+        simulation: &mut Simulation,
+        update: &mut MobUpdate,
+    ) -> Result<bool, MobStoreError> {
+        let Some(transaction) = update.player_attack_transaction.clone() else {
+            return Ok(false);
+        };
+        if update.combat_events.len() < transaction.generated_combat_events
+            || update.mob_deaths.len() < transaction.generated_mob_deaths
+            || update.staged_drops.len() < transaction.generated_staged_drops
+        {
+            return Err(MobStoreError::PlayerAttackTransaction {
+                message: format!("transaction {} effects are incomplete", transaction.id),
+            });
+        }
+        let rolled_back = apply_rollback_player_attack(simulation, &transaction)?;
+        if rolled_back {
+            update
+                .combat_events
+                .truncate(update.combat_events.len() - transaction.generated_combat_events);
+            update
+                .mob_deaths
+                .truncate(update.mob_deaths.len() - transaction.generated_mob_deaths);
+            update
+                .staged_drops
+                .truncate(update.staged_drops.len() - transaction.generated_staged_drops);
+            update.player_attack_transaction = None;
+        }
+        Ok(rolled_back)
+    }
+
+    fn store() -> Simulation {
         let formulas = FormulaCatalog::load(Path::new("../../config/skill-formulas.toml"))
             .expect("formula catalog");
-        MobStore::new(
-            CombatConfig {
-                disengage_range: 520.0,
-                player_attack_range: 220.0,
-                attack_vertical_reach: 90.0,
-                touch_horizontal_reach: 28.0,
-                touch_vertical_reach: 48.0,
-                projectile_range: 420.0,
-                projectile_speed: 240.0,
-                projectile_hit_reach: 18.0,
-                player_attack_interval: Duration::from_millis(600),
-                mob_attack_interval: Duration::from_millis(1_500),
-                player_invulnerability: Duration::from_secs(1),
-                default_respawn: Duration::from_secs(7),
-            },
+        Simulation::new(
+            combat_config(),
             Arc::new(formulas),
             Arc::new(LootCatalog::default()),
             Arc::new(DropStore::new(Duration::from_secs(600))),
         )
     }
 
-    fn store_with_guaranteed_loot() -> MobStore {
+    fn mailbox_store() -> MobStore {
+        let formulas = FormulaCatalog::load(Path::new("../../config/skill-formulas.toml"))
+            .expect("formula catalog");
+        MobStore::new(
+            combat_config(),
+            Arc::new(formulas),
+            Arc::new(LootCatalog::default()),
+            Arc::new(DropStore::new(Duration::from_secs(600))),
+        )
+    }
+
+    fn combat_config() -> CombatConfig {
+        CombatConfig {
+            disengage_range: 520.0,
+            player_attack_range: 220.0,
+            attack_vertical_reach: 90.0,
+            touch_horizontal_reach: 28.0,
+            touch_vertical_reach: 48.0,
+            projectile_range: 420.0,
+            projectile_speed: 240.0,
+            projectile_hit_reach: 18.0,
+            player_attack_interval: Duration::from_millis(600),
+            mob_attack_interval: Duration::from_millis(1_500),
+            player_invulnerability: Duration::from_secs(1),
+            default_respawn: Duration::from_secs(7),
+        }
+    }
+
+    fn store_with_guaranteed_loot() -> Simulation {
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("loot.toml");
         fs::write(

@@ -78,7 +78,9 @@ pub async fn use_basic_attack(
             attack_type: crate::jobs::SkillAttackType::Physical,
         },
         effects.projected(),
-    ) {
+    )
+    .await
+    {
         Ok(simulation) => simulation,
         Err(error) => {
             crate::player_transaction::abort_player_transaction(

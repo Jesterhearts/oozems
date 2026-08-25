@@ -70,8 +70,6 @@ struct PickupRollback {
 
 struct MobChange {
     store: Arc<MobStore>,
-    player_id: String,
-    map_id: u32,
     update: MobUpdate,
     committed: bool,
 }
@@ -123,6 +121,8 @@ pub struct CommittedPlayerTransaction {
 pub enum PlayerTransactionError {
     #[error("player transaction plan is invalid: {0}")]
     Plan(#[source] PlayerTransactionPlanError),
+    #[error("player transaction worker failed")]
+    Worker(#[source] tokio::task::JoinError),
     #[error("player transaction failed: {failure}")]
     Failed { failure: Box<TransactionFailure> },
     #[error(
@@ -279,8 +279,6 @@ pub fn stage_mob_update(
     stage_drops(transaction, drop_store, update.staged_drops.clone())?;
     transaction.mob = Some(MobChange {
         store,
-        player_id: transaction.staged_player.id.clone(),
-        map_id: transaction.staged_player.map_id,
         update,
         committed: false,
     });
@@ -360,6 +358,22 @@ pub fn stage_activity(
 pub async fn commit_player_transaction(
     database: &Database,
     guard: &PlayerGuard,
+    transaction: PlayerTransaction,
+) -> Result<CommittedPlayerTransaction, PlayerTransactionError> {
+    let database = database.clone();
+    let guard = guard.clone();
+    // Retain the player lock and finish compensation if the request task is
+    // cancelled after one of the stores has committed.
+    tokio::spawn(
+        async move { commit_player_transaction_inner(&database, &guard, transaction).await },
+    )
+    .await
+    .map_err(PlayerTransactionError::Worker)?
+}
+
+async fn commit_player_transaction_inner(
+    database: &Database,
+    guard: &PlayerGuard,
     mut transaction: PlayerTransaction,
 ) -> Result<CommittedPlayerTransaction, PlayerTransactionError> {
     if let Err(failure) = commit_staged_changes(database, guard, &mut transaction).await {
@@ -401,10 +415,28 @@ pub async fn commit_player_transaction(
 pub async fn abort_player_transaction(
     database: &Database,
     guard: &PlayerGuard,
-    mut transaction: PlayerTransaction,
+    transaction: PlayerTransaction,
     cause: impl Into<String>,
 ) -> Result<(), PlayerTransactionError> {
-    let failure = TransactionFailure::Request(cause.into());
+    let database = database.clone();
+    let guard = guard.clone();
+    let cause = cause.into();
+    // Aborts coordinate several stores and need the same cancellation
+    // shielding as commits.
+    tokio::spawn(async move {
+        abort_player_transaction_inner(&database, &guard, transaction, cause).await
+    })
+    .await
+    .map_err(PlayerTransactionError::Worker)?
+}
+
+async fn abort_player_transaction_inner(
+    database: &Database,
+    guard: &PlayerGuard,
+    mut transaction: PlayerTransaction,
+    cause: String,
+) -> Result<(), PlayerTransactionError> {
+    let failure = TransactionFailure::Request(cause);
     let rollback_failures = rollback_player_transaction(database, guard, &mut transaction).await;
     if rollback_failures.is_empty() {
         Ok(())
@@ -492,6 +524,7 @@ async fn commit_staged_changes(
     }
     if let Some(change) = transaction.mob.as_mut() {
         crate::mobs::commit_player_attack(&change.store, &mut change.update)
+            .await
             .map_err(TransactionFailure::Mobs)?;
         change.committed = true;
     }
@@ -504,7 +537,7 @@ async fn rollback_player_transaction(
     transaction: &mut PlayerTransaction,
 ) -> Vec<RollbackFailure> {
     let mut failures = Vec::new();
-    rollback_mob(transaction, &mut failures);
+    rollback_mob(transaction, &mut failures).await;
     rollback_activity(transaction, &mut failures);
     rollback_movement_persistence(transaction, &mut failures);
     rollback_relocation(transaction, &mut failures);
@@ -535,7 +568,7 @@ async fn rollback_player_transaction(
     failures
 }
 
-fn rollback_mob(
+async fn rollback_mob(
     transaction: &mut PlayerTransaction,
     failures: &mut Vec<RollbackFailure>,
 ) {
@@ -550,18 +583,8 @@ fn rollback_mob(
         ));
         return;
     }
-    if let Err(error) = crate::mobs::rollback_player_attack(&change.store, &mut change.update) {
-        failures.push(RollbackFailure::Mobs(error));
-        return;
-    }
-    if let Err(error) = crate::mobs::restore_player_effects(
-        &change.store,
-        change.map_id,
-        &change.player_id,
-        std::mem::take(&mut change.update.combat_events),
-        std::mem::take(&mut change.update.mob_deaths),
-        std::mem::take(&mut change.update.staged_drops),
-    ) {
+    if let Err(error) = crate::mobs::rollback_player_update(&change.store, &mut change.update).await
+    {
         failures.push(RollbackFailure::Mobs(error));
     }
 }

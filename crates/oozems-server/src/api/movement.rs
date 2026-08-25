@@ -235,7 +235,8 @@ async fn movement_response(
             &map,
             &authoritative_player,
             effects.projected(),
-        )?;
+        )
+        .await?;
         let has_player_effects =
             simulation.player_damage() > 0 || !simulation.mob_deaths.is_empty();
         let prepared = prepare_simulation_player_effects(
