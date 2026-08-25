@@ -81,11 +81,12 @@ pub fn click_action(
                 return Some(InteractionUiAction::Consume);
             }
             let pages = visual_dialog_pages(dialog);
+            let previous_region = dialog_previous_region(state, dialog, pages.len());
             if state.page + 1 < pages.len() && contains_region(window, "npc-next", point) {
                 return Some(InteractionUiAction::NextPage);
             }
             if state.page + 1 == pages.len() && !dialog.choices.is_empty() {
-                if state.choice_page > 0 && contains_region(window, "npc-previous", point) {
+                if state.choice_page > 0 && contains_region(window, previous_region, point) {
                     return Some(InteractionUiAction::PreviousChoicePage);
                 }
                 if (state.choice_page + 1) * DIALOG_CHOICE_PAGE_SIZE < dialog.choices.len()
@@ -94,18 +95,13 @@ pub fn click_action(
                     return Some(InteractionUiAction::NextChoicePage);
                 }
             }
-            if state.page > 0 && contains_region(window, "npc-previous", point) {
+            if state.page > 0 && contains_region(window, previous_region, point) {
                 return Some(InteractionUiAction::PreviousPage);
             }
             if state.page + 1 < pages.len() {
                 return Some(InteractionUiAction::Consume);
             }
-            if dialog.choices.len() == 2
-                && dialog.choices.iter().any(|choice| {
-                    NpcDialogChoiceKind::try_from(choice.kind).ok()
-                        == Some(NpcDialogChoiceKind::AcceptQuest)
-                })
-            {
+            if is_quest_decision(dialog) {
                 if contains_region(window, "npc-accept", point) {
                     return dialog.choices.iter().find_map(|choice| {
                         (NpcDialogChoiceKind::try_from(choice.kind).ok()
@@ -126,6 +122,7 @@ pub fn click_action(
                         })
                     });
                 }
+                return Some(InteractionUiAction::Consume);
             }
             if let Some(index) = row_at(window, "npc-choices", point, LIST_ROW_HEIGHT)
                 && index < DIALOG_CHOICE_PAGE_SIZE
@@ -275,6 +272,33 @@ pub fn visual_dialog_pages(dialog: &NpcDialogView) -> Vec<String> {
     pages
 }
 
+pub(crate) fn is_quest_decision(dialog: &NpcDialogView) -> bool {
+    dialog.choices.len() == 2
+        && [
+            NpcDialogChoiceKind::AcceptQuest,
+            NpcDialogChoiceKind::DeclineQuest,
+        ]
+        .into_iter()
+        .all(|kind| {
+            dialog
+                .choices
+                .iter()
+                .any(|choice| NpcDialogChoiceKind::try_from(choice.kind).ok() == Some(kind))
+        })
+}
+
+pub(crate) fn dialog_previous_region(
+    state: &InteractionState,
+    dialog: &NpcDialogView,
+    page_count: usize,
+) -> &'static str {
+    if state.page.checked_add(1) == Some(page_count) && is_quest_decision(dialog) {
+        "npc-decision-previous"
+    } else {
+        "npc-previous"
+    }
+}
+
 fn split_dialog_page(source: &str) -> Vec<String> {
     let mut pages = Vec::new();
     let mut page = String::new();
@@ -366,6 +390,7 @@ mod tests {
     use oozems_proto::v1::InventoryItemStack;
     use oozems_proto::v1::InventoryState;
     use oozems_proto::v1::NpcDialogChoice;
+    use oozems_proto::v1::NpcDialogChoiceKind;
     use oozems_proto::v1::NpcDialogView;
     use oozems_proto::v1::NpcInteraction;
     use oozems_proto::v1::NpcShopCurrency;
@@ -376,6 +401,7 @@ mod tests {
     use super::InteractionState;
     use super::InteractionUiAction;
     use super::click_action;
+    use super::dialog_previous_region;
     use super::row_at;
     use super::visual_dialog_pages;
     use crate::game_gui::CanvasPoint;
@@ -465,6 +491,118 @@ mod tests {
                 Some(InteractionUiAction::Consume)
             );
         }
+    }
+
+    #[test]
+    fn final_quest_decision_has_distinct_back_accept_and_decline_actions() {
+        let dialog = NpcDialogView {
+            quest_id: 100,
+            pages: vec!["one".to_owned(), "two".to_owned()],
+            choices: vec![
+                NpcDialogChoice {
+                    choice_id: 1,
+                    kind: NpcDialogChoiceKind::AcceptQuest as i32,
+                    ..NpcDialogChoice::default()
+                },
+                NpcDialogChoice {
+                    choice_id: 2,
+                    kind: NpcDialogChoiceKind::DeclineQuest as i32,
+                    ..NpcDialogChoice::default()
+                },
+            ],
+            ..NpcDialogView::default()
+        };
+        let state = InteractionState {
+            page: 1,
+            interaction: Some(NpcInteraction {
+                view: Some(npc_interaction::View::Dialog(dialog.clone())),
+                ..NpcInteraction::default()
+            }),
+            ..InteractionState::default()
+        };
+        let gui = GameGui {
+            npc_dialog_window: Some(GuiWindow {
+                layout: Some(GuiLayout {
+                    width: 529.0,
+                    height: 286.0,
+                    regions: vec![
+                        GuiRegion {
+                            name: "npc-decision-previous".to_owned(),
+                            x: 329.0,
+                            y: 253.0,
+                            width: 46.0,
+                            height: 20.0,
+                        },
+                        GuiRegion {
+                            name: "npc-accept".to_owned(),
+                            x: 383.0,
+                            y: 253.0,
+                            width: 60.0,
+                            height: 20.0,
+                        },
+                        GuiRegion {
+                            name: "npc-decline".to_owned(),
+                            x: 448.0,
+                            y: 253.0,
+                            width: 60.0,
+                            height: 20.0,
+                        },
+                        GuiRegion {
+                            name: "npc-choices".to_owned(),
+                            x: 154.0,
+                            y: 108.0,
+                            width: 345.0,
+                            height: 100.0,
+                        },
+                    ],
+                    ..GuiLayout::default()
+                }),
+                ..GuiWindow::default()
+            }),
+            ..GameGui::default()
+        };
+
+        assert_eq!(
+            dialog_previous_region(&state, &dialog, 2),
+            "npc-decision-previous"
+        );
+        assert_eq!(
+            dialog_previous_region(&InteractionState::default(), &dialog, 2),
+            "npc-previous"
+        );
+        assert_eq!(
+            dialog_previous_region(
+                &state,
+                &NpcDialogView {
+                    pages: dialog.pages.clone(),
+                    ..NpcDialogView::default()
+                },
+                2
+            ),
+            "npc-previous"
+        );
+        assert_eq!(
+            click_action(&gui, &state, None, CanvasPoint { x: 340.0, y: 260.0 }),
+            Some(InteractionUiAction::PreviousPage)
+        );
+        assert_eq!(
+            click_action(&gui, &state, None, CanvasPoint { x: 410.0, y: 260.0 }),
+            Some(InteractionUiAction::SelectChoice {
+                quest_id: 100,
+                choice_id: 1,
+            })
+        );
+        assert_eq!(
+            click_action(&gui, &state, None, CanvasPoint { x: 470.0, y: 260.0 }),
+            Some(InteractionUiAction::SelectChoice {
+                quest_id: 100,
+                choice_id: 2,
+            })
+        );
+        assert_eq!(
+            click_action(&gui, &state, None, CanvasPoint { x: 170.0, y: 120.0 }),
+            Some(InteractionUiAction::Consume)
+        );
     }
 
     #[test]

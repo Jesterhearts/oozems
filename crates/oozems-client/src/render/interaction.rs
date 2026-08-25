@@ -2,7 +2,6 @@ use oozems_proto::v1::GuiLayout;
 use oozems_proto::v1::GuiRegion;
 use oozems_proto::v1::GuiSpriteTemplate;
 use oozems_proto::v1::GuiWindow;
-use oozems_proto::v1::NpcDialogChoiceKind;
 use oozems_proto::v1::NpcDialogView;
 use oozems_proto::v1::NpcShopView;
 use oozems_proto::v1::NpcTaxiView;
@@ -12,6 +11,8 @@ use crate::assets::ready_image;
 use crate::game::Game;
 use crate::interaction_ui::DIALOG_CHOICE_PAGE_SIZE;
 use crate::interaction_ui::SHOP_PAGE_SIZE;
+use crate::interaction_ui::dialog_previous_region;
+use crate::interaction_ui::is_quest_decision;
 use crate::interaction_ui::visual_dialog_pages;
 
 const DIALOG_LINE_HEIGHT: f64 = 17.0;
@@ -59,8 +60,9 @@ fn draw_dialog(
         .len()
         .max(1)
         .div_ceil(DIALOG_CHOICE_PAGE_SIZE);
+    let previous_region = dialog_previous_region(&game.ui.interaction, dialog, pages.len());
     if game.ui.interaction.choice_page > 0 || game.ui.interaction.page > 0 {
-        draw_template_in_region(game, window, layout, "npc-dialog-previous", "npc-previous");
+        draw_template_in_region(game, window, layout, "npc-dialog-previous", previous_region);
     }
     if game.ui.interaction.page + 1 < pages.len() {
         draw_template_in_region(game, window, layout, "npc-dialog-next", "npc-next");
@@ -69,10 +71,7 @@ fn draw_dialog(
     if game.ui.interaction.choice_page + 1 < choice_page_count {
         draw_template_in_region(game, window, layout, "npc-dialog-next", "npc-next");
     }
-    let has_accept = dialog.choices.iter().any(|choice| {
-        NpcDialogChoiceKind::try_from(choice.kind).ok() == Some(NpcDialogChoiceKind::AcceptQuest)
-    });
-    if has_accept {
+    if is_quest_decision(dialog) {
         draw_template_in_region(game, window, layout, "npc-dialog-accept", "npc-accept");
         draw_template_in_region(game, window, layout, "npc-dialog-decline", "npc-decline");
     } else if !dialog.choices.is_empty() {

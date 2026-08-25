@@ -108,6 +108,13 @@ pub(super) fn compose_npc_dialog_window(
             region("npc-text", 154.0, 42.0, 345.0, 170.0),
             region("npc-choices", 154.0, 108.0, 345.0, 100.0),
             region("npc-previous", 402.0, bottom_top + 27.0, 46.0, 20.0),
+            region(
+                "npc-decision-previous",
+                329.0,
+                bottom_top + 27.0,
+                46.0,
+                20.0,
+            ),
             region("npc-next", 459.0, bottom_top + 27.0, 46.0, 20.0),
             region("npc-ok", 459.0, bottom_top + 27.0, 46.0, 20.0),
             region("npc-close", 420.0, bottom_top + 27.0, 85.0, 20.0),

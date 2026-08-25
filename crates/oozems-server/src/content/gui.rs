@@ -853,6 +853,7 @@ mod tests {
     use super::InventoryWindowSources;
     use super::ItemWindowSources;
     use super::KeyConfigSources;
+    use super::NpcDialogSources;
     use super::SkillWindowSources;
     use super::SourceSprite;
     use super::StatWindowSources;
@@ -861,6 +862,7 @@ mod tests {
     use super::compose_inventory_window;
     use super::compose_item_window;
     use super::compose_key_config;
+    use super::compose_npc_dialog_window;
     use super::compose_skill_window;
     use super::compose_stat_window;
     use super::compose_status_bar;
@@ -972,6 +974,34 @@ mod tests {
             region_geometry(&layout, "cash-shop-exit"),
             Some((632.0, 535.0, 168.0, 49.0))
         );
+    }
+
+    #[test]
+    fn npc_decision_footer_keeps_back_clear_of_accept_and_decline() {
+        let window = compose_npc_dialog_window(&NpcDialogSources {
+            top: source("npc-top", 529.0, 46.0),
+            center: source("npc-center", 529.0, 18.0),
+            bottom: source("npc-bottom", 529.0, 60.0),
+            close: source("npc-dialog-close", 85.0, 15.0),
+            ok: source("npc-dialog-ok", 44.0, 15.0),
+            next: source("npc-dialog-next", 44.0, 15.0),
+            previous: source("npc-dialog-previous", 44.0, 15.0),
+            accept: source("npc-dialog-accept", 55.0, 15.0),
+            decline: source("npc-dialog-decline", 55.0, 15.0),
+            choice: source("npc-dialog-choice", 345.0, 20.0),
+            choice_selected: source("npc-dialog-choice-selected", 345.0, 20.0),
+        })
+        .expect("valid NPC dialog");
+        let layout = window.layout.expect("NPC dialog layout");
+        let previous = named_region(&layout, "npc-previous");
+        let decision_previous = named_region(&layout, "npc-decision-previous");
+        let accept = named_region(&layout, "npc-accept");
+        let decline = named_region(&layout, "npc-decline");
+
+        assert_eq!((previous.x, decision_previous.x), (402.0, 329.0));
+        assert_eq!((decision_previous.y, accept.y), (accept.y, decline.y));
+        assert!(decision_previous.x + decision_previous.width <= accept.x);
+        assert!(accept.x + accept.width <= decline.x);
     }
 
     #[test]
@@ -1143,6 +1173,17 @@ mod tests {
             .iter()
             .find(|region| region.name == name)
             .map(|region| (region.x, region.y, region.width, region.height))
+    }
+
+    fn named_region<'a>(
+        layout: &'a oozems_proto::v1::GuiLayout,
+        name: &str,
+    ) -> &'a oozems_proto::v1::GuiRegion {
+        layout
+            .regions
+            .iter()
+            .find(|region| region.name == name)
+            .expect("named GUI region")
     }
 
     fn sprite_position(
