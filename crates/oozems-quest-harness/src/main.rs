@@ -1,10 +1,10 @@
 use std::collections::BTreeSet;
 use std::env;
 use std::fs;
-use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use anyhow::Context;
 use anyhow::Result;
@@ -97,6 +97,10 @@ enum Command {
         /// Maximum number of model attempts after validation failures.
         #[arg(long, default_value_t = 2, value_parser = clap::value_parser!(u8).range(1..=5))]
         attempts: u8,
+
+        /// Maximum number of model requests to run concurrently.
+        #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u16).range(1..=256))]
+        parallel: u16,
 
         /// Maximum completion tokens requested from the model.
         /// This budget includes reasoning tokens.
@@ -256,6 +260,7 @@ fn run(cli: Cli) -> Result<()> {
             output,
             base_url,
             attempts,
+            parallel,
             max_tokens,
             reasoning_effort,
         } => generate(GenerateOptions {
@@ -264,6 +269,7 @@ fn run(cli: Cli) -> Result<()> {
             output,
             base_url,
             attempts,
+            parallel: usize::from(parallel),
             max_tokens,
             reasoning_effort,
             wz_options,
@@ -318,6 +324,7 @@ struct GenerateOptions {
     output: Option<PathBuf>,
     base_url: String,
     attempts: u8,
+    parallel: usize,
     max_tokens: u32,
     reasoning_effort: Option<ReasoningEffortArg>,
     wz_options: OpenOptions,
@@ -342,11 +349,10 @@ fn generate(options: GenerateOptions) -> Result<()> {
         options.input.all,
         phase,
     )?;
-    let total = if options.input.all {
-        unique_script_count(evidence::source_catalog(&source), phase)
-    } else {
-        0
-    };
+    let total = options
+        .input
+        .all
+        .then(|| unique_script_count(evidence::source_catalog(&source), phase));
     let api_key = resolve_api_key(&options.base_url)?;
     let client = provider::client()?;
     let config = CompletionConfig {
@@ -356,40 +362,140 @@ fn generate(options: GenerateOptions) -> Result<()> {
         maximum_tokens: options.max_tokens,
         reasoning: reasoning_config(&options.base_url, options.reasoning_effort),
     };
-    prepare_program_output(options.output.as_deref())?;
-    let mut generated = 0;
+    let mut scheduled = 0;
     let mut seen_names = BTreeSet::<String>::new();
     let mut cache = evidence::EvidenceCache::default();
+    let mut pending = Vec::with_capacity(options.parallel);
+    let mut programs = Vec::new();
     for selector in selectors {
         let bundle = evidence::assemble_from_source(&source, &mut cache, &selector, phase)?;
         let evidence_value =
-            serde_json::to_value(&bundle).context("failed to encode WZ evidence")?;
+            Arc::new(serde_json::to_value(&bundle).context("failed to encode WZ evidence")?);
         for target in &bundle.scripts {
             if !seen_names.insert(target.name.clone()) {
                 continue;
             }
-            if options.input.all {
-                eprintln!(
-                    "Generating script {} of {total}: {} (quest {})",
-                    generated + 1,
-                    target.name,
-                    bundle.quest_id
+            scheduled += 1;
+            pending.push(GenerationTask {
+                ordinal: scheduled,
+                quest_id: bundle.quest_id,
+                phase: target.phase,
+                script_name: target.name.clone(),
+                evidence: Arc::clone(&evidence_value),
+            });
+            if pending.len() == options.parallel {
+                run_generation_batch(
+                    &mut pending,
+                    &mut programs,
+                    &client,
+                    &config,
+                    options.attempts,
+                    total,
                 );
             }
-            let program = generate_program(
-                &client,
-                &config,
-                &bundle,
-                target.phase,
-                &target.name,
-                &evidence_value,
-                options.attempts,
-            )?;
-            append_program(options.output.as_deref(), &program, generated > 0)?;
-            generated += 1;
         }
     }
-    Ok(())
+    run_generation_batch(
+        &mut pending,
+        &mut programs,
+        &client,
+        &config,
+        options.attempts,
+        total,
+    );
+    write_text(options.output.as_deref(), &merge_programs(&programs))
+}
+
+struct GenerationTask {
+    ordinal: usize,
+    quest_id: u32,
+    phase: QuestPhase,
+    script_name: String,
+    evidence: Arc<serde_json::Value>,
+}
+
+fn run_generation_batch(
+    pending: &mut Vec<GenerationTask>,
+    programs: &mut Vec<String>,
+    client: &reqwest::blocking::Client,
+    config: &CompletionConfig<'_>,
+    attempts: u8,
+    total: Option<usize>,
+) {
+    if pending.is_empty() {
+        return;
+    }
+    let mut tasks = std::mem::take(pending);
+    if let Some(total) = total {
+        for task in &tasks {
+            eprintln!(
+                "Generating script {} of {total}: {} (quest {})",
+                task.ordinal, task.script_name, task.quest_id
+            );
+        }
+    }
+    let responses = issue_generation_requests(client, config, &tasks, attempts);
+    collect_generation_results(programs, &tasks, responses);
+    tasks.clear();
+    *pending = tasks;
+}
+
+fn issue_generation_requests(
+    client: &reqwest::blocking::Client,
+    config: &CompletionConfig<'_>,
+    tasks: &[GenerationTask],
+    attempts: u8,
+) -> Vec<Result<String>> {
+    std::thread::scope(|scope| {
+        let workers = tasks
+            .iter()
+            .map(|task| {
+                scope.spawn(move || {
+                    generate_program(
+                        client,
+                        config,
+                        task.quest_id,
+                        task.phase,
+                        &task.script_name,
+                        &task.evidence,
+                        attempts,
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        workers
+            .into_iter()
+            .zip(tasks)
+            .map(|(worker, task)| {
+                worker.join().unwrap_or_else(|_| {
+                    Err(anyhow::anyhow!(
+                        "model request worker for script {:?} panicked",
+                        task.script_name
+                    ))
+                })
+            })
+            .collect()
+    })
+}
+
+fn collect_generation_results(
+    programs: &mut Vec<String>,
+    tasks: &[GenerationTask],
+    responses: Vec<Result<String>>,
+) {
+    for (task, response) in tasks.iter().zip(responses) {
+        match response {
+            Ok(program) => programs.push(program),
+            Err(error) => eprintln!(
+                "warning: ignoring script {:?} for quest {} because generation failed: {error:#}",
+                task.script_name, task.quest_id
+            ),
+        }
+    }
+}
+
+fn merge_programs(programs: &[String]) -> String {
+    programs.join("\n")
 }
 
 fn generation_selectors(
@@ -450,13 +556,13 @@ fn reasoning_config(
 fn generate_program(
     client: &reqwest::blocking::Client,
     config: &CompletionConfig<'_>,
-    evidence: &EvidenceBundle,
+    quest_id: u32,
     phase: QuestPhase,
     script_name: &str,
     evidence_value: &serde_json::Value,
     attempts: u8,
 ) -> Result<String> {
-    let user_prompt = script::user_prompt(evidence.quest_id, phase, script_name, evidence_value)?;
+    let user_prompt = script::user_prompt(quest_id, phase, script_name, evidence_value)?;
     let mut messages = vec![
         Message {
             role: MessageRole::System,
@@ -470,7 +576,7 @@ fn generate_program(
     let mut last_error = None;
     for attempt in 1..=attempts {
         let response = provider::complete(client, config, &messages)?;
-        match script::validate_output(&response, script_name, evidence.quest_id) {
+        match script::validate_output(&response, script_name, quest_id) {
             Ok(output) => return Ok(output),
             Err(error) => {
                 let message = format!("{error:#}");
@@ -575,43 +681,15 @@ fn write_text(
     }
 }
 
-fn prepare_program_output(path: Option<&Path>) -> Result<()> {
-    let Some(path) = path else {
-        return Ok(());
-    };
-    fs::File::create(path)
-        .with_context(|| format!("failed to prepare output file {}", path.display()))?;
-    Ok(())
-}
-
-fn append_program(
-    path: Option<&Path>,
-    program: &str,
-    needs_separator: bool,
-) -> Result<()> {
-    let separator = if needs_separator { "\n" } else { "" };
-    match path {
-        Some(path) => {
-            let mut file = fs::OpenOptions::new()
-                .append(true)
-                .open(path)
-                .with_context(|| format!("failed to open output file {}", path.display()))?;
-            write!(file, "{separator}{program}")
-                .with_context(|| format!("failed to write output to {}", path.display()))?;
-            file.flush()
-                .with_context(|| format!("failed to flush output to {}", path.display()))
-        }
-        None => {
-            print!("{separator}{program}");
-            std::io::stdout()
-                .flush()
-                .context("failed to flush standard output")
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use std::io::Read;
+    use std::io::Write;
+    use std::net::TcpListener;
+    use std::thread;
+    use std::time::Duration;
+    use std::time::Instant;
+
     use clap::CommandFactory;
     use tempfile::tempdir;
 
@@ -659,11 +737,54 @@ mod tests {
             cli.command,
             Command::Generate {
                 input: GenerateInput { all: true, .. },
+                parallel,
                 max_tokens: 16_384,
                 reasoning_effort: None,
                 ..
-            }
+            } if parallel == 1
         ));
+    }
+
+    #[test]
+    fn generate_accepts_positive_parallel_request_limits() {
+        let cli = Cli::try_parse_from([
+            "oozems-quest-harness",
+            "generate",
+            "Quest.wz",
+            "--all",
+            "--model",
+            "test-model",
+            "--parallel",
+            "4",
+        ])
+        .expect("parallel generation command");
+        assert!(matches!(cli.command, Command::Generate { parallel: 4, .. }));
+        assert!(
+            Cli::try_parse_from([
+                "oozems-quest-harness",
+                "generate",
+                "Quest.wz",
+                "--all",
+                "--model",
+                "test-model",
+                "--parallel",
+                "0",
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "oozems-quest-harness",
+                "generate",
+                "Quest.wz",
+                "--all",
+                "--model",
+                "test-model",
+                "--parallel",
+                "257",
+            ])
+            .is_err()
+        );
     }
 
     #[test]
@@ -703,16 +824,144 @@ mod tests {
     }
 
     #[test]
-    fn program_output_is_written_incrementally_as_one_document() {
+    fn program_outputs_are_merged_and_written_as_one_document() {
         let directory = tempdir().expect("temporary directory");
         let path = directory.path().join("programs.toml");
+        let programs = vec![
+            "[[scripts]]\nname = \"one\"\n".to_owned(),
+            "[[scripts]]\nname = \"two\"\n".to_owned(),
+        ];
 
-        prepare_program_output(Some(&path)).expect("prepare output");
-        append_program(Some(&path), "[[scripts]]\nname = \"one\"\n", false).expect("first program");
-        append_program(Some(&path), "[[scripts]]\nname = \"two\"\n", true).expect("second program");
+        write_text(Some(&path), &merge_programs(&programs)).expect("write merged programs");
 
         assert_eq!(
             fs::read_to_string(path).expect("generated programs"),
+            "[[scripts]]\nname = \"one\"\n\n[[scripts]]\nname = \"two\"\n"
+        );
+    }
+
+    #[test]
+    fn failed_script_results_are_ignored_without_reordering_successes() {
+        let evidence = Arc::new(serde_json::json!({}));
+        let tasks = ["one", "invalid", "two"]
+            .into_iter()
+            .enumerate()
+            .map(|(index, script_name)| GenerationTask {
+                ordinal: index + 1,
+                quest_id: 100,
+                phase: QuestPhase::Start,
+                script_name: script_name.to_owned(),
+                evidence: Arc::clone(&evidence),
+            })
+            .collect::<Vec<_>>();
+        let responses = vec![
+            Ok("[[scripts]]\nname = \"one\"\n".to_owned()),
+            Err(anyhow::anyhow!("invalid model response")),
+            Ok("[[scripts]]\nname = \"two\"\n".to_owned()),
+        ];
+        let mut programs = Vec::new();
+
+        collect_generation_results(&mut programs, &tasks, responses);
+
+        assert_eq!(
+            merge_programs(&programs),
+            "[[scripts]]\nname = \"one\"\n\n[[scripts]]\nname = \"two\"\n"
+        );
+    }
+
+    #[test]
+    fn generation_requests_run_concurrently_and_keep_task_order() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("test listener");
+        listener
+            .set_nonblocking(true)
+            .expect("nonblocking test listener");
+        let address = listener.local_addr().expect("test listener address");
+        let server = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let mut streams = Vec::new();
+            while streams.len() < 2 && Instant::now() < deadline {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        stream
+                            .set_nonblocking(false)
+                            .expect("blocking provider stream");
+                        streams.push(stream);
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("failed to accept provider request: {error}"),
+                }
+            }
+            assert_eq!(
+                streams.len(),
+                2,
+                "both provider requests must arrive before either response is sent"
+            );
+
+            let mut requests = streams
+                .into_iter()
+                .map(|mut stream| {
+                    let request = read_http_request(&mut stream);
+                    let header_end = request
+                        .windows(4)
+                        .position(|window| window == b"\r\n\r\n")
+                        .expect("request headers");
+                    let body =
+                        serde_json::from_slice::<serde_json::Value>(&request[header_end + 4..])
+                            .expect("completion request JSON");
+                    let prompt = body["messages"][1]["content"]
+                        .as_str()
+                        .expect("user prompt");
+                    let script_name = ["one", "two"]
+                        .into_iter()
+                        .find(|name| prompt.contains(&format!("Exact WZ script name: \"{name}\"")))
+                        .expect("requested script name");
+                    (script_name, stream)
+                })
+                .collect::<Vec<_>>();
+            requests.sort_by_key(|(script_name, _)| *script_name == "one");
+            for (script_name, mut stream) in requests {
+                write_completion_response(
+                    &mut stream,
+                    &format!("[[scripts]]\nname = \"{script_name}\"\n"),
+                );
+            }
+        });
+        let base_url = format!("http://{address}/v1");
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .expect("test HTTP client");
+        let config = CompletionConfig {
+            base_url: &base_url,
+            api_key: "secret",
+            model: "test/model",
+            maximum_tokens: 512,
+            reasoning: None,
+        };
+        let evidence = Arc::new(serde_json::json!({}));
+        let tasks = ["one", "two"]
+            .into_iter()
+            .enumerate()
+            .map(|(index, script_name)| GenerationTask {
+                ordinal: index + 1,
+                quest_id: 100,
+                phase: QuestPhase::Start,
+                script_name: script_name.to_owned(),
+                evidence: Arc::clone(&evidence),
+            })
+            .collect::<Vec<_>>();
+
+        let responses = issue_generation_requests(&client, &config, &tasks, 1);
+        server.join().expect("test provider server");
+        let programs = responses
+            .into_iter()
+            .map(|response| response.expect("valid generated program"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            merge_programs(&programs),
             "[[scripts]]\nname = \"one\"\n\n[[scripts]]\nname = \"two\"\n"
         );
     }
@@ -734,5 +983,58 @@ mod tests {
                 exclude: true,
             })
         );
+    }
+
+    fn read_http_request(stream: &mut impl Read) -> Vec<u8> {
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 4_096];
+        let (header_end, content_length) = loop {
+            let bytes = stream.read(&mut buffer).expect("read provider request");
+            assert!(bytes > 0, "provider request ended before its headers");
+            request.extend_from_slice(&buffer[..bytes]);
+            if let Some(header_end) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                let headers = String::from_utf8_lossy(&request[..header_end]);
+                let content_length = headers
+                    .lines()
+                    .filter_map(|line| line.split_once(':'))
+                    .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                    .and_then(|(_, value)| value.trim().parse::<usize>().ok())
+                    .expect("request content length");
+                break (header_end, content_length);
+            }
+            assert!(
+                request.len() <= 64 * 1024,
+                "provider request headers are too long"
+            );
+        };
+        let expected_length = header_end + 4 + content_length;
+        while request.len() < expected_length {
+            let bytes = stream
+                .read(&mut buffer)
+                .expect("read provider request body");
+            assert!(bytes > 0, "provider request body ended early");
+            request.extend_from_slice(&buffer[..bytes]);
+        }
+        request.truncate(expected_length);
+        request
+    }
+
+    fn write_completion_response(
+        stream: &mut impl Write,
+        content: &str,
+    ) {
+        let body = serde_json::json!({
+            "choices": [{
+                "message": { "content": content },
+            }],
+        })
+        .to_string();
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: \
+             {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .expect("provider response");
     }
 }

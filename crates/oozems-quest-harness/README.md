@@ -83,15 +83,18 @@ Generate every unique script referenced by the archive with `--all`:
 cargo run --package oozems-quest-harness -- generate \
   data/Quest.wz \
   --all \
+  --parallel 4 \
   --model openai/gpt-5.2 \
   --output generated-quest-scripts.toml
 ```
 
 Quests are processed in ascending ID order. Shared script names are generated
 only once, and `--phase` can restrict the batch to start or completion scripts.
-Progress is written to standard error. Each validated program is appended to
-the output immediately, so programs completed before a later failure remain in
-the output file. The output file is replaced when a new run starts.
+`--parallel` controls the maximum number of concurrent model requests and
+accepts values from 1 through 256; it defaults to one. Progress and individual
+script failures are written to standard error. A failed script is ignored while
+the remaining requests continue. The successful responses are merged in archive
+order and the output file is replaced once after generation finishes.
 
 `--all` can make hundreds of paid requests. The bundled v83 archive currently
 contains 680 unique script names. The server loads quests that reference 663 of
