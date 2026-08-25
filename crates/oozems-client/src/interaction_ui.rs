@@ -1,6 +1,3 @@
-use std::cell::Cell;
-use std::rc::Rc;
-
 use oozems_proto::v1::GameGui;
 use oozems_proto::v1::InventoryState;
 use oozems_proto::v1::NpcDialogChoiceKind;
@@ -26,7 +23,6 @@ pub struct InteractionState {
     pub selected_offer: Option<usize>,
     pub selected_inventory: Option<usize>,
     pub inventory_page: usize,
-    pub in_flight: Rc<Cell<bool>>,
     pub generation: u64,
 }
 
@@ -51,10 +47,6 @@ pub enum InteractionUiAction {
 impl InteractionState {
     pub fn is_open(&self) -> bool {
         self.interaction.is_some()
-    }
-
-    pub fn is_busy(&self) -> bool {
-        self.is_open() || self.in_flight.get()
     }
 
     pub fn install(
@@ -307,10 +299,18 @@ fn contains_window(
     point: CanvasPoint,
 ) -> bool {
     window.layout.as_ref().is_some_and(|layout| {
-        point.x >= window.x
-            && point.x < window.x + layout.width
-            && point.y >= window.y
-            && point.y < window.y + layout.height
+        crate::hit_test::contains(
+            crate::hit_test::Rect {
+                x: f64::from(window.x),
+                y: f64::from(window.y),
+                width: f64::from(layout.width),
+                height: f64::from(layout.height),
+            },
+            crate::hit_test::Point {
+                x: f64::from(point.x),
+                y: f64::from(point.y),
+            },
+        )
     })
 }
 
@@ -322,10 +322,18 @@ fn contains_region(
     window.layout.as_ref().is_some_and(|layout| {
         layout.regions.iter().any(|region| {
             region.name == name
-                && point.x >= window.x + region.x
-                && point.x < window.x + region.x + region.width
-                && point.y >= window.y + region.y
-                && point.y < window.y + region.y + region.height
+                && crate::hit_test::contains(
+                    crate::hit_test::Rect {
+                        x: f64::from(window.x + region.x),
+                        y: f64::from(window.y + region.y),
+                        width: f64::from(region.width),
+                        height: f64::from(region.height),
+                    },
+                    crate::hit_test::Point {
+                        x: f64::from(point.x),
+                        y: f64::from(point.y),
+                    },
+                )
         })
     })
 }

@@ -1,0 +1,710 @@
+use std::collections::VecDeque;
+
+use oozems_proto::v1::GameGui;
+use oozems_proto::v1::KeyAction;
+use oozems_proto::v1::Map;
+use oozems_proto::v1::PlayerState;
+use oozems_proto::v1::Vec2;
+
+use super::Game;
+use super::WorldRuntime;
+use super::buffs;
+use super::input::apply_canvas_input;
+use super::input::interaction_is_busy;
+use super::movement_actions;
+use super::recovery_actions;
+use super::request_dispatch::PendingRequest;
+use super::request_dispatch::PendingRequests;
+use super::request_dispatch::PendingTransition;
+use super::request_dispatch::collect_refresh_requests;
+use super::request_dispatch::save_if_due;
+use super::request_dispatch::synchronize_morph;
+use super::requests;
+use crate::character_render::CharacterAnimation;
+use crate::game_gui;
+use crate::game_gui::GuiAction;
+use crate::game_gui::GuiState;
+use crate::keymap;
+use crate::movement;
+use crate::movement::MapTransition;
+use crate::movement::MotionState;
+use crate::movement::PlayerInput;
+use crate::skill_effects;
+
+pub(super) struct PersistenceState {
+    pub(super) dirty: bool,
+    pub(super) next_save_ms: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CharacterAnimationState {
+    pub animation: CharacterAnimation,
+    started_ms: f64,
+    paused_at_ms: Option<f64>,
+    one_shot_until_ms: Option<f64>,
+}
+
+pub(super) fn update(
+    game: &mut Game,
+    timestamp_ms: f64,
+) -> PendingRequests {
+    let elapsed_seconds = if game.clock.last_frame_ms == 0.0 {
+        0.0
+    } else {
+        ((timestamp_ms - game.clock.last_frame_ms) / 1_000.0).clamp(0.0, 0.05) as f32
+    };
+    game.clock.last_frame_ms = timestamp_ms;
+    game.clock.now_ms = timestamp_ms;
+    skill_effects::update(
+        &mut game.world.skill_effect_state,
+        &game.surface.images,
+        timestamp_ms,
+    );
+    let now_ms = js_sys::Date::now().max(0.0) as u64;
+    game.world.map.dropped_items.retain(|drop| {
+        drop.despawn_at_unix_ms > now_ms
+            && (drop.expires_at_unix_ms == 0 || drop.expires_at_unix_ms > now_ms)
+    });
+
+    let mut pending = PendingRequests::default();
+    apply_canvas_input(game, &mut pending);
+
+    let mut input = {
+        let bindings = game.player.key_bindings.current.borrow();
+        keymap::drain_frame_input(&mut game.input.keyboard.borrow_mut(), &bindings)
+    };
+    let key_config_open = game.ui.gui_state.borrow().key_config_open;
+    if key_config_open {
+        input.player = PlayerInput::default();
+        input.skills.clear();
+        input
+            .actions
+            .retain(|action| *action == KeyAction::OpenKeyConfig);
+    }
+    let interaction_busy =
+        interaction_is_busy(game) || pending.has_kind(requests::RequestKind::Interaction);
+    let cash_shop_open =
+        game.ui.cash_shop.open || pending.has_kind(requests::RequestKind::CashShopCatalog);
+    if interaction_busy || cash_shop_open {
+        input.player = PlayerInput::default();
+        input.skills.clear();
+        input.actions.clear();
+    }
+    let pick_up = apply_key_actions(
+        &mut game.ui.gui_state.borrow_mut(),
+        &game.ui.gui,
+        &input.actions,
+    );
+    buffs::apply(
+        &mut game.player.active_buffs,
+        &mut input.player,
+        timestamp_ms,
+    );
+    synchronize_morph(game);
+
+    if game.player.active_buffs.attacks_disabled {
+        input
+            .actions
+            .retain(|action| *action != KeyAction::BasicAttack);
+        input.skills.clear();
+    }
+    let basic_attack_requested = input.actions.contains(&KeyAction::BasicAttack);
+
+    let transition_active = game
+        .requests
+        .admission
+        .is_active(requests::RequestKind::Transition);
+    let selected_transition = if transition_active {
+        None
+    } else {
+        update_player(
+            &mut game.player.state,
+            &mut game.world,
+            &mut game.requests.movement,
+            game.clock.now_ms,
+            elapsed_seconds,
+            input.player,
+        )
+    };
+    let selected_transition = selected_transition.and_then(|transition| {
+        let observation = movement_actions::observation(
+            game.world.map.id,
+            game.player.state.position,
+            game.world.motion,
+        );
+        movement_actions::capture_movement_snapshot(&mut game.requests.movement, observation)
+            .map(|source| PendingTransition { source, transition })
+    });
+    let transition = select_transition_request(
+        &mut game.requests.deferred_transitions,
+        selected_transition,
+        game.world.map.id,
+        transition_active
+            || pending.has_player_mutation()
+            || game.requests.admission.player_mutation_is_active(),
+    );
+    let transition_pending = transition.is_some() || !game.requests.deferred_transitions.is_empty();
+    let (basic_attack, skill_id) = select_combat_requests(
+        game.player.active_buffs.attacks_disabled,
+        transition_pending,
+        transition_active,
+        basic_attack_requested,
+        input.skills.into_iter().next(),
+    );
+    let movement_observation = movement_actions::observation(
+        game.world.map.id,
+        game.player.state.position,
+        game.world.motion,
+    );
+    let movement_snapshot = movement_actions::update(
+        &mut game.requests.movement,
+        game.world.movement_rules.snapshot_interval_ms,
+        !transition_pending && !transition_active,
+        game.requests
+            .admission
+            .is_active(requests::RequestKind::Movement),
+        timestamp_ms,
+        movement_observation,
+    );
+    let needs_recovery = game
+        .player
+        .state
+        .stats
+        .as_ref()
+        .is_some_and(|stats| stats.hp < stats.max_hp || stats.mp < stats.max_mp);
+    let can_poll_recovery = game.world.character_animation.animation == CharacterAnimation::Idle
+        && !pick_up
+        && !basic_attack
+        && skill_id.is_none()
+        && transition.is_none()
+        && !pending.has_player_mutation()
+        && !game.requests.admission.player_mutation_is_active()
+        && !interaction_busy
+        && !cash_shop_open;
+    let recover = recovery_actions::update(
+        &mut game.requests.recovery,
+        needs_recovery,
+        can_poll_recovery,
+        game.requests
+            .admission
+            .is_active(requests::RequestKind::Recovery),
+        timestamp_ms,
+    );
+    let save = save_if_due(
+        &mut game.persistence,
+        &game.requests.admission,
+        &game.player.state,
+        game.player.key_bindings.generation,
+        !pending.has_player_mutation()
+            && !pick_up
+            && !basic_attack
+            && skill_id.is_none()
+            && !transition_pending
+            && !recover,
+        timestamp_ms,
+    );
+
+    let mut requests = PendingRequests::default();
+    collect_refresh_requests(game, &mut requests);
+    requests.requests.extend(pending.requests);
+    if pick_up {
+        requests.push(PendingRequest::PickUp);
+    }
+    if movement_snapshot {
+        requests.push(PendingRequest::Movement);
+    }
+    if basic_attack {
+        requests.push(PendingRequest::BasicAttack);
+    }
+    if let Some(skill_id) = skill_id {
+        requests.push(PendingRequest::Skill(GuiAction::UseSkill { skill_id }));
+    }
+    if recover {
+        requests.push(PendingRequest::Recovery);
+    }
+    if let Some(save) = save {
+        requests.push(PendingRequest::Save(Box::new(save)));
+    }
+    if let Some(transition) = transition {
+        requests.push(PendingRequest::Transition(transition));
+    }
+    requests
+}
+
+fn select_combat_requests(
+    attacks_disabled: bool,
+    transition_selected: bool,
+    transition_active: bool,
+    basic_attack_requested: bool,
+    skill_id: Option<u32>,
+) -> (bool, Option<u32>) {
+    let combat_allowed = !attacks_disabled && !transition_selected && !transition_active;
+    (
+        combat_allowed && basic_attack_requested,
+        combat_allowed.then_some(skill_id).flatten(),
+    )
+}
+
+pub(super) fn defer_transition(
+    deferred: &mut VecDeque<PendingTransition>,
+    request: PendingTransition,
+    current_map_id: u32,
+) {
+    let already_deferred = deferred.iter().any(|pending| {
+        pending.source.map_id == request.source.map_id && pending.transition == request.transition
+    });
+    if request.source.map_id == current_map_id && !already_deferred {
+        deferred.push_back(request);
+    }
+}
+
+fn select_transition_request(
+    deferred: &mut VecDeque<PendingTransition>,
+    selected: Option<PendingTransition>,
+    current_map_id: u32,
+    blocked: bool,
+) -> Option<PendingTransition> {
+    deferred.retain(|request| request.source.map_id == current_map_id);
+    if let Some(transition) = selected {
+        defer_transition(deferred, transition, current_map_id);
+    }
+    (!blocked).then(|| deferred.pop_front()).flatten()
+}
+
+fn apply_key_actions(
+    state: &mut GuiState,
+    gui: &GameGui,
+    actions: &[KeyAction],
+) -> bool {
+    let mut pick_up = false;
+    for action in actions {
+        let gui_action = match action {
+            KeyAction::Jump => continue,
+            KeyAction::BasicAttack => continue,
+            KeyAction::PickUp => {
+                pick_up = true;
+                continue;
+            }
+            KeyAction::OpenCharacter => GuiAction::ToggleStats,
+            KeyAction::OpenEquipment => GuiAction::ToggleEquipment,
+            KeyAction::OpenInventory => GuiAction::ToggleInventory,
+            KeyAction::OpenSkills if gui.skill_window.is_some() => GuiAction::ToggleSkills,
+            KeyAction::OpenSkills => continue,
+            KeyAction::OpenKeyConfig if gui.key_config_window.is_some() => {
+                GuiAction::ToggleKeyConfig
+            }
+            KeyAction::OpenKeyConfig => continue,
+            KeyAction::Unspecified => continue,
+        };
+        let _ = game_gui::apply_local_action(state, gui_action);
+    }
+    pick_up
+}
+
+fn update_player(
+    player: &mut PlayerState,
+    world: &mut WorldRuntime,
+    movement_sync: &mut movement_actions::MovementSyncState,
+    now_ms: f64,
+    elapsed_seconds: f32,
+    input: PlayerInput,
+) -> Option<MapTransition> {
+    let position = player.position?;
+    let previous_motion = world.motion;
+    if input.horizontal != 0.0 {
+        world.facing_left = input.horizontal < 0.0;
+    }
+    let output = movement::update_player(
+        &world.map,
+        &world.movement_rules,
+        position,
+        world.motion,
+        input,
+        elapsed_seconds,
+    );
+    if output.dropped_through {
+        movement_actions::record_drop_through(
+            movement_sync,
+            world.map.id,
+            position,
+            previous_motion,
+        );
+    }
+    let animation = character_animation(&world.map, output.state, input);
+    let animation_plays = character_animation_plays(animation, position, output.position);
+    update_character_animation(
+        &mut world.character_animation,
+        animation,
+        animation_plays,
+        now_ms,
+    );
+    player.position = Some(output.position);
+    world.motion = output.state;
+    output.transition
+}
+
+pub(super) fn character_animation(
+    map: &Map,
+    state: MotionState,
+    input: PlayerInput,
+) -> CharacterAnimation {
+    if let Some(index) = state.climbing {
+        match map.ladders.get(index) {
+            Some(feature) if feature.is_ladder => CharacterAnimation::Ladder,
+            Some(_) => CharacterAnimation::Rope,
+            None => CharacterAnimation::Idle,
+        }
+    } else if !state.on_ground {
+        CharacterAnimation::Jump
+    } else if input.horizontal != 0.0 {
+        CharacterAnimation::Walk
+    } else {
+        CharacterAnimation::Idle
+    }
+}
+
+pub(super) fn new_character_animation_state(
+    animation: CharacterAnimation,
+    plays: bool,
+    timestamp_ms: f64,
+) -> CharacterAnimationState {
+    CharacterAnimationState {
+        animation,
+        started_ms: timestamp_ms,
+        paused_at_ms: (!plays).then_some(timestamp_ms),
+        one_shot_until_ms: None,
+    }
+}
+
+fn character_animation_plays(
+    animation: CharacterAnimation,
+    previous_position: Vec2,
+    next_position: Vec2,
+) -> bool {
+    !matches!(
+        animation,
+        CharacterAnimation::Ladder | CharacterAnimation::Rope
+    ) || previous_position.y != next_position.y
+}
+
+pub(super) fn update_character_animation(
+    state: &mut CharacterAnimationState,
+    next: CharacterAnimation,
+    plays: bool,
+    timestamp_ms: f64,
+) {
+    if state
+        .one_shot_until_ms
+        .is_some_and(|deadline_ms| timestamp_ms < deadline_ms)
+    {
+        return;
+    }
+    state.one_shot_until_ms = None;
+    if state.animation != next {
+        *state = new_character_animation_state(next, plays, timestamp_ms);
+        return;
+    }
+    match (state.paused_at_ms, plays) {
+        (Some(paused_at_ms), true) => {
+            state.started_ms += (timestamp_ms - paused_at_ms).max(0.0);
+            state.paused_at_ms = None;
+        }
+        (None, false) => state.paused_at_ms = Some(timestamp_ms),
+        _ => {}
+    }
+}
+
+pub(super) fn start_character_attack_animation(
+    world: &mut WorldRuntime,
+    now_ms: f64,
+) {
+    let duration_ms = crate::character_render::animation_duration_ms(
+        &world.character_sprites,
+        CharacterAnimation::Attack,
+    );
+    world.character_animation =
+        new_character_animation_state(CharacterAnimation::Attack, true, now_ms);
+    world.character_animation.one_shot_until_ms = Some(now_ms + duration_ms.max(1) as f64);
+}
+
+pub(super) fn restart_character_animation(
+    state: &mut CharacterAnimationState,
+    timestamp_ms: f64,
+) {
+    if state
+        .one_shot_until_ms
+        .is_some_and(|deadline_ms| timestamp_ms < deadline_ms)
+    {
+        return;
+    }
+    state.one_shot_until_ms = None;
+    state.started_ms = timestamp_ms;
+    state.paused_at_ms = state.paused_at_ms.map(|_| timestamp_ms);
+}
+
+pub(crate) fn character_animation_elapsed_ms(
+    state: CharacterAnimationState,
+    timestamp_ms: f64,
+) -> f64 {
+    (state.paused_at_ms.unwrap_or(timestamp_ms) - state.started_ms).max(0.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::VecDeque;
+
+    use oozems_proto::v1::Ladder;
+    use oozems_proto::v1::Map;
+    use oozems_proto::v1::MovementContact;
+    use oozems_proto::v1::MovementMode;
+    use oozems_proto::v1::MovementSnapshot;
+    use oozems_proto::v1::Vec2;
+
+    use super::character_animation;
+    use super::character_animation_elapsed_ms;
+    use super::character_animation_plays;
+    use super::new_character_animation_state;
+    use super::restart_character_animation;
+    use super::select_combat_requests;
+    use super::select_transition_request;
+    use super::update_character_animation;
+    use crate::character_render::CharacterAnimation;
+    use crate::game::request_dispatch::PendingTransition;
+    use crate::movement::MapTransition;
+    use crate::movement::MotionState;
+    use crate::movement::PlayerInput;
+
+    fn transition(target_map_id: u32) -> MapTransition {
+        MapTransition {
+            target_map_id,
+            target_portal_name: "spawn".to_owned(),
+        }
+    }
+
+    fn pending_transition(
+        source_x: f32,
+        sequence: u64,
+        target_map_id: u32,
+    ) -> PendingTransition {
+        PendingTransition {
+            source: MovementSnapshot {
+                sequence,
+                map_id: 10,
+                position: Some(Vec2 {
+                    x: source_x,
+                    y: 200.0,
+                }),
+                mode: MovementMode::Airborne as i32,
+                support_contact: Some(MovementContact {
+                    position: Some(Vec2 { x: 90.0, y: 210.0 }),
+                    mode: MovementMode::Grounded as i32,
+                }),
+                drop_through: true,
+            },
+            transition: transition(target_map_id),
+        }
+    }
+
+    #[test]
+    fn blocked_transition_is_dispatched_when_player_mutation_lane_is_free() {
+        let mut deferred = VecDeque::new();
+        let request = pending_transition(100.0, 7, 20);
+
+        assert_eq!(
+            select_transition_request(&mut deferred, Some(request.clone()), 10, true),
+            None
+        );
+        assert_eq!(deferred.len(), 1);
+        assert_eq!(
+            select_transition_request(&mut deferred, None, 10, false),
+            Some(request)
+        );
+        assert!(deferred.is_empty());
+    }
+
+    #[test]
+    fn deferred_transition_from_a_previous_map_is_not_dispatched() {
+        let mut deferred = VecDeque::from([pending_transition(100.0, 7, 20)]);
+
+        assert_eq!(
+            select_transition_request(&mut deferred, None, 30, false),
+            None
+        );
+        assert!(deferred.is_empty());
+    }
+
+    #[test]
+    fn deferred_transition_retains_the_snapshot_from_portal_selection() {
+        let mut deferred = VecDeque::new();
+        let selected = pending_transition(100.0, 7, 20);
+
+        assert_eq!(
+            select_transition_request(&mut deferred, Some(selected.clone()), 10, true),
+            None
+        );
+        let later_selection = pending_transition(500.0, 8, 20);
+        assert_eq!(
+            select_transition_request(&mut deferred, Some(later_selection.clone()), 10, true),
+            None
+        );
+
+        let dispatched =
+            select_transition_request(&mut deferred, None, 10, false).expect("deferred transition");
+        assert_eq!(dispatched.source, selected.source);
+        assert_ne!(dispatched.source, later_selection.source);
+        assert!(deferred.is_empty());
+    }
+
+    #[test]
+    fn movement_state_selects_the_character_animation() {
+        let map = Map {
+            ladders: vec![
+                Ladder {
+                    is_ladder: true,
+                    ..Ladder::default()
+                },
+                Ladder {
+                    is_ladder: false,
+                    ..Ladder::default()
+                },
+            ],
+            ..Map::default()
+        };
+        let grounded = MotionState {
+            on_ground: true,
+            ..MotionState::default()
+        };
+        let walking = PlayerInput {
+            horizontal: -1.0,
+            ..PlayerInput::default()
+        };
+
+        assert_eq!(
+            character_animation(&map, grounded, PlayerInput::default()),
+            CharacterAnimation::Idle
+        );
+        assert_eq!(
+            character_animation(&map, grounded, walking),
+            CharacterAnimation::Walk
+        );
+        assert_eq!(
+            character_animation(&map, MotionState::default(), walking),
+            CharacterAnimation::Jump
+        );
+        assert_eq!(
+            character_animation(
+                &map,
+                MotionState {
+                    climbing: Some(0),
+                    ..MotionState::default()
+                },
+                walking,
+            ),
+            CharacterAnimation::Ladder
+        );
+        assert_eq!(
+            character_animation(
+                &map,
+                MotionState {
+                    climbing: Some(1),
+                    ..MotionState::default()
+                },
+                walking,
+            ),
+            CharacterAnimation::Rope
+        );
+    }
+
+    #[test]
+    fn changing_action_restarts_animation_time() {
+        let mut animation = new_character_animation_state(CharacterAnimation::Idle, true, 20.0);
+
+        update_character_animation(&mut animation, CharacterAnimation::Idle, true, 100.0);
+        assert_eq!(character_animation_elapsed_ms(animation, 100.0), 80.0);
+        update_character_animation(&mut animation, CharacterAnimation::Walk, true, 125.0);
+        assert_eq!(animation.animation, CharacterAnimation::Walk);
+        assert_eq!(character_animation_elapsed_ms(animation, 125.0), 0.0);
+    }
+
+    #[test]
+    fn one_shot_attack_finishes_before_movement_animation_resumes() {
+        let mut animation = new_character_animation_state(CharacterAnimation::Attack, true, 100.0);
+        animation.one_shot_until_ms = Some(400.0);
+
+        update_character_animation(&mut animation, CharacterAnimation::Walk, true, 399.0);
+        assert_eq!(animation.animation, CharacterAnimation::Attack);
+        update_character_animation(&mut animation, CharacterAnimation::Walk, true, 400.0);
+        assert_eq!(animation.animation, CharacterAnimation::Walk);
+        assert_eq!(character_animation_elapsed_ms(animation, 400.0), 0.0);
+    }
+
+    #[test]
+    fn sprite_refresh_preserves_an_active_one_shot_animation() {
+        let mut animation = new_character_animation_state(CharacterAnimation::Attack, true, 100.0);
+        animation.one_shot_until_ms = Some(400.0);
+
+        restart_character_animation(&mut animation, 200.0);
+
+        assert_eq!(animation.animation, CharacterAnimation::Attack);
+        assert_eq!(character_animation_elapsed_ms(animation, 200.0), 100.0);
+        assert_eq!(animation.one_shot_until_ms, Some(400.0));
+    }
+
+    #[test]
+    fn stationary_climbing_pauses_and_resumes_animation_time() {
+        let mut animation = new_character_animation_state(CharacterAnimation::Ladder, true, 100.0);
+
+        update_character_animation(&mut animation, CharacterAnimation::Ladder, false, 300.0);
+        assert_eq!(character_animation_elapsed_ms(animation, 900.0), 200.0);
+        update_character_animation(&mut animation, CharacterAnimation::Ladder, true, 1_000.0);
+        assert_eq!(character_animation_elapsed_ms(animation, 1_000.0), 200.0);
+        assert_eq!(character_animation_elapsed_ms(animation, 1_100.0), 300.0);
+    }
+
+    #[test]
+    fn climbing_animation_runs_only_during_vertical_displacement() {
+        let position = Vec2 { x: 200.0, y: 300.0 };
+        let climbed = Vec2 { x: 200.0, y: 290.0 };
+
+        assert!(!character_animation_plays(
+            CharacterAnimation::Ladder,
+            position,
+            position,
+        ));
+        assert!(!character_animation_plays(
+            CharacterAnimation::Rope,
+            position,
+            position,
+        ));
+        assert!(character_animation_plays(
+            CharacterAnimation::Ladder,
+            position,
+            climbed,
+        ));
+        assert!(character_animation_plays(
+            CharacterAnimation::Idle,
+            position,
+            position,
+        ));
+    }
+
+    #[test]
+    fn authoritative_disable_and_transitions_suppress_combat_requests() {
+        assert_eq!(
+            select_combat_requests(true, false, false, true, Some(1)),
+            (false, None)
+        );
+        assert_eq!(
+            select_combat_requests(false, true, false, true, Some(1)),
+            (false, None)
+        );
+        assert_eq!(
+            select_combat_requests(false, false, true, true, Some(1)),
+            (false, None)
+        );
+        assert_eq!(
+            select_combat_requests(false, false, false, true, Some(1)),
+            (true, Some(1))
+        );
+    }
+}

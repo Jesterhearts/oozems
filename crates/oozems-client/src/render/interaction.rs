@@ -19,7 +19,7 @@ const CHOICE_ROW_HEIGHT: f64 = 24.0;
 const SHOP_ROW_HEIGHT: f32 = 37.0;
 
 pub(super) fn draw(game: &Game) {
-    let Some(interaction) = game.interaction.interaction.as_ref() else {
+    let Some(interaction) = game.ui.interaction.interaction.as_ref() else {
         return;
     };
     match interaction.view.as_ref() {
@@ -37,7 +37,7 @@ fn draw_dialog(
     interaction: &oozems_proto::v1::NpcInteraction,
     dialog: &NpcDialogView,
 ) {
-    let Some(window) = game.gui.npc_dialog_window.as_ref() else {
+    let Some(window) = game.ui.gui.npc_dialog_window.as_ref() else {
         return;
     };
     if !super::draw_window(game, window) {
@@ -47,7 +47,7 @@ fn draw_dialog(
     draw_dialog_heading(game, interaction, &dialog.title, window);
     let pages = visual_dialog_pages(dialog);
     let page = pages
-        .get(game.interaction.page)
+        .get(game.ui.interaction.page)
         .map(String::as_str)
         .unwrap_or_default();
     draw_wrapped_region(game, window, "npc-text", page);
@@ -59,14 +59,14 @@ fn draw_dialog(
         .len()
         .max(1)
         .div_ceil(DIALOG_CHOICE_PAGE_SIZE);
-    if game.interaction.choice_page > 0 || game.interaction.page > 0 {
+    if game.ui.interaction.choice_page > 0 || game.ui.interaction.page > 0 {
         draw_template_in_region(game, window, layout, "npc-dialog-previous", "npc-previous");
     }
-    if game.interaction.page + 1 < pages.len() {
+    if game.ui.interaction.page + 1 < pages.len() {
         draw_template_in_region(game, window, layout, "npc-dialog-next", "npc-next");
         return;
     }
-    if game.interaction.choice_page + 1 < choice_page_count {
+    if game.ui.interaction.choice_page + 1 < choice_page_count {
         draw_template_in_region(game, window, layout, "npc-dialog-next", "npc-next");
     }
     let has_accept = dialog.choices.iter().any(|choice| {
@@ -87,7 +87,7 @@ fn draw_taxi(
     interaction: &oozems_proto::v1::NpcInteraction,
     taxi: &NpcTaxiView,
 ) {
-    let Some(window) = game.gui.npc_dialog_window.as_ref() else {
+    let Some(window) = game.ui.gui.npc_dialog_window.as_ref() else {
         return;
     };
     if !super::draw_window(game, window) {
@@ -110,10 +110,10 @@ fn draw_taxi(
             region.x,
             region.y + index as f32 * CHOICE_ROW_HEIGHT as f32 + 4.0,
         );
-        game.context.set_fill_style_str("#2f3437");
-        game.context.set_font("bold 12px Arial");
+        game.surface.context.set_fill_style_str("#2f3437");
+        game.surface.context.set_font("bold 12px Arial");
         let label = format!("{}  ({} mesos)", destination.label, destination.fare);
-        let _ = game.context.fill_text_with_max_width(
+        let _ = game.surface.context.fill_text_with_max_width(
             &label,
             f64::from(window.x + region.x + 13.0),
             y,
@@ -128,7 +128,7 @@ fn draw_shop(
     interaction: &oozems_proto::v1::NpcInteraction,
     shop: &NpcShopView,
 ) {
-    let Some(window) = game.gui.shop_window.as_ref() else {
+    let Some(window) = game.ui.gui.shop_window.as_ref() else {
         return;
     };
     if !super::draw_window(game, window) {
@@ -141,6 +141,7 @@ fn draw_shop(
     let now_unix_ms = js_sys::Date::now().max(0.0) as u64;
     draw_shop_portrait(game, interaction, window);
     if let Some(index) = game
+        .ui
         .interaction
         .selected_offer
         .filter(|index| *index < SHOP_PAGE_SIZE)
@@ -155,9 +156,12 @@ fn draw_shop(
     }
     if !cash_point_shop
         && let Some(index) = game
+            .ui
             .interaction
             .selected_inventory
-            .and_then(|index| index.checked_sub(game.interaction.inventory_page * SHOP_PAGE_SIZE))
+            .and_then(|index| {
+                index.checked_sub(game.ui.interaction.inventory_page * SHOP_PAGE_SIZE)
+            })
             .filter(|index| *index < SHOP_PAGE_SIZE)
     {
         draw_template(
@@ -182,7 +186,7 @@ fn draw_shop(
         }
     }
     if !cash_point_shop && let Some(inventory) = game.player.inventory.as_ref() {
-        let start = game.interaction.inventory_page * SHOP_PAGE_SIZE;
+        let start = game.ui.interaction.inventory_page * SHOP_PAGE_SIZE;
         for (index, stack) in inventory
             .stacks
             .iter()
@@ -215,10 +219,10 @@ fn draw_shop(
         draw_template_in_region(game, window, layout, "shop-sell", "shop-sell");
     }
     draw_template_in_region(game, window, layout, "shop-exit", "shop-close");
-    game.context.set_fill_style_str("#202020");
-    game.context.set_font("bold 11px Arial");
+    game.surface.context.set_fill_style_str("#202020");
+    game.surface.context.set_font("bold 11px Arial");
     if cash_point_shop {
-        let _ = game.context.fill_text_with_max_width(
+        let _ = game.surface.context.fill_text_with_max_width(
             &format!("{}: {}", shop.currency_name, game.player.cash_points),
             f64::from(window.x + 277.0),
             f64::from(window.y + 107.0),
@@ -226,7 +230,7 @@ fn draw_shop(
         );
     } else {
         draw_template_in_region(game, window, layout, "shop-meso", "shop-mesos");
-        let _ = game.context.fill_text(
+        let _ = game.surface.context.fill_text(
             &game.player.mesos.to_string(),
             f64::from(window.x + 291.0),
             f64::from(window.y + 107.0),
@@ -251,21 +255,21 @@ fn draw_inventory_page_controls(
     if page_count <= 1 {
         return;
     }
-    game.context.set_fill_style_str("#eef7ff");
-    game.context.set_font("bold 13px Arial");
-    if game.interaction.inventory_page > 0
+    game.surface.context.set_fill_style_str("#eef7ff");
+    game.surface.context.set_font("bold 13px Arial");
+    if game.ui.interaction.inventory_page > 0
         && let Some(region) = region(layout, "shop-inventory-previous")
     {
-        let _ = game.context.fill_text(
+        let _ = game.surface.context.fill_text(
             "<",
             f64::from(window.x + region.x + 4.0),
             f64::from(window.y + region.y + 13.0),
         );
     }
-    if game.interaction.inventory_page + 1 < page_count
+    if game.ui.interaction.inventory_page + 1 < page_count
         && let Some(region) = region(layout, "shop-inventory-next")
     {
-        let _ = game.context.fill_text(
+        let _ = game.surface.context.fill_text(
             ">",
             f64::from(window.x + region.x + 4.0),
             f64::from(window.y + region.y + 13.0),
@@ -280,15 +284,21 @@ fn draw_shop_item_text(
     name: &str,
     price: &str,
 ) {
-    game.context.set_fill_style_str("#202020");
-    game.context.set_font("10px Arial");
-    let _ = game
-        .context
-        .fill_text_with_max_width(name, f64::from(x), f64::from(y + 13.0), 155.0);
-    game.context.set_fill_style_str("#53606a");
-    let _ = game
-        .context
-        .fill_text_with_max_width(price, f64::from(x), f64::from(y + 27.0), 155.0);
+    game.surface.context.set_fill_style_str("#202020");
+    game.surface.context.set_font("10px Arial");
+    let _ = game.surface.context.fill_text_with_max_width(
+        name,
+        f64::from(x),
+        f64::from(y + 13.0),
+        155.0,
+    );
+    game.surface.context.set_fill_style_str("#53606a");
+    let _ = game.surface.context.fill_text_with_max_width(
+        price,
+        f64::from(x),
+        f64::from(y + 27.0),
+        155.0,
+    );
 }
 
 fn draw_dialog_choices(
@@ -303,7 +313,7 @@ fn draw_dialog_choices(
     for (index, choice) in dialog
         .choices
         .iter()
-        .skip(game.interaction.choice_page * DIALOG_CHOICE_PAGE_SIZE)
+        .skip(game.ui.interaction.choice_page * DIALOG_CHOICE_PAGE_SIZE)
         .take(DIALOG_CHOICE_PAGE_SIZE)
         .enumerate()
     {
@@ -314,9 +324,9 @@ fn draw_dialog_choices(
             region.x,
             region.y + index as f32 * CHOICE_ROW_HEIGHT as f32 + 4.0,
         );
-        game.context.set_fill_style_str("#2f3437");
-        game.context.set_font("bold 12px Arial");
-        let _ = game.context.fill_text_with_max_width(
+        game.surface.context.set_fill_style_str("#2f3437");
+        game.surface.context.set_font("bold 12px Arial");
+        let _ = game.surface.context.fill_text_with_max_width(
             &choice.label,
             f64::from(window.x + region.x + 13.0),
             f64::from(window.y + region.y) + 14.0 + index as f64 * CHOICE_ROW_HEIGHT,
@@ -342,9 +352,9 @@ fn draw_dialog_heading(
     } else {
         format!("{} - {title}", interaction.npc_name)
     };
-    game.context.set_fill_style_str("#2f3437");
-    game.context.set_font("bold 13px Arial");
-    let _ = game.context.fill_text_with_max_width(
+    game.surface.context.set_fill_style_str("#2f3437");
+    game.surface.context.set_font("bold 13px Arial");
+    let _ = game.surface.context.fill_text_with_max_width(
         &heading,
         f64::from(window.x + region.x),
         f64::from(window.y + region.y + 13.0),
@@ -364,14 +374,14 @@ fn draw_wrapped_region(
     let Some(region) = region(layout, region_name) else {
         return;
     };
-    game.context.set_fill_style_str("#2f3437");
-    game.context.set_font("12px Arial");
+    game.surface.context.set_fill_style_str("#2f3437");
+    game.surface.context.set_font("12px Arial");
     for (index, line) in wrap_text(game, &clean_wz_text(source), f64::from(region.width))
         .into_iter()
         .take((f64::from(region.height) / DIALOG_LINE_HEIGHT) as usize)
         .enumerate()
     {
-        let _ = game.context.fill_text(
+        let _ = game.surface.context.fill_text(
             &line,
             f64::from(window.x + region.x),
             f64::from(window.y + region.y) + 13.0 + index as f64 * DIALOG_LINE_HEIGHT,
@@ -385,6 +395,7 @@ fn draw_npc_portrait(
     window: &GuiWindow,
 ) {
     let Some(npc) = game
+        .world
         .map
         .npcs
         .iter()
@@ -402,6 +413,7 @@ fn draw_shop_portrait(
     window: &GuiWindow,
 ) {
     let frame = game
+        .world
         .map
         .npcs
         .iter()
@@ -411,13 +423,14 @@ fn draw_shop_portrait(
     let Some(frame) = frame else {
         return;
     };
-    let Some(image) = ready_image(&game.images, &frame.asset_id) else {
+    let Some(image) = ready_image(&game.surface.images, &frame.asset_id) else {
         return;
     };
     let scale = (90.0_f64 / f64::from(frame.width))
         .min(90.0 / f64::from(frame.height))
         .min(1.0);
     let _ = game
+        .surface
         .context
         .draw_image_with_html_image_element_and_dw_and_dh(
             image,
@@ -436,7 +449,7 @@ fn draw_portrait_frame(
     let Some(frame) = frame else {
         return;
     };
-    let Some(image) = ready_image(&game.images, &frame.asset_id) else {
+    let Some(image) = ready_image(&game.surface.images, &frame.asset_id) else {
         return;
     };
     let scale = (90.0_f64 / f64::from(frame.width))
@@ -445,6 +458,7 @@ fn draw_portrait_frame(
     let width = f64::from(frame.width) * scale;
     let height = f64::from(frame.height) * scale;
     let _ = game
+        .surface
         .context
         .draw_image_with_html_image_element_and_dw_and_dh(
             image,
@@ -484,10 +498,11 @@ fn draw_template(
     let Some(template) = template else {
         return;
     };
-    let Some(image) = ready_image(&game.images, &template.asset_id) else {
+    let Some(image) = ready_image(&game.surface.images, &template.asset_id) else {
         return;
     };
     let _ = game
+        .surface
         .context
         .draw_image_with_html_image_element_and_dw_and_dh(
             image,
@@ -536,6 +551,7 @@ fn wrap_text(
                 format!("{line} {word}")
             };
             let width = game
+                .surface
                 .context
                 .measure_text(&candidate)
                 .map_or(candidate.chars().count() as f64 * 6.0, |metrics| {

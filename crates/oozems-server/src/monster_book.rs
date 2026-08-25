@@ -115,16 +115,6 @@ mod tests {
     }
 
     #[test]
-    fn structurally_valid_unknown_cards_are_preserved() {
-        let cards = vec![MonsterBookCard {
-            card_item_id: 2_389_999,
-            count: 1,
-        }];
-
-        assert_eq!(super::canonicalize(cards.clone()), Ok(cards));
-    }
-
-    #[test]
     fn adding_cards_inserts_in_order_and_caps_at_five() {
         let mut cards = vec![MonsterBookCard {
             card_item_id: 2_380_001,

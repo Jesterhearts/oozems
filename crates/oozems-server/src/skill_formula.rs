@@ -6,6 +6,10 @@ use std::path::PathBuf;
 use serde::Deserialize;
 use thiserror::Error;
 
+use crate::formula_parser::BinaryOperator;
+use crate::formula_parser::Expression;
+use crate::formula_parser::Parser;
+
 const VARIABLES: &[&str] = &[
     "Accuracy",
     "AccuracyRatio",
@@ -74,7 +78,7 @@ struct FormulaCategory<Key> {
 pub struct FormulaProfile {
     path: String,
     name: String,
-    properties: BTreeMap<String, Expression>,
+    properties: BTreeMap<String, Expression<SkillAtom>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -145,28 +149,13 @@ struct ProfileSelectionFile {
 }
 
 #[derive(Clone, Debug)]
-enum Expression {
+enum SkillAtom {
     Literal(f64),
     Variable(String),
-    Negate(Box<Expression>),
-    Binary {
-        operator: BinaryOperator,
-        left: Box<Expression>,
-        right: Box<Expression>,
-    },
     Function {
         function: Function,
-        arguments: Vec<Expression>,
+        arguments: Vec<Expression<SkillAtom>>,
     },
-}
-
-#[derive(Clone, Copy, Debug)]
-enum BinaryOperator {
-    Add,
-    Subtract,
-    Multiply,
-    Divide,
-    Exponentiate,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -175,11 +164,6 @@ enum Function {
     Truncate,
     Minimum,
     Maximum,
-}
-
-struct FormulaParser<'a> {
-    input: &'a [u8],
-    position: usize,
 }
 
 #[derive(Debug, Error)]
@@ -492,12 +476,14 @@ fn compile_profiles(
 fn compile_formula_source(
     formula: &str,
     source: FormulaSource,
-) -> Result<Expression, String> {
+) -> Result<Expression<SkillAtom>, String> {
     match source {
         FormulaSource::Text(source) => parse_formula(&source)
             .map_err(|error| format!("formula {formula:?} is invalid: {error}")),
-        FormulaSource::Integer(value) => Ok(Expression::Literal(value as f64)),
-        FormulaSource::Decimal(value) if value.is_finite() => Ok(Expression::Literal(value)),
+        FormulaSource::Integer(value) => Ok(Expression::Atom(SkillAtom::Literal(value as f64))),
+        FormulaSource::Decimal(value) if value.is_finite() => {
+            Ok(Expression::Atom(SkillAtom::Literal(value)))
+        }
         FormulaSource::Decimal(_) => Err(format!("formula {formula:?} must be finite")),
     }
 }
@@ -598,34 +584,34 @@ pub fn evaluate_damage_profile(
     })
 }
 
-fn validate_variables(expression: &Expression) -> Result<(), String> {
+fn validate_variables(expression: &Expression<SkillAtom>) -> Result<(), String> {
     match expression {
-        Expression::Variable(name) if !VARIABLES.contains(&name.as_str()) => {
-            Err(format!("unknown variable {name:?}"))
-        }
+        Expression::Atom(atom) => validate_atom_variables(atom),
         Expression::Negate(value) => validate_variables(value),
         Expression::Binary { left, right, .. } => {
             validate_variables(left)?;
             validate_variables(right)
         }
-        Expression::Function { arguments, .. } => arguments.iter().try_for_each(validate_variables),
-        Expression::Literal(_) | Expression::Variable(_) => Ok(()),
+    }
+}
+
+fn validate_atom_variables(atom: &SkillAtom) -> Result<(), String> {
+    match atom {
+        SkillAtom::Variable(name) if !VARIABLES.contains(&name.as_str()) => {
+            Err(format!("unknown variable {name:?}"))
+        }
+        SkillAtom::Function { arguments, .. } => arguments.iter().try_for_each(validate_variables),
+        SkillAtom::Literal(_) | SkillAtom::Variable(_) => Ok(()),
     }
 }
 
 fn evaluate_expression(
     formula: &str,
-    expression: &Expression,
+    expression: &Expression<SkillAtom>,
     variables: &BTreeMap<&str, f64>,
 ) -> Result<f64, FormulaEvaluationError> {
     let value = match expression {
-        Expression::Literal(value) => *value,
-        Expression::Variable(name) => *variables.get(name.as_str()).ok_or_else(|| {
-            FormulaEvaluationError::MissingVariable {
-                formula: formula.to_owned(),
-                variable: name.clone(),
-            }
-        })?,
+        Expression::Atom(atom) => evaluate_atom(formula, atom, variables)?,
         Expression::Negate(value) => -evaluate_expression(formula, value, variables)?,
         Expression::Binary {
             operator,
@@ -636,16 +622,6 @@ fn evaluate_expression(
             let right = evaluate_expression(formula, right, variables)?;
             evaluate_binary(formula, *operator, left, right)?
         }
-        Expression::Function {
-            function,
-            arguments,
-        } => {
-            let values = arguments
-                .iter()
-                .map(|argument| evaluate_expression(formula, argument, variables))
-                .collect::<Result<Vec<_>, _>>()?;
-            evaluate_function(*function, &values)
-        }
     };
     if !value.is_finite() {
         return Err(arithmetic_error(
@@ -654,6 +630,32 @@ fn evaluate_expression(
         ));
     }
     Ok(value)
+}
+
+fn evaluate_atom(
+    formula: &str,
+    atom: &SkillAtom,
+    variables: &BTreeMap<&str, f64>,
+) -> Result<f64, FormulaEvaluationError> {
+    match atom {
+        SkillAtom::Literal(value) => Ok(*value),
+        SkillAtom::Variable(name) => variables.get(name.as_str()).copied().ok_or_else(|| {
+            FormulaEvaluationError::MissingVariable {
+                formula: formula.to_owned(),
+                variable: name.clone(),
+            }
+        }),
+        SkillAtom::Function {
+            function,
+            arguments,
+        } => {
+            let values = arguments
+                .iter()
+                .map(|argument| evaluate_expression(formula, argument, variables))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(evaluate_function(*function, &values))
+        }
+    }
 }
 
 fn evaluate_binary(
@@ -696,216 +698,61 @@ fn arithmetic_error(
     }
 }
 
-fn parse_formula(source: &str) -> Result<Expression, String> {
+fn parse_formula(source: &str) -> Result<Expression<SkillAtom>, String> {
     if source.trim().is_empty() || !source.is_ascii() {
         return Err("formulas must contain non-empty ASCII text".to_owned());
     }
-    let mut parser = FormulaParser {
-        input: source.as_bytes(),
-        position: 0,
-    };
-    let expression = parser.parse_addition()?;
+    crate::formula_parser::parse(source, parse_atom)
+}
+
+fn parse_atom(parser: &mut Parser<'_, SkillAtom>) -> Result<SkillAtom, String> {
     parser.skip_whitespace();
-    if parser.position != parser.input.len() {
-        return parser.error("unexpected trailing input");
-    }
-    Ok(expression)
-}
-
-impl FormulaParser<'_> {
-    fn parse_addition(&mut self) -> Result<Expression, String> {
-        let mut expression = self.parse_multiplication()?;
-        loop {
-            let operator = if self.consume(b'+') {
-                BinaryOperator::Add
-            } else if self.consume(b'-') {
-                BinaryOperator::Subtract
-            } else {
-                return Ok(expression);
-            };
-            expression = binary(operator, expression, self.parse_multiplication()?);
-        }
-    }
-
-    fn parse_multiplication(&mut self) -> Result<Expression, String> {
-        let mut expression = self.parse_unary()?;
-        loop {
-            let operator = if self.consume(b'*') {
-                BinaryOperator::Multiply
-            } else if self.consume(b'/') {
-                BinaryOperator::Divide
-            } else {
-                return Ok(expression);
-            };
-            expression = binary(operator, expression, self.parse_unary()?);
-        }
-    }
-
-    fn parse_unary(&mut self) -> Result<Expression, String> {
-        if self.consume(b'+') {
-            return self.parse_unary();
-        }
-        if self.consume(b'-') {
-            return Ok(Expression::Negate(Box::new(self.parse_unary()?)));
-        }
-        self.parse_power()
-    }
-
-    fn parse_power(&mut self) -> Result<Expression, String> {
-        let base = self.parse_primary()?;
-        if self.consume(b'^') {
-            return Ok(binary(
-                BinaryOperator::Exponentiate,
-                base,
-                self.parse_unary()?,
-            ));
-        }
-        Ok(base)
-    }
-
-    fn parse_primary(&mut self) -> Result<Expression, String> {
-        self.skip_whitespace();
-        if self.consume(b'(') {
-            let expression = self.parse_addition()?;
-            self.expect(b')')?;
-            return Ok(expression);
-        }
-        if self
-            .peek()
-            .is_some_and(|byte| byte.is_ascii_digit() || byte == b'.')
-        {
-            return self.parse_number().map(Expression::Literal);
-        }
-        if self.peek().is_some_and(|byte| byte.is_ascii_alphabetic()) {
-            return self.parse_identifier();
-        }
-        self.error("expected a number, variable, function, or parenthesized expression")
-    }
-
-    fn parse_identifier(&mut self) -> Result<Expression, String> {
-        let name = self.identifier()?;
-        if !self.consume(b'(') {
-            return Ok(Expression::Variable(name));
-        }
-        let function = match name.as_str() {
-            "floor" => Function::Floor,
-            "trunc" => Function::Truncate,
-            "min" => Function::Minimum,
-            "max" => Function::Maximum,
-            _ => return self.error(&format!("unknown function {name:?}")),
-        };
-        let mut arguments = vec![self.parse_addition()?];
-        while self.consume(b',') {
-            arguments.push(self.parse_addition()?);
-        }
-        self.expect(b')')?;
-        let expected = match function {
-            Function::Floor | Function::Truncate => 1,
-            Function::Minimum | Function::Maximum => 2,
-        };
-        if arguments.len() != expected {
-            return self.error(&format!(
-                "function {name:?} requires {expected} argument(s)"
-            ));
-        }
-        Ok(Expression::Function {
-            function,
-            arguments,
-        })
-    }
-
-    fn identifier(&mut self) -> Result<String, String> {
-        self.skip_whitespace();
-        let start = self.position;
-        while self
-            .peek()
-            .is_some_and(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-        {
-            self.position += 1;
-        }
-        if start == self.position {
-            return self.error("expected an identifier");
-        }
-        Ok(std::str::from_utf8(&self.input[start..self.position])
-            .expect("formula is validated as ASCII")
-            .to_owned())
-    }
-
-    fn parse_number(&mut self) -> Result<f64, String> {
-        self.skip_whitespace();
-        let start = self.position;
-        let mut decimal_points = 0;
-        while self.peek().is_some_and(|byte| {
-            if byte == b'.' {
-                decimal_points += 1;
-                true
-            } else {
-                byte.is_ascii_digit()
-            }
-        }) {
-            self.position += 1;
-        }
-        if decimal_points > 1 || start == self.position {
-            return self.error("invalid number");
-        }
-        let value = std::str::from_utf8(&self.input[start..self.position])
-            .expect("formula is validated as ASCII");
-        value
+    if parser
+        .peek()
+        .is_some_and(|byte| byte.is_ascii_digit() || byte == b'.')
+    {
+        let (start, source) = parser.number()?;
+        let value = source
             .parse()
-            .map_err(|_| format!("invalid number at byte {start}"))
+            .map_err(|_| format!("invalid number at byte {start}"))?;
+        return Ok(SkillAtom::Literal(value));
     }
-
-    fn expect(
-        &mut self,
-        expected: u8,
-    ) -> Result<(), String> {
-        if self.consume(expected) {
-            return Ok(());
-        }
-        self.error(&format!("expected {:?}", char::from(expected)))
+    if parser.peek().is_some_and(|byte| byte.is_ascii_alphabetic()) {
+        return parse_identifier(parser);
     }
-
-    fn consume(
-        &mut self,
-        expected: u8,
-    ) -> bool {
-        self.skip_whitespace();
-        if self.peek() == Some(expected) {
-            self.position += 1;
-            true
-        } else {
-            false
-        }
-    }
-
-    fn skip_whitespace(&mut self) {
-        while self.peek().is_some_and(|byte| byte.is_ascii_whitespace()) {
-            self.position += 1;
-        }
-    }
-
-    fn peek(&self) -> Option<u8> {
-        self.input.get(self.position).copied()
-    }
-
-    fn error<T>(
-        &self,
-        message: &str,
-    ) -> Result<T, String> {
-        Err(format!("{message} at byte {}", self.position))
-    }
+    parser.error("expected a number, variable, function, or parenthesized expression")
 }
 
-fn binary(
-    operator: BinaryOperator,
-    left: Expression,
-    right: Expression,
-) -> Expression {
-    Expression::Binary {
-        operator,
-        left: Box::new(left),
-        right: Box::new(right),
+fn parse_identifier(parser: &mut Parser<'_, SkillAtom>) -> Result<SkillAtom, String> {
+    let name = parser.identifier()?;
+    if !parser.consume(b'(') {
+        return Ok(SkillAtom::Variable(name));
     }
+    let function = match name.as_str() {
+        "floor" => Function::Floor,
+        "trunc" => Function::Truncate,
+        "min" => Function::Minimum,
+        "max" => Function::Maximum,
+        _ => return parser.error(&format!("unknown function {name:?}")),
+    };
+    let mut arguments = vec![parser.parse_expression()?];
+    while parser.consume(b',') {
+        arguments.push(parser.parse_expression()?);
+    }
+    parser.expect(b')')?;
+    let expected = match function {
+        Function::Floor | Function::Truncate => 1,
+        Function::Minimum | Function::Maximum => 2,
+    };
+    if arguments.len() != expected {
+        return parser.error(&format!(
+            "function {name:?} requires {expected} argument(s)"
+        ));
+    }
+    Ok(SkillAtom::Function {
+        function,
+        arguments,
+    })
 }
 
 #[cfg(test)]
@@ -967,6 +814,41 @@ profile = "unarmed"
             evaluate_profile_property(bare_hands, "attack", &[("CharacterLevel", 200.0)],)
                 .expect("capped attack"),
             31.0,
+        );
+    }
+
+    #[test]
+    fn skill_formulas_apply_shared_precedence_and_right_associative_exponents() {
+        let formulas = load(
+            r#"
+source_url = "https://example.test/formulas"
+
+[weapon_profiles.unarmed]
+attack = "1"
+minimum = "1"
+maximum = "1"
+
+[weapons.bare_hands]
+profile = "unarmed"
+
+[skill_profiles.math]
+precedence = "2 + SkillLevel * 2 ^ 3 ^ 2 / 256 - 1"
+signed = "-2 ^ 2 + 5"
+
+[skills."1"]
+profile = "math"
+"#,
+        );
+        let math = formulas.skill_profile(1).expect("math profile");
+
+        assert_eq!(
+            evaluate_profile_property(math, "precedence", &[("SkillLevel", 1.0)])
+                .expect("precedence formula"),
+            3.0,
+        );
+        assert_eq!(
+            evaluate_profile_property(math, "signed", &[]).expect("signed formula"),
+            1.0,
         );
     }
 

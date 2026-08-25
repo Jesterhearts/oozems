@@ -110,7 +110,7 @@ pub(super) fn draw(
     camera_y: f64,
     layer: i32,
 ) {
-    for npc in &game.map.npcs {
+    for npc in &game.world.map.npcs {
         if npc.layer != layer {
             continue;
         }
@@ -151,8 +151,8 @@ pub(super) fn at_point(
     camera_x: f64,
     camera_y: f64,
 ) -> Option<u32> {
-    game.world_layers.iter().rev().find_map(|layer| {
-        game.map.npcs.iter().rev().find_map(|npc| {
+    game.world.world_layers.iter().rev().find_map(|layer| {
+        game.world.map.npcs.iter().rev().find_map(|npc| {
             if npc.layer != *layer {
                 return None;
             }
@@ -177,23 +177,27 @@ fn ready_frame<'a>(
     npc: &'a Npc,
 ) -> Option<&'a NpcFrame> {
     let standing_frames = standing_frames(npc)?;
-    let sequence = frame_sequence(npc, &game.npc_animations, game.frame_time_ms);
+    let sequence = frame_sequence(npc, &game.world.npc_animations, game.clock.now_ms);
     let preferred_index = if sequence.one_shot {
-        one_shot_frame_index(sequence.frames, sequence.elapsed_ms)
+        crate::animation::frame_index_exact(
+            sequence.frames.iter().map(|frame| frame.delay_ms),
+            sequence.elapsed_ms,
+            crate::animation::Playback::Once,
+        )
     } else {
         animation_frame_index(sequence.frames, sequence.elapsed_ms)
     }?;
     if let Some(index) = assets::ready_or_fallback_index(
-        &game.images,
+        &game.surface.images,
         sequence.frames.iter().map(|frame| frame.asset_id.as_str()),
         preferred_index,
     ) {
         return sequence.frames.get(index);
     }
     if sequence.one_shot {
-        let default_index = animation_frame_index(standing_frames, game.frame_time_ms)?;
+        let default_index = animation_frame_index(standing_frames, game.clock.now_ms)?;
         let index = assets::ready_or_fallback_index(
-            &game.images,
+            &game.surface.images,
             standing_frames.iter().map(|frame| frame.asset_id.as_str()),
             default_index,
         )?;
@@ -260,35 +264,29 @@ fn point_in_frame(
     width: f64,
     height: f64,
 ) -> bool {
-    f64::from(point.x) >= left
-        && f64::from(point.x) <= left + width
-        && f64::from(point.y) >= top
-        && f64::from(point.y) <= top + height
+    crate::hit_test::contains_inclusive(
+        crate::hit_test::Rect {
+            x: left,
+            y: top,
+            width,
+            height,
+        },
+        crate::hit_test::Point {
+            x: f64::from(point.x),
+            y: f64::from(point.y),
+        },
+    )
 }
 
 fn animation_frame_index(
     frames: &[NpcFrame],
     timestamp_ms: f64,
 ) -> Option<usize> {
-    super::timed_frame_index(frames.iter().map(|frame| frame.delay_ms), timestamp_ms)
-}
-
-fn one_shot_frame_index(
-    frames: &[NpcFrame],
-    elapsed_ms: f64,
-) -> Option<usize> {
-    let mut remaining = elapsed_ms.max(0.0) as u64;
-    if remaining >= animation_duration_ms(frames) {
-        return None;
-    }
-    for (index, frame) in frames.iter().enumerate() {
-        let delay = u64::from(frame.delay_ms);
-        if remaining < delay {
-            return Some(index);
-        }
-        remaining = remaining.saturating_sub(delay);
-    }
-    None
+    crate::animation::frame_index(
+        frames.iter().map(|frame| frame.delay_ms),
+        timestamp_ms,
+        crate::animation::Playback::Loop,
+    )
 }
 
 fn animation_duration_ms(frames: &[NpcFrame]) -> u64 {
@@ -321,7 +319,6 @@ mod tests {
     use super::frame_sequence;
     use super::frame_x;
     use super::install_event;
-    use super::one_shot_frame_index;
     use super::point_in_frame;
     use super::standing_frames;
     use crate::game_gui::CanvasPoint;
@@ -451,12 +448,20 @@ mod tests {
         let first = frame_sequence(npc, &state, 199.0);
         assert!(first.one_shot);
         assert_eq!(
-            one_shot_frame_index(first.frames, first.elapsed_ms),
+            crate::animation::frame_index_exact(
+                first.frames.iter().map(|frame| frame.delay_ms),
+                first.elapsed_ms,
+                crate::animation::Playback::Once,
+            ),
             Some(0)
         );
         let second = frame_sequence(npc, &state, 200.0);
         assert_eq!(
-            one_shot_frame_index(second.frames, second.elapsed_ms),
+            crate::animation::frame_index_exact(
+                second.frames.iter().map(|frame| frame.delay_ms),
+                second.elapsed_ms,
+                crate::animation::Playback::Once,
+            ),
             Some(1)
         );
         let final_named = frame_sequence(npc, &state, 399.0);
@@ -516,8 +521,12 @@ mod tests {
         let mut state = NpcAnimationPlaybackState::default();
         install_event(&mut state, &map, animation_event(5), 5, 5, 100.0).expect("animation event");
         let sequence = frame_sequence(npc, &state, 100.0);
-        let frame = &sequence.frames
-            [one_shot_frame_index(sequence.frames, sequence.elapsed_ms).expect("named frame")];
+        let frame = &sequence.frames[crate::animation::frame_index_exact(
+            sequence.frames.iter().map(|frame| frame.delay_ms),
+            sequence.elapsed_ms,
+            crate::animation::Playback::Once,
+        )
+        .expect("named frame")];
         let left = f64::from(frame_x(100.0, frame, true));
 
         assert_eq!(left, 85.0);

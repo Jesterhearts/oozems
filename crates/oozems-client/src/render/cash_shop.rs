@@ -16,17 +16,17 @@ const CARD_TEXT_X: f32 = 78.0;
 const CARD_TEXT_WIDTH: f64 = 117.0;
 
 pub(super) fn draw(game: &Game) {
-    let viewport_width = game.canvas.width() as f32;
-    let viewport_height = game.canvas.height() as f32;
-    game.context.set_fill_style_str("#15191e");
-    game.context.fill_rect(
+    let viewport_width = game.surface.canvas.width() as f32;
+    let viewport_height = game.surface.canvas.height() as f32;
+    game.surface.context.set_fill_style_str("#15191e");
+    game.surface.context.fill_rect(
         0.0,
         0.0,
         f64::from(viewport_width),
         f64::from(viewport_height),
     );
 
-    let Some(window) = game.gui.cash_shop_window.as_ref() else {
+    let Some(window) = game.ui.gui.cash_shop_window.as_ref() else {
         return;
     };
     let Some(transform) = cash_shop_ui::screen_transform(window, viewport_width, viewport_height)
@@ -37,12 +37,14 @@ pub(super) fn draw(game: &Game) {
         return;
     };
 
-    game.context.save();
+    game.surface.context.save();
     let transformed = game
+        .surface
         .context
         .translate(f64::from(transform.origin_x), f64::from(transform.origin_y))
         .and_then(|()| {
-            game.context
+            game.surface
+                .context
                 .scale(f64::from(transform.scale), f64::from(transform.scale))
         });
     if transformed.is_ok() && super::draw_window(game, window) {
@@ -51,16 +53,16 @@ pub(super) fn draw(game: &Game) {
         draw_offers(game, layout);
         draw_request_state(game, layout);
     }
-    game.context.restore();
+    game.surface.context.restore();
 }
 
 fn draw_character_preview(game: &Game) {
     character_render::draw_character(
-        &game.context,
-        &game.images,
-        &game.character_sprites,
+        &game.surface.context,
+        &game.surface.images,
+        &game.world.character_sprites,
         CharacterAnimation::Idle,
-        character_animation_elapsed_ms(game.character_animation, game.frame_time_ms),
+        character_animation_elapsed_ms(game.world.character_animation, game.clock.now_ms),
         CharacterPlacement {
             anchor_x: 130.0,
             anchor_y: 173.0,
@@ -71,11 +73,14 @@ fn draw_character_preview(game: &Game) {
 }
 
 fn draw_account_details(game: &Game) {
-    game.context.set_fill_style_str("#263238");
-    game.context.set_font("bold 12px Arial");
-    let _ = game.context.fill_text(&game.player.name, 49.0, 225.0);
-    let _ = game.context.fill_text_with_max_width(
-        &currency_amount_label(game.player.cash_points, &game.cash_shop.currency_name),
+    game.surface.context.set_fill_style_str("#263238");
+    game.surface.context.set_font("bold 12px Arial");
+    let _ = game
+        .surface
+        .context
+        .fill_text(&game.player.name, 49.0, 225.0);
+    let _ = game.surface.context.fill_text_with_max_width(
+        &currency_amount_label(game.player.cash_points, &game.ui.cash_shop.currency_name),
         592.0,
         92.0,
         180.0,
@@ -86,7 +91,7 @@ fn draw_offers(
     game: &Game,
     layout: &GuiLayout,
 ) {
-    let Some(offers) = game.cash_shop.offers.as_ref() else {
+    let Some(offers) = game.ui.cash_shop.offers.as_ref() else {
         return;
     };
     for (index, offer) in offers.iter().enumerate() {
@@ -106,18 +111,18 @@ fn draw_offers(
         let card_y = card.y;
         if let Some(definition) = super::item_definition(game, offer.item_id) {
             super::draw_item_icon(game, definition, card_x + CARD_ICON_X, card_y + CARD_ICON_Y);
-            game.context.set_fill_style_str("#25323a");
-            game.context.set_font("bold 11px Arial");
-            let _ = game.context.fill_text_with_max_width(
+            game.surface.context.set_fill_style_str("#25323a");
+            game.surface.context.set_font("bold 11px Arial");
+            let _ = game.surface.context.fill_text_with_max_width(
                 &definition.name,
                 f64::from(card_x + CARD_TEXT_X),
                 f64::from(card_y + 17.0),
                 CARD_TEXT_WIDTH,
             );
         } else {
-            game.context.set_fill_style_str("#25323a");
-            game.context.set_font("bold 11px Arial");
-            let _ = game.context.fill_text(
+            game.surface.context.set_fill_style_str("#25323a");
+            game.surface.context.set_font("bold 11px Arial");
+            let _ = game.surface.context.fill_text(
                 &format!("Item {}", offer.item_id),
                 f64::from(card_x + CARD_TEXT_X),
                 f64::from(card_y + 19.0),
@@ -134,17 +139,17 @@ fn draw_offer_details(
     card_x: f32,
     card_y: f32,
 ) {
-    game.context.set_font("10px Arial");
-    game.context.set_fill_style_str("#4b5f6b");
-    let _ = game.context.fill_text(
+    game.surface.context.set_font("10px Arial");
+    game.surface.context.set_fill_style_str("#4b5f6b");
+    let _ = game.surface.context.fill_text(
         &duration_label(offer.duration_ms),
         f64::from(card_x + CARD_TEXT_X),
         f64::from(card_y + 36.0),
     );
-    game.context.set_fill_style_str("#b45d26");
-    game.context.set_font("bold 10px Arial");
-    let _ = game.context.fill_text_with_max_width(
-        &currency_amount_label(offer.price, &game.cash_shop.currency_name),
+    game.surface.context.set_fill_style_str("#b45d26");
+    game.surface.context.set_font("bold 10px Arial");
+    let _ = game.surface.context.fill_text_with_max_width(
+        &currency_amount_label(offer.price, &game.ui.cash_shop.currency_name),
         f64::from(card_x + CARD_TEXT_X),
         f64::from(card_y + 51.0),
         CARD_TEXT_WIDTH,
@@ -160,10 +165,11 @@ fn draw_buy_button(
     let Some(template) = game_gui::named_sprite_template(layout, "cash-shop-buy") else {
         return;
     };
-    let Some(image) = ready_image(&game.images, &template.asset_id) else {
+    let Some(image) = ready_image(&game.surface.images, &template.asset_id) else {
         return;
     };
     let _ = game
+        .surface
         .context
         .draw_image_with_html_image_element_and_dw_and_dh(
             image,
@@ -178,11 +184,11 @@ fn draw_request_state(
     game: &Game,
     layout: &GuiLayout,
 ) {
-    let message = if game.cash_shop.request_in_flight() {
+    let message = if game.cash_shop_request_in_flight() {
         Some("Processing...")
-    } else if let Some(error) = game.cash_shop.load_error.as_deref() {
+    } else if let Some(error) = game.ui.cash_shop.load_error.as_deref() {
         Some(error)
-    } else if game.cash_shop.offers.as_ref().is_some_and(Vec::is_empty) {
+    } else if game.ui.cash_shop.offers.as_ref().is_some_and(Vec::is_empty) {
         Some("No Cash Shop offers are configured.")
     } else {
         None
@@ -190,11 +196,13 @@ fn draw_request_state(
     let Some(message) = message else {
         return;
     };
-    game.context.set_fill_style_str("rgba(245, 248, 250, 0.94)");
-    game.context.fill_rect(236.0, 270.0, 428.0, 48.0);
-    game.context.set_fill_style_str("#38464f");
-    game.context.set_font("bold 12px Arial");
-    let _ = game.context.fill_text_with_max_width(
+    game.surface
+        .context
+        .set_fill_style_str("rgba(245, 248, 250, 0.94)");
+    game.surface.context.fill_rect(236.0, 270.0, 428.0, 48.0);
+    game.surface.context.set_fill_style_str("#38464f");
+    game.surface.context.set_font("bold 12px Arial");
+    let _ = game.surface.context.fill_text_with_max_width(
         message,
         252.0,
         299.0,

@@ -63,9 +63,12 @@ pub struct ProjectedEffects {
 pub enum EffectStoreError {
     #[error("the active effect store is unavailable")]
     Store,
+    #[error("the active effects changed during a player transaction")]
+    Conflict,
 }
 
 impl PlayerEffects {
+    #[cfg(test)]
     pub fn revision(&self) -> u64 {
         self.revision
     }
@@ -105,6 +108,7 @@ pub fn snapshot(
     Ok(player.clone())
 }
 
+#[cfg(test)]
 pub fn commit(
     effects: &ActiveEffects,
     player_id: &str,
@@ -118,6 +122,41 @@ pub fn commit(
     if staged.revision >= current_revision {
         players.insert(player_id.to_owned(), staged);
     }
+    Ok(())
+}
+
+pub fn commit_staged(
+    effects: &ActiveEffects,
+    player_id: &str,
+    original: &PlayerEffects,
+    staged: &PlayerEffects,
+) -> Result<(), EffectStoreError> {
+    let mut players = effects
+        .players
+        .lock()
+        .map_err(|_| EffectStoreError::Store)?;
+    let current = players.get(player_id).cloned().unwrap_or_default();
+    if &current != original {
+        return Err(EffectStoreError::Conflict);
+    }
+    players.insert(player_id.to_owned(), staged.clone());
+    Ok(())
+}
+
+pub fn rollback_staged(
+    effects: &ActiveEffects,
+    player_id: &str,
+    staged: &PlayerEffects,
+    original: &PlayerEffects,
+) -> Result<(), EffectStoreError> {
+    let mut players = effects
+        .players
+        .lock()
+        .map_err(|_| EffectStoreError::Store)?;
+    if players.get(player_id) != Some(staged) {
+        return Err(EffectStoreError::Conflict);
+    }
+    players.insert(player_id.to_owned(), original.clone());
     Ok(())
 }
 

@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::fs;
 use std::io::Cursor;
 use std::io::Write;
@@ -16,9 +15,12 @@ use wzlib_rs::wz::binary_writer::WzBinaryWriter;
 use wzlib_rs::wz::directory::compute_image_checksum;
 use wzlib_rs::wz::header::WzHeader;
 use wzlib_rs::wz::image_writer::write_image;
+use wzlib_rs::wz::mcv::McvHeader;
 use wzlib_rs::wz::properties::WzProperty;
+use wzlib_rs::wz::types::WzPngFormat;
 
 use crate::archive::Archive;
+use crate::archive::ImageDescriptor;
 use crate::archive::Location;
 use crate::archive::OpenOptions;
 use crate::archive::entry_paths;
@@ -52,6 +54,16 @@ struct EditedArchive {
     old_value: Value,
     new_value: Value,
     unchanged_images: usize,
+}
+
+struct EditedImage {
+    image_path: String,
+    property_path: String,
+    properties: Vec<(String, WzProperty)>,
+    bytes: Vec<u8>,
+    kind: &'static str,
+    old_value: Value,
+    new_value: Value,
 }
 
 pub fn set_value(
@@ -113,23 +125,42 @@ fn edit_archive(
     path: &str,
     value: Value,
 ) -> Result<EditedArchive> {
-    let (target_image_path, target_image, property_segments) =
+    let edit = edit_image(&archive, path, &value)?;
+    let original_images = image_descriptors(&archive.file.directory);
+    let output = rebuild_archive(&mut archive, &original_images, &edit)?;
+    let bytes = validate_rebuilt_archive(&archive, &original_images, &edit, output)?;
+
+    Ok(EditedArchive {
+        bytes,
+        path: edit.property_path,
+        kind: edit.kind,
+        old_value: edit.old_value,
+        new_value: edit.new_value,
+        unchanged_images: original_images.len().saturating_sub(1),
+    })
+}
+
+fn edit_image(
+    archive: &Archive,
+    path: &str,
+    value: &Value,
+) -> Result<EditedImage> {
+    let (image_path, mut parsed_image, property_segments) =
         match resolve_location(&archive.file.directory, path)? {
             Location::Directory { .. } => bail!("cannot set a directory value: {path}"),
             Location::Image {
                 entry,
                 path,
                 property_segments,
-            } => (path, entry.clone(), property_segments),
+            } => (path, parse_image(archive, entry)?, property_segments),
         };
     if property_segments.is_empty() {
-        bail!("cannot set an image value; append a property path after {target_image_path}");
+        bail!("cannot set an image value; append a property path after {image_path}");
     }
 
-    let mut parsed_image = parse_image(&archive, &target_image)?;
     let property_path = property_segments
         .iter()
-        .fold(target_image_path.clone(), |path, segment| {
+        .fold(image_path.clone(), |path, segment| {
             crate::archive::join_path(&path, segment)
         });
     let (name, property) = find_property_mut(&mut parsed_image.properties, &property_segments)?;
@@ -137,91 +168,151 @@ fn edit_archive(
     let old_value = old_summary
         .value
         .context("only scalar and vector properties can be set")?;
-    replace_value(property, &value)?;
+    replace_value(property, value)?;
     let new_summary = property_summary(name, property, &property_path);
     let new_value = new_summary
         .value
         .context("edited property did not produce a value")?;
+    let bytes = serialize_image(&parsed_image.properties, parsed_image.iv)?;
 
-    let serialized_image = serialize_image(&parsed_image.properties, parsed_image.iv)?;
-    let descriptors = image_descriptors(&archive.file.directory);
-    let target_count = descriptors
-        .iter()
-        .filter(|descriptor| descriptor.path == target_image_path)
-        .count();
-    if target_count != 1 {
-        bail!("expected one image at {target_image_path}, found {target_count}");
-    }
-
-    let blobs: Vec<Cow<'_, [u8]>> = descriptors
-        .iter()
-        .map(|descriptor| {
-            if descriptor.path == target_image_path {
-                Ok(Cow::Owned(serialized_image.clone()))
-            } else {
-                image_bytes(&archive.data, &descriptor.entry).map(Cow::Borrowed)
-            }
-        })
-        .collect::<Result<_>>()?;
-    let blob_refs: Vec<&[u8]> = blobs.iter().map(AsRef::as_ref).collect();
-    let consumed = archive.file.directory.attach_image_data(&blob_refs)?;
-    if consumed != blob_refs.len() {
-        bail!(
-            "archive directory consumed {consumed} of {} image blobs",
-            blob_refs.len()
-        );
-    }
-    let output = archive.file.save_with_image_data(&blob_refs)?;
-
-    let validation_options = OpenOptions {
-        region: archive.region,
-        version: Some(archive.file.version),
-    };
-    let validated = parse_archive(output, archive.source.clone(), validation_options)
-        .context("rebuilt archive failed validation")?;
-    let validated_image = match resolve_location(&validated.file.directory, &target_image_path)? {
-        Location::Image { entry, .. } => parse_image(&validated, entry)?,
-        Location::Directory { .. } => {
-            bail!("rebuilt archive replaced image {target_image_path} with a directory")
-        }
-    };
-    if !property_lists_equal(&validated_image.properties, &parsed_image.properties) {
-        bail!("rebuilt archive changed properties outside {property_path}");
-    }
-
-    let validated_descriptors = image_descriptors(&validated.file.directory);
-    if validated_descriptors.len() != descriptors.len() {
-        bail!("rebuilt archive changed the number of images");
-    }
-    for (original, rebuilt) in descriptors.iter().zip(&validated_descriptors) {
-        if original.path != rebuilt.path {
-            bail!("rebuilt archive changed image path {}", original.path);
-        }
-        let rebuilt_bytes = image_bytes(&validated.data, &rebuilt.entry)?;
-        if compute_image_checksum(rebuilt_bytes) != rebuilt.entry.checksum {
-            bail!("rebuilt image {} has an invalid checksum", rebuilt.path);
-        }
-        if original.path != target_image_path
-            && image_bytes(&archive.data, &original.entry)? != rebuilt_bytes
-        {
-            bail!("rebuilt archive changed unedited image {}", original.path);
-        }
-    }
-    let validated_node = get(&validated, &property_path)
-        .context("rebuilt archive does not contain the edited property")?;
-    if validated_node.kind != new_summary.kind || validated_node.value.as_ref() != Some(&new_value)
-    {
-        bail!("rebuilt archive did not preserve the requested value at {property_path}");
-    }
-
-    Ok(EditedArchive {
-        bytes: validated.data,
-        path: property_path,
+    Ok(EditedImage {
+        image_path,
+        property_path,
+        properties: parsed_image.properties,
+        bytes,
         kind: new_summary.kind,
         old_value,
         new_value,
-        unchanged_images: descriptors.len().saturating_sub(1),
     })
+}
+
+fn rebuild_archive(
+    archive: &mut Archive,
+    images: &[ImageDescriptor],
+    edit: &EditedImage,
+) -> Result<Vec<u8>> {
+    let target_count = images
+        .iter()
+        .filter(|image| image.path == edit.image_path)
+        .count();
+    if target_count != 1 {
+        bail!(
+            "expected one image at {}, found {target_count}",
+            edit.image_path
+        );
+    }
+
+    let blobs = images
+        .iter()
+        .map(|image| {
+            if image.path == edit.image_path {
+                Ok(edit.bytes.as_slice())
+            } else {
+                image_bytes(&archive.data, &image.entry)
+            }
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let consumed = archive.file.directory.attach_image_data(&blobs)?;
+    if consumed != blobs.len() {
+        bail!(
+            "archive directory consumed {consumed} of {} image blobs",
+            blobs.len()
+        );
+    }
+    archive
+        .file
+        .save_with_image_data(&blobs)
+        .map_err(Into::into)
+}
+
+fn validate_rebuilt_archive(
+    original: &Archive,
+    original_images: &[ImageDescriptor],
+    edit: &EditedImage,
+    output: Vec<u8>,
+) -> Result<Vec<u8>> {
+    let validation_options = OpenOptions {
+        region: original.region,
+        version: Some(original.file.version),
+    };
+    let validated = parse_archive(output, original.source.clone(), validation_options)
+        .context("rebuilt archive failed validation")?;
+
+    validate_edited_property_tree(&validated, edit)?;
+    validate_rebuilt_images(original, &validated, original_images, &edit.image_path)?;
+    validate_requested_value(&validated, edit)?;
+
+    Ok(validated.data)
+}
+
+fn validate_edited_property_tree(
+    rebuilt: &Archive,
+    edit: &EditedImage,
+) -> Result<()> {
+    let rebuilt_image = match resolve_location(&rebuilt.file.directory, &edit.image_path)? {
+        Location::Image { entry, .. } => parse_image(rebuilt, entry)?,
+        Location::Directory { .. } => {
+            bail!(
+                "rebuilt archive replaced image {} with a directory",
+                edit.image_path
+            )
+        }
+    };
+    if !property_lists_equal(&rebuilt_image.properties, &edit.properties) {
+        bail!(
+            "rebuilt archive changed properties outside {}",
+            edit.property_path
+        );
+    }
+    Ok(())
+}
+
+fn validate_rebuilt_images(
+    original: &Archive,
+    rebuilt: &Archive,
+    original_images: &[ImageDescriptor],
+    edited_image_path: &str,
+) -> Result<()> {
+    let rebuilt_images = image_descriptors(&rebuilt.file.directory);
+    if rebuilt_images.len() != original_images.len() {
+        bail!("rebuilt archive changed the number of images");
+    }
+    for (original_image, rebuilt_image) in original_images.iter().zip(&rebuilt_images) {
+        if original_image.path != rebuilt_image.path {
+            bail!("rebuilt archive changed image path {}", original_image.path);
+        }
+        let rebuilt_bytes = image_bytes(&rebuilt.data, &rebuilt_image.entry)?;
+        if compute_image_checksum(rebuilt_bytes) != rebuilt_image.entry.checksum {
+            bail!(
+                "rebuilt image {} has an invalid checksum",
+                rebuilt_image.path
+            );
+        }
+        if original_image.path != edited_image_path
+            && image_bytes(&original.data, &original_image.entry)? != rebuilt_bytes
+        {
+            bail!(
+                "rebuilt archive changed unedited image {}",
+                original_image.path
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_requested_value(
+    rebuilt: &Archive,
+    edit: &EditedImage,
+) -> Result<()> {
+    let validated_node = get(rebuilt, &edit.property_path)
+        .context("rebuilt archive does not contain the edited property")?;
+    if validated_node.kind != edit.kind || validated_node.value.as_ref() != Some(&edit.new_value) {
+        bail!(
+            "rebuilt archive did not preserve the requested value at {}",
+            edit.property_path
+        );
+    }
+    Ok(())
 }
 
 fn replace_value(
@@ -336,132 +427,149 @@ fn properties_equal(
     left: &WzProperty,
     right: &WzProperty,
 ) -> bool {
-    match (left, right) {
-        (WzProperty::Null, WzProperty::Null) => true,
-        (WzProperty::Short(left), WzProperty::Short(right)) => left == right,
-        (WzProperty::Int(left), WzProperty::Int(right)) => left == right,
-        (WzProperty::Long(left), WzProperty::Long(right)) => left == right,
-        (WzProperty::Float(left), WzProperty::Float(right)) => left.to_bits() == right.to_bits(),
-        (WzProperty::Double(left), WzProperty::Double(right)) => left.to_bits() == right.to_bits(),
-        (WzProperty::String(left), WzProperty::String(right))
-        | (WzProperty::Uol(left), WzProperty::Uol(right)) => left == right,
-        (
-            WzProperty::SubProperty { properties: left },
-            WzProperty::SubProperty { properties: right },
-        ) => property_lists_equal(left, right),
-        (
-            WzProperty::Canvas {
-                width: left_width,
-                height: left_height,
-                format: left_format,
-                properties: left_properties,
-                png_data: left_data,
-            },
-            WzProperty::Canvas {
-                width: right_width,
-                height: right_height,
-                format: right_format,
-                properties: right_properties,
-                png_data: right_data,
-            },
-        ) => {
-            left_width == right_width
-                && left_height == right_height
-                && left_format == right_format
-                && property_lists_equal(left_properties, right_properties)
-                && left_data == right_data
+    // Archive version is validated separately, and video offsets may change during
+    // rebuild. Neither form of physical metadata belongs in the semantic view.
+    semantic_property(left) == semantic_property(right)
+}
+
+#[derive(PartialEq, Eq)]
+enum SemanticProperty<'a> {
+    Null,
+    Short(i16),
+    Int(i32),
+    Long(i64),
+    Float(u32),
+    Double(u64),
+    String(&'a str),
+    SubProperty(Vec<(&'a str, SemanticProperty<'a>)>),
+    Canvas {
+        width: i32,
+        height: i32,
+        format: WzPngFormat,
+        properties: Vec<(&'a str, SemanticProperty<'a>)>,
+        png_data: &'a [u8],
+    },
+    Vector {
+        x: i32,
+        y: i32,
+    },
+    Convex(Vec<(&'a str, SemanticProperty<'a>)>),
+    Sound {
+        duration_ms: i32,
+        data: &'a [u8],
+        header: &'a [u8],
+    },
+    Uol(&'a str),
+    Lua(&'a [u8]),
+    RawData {
+        raw_type: u8,
+        properties: Vec<(&'a str, SemanticProperty<'a>)>,
+        data: &'a [u8],
+    },
+    Video {
+        video_type: u8,
+        properties: Vec<(&'a str, SemanticProperty<'a>)>,
+        data_length: u32,
+        mcv_header: Option<SemanticMcvHeader>,
+        video_data: Option<&'a [u8]>,
+    },
+}
+
+#[derive(PartialEq, Eq)]
+struct SemanticMcvHeader {
+    header_length: u16,
+    fourcc: u32,
+    width: u16,
+    height: u16,
+    frame_count: i32,
+    data_flags: u8,
+    frame_delay_unit_ns: i64,
+    default_delay: i32,
+}
+
+fn semantic_property(property: &WzProperty) -> SemanticProperty<'_> {
+    match property {
+        WzProperty::Null => SemanticProperty::Null,
+        WzProperty::Short(value) => SemanticProperty::Short(*value),
+        WzProperty::Int(value) => SemanticProperty::Int(*value),
+        WzProperty::Long(value) => SemanticProperty::Long(*value),
+        WzProperty::Float(value) => SemanticProperty::Float(value.to_bits()),
+        WzProperty::Double(value) => SemanticProperty::Double(value.to_bits()),
+        WzProperty::String(value) => SemanticProperty::String(value),
+        WzProperty::SubProperty { properties } => {
+            SemanticProperty::SubProperty(semantic_property_list(properties))
         }
-        (
-            WzProperty::Vector {
-                x: left_x,
-                y: left_y,
-            },
-            WzProperty::Vector {
-                x: right_x,
-                y: right_y,
-            },
-        ) => left_x == right_x && left_y == right_y,
-        (WzProperty::Convex { points: left }, WzProperty::Convex { points: right }) => {
-            property_lists_equal(left, right)
-        }
-        (
-            WzProperty::Sound {
-                duration_ms: left_duration,
-                data: left_data,
-                header: left_header,
-            },
-            WzProperty::Sound {
-                duration_ms: right_duration,
-                data: right_data,
-                header: right_header,
-            },
-        ) => {
-            left_duration == right_duration
-                && left_data == right_data
-                && left_header == right_header
-        }
-        (WzProperty::Lua(left), WzProperty::Lua(right)) => left == right,
-        (
-            WzProperty::RawData {
-                raw_type: left_type,
-                properties: left_properties,
-                data: left_data,
-            },
-            WzProperty::RawData {
-                raw_type: right_type,
-                properties: right_properties,
-                data: right_data,
-            },
-        ) => {
-            left_type == right_type
-                && property_lists_equal(left_properties, right_properties)
-                && left_data == right_data
-        }
-        (
-            WzProperty::Video {
-                video_type: left_type,
-                properties: left_properties,
-                data_length: left_length,
-                mcv_header: left_header,
-                video_data: left_data,
-                ..
-            },
-            WzProperty::Video {
-                video_type: right_type,
-                properties: right_properties,
-                data_length: right_length,
-                mcv_header: right_header,
-                video_data: right_data,
-                ..
-            },
-        ) => {
-            left_type == right_type
-                && property_lists_equal(left_properties, right_properties)
-                && left_length == right_length
-                && mcv_headers_equal(left_header.as_ref(), right_header.as_ref())
-                && left_data == right_data
-        }
-        _ => false,
+        WzProperty::Canvas {
+            width,
+            height,
+            format,
+            properties,
+            png_data,
+        } => SemanticProperty::Canvas {
+            width: *width,
+            height: *height,
+            format: *format,
+            properties: semantic_property_list(properties),
+            png_data,
+        },
+        WzProperty::Vector { x, y } => SemanticProperty::Vector { x: *x, y: *y },
+        WzProperty::Convex { points } => SemanticProperty::Convex(semantic_property_list(points)),
+        WzProperty::Sound {
+            duration_ms,
+            data,
+            header,
+        } => SemanticProperty::Sound {
+            duration_ms: *duration_ms,
+            data,
+            header,
+        },
+        WzProperty::Uol(value) => SemanticProperty::Uol(value),
+        WzProperty::Lua(value) => SemanticProperty::Lua(value),
+        WzProperty::RawData {
+            raw_type,
+            properties,
+            data,
+        } => SemanticProperty::RawData {
+            raw_type: *raw_type,
+            properties: semantic_property_list(properties),
+            data,
+        },
+        WzProperty::Video {
+            video_type,
+            properties,
+            data_offset: _,
+            data_length,
+            mcv_header,
+            video_data,
+        } => SemanticProperty::Video {
+            video_type: *video_type,
+            properties: semantic_property_list(properties),
+            data_length: *data_length,
+            mcv_header: mcv_header.as_ref().map(semantic_mcv_header),
+            video_data: video_data.as_deref(),
+        },
     }
 }
 
-fn mcv_headers_equal(
-    left: Option<&wzlib_rs::wz::mcv::McvHeader>,
-    right: Option<&wzlib_rs::wz::mcv::McvHeader>,
-) -> bool {
-    match (left, right) {
-        (None, None) => true,
-        (Some(left), Some(right)) => {
-            left.header_length == right.header_length
-                && left.fourcc == right.fourcc
-                && left.width == right.width
-                && left.height == right.height
-                && left.frame_count == right.frame_count
-                && left.data_flags == right.data_flags
-                && left.frame_delay_unit_ns == right.frame_delay_unit_ns
-                && left.default_delay == right.default_delay
-        }
-        _ => false,
+fn semantic_property_list(
+    properties: &[(String, WzProperty)]
+) -> Vec<(&str, SemanticProperty<'_>)> {
+    properties
+        .iter()
+        .map(|(name, property)| (name.as_str(), semantic_property(property)))
+        .collect()
+}
+
+fn semantic_mcv_header(header: &McvHeader) -> SemanticMcvHeader {
+    SemanticMcvHeader {
+        header_length: header.header_length,
+        fourcc: header.fourcc,
+        width: header.width,
+        height: header.height,
+        frame_count: header.frame_count,
+        data_flags: header.data_flags,
+        frame_delay_unit_ns: header.frame_delay_unit_ns,
+        default_delay: header.default_delay,
     }
 }
 

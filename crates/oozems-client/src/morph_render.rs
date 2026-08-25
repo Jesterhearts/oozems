@@ -75,7 +75,11 @@ fn ready_animation_frame(
     timestamp_ms: f64,
     mut is_ready: impl FnMut(&str) -> bool,
 ) -> Option<&MorphFrame> {
-    let preferred_index = frame_index_at_time(&animation.frames, timestamp_ms)?;
+    let preferred_index = crate::animation::frame_index(
+        animation.frames.iter().map(|frame| frame.delay_ms),
+        timestamp_ms,
+        crate::animation::Playback::Loop,
+    )?;
     let frame_index = preferred_or_first_ready(
         animation
             .frames
@@ -109,28 +113,6 @@ fn animation_for(
         })
 }
 
-fn frame_index_at_time(
-    frames: &[MorphFrame],
-    timestamp_ms: f64,
-) -> Option<usize> {
-    let total_duration = frames
-        .iter()
-        .map(|frame| u64::from(frame.delay_ms.max(1)))
-        .sum::<u64>();
-    if total_duration == 0 {
-        return None;
-    }
-    let mut animation_time = timestamp_ms.max(0.0) as u64 % total_duration;
-    for (index, frame) in frames.iter().enumerate() {
-        let delay = u64::from(frame.delay_ms.max(1));
-        if animation_time < delay {
-            return Some(index);
-        }
-        animation_time -= delay;
-    }
-    (!frames.is_empty()).then_some(frames.len() - 1)
-}
-
 #[cfg(test)]
 mod tests {
     use oozems_proto::v1::MorphAnimation;
@@ -138,7 +120,6 @@ mod tests {
     use oozems_proto::v1::MorphFrame;
 
     use super::animation_for;
-    use super::frame_index_at_time;
     use super::ready_frame;
     use crate::character_render::CharacterAnimation;
 
@@ -173,9 +154,16 @@ mod tests {
             },
         ];
 
-        assert_eq!(frame_index_at_time(&frames, 49.0), Some(0));
-        assert_eq!(frame_index_at_time(&frames, 50.0), Some(1));
-        assert_eq!(frame_index_at_time(&frames, 150.0), Some(0));
+        let frame_index = |timestamp_ms| {
+            crate::animation::frame_index(
+                frames.iter().map(|frame| frame.delay_ms),
+                timestamp_ms,
+                crate::animation::Playback::Loop,
+            )
+        };
+        assert_eq!(frame_index(49.0), Some(0));
+        assert_eq!(frame_index(50.0), Some(1));
+        assert_eq!(frame_index(150.0), Some(0));
     }
 
     #[test]

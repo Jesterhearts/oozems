@@ -1,6 +1,3 @@
-use std::cell::Cell;
-use std::rc::Rc;
-
 use oozems_proto::v1::CashShopOffer;
 use oozems_proto::v1::GameGui;
 use oozems_proto::v1::GuiWindow;
@@ -28,7 +25,6 @@ pub struct CashShopState {
     pub offers: Option<Vec<CashShopOffer>>,
     pub currency_name: String,
     pub load_error: Option<String>,
-    request_in_flight: Rc<Cell<bool>>,
 }
 
 impl Default for CashShopState {
@@ -38,24 +34,15 @@ impl Default for CashShopState {
             offers: None,
             currency_name: "Ooze".to_owned(),
             load_error: None,
-            request_in_flight: Rc::new(Cell::new(false)),
         }
     }
 }
 
 impl CashShopState {
-    pub fn begin_open(&mut self) -> Option<Rc<Cell<bool>>> {
-        if self.request_in_flight.replace(true) {
-            return None;
-        }
+    pub fn begin_open(&mut self) {
         self.open = true;
         self.offers = None;
         self.load_error = None;
-        Some(self.request_in_flight.clone())
-    }
-
-    pub fn begin_purchase(&self) -> Option<Rc<Cell<bool>>> {
-        (!self.request_in_flight.replace(true)).then(|| self.request_in_flight.clone())
     }
 
     pub fn close(&mut self) {
@@ -85,10 +72,6 @@ impl CashShopState {
             self.load_error = Some(error);
         }
     }
-
-    pub fn request_in_flight(&self) -> bool {
-        self.request_in_flight.get()
-    }
 }
 
 pub fn action_at(
@@ -98,6 +81,7 @@ pub fn action_at(
     viewport_height: f32,
     point: CanvasPoint,
     button: PointerButton,
+    request_in_flight: bool,
 ) -> Option<CashShopAction> {
     if !state.open {
         return None;
@@ -111,7 +95,7 @@ pub fn action_at(
     if region_contains(layout, "cash-shop-exit", logical_point) {
         return Some(CashShopAction::Close);
     }
-    if state.request_in_flight() {
+    if request_in_flight {
         return Some(CashShopAction::Consume);
     }
     state
@@ -183,10 +167,18 @@ fn region_contains(
     point: CanvasPoint,
 ) -> bool {
     game_gui::named_region(layout, name).is_some_and(|region| {
-        point.x >= region.x
-            && point.x <= region.x + region.width
-            && point.y >= region.y
-            && point.y <= region.y + region.height
+        crate::hit_test::contains_inclusive(
+            crate::hit_test::Rect {
+                x: f64::from(region.x),
+                y: f64::from(region.y),
+                width: f64::from(region.width),
+                height: f64::from(region.height),
+            },
+            crate::hit_test::Point {
+                x: f64::from(point.x),
+                y: f64::from(point.y),
+            },
+        )
     })
 }
 
@@ -253,6 +245,7 @@ mod tests {
                 900.0,
                 CanvasPoint { x: 740.0, y: 240.0 },
                 PointerButton::Left,
+                false,
             ),
             Some(CashShopAction::Buy { offer_id: 7 })
         );
@@ -267,6 +260,7 @@ mod tests {
                     y: 840.0,
                 },
                 PointerButton::Left,
+                false,
             ),
             Some(CashShopAction::Close)
         );
@@ -291,15 +285,29 @@ mod tests {
         let point = CanvasPoint { x: 740.0, y: 240.0 };
 
         assert_eq!(
-            action_at(&state, &gui, 1_600.0, 900.0, point, PointerButton::Right,),
+            action_at(
+                &state,
+                &gui,
+                1_600.0,
+                900.0,
+                point,
+                PointerButton::Right,
+                false,
+            ),
             Some(CashShopAction::Consume)
         );
-        let request = state.begin_purchase().expect("begin request");
         assert_eq!(
-            action_at(&state, &gui, 1_600.0, 900.0, point, PointerButton::Left,),
+            action_at(
+                &state,
+                &gui,
+                1_600.0,
+                900.0,
+                point,
+                PointerButton::Left,
+                true,
+            ),
             Some(CashShopAction::Consume)
         );
-        request.set(false);
     }
 
     fn cash_shop_window() -> GuiWindow {

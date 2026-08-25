@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+mod animation;
 mod api;
 mod assets;
 mod cash_shop_ui;
@@ -7,6 +8,7 @@ mod character_create;
 mod character_render;
 mod game;
 mod game_gui;
+mod hit_test;
 mod interaction_ui;
 mod keymap;
 mod mob_render;

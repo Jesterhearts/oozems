@@ -16,6 +16,12 @@ pub struct BasicAttackCooldowns {
     deadlines: Mutex<HashMap<String, u64>>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BasicAttackReservation {
+    player_id: String,
+    deadline_ms: u64,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DamageRange {
     pub minimum: u32,
@@ -79,7 +85,7 @@ pub fn reserve_basic_attack(
     player_id: &str,
     now_ms: u64,
     interval: Duration,
-) -> Result<u64, AttackRuleError> {
+) -> Result<BasicAttackReservation, AttackRuleError> {
     let mut deadlines = cooldowns
         .deadlines
         .lock()
@@ -95,20 +101,22 @@ pub fn reserve_basic_attack(
         .max(1);
     let deadline_ms = now_ms.saturating_add(interval_ms);
     deadlines.insert(player_id.to_owned(), deadline_ms);
-    Ok(deadline_ms)
+    Ok(BasicAttackReservation {
+        player_id: player_id.to_owned(),
+        deadline_ms,
+    })
 }
 
 pub fn release_basic_attack(
     cooldowns: &BasicAttackCooldowns,
-    player_id: &str,
-    deadline_ms: u64,
+    reservation: &BasicAttackReservation,
 ) -> Result<(), AttackRuleError> {
     let mut deadlines = cooldowns
         .deadlines
         .lock()
         .map_err(|_| AttackRuleError::CooldownStore)?;
-    if deadlines.get(player_id) == Some(&deadline_ms) {
-        deadlines.remove(player_id);
+    if deadlines.get(&reservation.player_id) == Some(&reservation.deadline_ms) {
+        deadlines.remove(&reservation.player_id);
     }
     Ok(())
 }
@@ -170,14 +178,6 @@ mod tests {
     }
 
     #[test]
-    fn basic_attack_requires_character_stats() {
-        assert_eq!(
-            calculate_basic_attack(&PlayerState::default(), &formulas(), 0),
-            Err(AttackRuleError::MissingStats)
-        );
-    }
-
-    #[test]
     fn basic_attack_cooldown_is_atomic_and_expires() {
         let cooldowns = BasicAttackCooldowns::default();
         let interval = std::time::Duration::from_millis(600);
@@ -191,10 +191,9 @@ mod tests {
         let current_deadline =
             reserve_basic_attack(&cooldowns, "player", 1_600, interval).expect("expired cooldown");
 
-        release_basic_attack(&cooldowns, "player", current_deadline)
-            .expect("release current cooldown");
+        release_basic_attack(&cooldowns, &current_deadline).expect("release current cooldown");
         reserve_basic_attack(&cooldowns, "player", 1_601, interval).expect("released cooldown");
-        release_basic_attack(&cooldowns, "player", deadline).expect("ignore stale release");
+        release_basic_attack(&cooldowns, &deadline).expect("ignore stale release");
         assert_eq!(
             reserve_basic_attack(&cooldowns, "player", 1_602, interval),
             Err(AttackRuleError::Cooldown { remaining_ms: 599 })

@@ -59,13 +59,13 @@ struct WzTextFragment {
 
 pub(super) fn draw_active_buffs(game: &Game) {
     let placements = buff_placements(
-        game.active_buffs.buffs.len(),
-        game.canvas.width() as f32,
-        game.canvas.client_width() as f32,
+        game.player.active_buffs.buffs.len(),
+        game.surface.canvas.width() as f32,
+        game.surface.canvas.client_width() as f32,
     );
-    let now_ms = game.frame_time_ms;
+    let now_ms = game.clock.now_ms;
     for placement in placements {
-        let buff = &game.active_buffs.buffs[placement.index];
+        let buff = &game.player.active_buffs.buffs[placement.index];
         draw_buff_background(game, placement);
         match buff.source {
             Some(active_buff::Source::ItemId(item_id)) => {
@@ -91,11 +91,11 @@ pub(super) fn draw_active_buffs(game: &Game) {
 }
 
 pub(super) fn draw_hovered_skill(game: &Game) {
-    let hovered = game.pointer.and_then(|pointer| {
+    let hovered = game.ui.pointer.and_then(|pointer| {
         let book = game_gui::hovered_skill(
-            *game.gui_state.borrow(),
-            &game.gui,
-            &game.skill_book,
+            *game.ui.gui_state.borrow(),
+            &game.ui.gui,
+            &game.player.skill_book,
             pointer,
         )
         .and_then(|skill| {
@@ -104,20 +104,20 @@ pub(super) fn draw_hovered_skill(game: &Game) {
             })
         });
         book.or_else(|| {
-            hovered_buff(game, pointer).and_then(|buff| buff_info(game, buff, game.frame_time_ms))
+            hovered_buff(game, pointer).and_then(|buff| buff_info(game, buff, game.clock.now_ms))
         })
         .map(|info| (pointer, info))
     });
-    let selected = game.selected_buff.and_then(|key| {
+    let selected = game.ui.selected_buff.and_then(|key| {
         let placements = active_buff_placements(game);
         placements.into_iter().find_map(|placement| {
-            let buff = &game.active_buffs.buffs[placement.index];
+            let buff = &game.player.active_buffs.buffs[placement.index];
             (buff.key() == key).then(|| {
                 let point = CanvasPoint {
                     x: placement.x + placement.width / 2.0,
                     y: placement.y + placement.height,
                 };
-                buff_info(game, buff, game.frame_time_ms).map(|info| (point, info))
+                buff_info(game, buff, game.clock.now_ms).map(|info| (point, info))
             })?
         })
     });
@@ -134,14 +134,14 @@ pub(super) fn select_active_buff(
     let selected = active_buff_placements(game)
         .into_iter()
         .find(|placement| contains(*placement, point))
-        .map(|placement| game.active_buffs.buffs[placement.index].key());
+        .map(|placement| game.player.active_buffs.buffs[placement.index].key());
     let Some(selected) = selected else {
-        game.selected_buff = None;
-        game.pointer = None;
+        game.ui.selected_buff = None;
+        game.ui.pointer = None;
         return false;
     };
-    game.selected_buff = toggled_buff_selection(game.selected_buff, selected);
-    game.pointer = game.selected_buff.map(|_| point);
+    game.ui.selected_buff = toggled_buff_selection(game.ui.selected_buff, selected);
+    game.ui.pointer = game.ui.selected_buff.map(|_| point);
     true
 }
 
@@ -156,22 +156,24 @@ fn draw_buff_background(
     game: &Game,
     placement: BuffPlacement,
 ) {
-    game.context.set_fill_style_str("rgba(6, 13, 20, 0.9)");
-    game.context.fill_rect(
+    game.surface
+        .context
+        .set_fill_style_str("rgba(6, 13, 20, 0.9)");
+    game.surface.context.fill_rect(
         f64::from(placement.x),
         f64::from(placement.y),
         f64::from(placement.width),
         f64::from(placement.height),
     );
-    game.context.set_fill_style_str("#b7c8d4");
-    game.context.fill_rect(
+    game.surface.context.set_fill_style_str("#b7c8d4");
+    game.surface.context.fill_rect(
         f64::from(placement.x + 1.0),
         f64::from(placement.y + 1.0),
         f64::from(placement.width - 2.0),
         f64::from(placement.icon_size + 2.0),
     );
-    game.context.set_fill_style_str("#263442");
-    game.context.fill_rect(
+    game.surface.context.set_fill_style_str("#263442");
+    game.surface.context.fill_rect(
         f64::from(placement.x + 2.0),
         f64::from(placement.y + 2.0),
         f64::from(placement.icon_size),
@@ -200,7 +202,7 @@ fn draw_buff_asset(
     icon_height: f32,
     placement: BuffPlacement,
 ) {
-    let Some(image) = ready_image(&game.images, asset_id) else {
+    let Some(image) = ready_image(&game.surface.images, asset_id) else {
         return;
     };
     let scale =
@@ -210,6 +212,7 @@ fn draw_buff_asset(
     let x = placement.x + 2.0 + (placement.icon_size - width) / 2.0;
     let y = placement.y + 2.0 + (placement.icon_size - height) / 2.0;
     let _ = game
+        .surface
         .context
         .draw_image_with_html_image_element_and_dw_and_dh(
             image,
@@ -227,17 +230,18 @@ fn draw_buff_time(
     now_ms: f64,
 ) {
     let remaining_ms = buff.remaining_ms(now_ms);
-    game.context.set_fill_style_str("#ffffff");
-    game.context
+    game.surface.context.set_fill_style_str("#ffffff");
+    game.surface
+        .context
         .set_font(&format!("bold {}px Arial", placement.timer_font_size));
-    game.context.set_text_align("center");
-    let _ = game.context.fill_text_with_max_width(
+    game.surface.context.set_text_align("center");
+    let _ = game.surface.context.fill_text_with_max_width(
         &format_short_duration(remaining_ms),
         f64::from(placement.x + placement.width / 2.0),
         f64::from(placement.y + placement.height - 3.0),
         f64::from(placement.width - 2.0),
     );
-    game.context.set_text_align("left");
+    game.surface.context.set_text_align("left");
 }
 
 fn hovered_buff(
@@ -247,7 +251,7 @@ fn hovered_buff(
     active_buff_placements(game)
         .into_iter()
         .find(|placement| contains(*placement, point))
-        .map(|placement| &game.active_buffs.buffs[placement.index])
+        .map(|placement| &game.player.active_buffs.buffs[placement.index])
 }
 
 fn buff_placements(
@@ -289,9 +293,9 @@ fn buff_placements(
 
 fn active_buff_placements(game: &Game) -> Vec<BuffPlacement> {
     buff_placements(
-        game.active_buffs.buffs.len(),
-        game.canvas.width() as f32,
-        game.canvas.client_width() as f32,
+        game.player.active_buffs.buffs.len(),
+        game.surface.canvas.width() as f32,
+        game.surface.canvas.client_width() as f32,
     )
 }
 
@@ -299,17 +303,26 @@ fn contains(
     placement: BuffPlacement,
     point: CanvasPoint,
 ) -> bool {
-    point.x >= placement.x
-        && point.x < placement.x + placement.width
-        && point.y >= placement.y
-        && point.y < placement.y + placement.height
+    crate::hit_test::contains(
+        crate::hit_test::Rect {
+            x: f64::from(placement.x),
+            y: f64::from(placement.y),
+            width: f64::from(placement.width),
+            height: f64::from(placement.height),
+        },
+        crate::hit_test::Point {
+            x: f64::from(point.x),
+            y: f64::from(point.y),
+        },
+    )
 }
 
 fn skill_definition(
     game: &Game,
     skill_id: u32,
 ) -> Option<&SkillDefinition> {
-    game.skill_book
+    game.player
+        .skill_book
         .skills
         .iter()
         .filter_map(|skill| skill.definition.as_ref())
@@ -320,7 +333,8 @@ fn item_definition(
     game: &Game,
     item_id: u32,
 ) -> Option<&ItemDefinition> {
-    game.gui
+    game.ui
+        .gui
         .items
         .iter()
         .find(|definition| definition.item_id == item_id)
@@ -430,19 +444,20 @@ fn draw_tooltip(
     pointer: CanvasPoint,
     info: &SkillInfo,
 ) {
-    let client_width = game.canvas.client_width() as f32;
+    let client_width = game.surface.canvas.client_width() as f32;
     let display_scale = if client_width > 0.0 {
-        (game.canvas.width() as f32 / client_width).clamp(1.0, 3.0)
+        (game.surface.canvas.width() as f32 / client_width).clamp(1.0, 3.0)
     } else {
         1.0
     };
-    game.context.save();
+    game.surface.context.save();
     if game
+        .surface
         .context
         .scale(f64::from(display_scale), f64::from(display_scale))
         .is_err()
     {
-        game.context.restore();
+        game.surface.context.restore();
         return;
     }
     let pointer = CanvasPoint {
@@ -450,43 +465,46 @@ fn draw_tooltip(
         y: pointer.y / display_scale,
     };
     let content_width = TOOLTIP_WIDTH - TOOLTIP_PADDING * 2.0;
-    let lines = tooltip_lines(&game.context, info, content_width);
+    let lines = tooltip_lines(&game.surface.context, info, content_width);
     let height = TOOLTIP_PADDING * 2.0 + lines.len() as f32 * TOOLTIP_LINE_HEIGHT;
     let (x, y) = tooltip_position(
         pointer,
         TOOLTIP_WIDTH,
         height,
-        game.canvas.width() as f32 / display_scale,
-        game.canvas.height() as f32 / display_scale,
+        game.surface.canvas.width() as f32 / display_scale,
+        game.surface.canvas.height() as f32 / display_scale,
     );
 
-    game.context.set_fill_style_str("rgba(5, 12, 20, 0.94)");
-    game.context.fill_rect(
+    game.surface
+        .context
+        .set_fill_style_str("rgba(5, 12, 20, 0.94)");
+    game.surface.context.fill_rect(
         f64::from(x),
         f64::from(y),
         f64::from(TOOLTIP_WIDTH),
         f64::from(height),
     );
-    game.context.set_fill_style_str("#8da1ae");
-    game.context.fill_rect(
+    game.surface.context.set_fill_style_str("#8da1ae");
+    game.surface.context.fill_rect(
         f64::from(x + 1.0),
         f64::from(y + 1.0),
         f64::from(TOOLTIP_WIDTH - 2.0),
         1.0,
     );
     for (index, line) in lines.iter().enumerate() {
-        game.context.set_font(line.font);
+        game.surface.context.set_font(line.font);
         let baseline = y + TOOLTIP_PADDING + (index + 1) as f32 * TOOLTIP_LINE_HEIGHT - 3.0;
         let mut text_x = x + TOOLTIP_PADDING;
         for span in &line.spans {
-            game.context.set_fill_style_str(span.color);
-            let _ = game
-                .context
-                .fill_text(&span.text, f64::from(text_x), f64::from(baseline));
-            text_x += measured_width(&game.context, &span.text);
+            game.surface.context.set_fill_style_str(span.color);
+            let _ =
+                game.surface
+                    .context
+                    .fill_text(&span.text, f64::from(text_x), f64::from(baseline));
+            text_x += measured_width(&game.surface.context, &span.text);
         }
     }
-    game.context.restore();
+    game.surface.context.restore();
 }
 
 fn tooltip_lines(

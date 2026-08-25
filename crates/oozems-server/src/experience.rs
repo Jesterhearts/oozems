@@ -10,6 +10,10 @@ use oozems_proto::v1::PlayerState;
 use serde::Deserialize;
 use thiserror::Error;
 
+use crate::formula_parser::BinaryOperator;
+use crate::formula_parser::Expression;
+use crate::formula_parser::Parser;
+
 const MAX_CONFIGURED_LEVEL: u32 = 10_000;
 
 #[derive(Clone, Debug)]
@@ -75,37 +79,17 @@ struct RawRange {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum Expression {
+enum ExperienceAtom {
     Literal(i128),
     Level,
     AtLevel(u32),
-    Negate(Box<Expression>),
-    Binary {
-        operator: BinaryOperator,
-        left: Box<Expression>,
-        right: Box<Expression>,
-    },
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum BinaryOperator {
-    Add,
-    Subtract,
-    Multiply,
-    Divide,
-    Exponentiate,
 }
 
 #[derive(Debug)]
 struct CompiledRange {
     start: u32,
     end: u32,
-    expression: Expression,
-}
-
-struct FormulaParser<'a> {
-    input: &'a [u8],
-    position: usize,
+    expression: Expression<ExperienceAtom>,
 }
 
 impl ExperienceCurves {
@@ -358,11 +342,11 @@ fn collect_curve_dependencies(
 }
 
 fn collect_expression_dependencies(
-    expression: &Expression,
+    expression: &Expression<ExperienceAtom>,
     dependencies: &mut BTreeSet<u32>,
 ) {
     match expression {
-        Expression::AtLevel(level) => {
+        Expression::Atom(ExperienceAtom::AtLevel(level)) => {
             dependencies.insert(*level);
         }
         Expression::Negate(value) => collect_expression_dependencies(value, dependencies),
@@ -370,7 +354,7 @@ fn collect_expression_dependencies(
             collect_expression_dependencies(left, dependencies);
             collect_expression_dependencies(right, dependencies);
         }
-        Expression::Literal(_) | Expression::Level => {}
+        Expression::Atom(ExperienceAtom::Literal(_) | ExperienceAtom::Level) => {}
     }
 }
 
@@ -470,23 +454,12 @@ fn validate_experience(
 
 fn evaluate_expression(
     curve_name: &str,
-    expression: &Expression,
+    expression: &Expression<ExperienceAtom>,
     level: u32,
     resolved: &[Option<u64>],
 ) -> Result<i128, String> {
     match expression {
-        Expression::Literal(value) => Ok(*value),
-        Expression::Level => Ok(i128::from(level)),
-        Expression::AtLevel(referenced_level) => resolved
-            .get(*referenced_level as usize)
-            .copied()
-            .flatten()
-            .map(i128::from)
-            .ok_or_else(|| {
-                format!(
-                    "XP curve {curve_name:?} could not resolve referenced level {referenced_level}"
-                )
-            }),
+        Expression::Atom(atom) => evaluate_atom(curve_name, atom, level, resolved),
         Expression::Negate(value) => evaluate_expression(curve_name, value, level, resolved)?
             .checked_neg()
             .ok_or_else(|| arithmetic_error(curve_name, level, "negation overflow")),
@@ -499,6 +472,28 @@ fn evaluate_expression(
             let right = evaluate_expression(curve_name, right, level, resolved)?;
             evaluate_binary(curve_name, level, *operator, left, right)
         }
+    }
+}
+
+fn evaluate_atom(
+    curve_name: &str,
+    atom: &ExperienceAtom,
+    level: u32,
+    resolved: &[Option<u64>],
+) -> Result<i128, String> {
+    match atom {
+        ExperienceAtom::Literal(value) => Ok(*value),
+        ExperienceAtom::Level => Ok(i128::from(level)),
+        ExperienceAtom::AtLevel(referenced_level) => resolved
+            .get(*referenced_level as usize)
+            .copied()
+            .flatten()
+            .map(i128::from)
+            .ok_or_else(|| {
+                format!(
+                    "XP curve {curve_name:?} could not resolve referenced level {referenced_level}"
+                )
+            }),
     }
 }
 
@@ -541,187 +536,51 @@ fn arithmetic_error(
     format!("XP curve {curve_name:?} has {message} while evaluating level {level}")
 }
 
-fn parse_formula(source: &str) -> Result<Expression, String> {
+fn parse_formula(source: &str) -> Result<Expression<ExperienceAtom>, String> {
     if !source.is_ascii() {
         return Err("formulas must contain only ASCII characters".to_owned());
     }
-    let mut parser = FormulaParser {
-        input: source.as_bytes(),
-        position: 0,
-    };
-    let expression = parser.parse_addition()?;
+    crate::formula_parser::parse(source, parse_atom)
+}
+
+fn parse_atom(parser: &mut Parser<'_, ExperienceAtom>) -> Result<ExperienceAtom, String> {
     parser.skip_whitespace();
-    if parser.position != parser.input.len() {
-        return parser.error("unexpected trailing input");
-    }
-    Ok(expression)
-}
-
-impl FormulaParser<'_> {
-    fn parse_addition(&mut self) -> Result<Expression, String> {
-        let mut expression = self.parse_multiplication()?;
-        loop {
-            let operator = if self.consume(b'+') {
-                BinaryOperator::Add
-            } else if self.consume(b'-') {
-                BinaryOperator::Subtract
-            } else {
-                return Ok(expression);
-            };
-            expression = binary(operator, expression, self.parse_multiplication()?);
-        }
-    }
-
-    fn parse_multiplication(&mut self) -> Result<Expression, String> {
-        let mut expression = self.parse_unary()?;
-        loop {
-            let operator = if self.consume(b'*') {
-                BinaryOperator::Multiply
-            } else if self.consume(b'/') {
-                BinaryOperator::Divide
-            } else {
-                return Ok(expression);
-            };
-            expression = binary(operator, expression, self.parse_unary()?);
-        }
-    }
-
-    fn parse_unary(&mut self) -> Result<Expression, String> {
-        if self.consume(b'+') {
-            return self.parse_unary();
-        }
-        if self.consume(b'-') {
-            return Ok(Expression::Negate(Box::new(self.parse_unary()?)));
-        }
-        self.parse_power()
-    }
-
-    fn parse_power(&mut self) -> Result<Expression, String> {
-        let base = self.parse_primary()?;
-        if self.consume(b'^') {
-            return Ok(binary(
-                BinaryOperator::Exponentiate,
-                base,
-                self.parse_unary()?,
-            ));
-        }
-        Ok(base)
-    }
-
-    fn parse_primary(&mut self) -> Result<Expression, String> {
-        self.skip_whitespace();
-        if self.consume(b'(') {
-            let expression = self.parse_addition()?;
-            self.expect(b')')?;
-            return Ok(expression);
-        }
-        if self.peek().is_some_and(|byte| byte.is_ascii_digit()) {
-            return self.parse_integer().map(Expression::Literal);
-        }
-        if self.peek().is_some_and(|byte| byte.is_ascii_alphabetic()) {
-            return self.parse_identifier();
-        }
-        self.error("expected a number, Level, atLevel(...), or parenthesized expression")
-    }
-
-    fn parse_identifier(&mut self) -> Result<Expression, String> {
-        self.skip_whitespace();
-        let start = self.position;
-        while self
-            .peek()
-            .is_some_and(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-        {
-            self.position += 1;
-        }
-        let name = std::str::from_utf8(&self.input[start..self.position])
-            .expect("formula is validated as ASCII");
-        match name {
-            "Level" => Ok(Expression::Level),
-            "atLevel" => {
-                self.expect(b'(')?;
-                let level = self.parse_integer()?;
-                let level = u32::try_from(level)
-                    .ok()
-                    .filter(|level| *level > 0)
-                    .ok_or_else(|| {
-                        format!(
-                            "atLevel requires a positive 32-bit level number at byte {}",
-                            self.position
-                        )
-                    })?;
-                self.expect(b')')?;
-                Ok(Expression::AtLevel(level))
-            }
-            _ => self.error(&format!("unknown identifier {name:?}")),
-        }
-    }
-
-    fn parse_integer(&mut self) -> Result<i128, String> {
-        self.skip_whitespace();
-        let start = self.position;
-        while self.peek().is_some_and(|byte| byte.is_ascii_digit()) {
-            self.position += 1;
-        }
-        if start == self.position {
-            return self.error("expected an integer");
-        }
-        let value = std::str::from_utf8(&self.input[start..self.position])
-            .expect("formula is validated as ASCII");
-        value
+    if parser.peek().is_some_and(|byte| byte.is_ascii_digit()) {
+        let (start, source) = parser.integer()?;
+        let value = source
             .parse()
-            .map_err(|_| format!("integer is too large at byte {start}"))
+            .map_err(|_| format!("integer is too large at byte {start}"))?;
+        return Ok(ExperienceAtom::Literal(value));
     }
-
-    fn expect(
-        &mut self,
-        expected: u8,
-    ) -> Result<(), String> {
-        if self.consume(expected) {
-            return Ok(());
-        }
-        self.error(&format!("expected {:?}", char::from(expected)))
+    if parser.peek().is_some_and(|byte| byte.is_ascii_alphabetic()) {
+        return parse_identifier(parser);
     }
-
-    fn consume(
-        &mut self,
-        expected: u8,
-    ) -> bool {
-        self.skip_whitespace();
-        if self.peek() == Some(expected) {
-            self.position += 1;
-            true
-        } else {
-            false
-        }
-    }
-
-    fn skip_whitespace(&mut self) {
-        while self.peek().is_some_and(|byte| byte.is_ascii_whitespace()) {
-            self.position += 1;
-        }
-    }
-
-    fn peek(&self) -> Option<u8> {
-        self.input.get(self.position).copied()
-    }
-
-    fn error<T>(
-        &self,
-        message: &str,
-    ) -> Result<T, String> {
-        Err(format!("{message} at byte {}", self.position))
-    }
+    parser.error("expected a number, Level, atLevel(...), or parenthesized expression")
 }
 
-fn binary(
-    operator: BinaryOperator,
-    left: Expression,
-    right: Expression,
-) -> Expression {
-    Expression::Binary {
-        operator,
-        left: Box::new(left),
-        right: Box::new(right),
+fn parse_identifier(parser: &mut Parser<'_, ExperienceAtom>) -> Result<ExperienceAtom, String> {
+    let name = parser.identifier()?;
+    match name.as_str() {
+        "Level" => Ok(ExperienceAtom::Level),
+        "atLevel" => {
+            parser.expect(b'(')?;
+            let (start, source) = parser.integer()?;
+            let level = source
+                .parse::<i128>()
+                .map_err(|_| format!("integer is too large at byte {start}"))?;
+            let level = u32::try_from(level)
+                .ok()
+                .filter(|level| *level > 0)
+                .ok_or_else(|| {
+                    format!(
+                        "atLevel requires a positive 32-bit level number at byte {}",
+                        parser.position()
+                    )
+                })?;
+            parser.expect(b')')?;
+            Ok(ExperienceAtom::AtLevel(level))
+        }
+        _ => parser.error(&format!("unknown identifier {name:?}")),
     }
 }
 
@@ -737,45 +596,6 @@ mod tests {
     use super::compile_curves;
     use super::grant_experience;
     use super::parse_formula;
-
-    #[test]
-    fn formulas_apply_precedence_and_right_associative_exponents() {
-        let config = curves(
-            r#"
-default_curve = "math"
-
-[[curves]]
-name = "math"
-
-[[curves.ranges]]
-start = 1
-end = 3
-formula = "2 + Level * 2 ^ 3 ^ 2 / 256 - 1"
-"#,
-        )
-        .expect("valid formula configuration");
-        let curve = config.default_curve();
-
-        assert_eq!(curve.required_for_level(1), Some(3));
-        assert_eq!(curve.required_for_level(2), Some(5));
-        assert_eq!(curve.required_for_level(3), Some(7));
-
-        let signed = curves(
-            r#"
-default_curve = "signed"
-
-[[curves]]
-name = "signed"
-
-[[curves.ranges]]
-start = 1
-end = 1
-formula = "-2 ^ 2 + 5"
-"#,
-        )
-        .expect("valid signed formula configuration");
-        assert_eq!(signed.default_curve().required_for_level(1), Some(1));
-    }
 
     #[test]
     fn at_level_resolves_acyclic_cross_range_dependencies() {

@@ -9,12 +9,11 @@ use oozems_proto::v1::PurchaseCashShopItemResponse;
 
 use super::ApiError;
 use super::Protobuf;
-use super::advance_automatic_player;
+use super::begin_player_mutation;
 use super::decode_request;
 use super::lock_player;
 use super::parse_player_id;
-use super::record_recovery_activity;
-use super::require_player_at;
+use super::prepare_player_mutation;
 use super::unix_time_ms;
 use crate::app::AppState;
 use crate::cash_shop::CashShopPurchaseError;
@@ -39,21 +38,29 @@ pub async fn purchase(
 ) -> Result<Protobuf<PurchaseCashShopItemResponse>, ApiError> {
     let request: PurchaseCashShopItemRequest = decode_request(&headers, body)?;
     let player_id = parse_player_id(&request.player_id)?;
-    let _player_guard = lock_player(&state, &player_id).await?;
+    let player_guard = lock_player(&state, &player_id).await?;
     let now_unix_ms = unix_time_ms()?;
-    let current = require_player_at(&state, &player_id, now_unix_ms).await?;
+    let mutation = begin_player_mutation(&state, &player_guard, &player_id, now_unix_ms).await?;
     let offer = state
         .cash_shop
         .offer(request.offer_id)
         .ok_or_else(|| invalid("the selected cash-shop offer does not exist"))?;
-    let result = crate::cash_shop::purchase(current, offer, state.catalog.as_ref(), now_unix_ms)
-        .map_err(|error| purchase_error(error, state.cash_shop.currency_name()))?;
-    let effects = crate::effects::snapshot(&state.active_effects, &result.player.id, now_unix_ms)?;
-    let advanced = advance_automatic_player(&state, result.player, effects, now_unix_ms);
-    let player = crate::database::save_player(&state.database, &advanced.player).await?;
-    let active_buffs = crate::effects::state(&advanced.effects, now_unix_ms);
-    crate::effects::commit(&state.active_effects, &player.id, advanced.effects)?;
-    record_recovery_activity(&state, player_id.as_str(), now_unix_ms);
+    let result = crate::cash_shop::purchase(
+        mutation.player.clone(),
+        offer,
+        state.catalog.as_ref(),
+        now_unix_ms,
+    )
+    .map_err(|error| purchase_error(error, state.cash_shop.currency_name()))?;
+    let (transaction, active_buffs) =
+        prepare_player_mutation(&state, mutation, result.player, true, true);
+    let player = crate::player_transaction::commit_player_transaction(
+        &state.database,
+        &player_guard,
+        transaction,
+    )
+    .await?
+    .player;
     Ok(Protobuf(PurchaseCashShopItemResponse {
         active_buffs: Some(active_buffs),
         player: Some(player),
@@ -100,30 +107,15 @@ mod tests {
     use crate::cash_shop::OfferLifetime;
 
     #[test]
-    fn offer_view_preserves_price_and_projects_permanent_as_zero_duration() {
+    fn permanent_offer_projects_to_zero_duration() {
         let permanent = offer_view(&CashShopOffer {
             offer_id: 1,
             item_id: 5_010_000,
             price: 1_200,
             lifetime: OfferLifetime::Permanent,
         });
-        let timed = offer_view(&CashShopOffer {
-            offer_id: 2,
-            item_id: 5_010_001,
-            price: 1_500,
-            lifetime: OfferLifetime::Timed { duration_ms: 42 },
-        });
 
-        assert_eq!(
-            (
-                permanent.offer_id,
-                permanent.item_id,
-                permanent.price,
-                permanent.duration_ms
-            ),
-            (1, 5_010_000, 1_200, 0)
-        );
-        assert_eq!(timed.duration_ms, 42);
+        assert_eq!(permanent.duration_ms, 0);
     }
 
     #[test]

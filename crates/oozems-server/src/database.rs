@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::time::Duration;
 
 use oozems_proto::v1::CharacterAppearance;
 use oozems_proto::v1::CharacterStats;
@@ -11,10 +12,18 @@ use surrealdb::types::Value;
 use thiserror::Error;
 
 use self::player_record::PlayerRecord;
+use crate::player_lock::PlayerGuard;
 
 mod player_record;
 
 pub type Database = Surreal<Db>;
+
+// Embedded transactions can conflict under legitimate concurrent writes. Bound
+// both retry count and delay so a save cannot hold its per-player request
+// forever.
+const PLAYER_SAVE_MAX_ATTEMPTS: usize = 8;
+const PLAYER_SAVE_MAX_BACKOFF: Duration = Duration::from_millis(16);
+const SURREALDB_TRANSACTION_CONFLICT_PREFIX: &str = "Transaction conflict:";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PlayerId(String);
@@ -183,6 +192,7 @@ pub async fn load_player(
 
 pub async fn create_player(
     database: &Database,
+    guard: &PlayerGuard,
     player_id: &PlayerId,
     name: &CharacterName,
     appearance: CharacterAppearance,
@@ -192,6 +202,7 @@ pub async fn create_player(
     initial_skill_points: u32,
     initial_cash_points: u64,
 ) -> surrealdb::Result<PlayerState> {
+    require_player_guard(guard, player_id)?;
     let mut stats = starter_character_stats();
     stats.experience_required = experience_required;
     let player = PlayerState {
@@ -213,30 +224,100 @@ pub async fn create_player(
         monster_book_cards: Vec::new(),
         cash_points: initial_cash_points,
     };
-    save_player(database, &player).await
+    save_player(database, guard, &player).await
 }
 
 pub async fn save_player(
     database: &Database,
+    guard: &PlayerGuard,
     player: &PlayerState,
 ) -> surrealdb::Result<PlayerState> {
     let player_id = PlayerId::parse(&player.id).map_err(player_record::invalid_player_error)?;
-    let current_revision = select_player_record(database, &player_id)
-        .await?
-        .map(player_record::record_revision)
-        .transpose()?
-        .unwrap_or_default();
-    let revision = next_player_revision(player.revision, current_revision)?;
-    let record = player_record::record_from_player(player, revision)?;
-    let value: Option<Value> = database
-        .upsert(("player", player.id.as_str()))
-        .content(record)
-        .await?;
-    let record = value
-        .map(player_record::decode_player_record)
-        .transpose()?
-        .ok_or_else(|| surrealdb::Error::internal("player upsert returned no record".to_owned()))?;
-    player_record::player_from_record(&player_id, record)
+    require_player_guard(guard, &player_id)?;
+    for attempt in 1..=PLAYER_SAVE_MAX_ATTEMPTS {
+        let transaction = database.clone().begin().await?;
+        let result = async {
+            let value: Option<Value> = transaction.select(("player", player_id.as_str())).await?;
+            let current_revision = value
+                .map(player_record::decode_player_record)
+                .transpose()?
+                .map(player_record::record_revision)
+                .transpose()?
+                .unwrap_or_default();
+            let revision = next_player_revision(player.revision, current_revision)?;
+            let record = player_record::record_from_player(player, revision)?;
+            let value: Option<Value> = transaction
+                .upsert(("player", player.id.as_str()))
+                .content(record)
+                .await?;
+            let record = value
+                .map(player_record::decode_player_record)
+                .transpose()?
+                .ok_or_else(|| {
+                    surrealdb::Error::internal("player upsert returned no record".to_owned())
+                })?;
+            player_record::player_from_record(&player_id, record)
+        }
+        .await;
+        let saved = match result {
+            Ok(saved) => saved,
+            Err(error) => {
+                let retry = is_transaction_conflict(&error);
+                if let Err(cancel_error) = transaction.cancel().await {
+                    return Err(surrealdb::Error::internal(format!(
+                        "player save failed: {error}; transaction cancellation failed: \
+                         {cancel_error}"
+                    )));
+                }
+                if retry {
+                    retry_transaction_conflict(attempt, &error).await?;
+                    continue;
+                }
+                return Err(error);
+            }
+        };
+        match transaction.commit().await {
+            Ok(_) => return Ok(saved),
+            Err(error) if is_transaction_conflict(&error) => {
+                retry_transaction_conflict(attempt, &error).await?;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("the finite player save attempt loop returns or exhausts")
+}
+
+fn is_transaction_conflict(error: &surrealdb::Error) -> bool {
+    is_transaction_conflict_message(error.message())
+}
+
+fn is_transaction_conflict_message(message: &str) -> bool {
+    // SurrealDB 3.2.4 erases the structured QueryError for embedded commit
+    // failures.
+    message.starts_with(SURREALDB_TRANSACTION_CONFLICT_PREFIX)
+}
+
+async fn retry_transaction_conflict(
+    attempt: usize,
+    error: &surrealdb::Error,
+) -> surrealdb::Result<()> {
+    let Some(delay) = player_save_retry_delay(attempt) else {
+        return Err(surrealdb::Error::internal(format!(
+            "player save exhausted {PLAYER_SAVE_MAX_ATTEMPTS} transaction-conflict attempts: \
+             {error}"
+        )));
+    };
+    tokio::time::sleep(delay).await;
+    Ok(())
+}
+
+fn player_save_retry_delay(attempt: usize) -> Option<Duration> {
+    if attempt >= PLAYER_SAVE_MAX_ATTEMPTS {
+        return None;
+    }
+    let exponent = u32::try_from(attempt.saturating_sub(1)).unwrap_or(u32::MAX);
+    let multiplier = 2_u32.checked_pow(exponent).unwrap_or(u32::MAX);
+    Some(Duration::from_millis(u64::from(multiplier)).min(PLAYER_SAVE_MAX_BACKOFF))
 }
 
 fn next_player_revision(
@@ -252,14 +333,31 @@ fn next_player_revision(
 
 pub async fn save_player_position(
     database: &Database,
+    guard: &PlayerGuard,
     player: &PlayerState,
 ) -> surrealdb::Result<()> {
+    let player_id = PlayerId::parse(&player.id).map_err(player_record::invalid_player_error)?;
+    require_player_guard(guard, &player_id)?;
     let data = player_record::position_data_from_player(player)?;
     let _: Option<Value> = database
         .update(("player", player.id.as_str()))
         .merge(data)
         .await?;
     Ok(())
+}
+
+fn require_player_guard(
+    guard: &PlayerGuard,
+    player_id: &PlayerId,
+) -> surrealdb::Result<()> {
+    if guard.holds_player(player_id.as_str()) {
+        Ok(())
+    } else {
+        Err(surrealdb::Error::internal(format!(
+            "player guard does not hold player {}",
+            player_id.as_str()
+        )))
+    }
 }
 
 pub fn apply_player_preferences(
@@ -298,6 +396,8 @@ fn starter_character_stats() -> CharacterStats {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use oozems_proto::v1::CharacterAppearance;
     use oozems_proto::v1::CharacterGender;
     use oozems_proto::v1::InventoryItemStack;
@@ -311,6 +411,7 @@ mod tests {
     use oozems_proto::v1::QuestStatus;
     use oozems_proto::v1::Vec2;
     use surrealdb::types::Value;
+    use tokio::sync::Barrier;
 
     use super::CharacterName;
     use super::PlayerId;
@@ -321,6 +422,9 @@ mod tests {
     use super::save_player;
     use super::save_player_position;
     use super::starter_character_stats;
+    use crate::player_lock::PlayerGuard;
+    use crate::player_lock::PlayerLocks;
+    use crate::player_lock::acquire_player;
 
     #[test]
     fn preference_updates_do_not_change_authoritative_fields() {
@@ -361,6 +465,55 @@ mod tests {
         assert_eq!(result.revision, current.revision);
     }
 
+    #[test]
+    fn surrealdb_conflict_detection_is_an_exact_prefix_compatibility_boundary() {
+        assert!(super::is_transaction_conflict_message(
+            "Transaction conflict: record changed"
+        ));
+        assert!(!super::is_transaction_conflict_message(
+            "transaction conflict: record changed"
+        ));
+        assert!(!super::is_transaction_conflict_message(
+            "wrapped Transaction conflict: record changed"
+        ));
+    }
+
+    #[test]
+    fn player_save_retry_schedule_is_finite_and_bounded() {
+        let delays = (1..=super::PLAYER_SAVE_MAX_ATTEMPTS)
+            .map(super::player_save_retry_delay)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            delays,
+            vec![
+                Some(std::time::Duration::from_millis(1)),
+                Some(std::time::Duration::from_millis(2)),
+                Some(std::time::Duration::from_millis(4)),
+                Some(std::time::Duration::from_millis(8)),
+                Some(std::time::Duration::from_millis(16)),
+                Some(std::time::Duration::from_millis(16)),
+                Some(std::time::Duration::from_millis(16)),
+                None,
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn exhausted_player_save_conflicts_return_a_clear_error() {
+        let conflict = surrealdb::Error::internal("Transaction conflict: test".to_owned());
+
+        let error = super::retry_transaction_conflict(super::PLAYER_SAVE_MAX_ATTEMPTS, &conflict)
+            .await
+            .expect_err("the final conflict must exhaust retries");
+
+        assert!(
+            error
+                .message()
+                .contains("player save exhausted 8 transaction-conflict attempts")
+        );
+    }
+
     #[tokio::test]
     async fn player_round_trip_uses_the_current_nested_schema() {
         let directory = tempfile::tempdir().expect("temporary directory");
@@ -377,7 +530,8 @@ mod tests {
                 .expect("load absent player"),
             None
         );
-        let mut player = create_test_player(&database, &player_id).await;
+        let guard = test_guard(&player_id).await;
+        let mut player = create_test_player(&database, &guard, &player_id).await;
         player.position = Some(Vec2 { x: 321.0, y: 456.0 });
         player.skill_points = 2;
         player.learned_skills = vec![
@@ -438,7 +592,9 @@ mod tests {
         crate::quest_records::set(&mut player, 2_236, 0, "000000".to_owned())
             .expect("primary quest record");
 
-        player = save_player(&database, &player).await.expect("save player");
+        player = save_player(&database, &guard, &player)
+            .await
+            .expect("save player");
         let loaded = load_player(&database, &player_id)
             .await
             .expect("load player")
@@ -458,13 +614,14 @@ mod tests {
             .await
             .expect("open SurrealKV");
         let player_id = PlayerId::parse("position-test").expect("valid player ID");
-        let mut player = create_test_player(&database, &player_id).await;
+        let guard = test_guard(&player_id).await;
+        let mut player = create_test_player(&database, &guard, &player_id).await;
         let original_stats = player.stats;
         let original_revision = player.revision;
         player.position = Some(Vec2 { x: 300.0, y: 250.0 });
         player.stats.as_mut().expect("stats").hp = 1;
 
-        save_player_position(&database, &player)
+        save_player_position(&database, &guard, &player)
             .await
             .expect("save position");
         let loaded = load_player(&database, &player_id)
@@ -484,15 +641,18 @@ mod tests {
             .await
             .expect("open SurrealKV");
         let player_id = PlayerId::parse("revision-test").expect("valid player ID");
-        let created = create_test_player(&database, &player_id).await;
+        let guard = test_guard(&player_id).await;
+        let created = create_test_player(&database, &guard, &player_id).await;
 
-        let saved = save_player(&database, &created).await.expect("save player");
+        let saved = save_player(&database, &guard, &created)
+            .await
+            .expect("save player");
         let mut ahead = created.clone();
         ahead.revision = 7;
-        let saved_ahead = save_player(&database, &ahead)
+        let saved_ahead = save_player(&database, &guard, &ahead)
             .await
             .expect("save player with an ahead revision");
-        let saved_again = save_player(&database, &created)
+        let saved_again = save_player(&database, &guard, &created)
             .await
             .expect("save stale player");
 
@@ -511,13 +671,116 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn concurrent_stale_saves_receive_monotonic_revisions() {
+        const WRITER_COUNT: u64 = 8;
+
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let database = open_surreal_kv(&directory.path().join("database"), 10_000)
+            .await
+            .expect("open SurrealKV");
+        let player_id = PlayerId::parse("concurrent-revision").expect("valid player ID");
+        let guard = test_guard(&player_id).await;
+        let stale = create_test_player(&database, &guard, &player_id).await;
+        drop(guard);
+        let barrier = Arc::new(Barrier::new(WRITER_COUNT as usize));
+        let mut writers = Vec::new();
+        for mesos in 0..WRITER_COUNT {
+            let database = database.clone();
+            let barrier = barrier.clone();
+            let mut player = stale.clone();
+            player.mesos = mesos;
+            writers.push(tokio::spawn(async move {
+                let locks = PlayerLocks::default();
+                let guard = acquire_player(&locks, &player.id)
+                    .await
+                    .expect("player guard");
+                barrier.wait().await;
+                save_player(&database, &guard, &player).await
+            }));
+        }
+
+        let mut revisions = Vec::new();
+        for writer in writers {
+            let saved = writer
+                .await
+                .expect("writer task")
+                .expect("save stale player");
+            revisions.push(saved.revision);
+        }
+        revisions.sort_unstable();
+
+        assert_eq!(revisions, (2..=WRITER_COUNT + 1).collect::<Vec<_>>());
+        assert_eq!(
+            load_player(&database, &player_id)
+                .await
+                .expect("load player")
+                .expect("saved player")
+                .revision,
+            WRITER_COUNT + 1
+        );
+    }
+
+    #[tokio::test]
+    async fn mutating_operations_reject_a_guard_for_another_player() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let database = open_surreal_kv(&directory.path().join("database"), 10_000)
+            .await
+            .expect("open SurrealKV");
+        let player_id = PlayerId::parse("guarded-player").expect("valid player ID");
+        let other_id = PlayerId::parse("other-player").expect("valid player ID");
+        let wrong_guard = test_guard(&other_id).await;
+
+        let create_error = create_player(
+            &database,
+            &wrong_guard,
+            &player_id,
+            &CharacterName::parse("Mina").expect("valid name"),
+            appearance(),
+            10_000,
+            Vec2 { x: 160.0, y: 420.0 },
+            123,
+            3,
+            10_000,
+        )
+        .await
+        .expect_err("another player's guard must not create a player");
+        assert!(create_error.to_string().contains("guarded-player"));
+        assert_eq!(
+            load_player(&database, &player_id)
+                .await
+                .expect("load absent player"),
+            None
+        );
+
+        let guard = test_guard(&player_id).await;
+        let saved = create_test_player(&database, &guard, &player_id).await;
+        let mut changed = saved.clone();
+        changed.mesos = 500;
+        changed.position = Some(Vec2 { x: 300.0, y: 250.0 });
+
+        save_player(&database, &wrong_guard, &changed)
+            .await
+            .expect_err("another player's guard must not save a player");
+        save_player_position(&database, &wrong_guard, &changed)
+            .await
+            .expect_err("another player's guard must not save a position");
+
+        let loaded = load_player(&database, &player_id)
+            .await
+            .expect("load player")
+            .expect("saved player");
+        assert_eq!(loaded, saved);
+    }
+
+    #[tokio::test]
     async fn schema_backfills_only_missing_cash_point_balances() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let database = open_surreal_kv(&directory.path().join("database"), 100)
             .await
             .expect("open SurrealKV");
         let player_id = PlayerId::parse("cash-migration").expect("valid player ID");
-        create_test_player(&database, &player_id).await;
+        let guard = test_guard(&player_id).await;
+        create_test_player(&database, &guard, &player_id).await;
 
         super::initialize_schema(&database, 999)
             .await
@@ -566,7 +829,8 @@ mod tests {
             .await
             .expect("open SurrealKV");
         let player_id = PlayerId::parse("invalid-save").expect("valid player ID");
-        let player = create_test_player(&database, &player_id).await;
+        let guard = test_guard(&player_id).await;
+        let player = create_test_player(&database, &guard, &player_id).await;
 
         for (expected, missing) in [
             (
@@ -598,7 +862,7 @@ mod tests {
                 },
             ),
         ] {
-            let error = save_player(&database, &missing)
+            let error = save_player(&database, &guard, &missing)
                 .await
                 .expect_err("missing required component must fail");
             assert!(error.to_string().contains(expected));
@@ -606,7 +870,7 @@ mod tests {
 
         let mut nonfinite = player.clone();
         nonfinite.position.as_mut().expect("position").x = f32::NAN;
-        let error = save_player(&database, &nonfinite)
+        let error = save_player(&database, &guard, &nonfinite)
             .await
             .expect_err("nonfinite position must fail");
         assert!(error.to_string().contains("position is not finite"));
@@ -624,14 +888,14 @@ mod tests {
                 master_level: 0,
             },
         ];
-        let error = save_player(&database, &invalid_collection)
+        let error = save_player(&database, &guard, &invalid_collection)
             .await
             .expect_err("duplicate learned skills must fail");
         assert!(error.to_string().contains("appears more than once"));
 
         let mut oversized_balance = player.clone();
         oversized_balance.cash_points = i64::MAX as u64 + 1;
-        let error = save_player(&database, &oversized_balance)
+        let error = save_player(&database, &guard, &oversized_balance)
             .await
             .expect_err("oversized cash-point balance must fail");
         assert!(error.to_string().contains("cash_points"));
@@ -643,7 +907,7 @@ mod tests {
             .expect("inventory")
             .stacks[0]
             .quantity = 0;
-        let error = save_player(&database, &invalid_inventory)
+        let error = save_player(&database, &guard, &invalid_inventory)
             .await
             .expect_err("zero-quantity inventory stack must fail");
         assert!(
@@ -651,6 +915,14 @@ mod tests {
                 .to_string()
                 .contains("positive item IDs and quantities")
         );
+
+        let current = load_player(&database, &player_id)
+            .await
+            .expect("load valid player after cancelled saves")
+            .expect("valid player");
+        save_player(&database, &guard, &current)
+            .await
+            .expect("save after cancelled transactions");
     }
 
     #[tokio::test]
@@ -660,7 +932,8 @@ mod tests {
             .await
             .expect("open SurrealKV");
         let player_id = PlayerId::parse("invalid-load").expect("valid player ID");
-        create_test_player(&database, &player_id).await;
+        let guard = test_guard(&player_id).await;
+        create_test_player(&database, &guard, &player_id).await;
         let mut record = super::select_player_record(&database, &player_id)
             .await
             .expect("select current record")
@@ -686,10 +959,12 @@ mod tests {
 
     async fn create_test_player(
         database: &super::Database,
+        guard: &PlayerGuard,
         player_id: &PlayerId,
     ) -> PlayerState {
         create_player(
             database,
+            guard,
             player_id,
             &CharacterName::parse("Mina").expect("valid name"),
             appearance(),
@@ -701,6 +976,13 @@ mod tests {
         )
         .await
         .expect("create player")
+    }
+
+    async fn test_guard(player_id: &PlayerId) -> PlayerGuard {
+        let locks = PlayerLocks::default();
+        acquire_player(&locks, player_id.as_str())
+            .await
+            .expect("player guard")
     }
 
     fn test_player_state() -> PlayerState {

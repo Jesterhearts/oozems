@@ -513,9 +513,9 @@ pub fn reserve_skill_cooldown(
     skill_id: u32,
     now_ms: u64,
     cooldown_ms: u64,
-) -> Result<(), SkillRuleError> {
+) -> Result<Option<SkillCooldownReservation>, SkillRuleError> {
     if cooldown_ms == 0 {
-        return Ok(());
+        return Ok(None);
     }
     let mut deadlines = cooldowns
         .deadlines
@@ -529,20 +529,34 @@ pub fn reserve_skill_cooldown(
             remaining_ms: deadline.saturating_sub(now_ms),
         });
     }
-    deadlines.insert(key, now_ms.saturating_add(cooldown_ms));
-    Ok(())
+    let deadline_ms = now_ms.saturating_add(cooldown_ms);
+    deadlines.insert(key, deadline_ms);
+    Ok(Some(SkillCooldownReservation {
+        player_id: player_id.to_owned(),
+        skill_id,
+        deadline_ms,
+    }))
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SkillCooldownReservation {
+    player_id: String,
+    skill_id: u32,
+    deadline_ms: u64,
 }
 
 pub fn release_skill_cooldown(
     cooldowns: &SkillCooldowns,
-    player_id: &str,
-    skill_id: u32,
+    reservation: &SkillCooldownReservation,
 ) -> Result<(), SkillRuleError> {
-    cooldowns
+    let mut deadlines = cooldowns
         .deadlines
         .lock()
-        .map_err(|_| SkillRuleError::CooldownStore)?
-        .remove(&(player_id.to_owned(), skill_id));
+        .map_err(|_| SkillRuleError::CooldownStore)?;
+    let key = (reservation.player_id.clone(), reservation.skill_id);
+    if deadlines.get(&key) == Some(&reservation.deadline_ms) {
+        deadlines.remove(&key);
+    }
     Ok(())
 }
 
@@ -991,13 +1005,34 @@ mod tests {
     #[test]
     fn a_failed_skill_transaction_can_release_its_reservation() {
         let cooldowns = SkillCooldowns::default();
-        reserve_skill_cooldown(&cooldowns, "player", 1_000, 1_000, 5_000)
-            .expect("reserve cooldown");
+        let reservation = reserve_skill_cooldown(&cooldowns, "player", 1_000, 1_000, 5_000)
+            .expect("reserve cooldown")
+            .expect("nonzero cooldown reservation");
 
-        release_skill_cooldown(&cooldowns, "player", 1_000).expect("release cooldown");
+        release_skill_cooldown(&cooldowns, &reservation).expect("release cooldown");
 
         reserve_skill_cooldown(&cooldowns, "player", 1_000, 1_001, 5_000)
             .expect("retry after downstream failure");
+    }
+
+    #[test]
+    fn a_stale_skill_reservation_cannot_release_a_new_deadline() {
+        let cooldowns = SkillCooldowns::default();
+        let stale = reserve_skill_cooldown(&cooldowns, "player", 1_000, 1_000, 5_000)
+            .expect("first reservation")
+            .expect("nonzero cooldown reservation");
+        reserve_skill_cooldown(&cooldowns, "player", 1_000, 6_000, 5_000)
+            .expect("replacement reservation");
+
+        release_skill_cooldown(&cooldowns, &stale).expect("release stale reservation");
+
+        assert_eq!(
+            reserve_skill_cooldown(&cooldowns, "player", 1_000, 6_001, 5_000),
+            Err(SkillRuleError::Cooldown {
+                skill_id: 1_000,
+                remaining_ms: 4_999,
+            })
+        );
     }
 
     #[test]

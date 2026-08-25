@@ -36,7 +36,7 @@ struct PlayerMovement {
     session: Option<MovementSession>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct MovementSession {
     sequence: u64,
     map_id: u32,
@@ -53,7 +53,7 @@ struct MovementSession {
     modifiers: MovementModifiers,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct AirborneState {
     origin_y: f32,
     started_at_ms: u64,
@@ -106,7 +106,14 @@ pub struct MovementDecision {
 
 #[derive(Clone, Copy, Debug)]
 pub struct RelocationRollback {
-    session: MovementSession,
+    before: MovementSession,
+    after: MovementSession,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct PersistenceRollback {
+    before: MovementSession,
+    after: MovementSession,
 }
 
 #[derive(Debug, Error)]
@@ -131,6 +138,10 @@ pub enum MovementError {
     MissingPlayerPosition,
     #[error("the destination map has no usable portal named {portal_name:?}")]
     MissingDestinationPortal { portal_name: String },
+    #[error("the player relocation changed before it could be restored")]
+    RelocationChanged,
+    #[error("the movement persistence marker changed before it could be restored")]
+    PersistenceChanged,
 }
 
 pub fn parse_snapshot(snapshot: MovementSnapshot) -> Result<SubmittedMovement, MovementError> {
@@ -337,7 +348,7 @@ pub fn enter_portal_with_modifiers(
             None,
         ));
     };
-    let rollback = RelocationRollback { session: *session };
+    let before = *session;
     let position = clamp_to_movement_bounds(portal.target_map, position);
     let (mode, platform_layer) = initial_motion(portal.target_map, &position, config);
     session.map_id = portal.target_map.id;
@@ -346,6 +357,10 @@ pub fn enter_portal_with_modifiers(
     session.platform_layer = platform_layer;
     session.airborne = airborne_state(session.mode, position.y, now_ms);
     session.dirty = true;
+    let rollback = RelocationRollback {
+        before,
+        after: *session,
+    };
     Ok((
         MovementDecision {
             persist: true,
@@ -394,7 +409,7 @@ pub fn relocate_player(
         .session
         .as_mut()
         .expect("movement session was initialized above");
-    let rollback = RelocationRollback { session: *session };
+    let before = *session;
     let (mode, platform_layer) = initial_motion(target_map, &position, config);
     session.map_id = target_map.id;
     session.position = position;
@@ -406,6 +421,10 @@ pub fn relocate_player(
     session.vertical_credit = 0.0;
     session.climb_credit = 0.0;
     session.dirty = true;
+    let rollback = RelocationRollback {
+        before,
+        after: *session,
+    };
     Ok((
         MovementDecision {
             persist: true,
@@ -421,7 +440,32 @@ pub fn restore_relocation(
     rollback: RelocationRollback,
 ) -> Result<(), MovementError> {
     let mut players = tracker.players.lock().map_err(|_| MovementError::Tracker)?;
-    players.entry(player_id.to_owned()).or_default().session = Some(rollback.session);
+    let movement = players.entry(player_id.to_owned()).or_default();
+    if movement.session != Some(rollback.after) {
+        return Err(MovementError::RelocationChanged);
+    }
+    movement.session = Some(rollback.before);
+    Ok(())
+}
+
+pub fn mark_relocation_persisted(
+    tracker: &MovementTracker,
+    player_id: &str,
+    now_ms: u64,
+    rollback: &mut RelocationRollback,
+) -> Result<(), MovementError> {
+    let mut players = tracker.players.lock().map_err(|_| MovementError::Tracker)?;
+    let movement = players.entry(player_id.to_owned()).or_default();
+    if movement.session != Some(rollback.after) {
+        return Err(MovementError::RelocationChanged);
+    }
+    let session = movement
+        .session
+        .as_mut()
+        .expect("the checked relocation session exists");
+    session.persisted_at_ms = now_ms;
+    session.dirty = false;
+    rollback.after = *session;
     Ok(())
 }
 
@@ -455,7 +499,7 @@ pub fn mark_persisted(
     tracker: &MovementTracker,
     player_id: &str,
     now_ms: u64,
-) -> Result<(), MovementError> {
+) -> Result<Option<PersistenceRollback>, MovementError> {
     if let Some(session) = tracker
         .players
         .lock()
@@ -463,9 +507,28 @@ pub fn mark_persisted(
         .get_mut(player_id)
         .and_then(|movement| movement.session.as_mut())
     {
+        let before = *session;
         session.persisted_at_ms = now_ms;
         session.dirty = false;
+        return Ok(Some(PersistenceRollback {
+            before,
+            after: *session,
+        }));
     }
+    Ok(None)
+}
+
+pub fn restore_persistence(
+    tracker: &MovementTracker,
+    player_id: &str,
+    rollback: PersistenceRollback,
+) -> Result<(), MovementError> {
+    let mut players = tracker.players.lock().map_err(|_| MovementError::Tracker)?;
+    let movement = players.entry(player_id.to_owned()).or_default();
+    if movement.session != Some(rollback.after) {
+        return Err(MovementError::PersistenceChanged);
+    }
+    movement.session = Some(rollback.before);
     Ok(())
 }
 
@@ -1062,6 +1125,7 @@ mod tests {
     use oozems_proto::v1::Portal;
     use oozems_proto::v1::Vec2;
 
+    use super::MovementError;
     use super::MovementMode;
     use super::MovementModifiers;
     use super::MovementTracker;
@@ -1071,8 +1135,11 @@ mod tests {
     use super::SupportContact;
     use super::enter_portal_with_modifiers;
     use super::initialize_player;
+    use super::mark_persisted;
+    use super::mark_relocation_persisted;
     use super::register_map;
     use super::relocate_player;
+    use super::restore_persistence;
     use super::restore_relocation;
     use super::submit_movement;
     use super::submit_movement_with_modifiers;
@@ -1825,7 +1892,7 @@ mod tests {
             ..Map::default()
         };
 
-        let (decision, rollback) = relocate_player(
+        let (decision, mut rollback) = relocate_player(
             &tracker,
             &player(),
             &source_map,
@@ -1837,10 +1904,37 @@ mod tests {
         .expect("authorized relocation");
         assert_eq!(decision.authoritative.map_id, 2);
 
+        mark_relocation_persisted(&tracker, "player", 1_200, &mut rollback)
+            .expect("mark relocated player persisted");
         restore_relocation(&tracker, "player", rollback).expect("restore source location");
         let restored = synchronize_player(&tracker, player()).expect("restored player");
         assert_eq!(restored.map_id, 1);
         assert_eq!(restored.position, Some(Vec2 { x: 100.0, y: 300.0 }));
+    }
+
+    #[test]
+    fn stale_persistence_tokens_cannot_restore_a_newer_marker() {
+        let tracker = initialized_tracker();
+        let first = mark_persisted(&tracker, "player", 1_200)
+            .expect("first persistence marker")
+            .expect("initialized movement session");
+        let second = mark_persisted(&tracker, "player", 1_300)
+            .expect("second persistence marker")
+            .expect("initialized movement session");
+
+        assert!(matches!(
+            restore_persistence(&tracker, "player", first),
+            Err(MovementError::PersistenceChanged)
+        ));
+        restore_persistence(&tracker, "player", second).expect("restore latest marker");
+        let session = tracker
+            .players
+            .lock()
+            .expect("movement players")
+            .get("player")
+            .and_then(|movement| movement.session)
+            .expect("player movement session");
+        assert_eq!(session.persisted_at_ms, 1_200);
     }
 
     fn initialized_tracker() -> MovementTracker {

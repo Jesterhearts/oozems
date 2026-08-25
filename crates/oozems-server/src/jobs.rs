@@ -53,19 +53,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn authoritative_job_ids_select_named_formula_families() {
-        assert_eq!(stat_formula_family(0), StatFormulaFamily::Standard);
-        assert_eq!(stat_formula_family(212), StatFormulaFamily::Standard);
-        assert_eq!(stat_formula_family(311), StatFormulaFamily::Ranged);
-        assert_eq!(stat_formula_family(411), StatFormulaFamily::Ranged);
-        assert_eq!(stat_formula_family(511), StatFormulaFamily::Brawler);
-        assert_eq!(stat_formula_family(521), StatFormulaFamily::Gunslinger);
+    fn formula_family_taxonomy_boundaries_are_pinned() {
+        for (job_id, family) in [
+            (299, StatFormulaFamily::Standard),
+            (300, StatFormulaFamily::Ranged),
+            (499, StatFormulaFamily::Ranged),
+            (500, StatFormulaFamily::Standard),
+            (509, StatFormulaFamily::Standard),
+            (510, StatFormulaFamily::Brawler),
+            (519, StatFormulaFamily::Brawler),
+            (520, StatFormulaFamily::Gunslinger),
+            (529, StatFormulaFamily::Gunslinger),
+            (530, StatFormulaFamily::Standard),
+        ] {
+            assert_eq!(stat_formula_family(job_id), family, "job {job_id}");
+        }
     }
 
     #[test]
-    fn only_mage_family_skills_select_magical_attack() {
-        assert_eq!(skill_attack_type(212), SkillAttackType::Magical);
-        assert_eq!(skill_attack_type(112), SkillAttackType::Physical);
-        assert_eq!(skill_attack_type(522), SkillAttackType::Physical);
+    fn magical_attack_taxonomy_boundaries_are_pinned() {
+        assert_eq!(skill_attack_type(199), SkillAttackType::Physical);
+        assert_eq!(skill_attack_type(200), SkillAttackType::Magical);
+        assert_eq!(skill_attack_type(299), SkillAttackType::Magical);
+        assert_eq!(skill_attack_type(300), SkillAttackType::Physical);
     }
 }

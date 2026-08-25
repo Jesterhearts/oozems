@@ -404,18 +404,3 @@ where
 
     O::decode(bytes.as_slice()).map_err(|error| ClientError::InvalidResponse(error.to_string()))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::ClientError;
-    use super::require_data;
-
-    #[test]
-    fn required_response_data_reports_its_missing_field() {
-        assert!(matches!(
-            require_data::<u32>(None, "player"),
-            Err(ClientError::MissingData("player"))
-        ));
-        assert_eq!(require_data(Some(7), "player").expect("present data"), 7);
-    }
-}

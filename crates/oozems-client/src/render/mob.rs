@@ -15,11 +15,12 @@ pub(super) fn draw(
     camera_y: f64,
     layer: i32,
 ) {
-    for mob in &game.map.mobs {
+    for mob in &game.world.map.mobs {
         if mob.layer != layer || mob.current_hp == 0 {
             continue;
         }
-        let Some(position) = crate::mob_render::position(&game.mob_render, mob, game.frame_time_ms)
+        let Some(position) =
+            crate::mob_render::position(&game.world.mob_render, mob, game.clock.now_ms)
         else {
             continue;
         };
@@ -30,7 +31,7 @@ pub(super) fn draw(
         let Some(animation) = movement_animation(definition, mode) else {
             continue;
         };
-        let Some(preferred) = animation_frame(animation, game.frame_time_ms) else {
+        let Some(preferred) = animation_frame(animation, game.clock.now_ms) else {
             continue;
         };
         if !super::sprite_is_visible(
@@ -70,14 +71,14 @@ pub(super) fn draw(
             camera_y,
         );
     }
-    for projectile in &game.map.mob_projectiles {
+    for projectile in &game.world.map.mob_projectiles {
         if projectile.layer != layer {
             continue;
         }
         let Some(position) = crate::mob_render::projectile_position(
-            &game.mob_render,
+            &game.world.mob_render,
             projectile,
-            game.frame_time_ms,
+            game.clock.now_ms,
         ) else {
             continue;
         };
@@ -90,13 +91,13 @@ pub(super) fn draw_combat_texts(
     camera_x: f64,
     camera_y: f64,
 ) {
-    let context = &game.context;
+    let context = &game.surface.context;
     context.save();
     context.set_font("bold 16px monospace");
     context.set_text_align("center");
     context.set_line_width(3.0);
     context.set_stroke_style_str("#111111");
-    for text in crate::mob_render::combat_texts(&game.mob_render, game.frame_time_ms) {
+    for text in crate::mob_render::combat_texts(&game.world.mob_render, game.clock.now_ms) {
         let x = f64::from(text.position.x) - camera_x;
         let y = f64::from(text.position.y) - camera_y - 36.0 - f64::from(text.progress) * 24.0;
         let label = if text.missed {
@@ -131,10 +132,11 @@ fn draw_health_bar(
     let left = f64::from(x) - camera_x - 20.0;
     let top = f64::from(health_bar_top(y, frame_origin_y)) - camera_y;
     let fill = current_hp as f64 / maximum_hp as f64;
-    game.context.set_fill_style_str("#222222");
-    game.context.fill_rect(left, top, 40.0, 5.0);
-    game.context.set_fill_style_str("#e53935");
-    game.context
+    game.surface.context.set_fill_style_str("#222222");
+    game.surface.context.fill_rect(left, top, 40.0, 5.0);
+    game.surface.context.set_fill_style_str("#e53935");
+    game.surface
+        .context
         .fill_rect(left + 1.0, top + 1.0, 38.0 * fill, 3.0);
 }
 
@@ -154,20 +156,24 @@ fn draw_projectile(
 ) {
     let x = f64::from(x) - camera_x;
     let y = f64::from(y) - camera_y - 24.0;
-    game.context.begin_path();
-    game.context.set_fill_style_str("#f7d94c");
-    game.context.set_stroke_style_str("#b55a16");
-    game.context.set_line_width(2.0);
-    let _ = game.context.arc(x, y, 6.0, 0.0, std::f64::consts::TAU);
-    game.context.fill();
-    game.context.stroke();
+    game.surface.context.begin_path();
+    game.surface.context.set_fill_style_str("#f7d94c");
+    game.surface.context.set_stroke_style_str("#b55a16");
+    game.surface.context.set_line_width(2.0);
+    let _ = game
+        .surface
+        .context
+        .arc(x, y, 6.0, 0.0, std::f64::consts::TAU);
+    game.surface.context.fill();
+    game.surface.context.stroke();
 }
 
 fn definition(
     game: &Game,
     definition_id: u32,
 ) -> Option<&MobDefinition> {
-    game.map
+    game.world
+        .map
         .mob_definitions
         .iter()
         .find(|definition| definition.id == definition_id)
@@ -203,9 +209,10 @@ fn animation_frame(
     animation: &MobAnimation,
     timestamp_ms: f64,
 ) -> Option<&MobFrame> {
-    let index = super::timed_frame_index(
+    let index = crate::animation::frame_index(
         animation.frames.iter().map(|frame| frame.delay_ms),
         timestamp_ms,
+        crate::animation::Playback::Loop,
     )?;
     animation.frames.get(index)
 }
@@ -221,7 +228,7 @@ fn drawable_frame<'a>(
         .flat_map(|animation| &animation.frames)
         .position(|frame| std::ptr::eq(frame, preferred))?;
     let index = assets::ready_or_fallback_index(
-        &game.images,
+        &game.surface.images,
         definition
             .animations
             .iter()

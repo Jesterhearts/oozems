@@ -8,6 +8,8 @@ use serde::Deserialize;
 use serde::Serialize;
 use url::Url;
 
+use crate::text::truncate;
+
 pub const DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
 
 #[derive(Clone, Debug, Serialize)]
@@ -176,13 +178,6 @@ struct ProviderError {
 #[derive(Deserialize)]
 struct ProviderErrorBody {
     message: String,
-}
-
-fn truncate(
-    value: &str,
-    maximum_chars: usize,
-) -> String {
-    value.chars().take(maximum_chars).collect()
 }
 
 #[cfg(test)]

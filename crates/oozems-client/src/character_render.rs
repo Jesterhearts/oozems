@@ -34,10 +34,15 @@ pub fn draw_character(
     timestamp_ms: f64,
     placement: CharacterPlacement,
 ) {
-    let Some(preferred) = frame_at_time(animation_frames(sprites, animation), timestamp_ms) else {
+    let frames = animation_frames(sprites, animation);
+    let Some(preferred_index) = crate::animation::frame_index(
+        frames.iter().map(|frame| frame.delay_ms),
+        timestamp_ms,
+        crate::animation::Playback::Loop,
+    ) else {
         return;
     };
-    let Some(frame) = drawable_frame(assets, sprites, preferred) else {
+    let Some(frame) = drawable_frame(assets, sprites, frames, preferred_index) else {
         return;
     };
     context.save();
@@ -65,27 +70,22 @@ pub fn draw_character(
 fn drawable_frame<'a>(
     browser_assets: &HashMap<String, BrowserAsset>,
     sprites: &'a CharacterSpriteSet,
-    preferred: &'a CharacterFrame,
+    selected_frames: &[CharacterFrame],
+    selected_index: usize,
 ) -> Option<&'a CharacterFrame> {
-    let mut preferred_ready = false;
-    let mut fallback = None;
-    for frame in all_frames(sprites) {
-        let ready = !frame.layers.is_empty()
-            && assets::images_ready(
-                browser_assets,
-                frame.layers.iter().map(|layer| layer.asset_id.as_str()),
-            );
-        if !ready {
-            continue;
-        }
-        fallback.get_or_insert(frame);
-        preferred_ready |= std::ptr::eq(frame, preferred);
-    }
-    if preferred_ready {
-        Some(preferred)
-    } else {
-        fallback
-    }
+    let preferred = selected_frames.get(selected_index)?;
+    let preferred_index = all_frames(sprites).position(|frame| std::ptr::eq(frame, preferred))?;
+    let index = assets::preferred_or_first_ready(
+        all_frames(sprites).map(|frame| {
+            !frame.layers.is_empty()
+                && assets::images_ready(
+                    browser_assets,
+                    frame.layers.iter().map(|layer| layer.asset_id.as_str()),
+                )
+        }),
+        preferred_index,
+    )?;
+    all_frames(sprites).nth(index)
 }
 
 fn all_frames(sprites: &CharacterSpriteSet) -> impl Iterator<Item = &CharacterFrame> {
@@ -136,29 +136,6 @@ fn horizontal_scale(
     if facing_left { scale } else { -scale }
 }
 
-fn frame_at_time(
-    frames: &[CharacterFrame],
-    timestamp_ms: f64,
-) -> Option<&CharacterFrame> {
-    let total_duration = frames
-        .iter()
-        .map(|frame| u64::from(frame.delay_ms.max(1)))
-        .sum::<u64>();
-    if total_duration == 0 {
-        return None;
-    }
-
-    let mut animation_time = timestamp_ms.max(0.0) as u64 % total_duration;
-    for frame in frames {
-        let delay = u64::from(frame.delay_ms.max(1));
-        if animation_time < delay {
-            return Some(frame);
-        }
-        animation_time -= delay;
-    }
-    frames.last()
-}
-
 #[cfg(test)]
 mod tests {
     use oozems_proto::v1::CharacterFrame;
@@ -167,7 +144,6 @@ mod tests {
     use super::CharacterAnimation;
     use super::animation_duration_ms;
     use super::animation_frames;
-    use super::frame_at_time;
     use super::horizontal_scale;
 
     #[test]
@@ -207,7 +183,7 @@ mod tests {
 
     #[test]
     fn animation_uses_each_frame_delay() {
-        let frames = vec![
+        let frames = [
             CharacterFrame {
                 delay_ms: 100,
                 ..CharacterFrame::default()
@@ -218,10 +194,17 @@ mod tests {
             },
         ];
 
-        assert_eq!(frame_at_time(&frames, 99.0), Some(&frames[0]));
-        assert_eq!(frame_at_time(&frames, 100.0), Some(&frames[1]));
-        assert_eq!(frame_at_time(&frames, 299.0), Some(&frames[1]));
-        assert_eq!(frame_at_time(&frames, 300.0), Some(&frames[0]));
+        let frame_index = |timestamp_ms| {
+            crate::animation::frame_index(
+                frames.iter().map(|frame| frame.delay_ms),
+                timestamp_ms,
+                crate::animation::Playback::Loop,
+            )
+        };
+        assert_eq!(frame_index(99.0), Some(0));
+        assert_eq!(frame_index(100.0), Some(1));
+        assert_eq!(frame_index(299.0), Some(1));
+        assert_eq!(frame_index(300.0), Some(0));
     }
 
     #[test]

@@ -10,7 +10,6 @@ use oozems_proto::v1::SellShopItemAction;
 use oozems_proto::v1::TakeTaxiAction;
 use oozems_proto::v1::npc_interaction;
 use oozems_proto::v1::npc_interaction_request;
-use wasm_bindgen_futures::spawn_local;
 
 use super::Game;
 use crate::api;
@@ -20,26 +19,28 @@ use crate::show_status;
 pub(super) fn begin_open(
     game: Rc<RefCell<Game>>,
     npc_spawn_id: u32,
+    permit: super::requests::RequestPermit,
 ) {
     let request = {
         let game = game.borrow();
         NpcInteractionRequest {
             player_id: game.player.id.clone(),
-            map_id: game.map.id,
+            map_id: game.world.map.id,
             npc_spawn_id,
             action: Some(npc_interaction_request::Action::Open(OpenNpcAction {})),
         }
     };
-    begin_request(game, request, "NPC interaction");
+    begin_request(game, request, "NPC interaction", permit);
 }
 
 pub(super) fn begin_action(
     game: Rc<RefCell<Game>>,
     action: InteractionUiAction,
+    permit: super::requests::RequestPermit,
 ) {
     let request = {
         let game = game.borrow();
-        let Some(interaction) = game.interaction.interaction.as_ref() else {
+        let Some(interaction) = game.ui.interaction.interaction.as_ref() else {
             return;
         };
         let action = match action {
@@ -55,6 +56,7 @@ pub(super) fn begin_action(
                     return;
                 };
                 let Some(offer) = game
+                    .ui
                     .interaction
                     .selected_offer
                     .and_then(|index| shop.offers.get(index))
@@ -74,7 +76,7 @@ pub(super) fn begin_action(
                     show_status("Cash-point shops do not buy items.", true);
                     return;
                 }
-                let Some(index) = game.interaction.selected_inventory else {
+                let Some(index) = game.ui.interaction.selected_inventory else {
                     show_status("Select an inventory item first.", true);
                     return;
                 };
@@ -116,46 +118,49 @@ pub(super) fn begin_action(
             action: Some(action),
         }
     };
-    begin_request(game, request, "NPC action");
+    begin_request(game, request, "NPC action", permit);
 }
 
 fn begin_request(
     game: Rc<RefCell<Game>>,
     request: NpcInteractionRequest,
     context: &'static str,
+    permit: super::requests::RequestPermit,
 ) {
-    let (in_flight, generation, source_map_id, learned_skills) = {
+    let (generation, source_map_id, learned_skills) = {
         let game = game.borrow();
         (
-            game.interaction.in_flight.clone(),
-            game.interaction.generation,
-            game.map.id,
+            game.ui.interaction.generation,
+            game.world.map.id,
             game.player.learned_skills.clone(),
         )
     };
-    if in_flight.replace(true) {
-        show_status("An NPC action is already in progress.", true);
-        return;
-    }
-    spawn_local(async move {
-        let request_started_ms = super::monotonic_time_ms();
-        let result = request_and_prepare(
-            request,
-            generation,
-            source_map_id,
-            learned_skills,
-            request_started_ms,
-        )
-        .await;
-        match result {
-            Ok(update) => match install_response(&mut game.borrow_mut(), update) {
-                Ok(message) => show_status(message, false),
-                Err(error) => show_status(&format!("{context} could not finish: {error}"), true),
+    super::requests::spawn_request(
+        game,
+        permit,
+        move || async move {
+            let request_started_ms = super::monotonic_time_ms();
+            request_and_prepare(
+                request,
+                generation,
+                source_map_id,
+                learned_skills,
+                request_started_ms,
+            )
+            .await
+        },
+        move |game, result, _| match result {
+            Ok(update) => match install_response(game, update) {
+                Ok(message) => super::requests::RequestStatus::success(message),
+                Err(error) => super::requests::RequestStatus::error(format!(
+                    "{context} could not finish: {error}"
+                )),
             },
-            Err(error) => show_status(&format!("{context} failed: {error}"), true),
-        }
-        in_flight.set(false);
-    });
+            Err(error) => {
+                super::requests::RequestStatus::error(format!("{context} failed: {error}"))
+            }
+        },
+    );
 }
 
 struct InteractionUpdate {
@@ -199,27 +204,24 @@ fn install_response(
     game: &mut Game,
     mut update: InteractionUpdate,
 ) -> Result<&'static str, String> {
-    let player = api::require_data(update.response.player.take(), "player")
-        .map_err(|error| error.to_string())?;
-    let active_buffs = api::require_data(update.response.active_buffs.take(), "active buffs")
-        .map_err(|error| error.to_string())?;
-    let active_buffs = super::validate_active_buffs(active_buffs)?;
+    let (player, active_buffs) =
+        super::responses::take_player_and_active_buffs(&mut update.response)?;
     let skill_active_buffs = update
         .skill_book
         .as_mut()
-        .map(|(loaded, _)| super::validate_active_buffs(std::mem::take(&mut loaded.active_buffs)))
+        .map(|(loaded, _)| super::buffs::validate_state(std::mem::take(&mut loaded.active_buffs)))
         .transpose()?;
     let response_player_revision = player.revision;
     let npc_animation = update.response.npc_animation.take();
-    let context_is_current =
-        game.interaction.generation == update.generation && game.map.id == update.source_map_id;
+    let context_is_current = game.ui.interaction.generation == update.generation
+        && game.world.map.id == update.source_map_id;
     let installed = super::install_full_player_update(game, player);
     super::install_active_buffs(game, active_buffs, update.request_started_ms);
     if installed.domains.skills
         && let Some(((loaded, skill_requested_at_ms), skill_active_buffs)) =
             update.skill_book.take().zip(skill_active_buffs)
     {
-        game.skill_book = loaded.skill_book;
+        game.player.skill_book = loaded.skill_book;
         super::install_active_buffs(game, skill_active_buffs, skill_requested_at_ms);
     }
     let relocation_requested =
@@ -235,15 +237,15 @@ fn install_response(
         _ => return Err("NPC response contains an incomplete map transition".to_owned()),
     };
     if context_is_current && !relocation_requested {
-        game.interaction.install(update.response.interaction);
+        game.ui.interaction.install(update.response.interaction);
         if let Some(event) = npc_animation
             && let Err(error) = crate::render::npc::install_event(
-                &mut game.npc_animations,
-                &game.map,
+                &mut game.world.npc_animations,
+                &game.world.map,
                 event,
                 response_player_revision,
                 game.player.revision,
-                game.frame_time_ms,
+                game.clock.now_ms,
             )
         {
             return Err(error);

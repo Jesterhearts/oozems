@@ -3,7 +3,6 @@ use std::rc::Rc;
 
 use oozems_proto::v1::CombatEventKind;
 use oozems_proto::v1::SkillUseResult;
-use wasm_bindgen_futures::spawn_local;
 
 use super::Game;
 use crate::api;
@@ -14,103 +13,100 @@ use crate::skill_effects;
 pub(super) fn begin(
     game: Rc<RefCell<Game>>,
     action: GuiAction,
+    permit: super::requests::RequestPermit,
 ) {
     if matches!(action, GuiAction::UseSkill { .. }) {
         let game = game.borrow();
-        if game.active_buffs.attacks_disabled {
+        if game.player.active_buffs.attacks_disabled {
             show_status("The active morph does not allow attacks.", true);
             return;
         }
-        if game.transition_in_flight.get() {
-            show_status("A map transition is already in progress.", true);
-            return;
-        }
     }
-    if super::recovery_actions::is_in_flight(&game.borrow().recovery_state) {
-        show_status("Recovery is still being saved.", true);
-        return;
-    }
-    super::recovery_actions::reset(&mut game.borrow_mut().recovery_state);
-    let in_flight = game.borrow().skill_action_in_flight.clone();
-    if in_flight.replace(true) {
-        show_status("A skill action is already in progress.", true);
-        return;
-    }
+    super::recovery_actions::reset(&mut game.borrow_mut().requests.recovery);
     let (player_id, target_mob_id, facing_left) = {
         let game = game.borrow();
         (
             game.player.id.clone(),
             select_target(&game).unwrap_or_default(),
-            game.facing_left,
+            game.world.facing_left,
         )
     };
-    spawn_local(async move {
-        let request_started_ms = super::monotonic_time_ms();
-        let result = match action {
-            GuiAction::AllocateSkill { skill_id } => {
-                match api::allocate_skill_point(&player_id, skill_id).await {
-                    Ok(response) => {
-                        install_allocation(&mut game.borrow_mut(), response, request_started_ms)
-                    }
-                    Err(error) => Err(format!("Skill point allocation failed: {error}")),
+    super::requests::spawn_request(
+        game,
+        permit,
+        move || async move {
+            match action {
+                GuiAction::AllocateSkill { skill_id } => {
+                    api::allocate_skill_point(&player_id, skill_id)
+                        .await
+                        .map(SkillResponse::Allocation)
+                        .map_err(|error| format!("Skill point allocation failed: {error}"))
                 }
-            }
-            GuiAction::UseSkill { skill_id } => {
-                match api::use_skill(&player_id, skill_id, &target_mob_id, facing_left).await {
-                    Ok(response) => {
-                        install_use(&mut game.borrow_mut(), response, request_started_ms)
-                    }
-                    Err(error) => Err(format!("Skill use failed: {error}")),
+                GuiAction::UseSkill { skill_id } => {
+                    api::use_skill(&player_id, skill_id, &target_mob_id, facing_left)
+                        .await
+                        .map(SkillResponse::Use)
+                        .map_err(|error| format!("Skill use failed: {error}"))
                 }
+                _ => unreachable!("non-skill action reached the skill request pipeline"),
             }
-            _ => unreachable!("non-skill action reached the skill request pipeline"),
-        };
-        match result {
-            Ok(message) => show_status(&message, false),
-            Err(error) => show_status(&error, true),
-        }
-        in_flight.set(false);
-    });
+        },
+        |game, result, request_started_ms| {
+            let result = match result {
+                Ok(SkillResponse::Allocation(response)) => {
+                    install_allocation(game, response, request_started_ms)
+                }
+                Ok(SkillResponse::Use(response)) => install_use(game, response, request_started_ms),
+                Err(error) => Err(error),
+            };
+            match result {
+                Ok(message) => super::requests::RequestStatus::success(message),
+                Err(error) => super::requests::RequestStatus::error(error),
+            }
+        },
+    );
 }
 
-pub(super) fn begin_basic_attack(game: Rc<RefCell<Game>>) {
-    if game.borrow().active_buffs.attacks_disabled {
+enum SkillResponse {
+    Allocation(oozems_proto::v1::AllocateSkillPointResponse),
+    Use(oozems_proto::v1::UseSkillResponse),
+}
+
+pub(super) fn begin_basic_attack(
+    game: Rc<RefCell<Game>>,
+    permit: super::requests::RequestPermit,
+) {
+    if game.borrow().player.active_buffs.attacks_disabled {
         show_status("The active morph does not allow attacks.", true);
         return;
     }
-    if game.borrow().transition_in_flight.get() {
-        show_status("A map transition is already in progress.", true);
-        return;
+    super::recovery_actions::reset(&mut game.borrow_mut().requests.recovery);
+    {
+        let mut state = game.borrow_mut();
+        let now_ms = state.clock.now_ms;
+        super::runtime::start_character_attack_animation(&mut state.world, now_ms);
     }
-    if super::recovery_actions::is_in_flight(&game.borrow().recovery_state) {
-        show_status("Recovery is still being saved.", true);
-        return;
-    }
-    super::recovery_actions::reset(&mut game.borrow_mut().recovery_state);
-    let in_flight = game.borrow().skill_action_in_flight.clone();
-    if in_flight.replace(true) {
-        show_status("A combat action is already in progress.", true);
-        return;
-    }
-    super::start_character_attack_animation(&mut game.borrow_mut());
     let (player_id, facing_left) = {
         let game = game.borrow();
-        (game.player.id.clone(), game.facing_left)
+        (game.player.id.clone(), game.world.facing_left)
     };
-    spawn_local(async move {
-        let request_started_ms = super::monotonic_time_ms();
-        let result = match api::use_basic_attack(&player_id, facing_left).await {
-            Ok(response) => {
-                install_basic_attack(&mut game.borrow_mut(), response, request_started_ms)
+    super::requests::spawn_request(
+        game,
+        permit,
+        move || async move {
+            api::use_basic_attack(&player_id, facing_left)
+                .await
+                .map_err(|error| format!("Basic attack failed: {error}"))
+        },
+        |game, result, request_started_ms| {
+            let result = result
+                .and_then(|response| install_basic_attack(game, response, request_started_ms));
+            match result {
+                Ok(message) => super::requests::RequestStatus::success(message),
+                Err(error) => super::requests::RequestStatus::error(error),
             }
-            Err(error) => Err(format!("Basic attack failed: {error}")),
-        };
-        match result {
-            Ok(message) => show_status(&message, false),
-            Err(error) => show_status(&error, true),
-        }
-        in_flight.set(false);
-    });
+        },
+    );
 }
 
 fn install_allocation(
@@ -118,16 +114,12 @@ fn install_allocation(
     mut response: oozems_proto::v1::AllocateSkillPointResponse,
     request_started_ms: f64,
 ) -> Result<String, String> {
-    let player =
-        api::require_data(response.player.take(), "player").map_err(|error| error.to_string())?;
+    let (player, active_buffs) = super::responses::take_player_and_active_buffs(&mut response)?;
     let skill_book = api::require_data(response.skill_book.take(), "skill book")
         .map_err(|error| error.to_string())?;
-    let active_buffs = api::require_data(response.active_buffs.take(), "active buffs")
-        .map_err(|error| error.to_string())?;
-    let active_buffs = super::validate_active_buffs(active_buffs)?;
     let installed = super::install_full_player_update(game, player);
     if installed.domains.skills {
-        game.skill_book = skill_book;
+        game.player.skill_book = skill_book;
     }
     super::install_active_buffs(game, active_buffs, request_started_ms);
     Ok("Skill point allocated.".to_owned())
@@ -138,13 +130,9 @@ fn install_use(
     mut response: oozems_proto::v1::UseSkillResponse,
     request_started_ms: f64,
 ) -> Result<String, String> {
-    let player =
-        api::require_data(response.player.take(), "player").map_err(|error| error.to_string())?;
+    let (player, active_buffs) = super::responses::take_player_and_active_buffs(&mut response)?;
     let result = api::require_data(response.result.take(), "skill use result")
         .map_err(|error| error.to_string())?;
-    let active_buffs = api::require_data(response.active_buffs.take(), "active buffs")
-        .map_err(|error| error.to_string())?;
-    let active_buffs = super::validate_active_buffs(active_buffs)?;
     let effect = api::require_data(response.effect.take(), "skill effect")
         .map_err(|error| error.to_string())?;
     let outcome = install_combat_update(
@@ -166,11 +154,7 @@ fn install_basic_attack(
     mut response: oozems_proto::v1::BasicAttackResponse,
     request_started_ms: f64,
 ) -> Result<String, String> {
-    let player =
-        api::require_data(response.player.take(), "player").map_err(|error| error.to_string())?;
-    let active_buffs = api::require_data(response.active_buffs.take(), "active buffs")
-        .map_err(|error| error.to_string())?;
-    let active_buffs = super::validate_active_buffs(active_buffs)?;
+    let (player, active_buffs) = super::responses::take_player_and_active_buffs(&mut response)?;
     let outcome = install_combat_update(
         game,
         player,
@@ -222,29 +206,32 @@ fn install_combat_update(
 ) -> Result<PlayerAttackOutcome, String> {
     let response_map_id = player.map_id;
     super::install_full_player_update(game, player);
-    validate_combat_map(game.map.id, response_map_id)?;
+    validate_combat_map(game.world.map.id, response_map_id)?;
     let outcome = player_attack_outcome(&combat_events);
-    if crate::mob_render::accept_simulation_snapshot(&mut game.mob_render, simulation_sequence) {
+    if crate::mob_render::accept_simulation_snapshot(
+        &mut game.world.mob_render,
+        simulation_sequence,
+    ) {
         crate::mob_render::install_snapshot(
-            &mut game.mob_render,
-            &mut game.map.mobs,
+            &mut game.world.mob_render,
+            &mut game.world.map.mobs,
             mobs,
-            game.frame_time_ms,
-            game.movement_rules.snapshot_interval_ms,
+            game.clock.now_ms,
+            game.world.movement_rules.snapshot_interval_ms,
         );
         crate::mob_render::install_projectile_snapshot(
-            &mut game.mob_render,
-            &mut game.map.mob_projectiles,
+            &mut game.world.mob_render,
+            &mut game.world.map.mob_projectiles,
             mob_projectiles,
-            game.frame_time_ms,
-            game.movement_rules.snapshot_interval_ms,
+            game.clock.now_ms,
+            game.world.movement_rules.snapshot_interval_ms,
         );
-        game.map.dropped_items = dropped_items;
+        game.world.map.dropped_items = dropped_items;
     }
     crate::mob_render::install_combat_events(
-        &mut game.mob_render,
+        &mut game.world.mob_render,
         combat_events,
-        game.frame_time_ms,
+        game.clock.now_ms,
     );
     Ok(outcome)
 }
@@ -284,14 +271,16 @@ fn validate_combat_map(
 
 fn select_target(game: &Game) -> Option<String> {
     let player = game.player.position?;
-    game.map
+    game.world
+        .map
         .mobs
         .iter()
-        .filter(|mob| mob.current_hp > 0 && mob.layer == game.motion.platform_layer)
+        .filter(|mob| mob.current_hp > 0 && mob.layer == game.world.motion.platform_layer)
         .filter_map(|mob| {
-            let position = crate::mob_render::position(&game.mob_render, mob, game.frame_time_ms)?;
+            let position =
+                crate::mob_render::position(&game.world.mob_render, mob, game.clock.now_ms)?;
             let delta_x = position.x - player.x;
-            let in_front = if game.facing_left {
+            let in_front = if game.world.facing_left {
                 delta_x <= 0.0
             } else {
                 delta_x >= 0.0
@@ -309,6 +298,7 @@ fn use_message(
     outcome: &PlayerAttackOutcome,
 ) -> String {
     let name = game
+        .player
         .skill_book
         .skills
         .iter()

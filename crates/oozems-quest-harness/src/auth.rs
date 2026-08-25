@@ -25,6 +25,8 @@ use sha2::Digest;
 use sha2::Sha256;
 use url::Url;
 
+use crate::text::truncate;
+
 const OPENROUTER_ORIGIN: &str = "https://openrouter.ai";
 const CALLBACK_PATH: &str = "/callback";
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(10 * 60);
@@ -283,13 +285,6 @@ fn exchange_code(
         bail!("OpenRouter returned an invalid API key");
     }
     Ok(exchange.key)
-}
-
-fn truncate(
-    value: &str,
-    maximum_chars: usize,
-) -> String {
-    value.chars().take(maximum_chars).collect()
 }
 
 #[cfg(unix)]

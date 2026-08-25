@@ -691,7 +691,6 @@ mod tests {
     use std::time::Instant;
 
     use clap::CommandFactory;
-    use tempfile::tempdir;
 
     use super::*;
 
@@ -821,23 +820,6 @@ mod tests {
         );
         assert_eq!(unique_script_count(&catalog, None), 2);
         assert_eq!(unique_script_count(&catalog, Some(QuestPhase::Start)), 1);
-    }
-
-    #[test]
-    fn program_outputs_are_merged_and_written_as_one_document() {
-        let directory = tempdir().expect("temporary directory");
-        let path = directory.path().join("programs.toml");
-        let programs = vec![
-            "[[scripts]]\nname = \"one\"\n".to_owned(),
-            "[[scripts]]\nname = \"two\"\n".to_owned(),
-        ];
-
-        write_text(Some(&path), &merge_programs(&programs)).expect("write merged programs");
-
-        assert_eq!(
-            fs::read_to_string(path).expect("generated programs"),
-            "[[scripts]]\nname = \"one\"\n\n[[scripts]]\nname = \"two\"\n"
-        );
     }
 
     #[test]

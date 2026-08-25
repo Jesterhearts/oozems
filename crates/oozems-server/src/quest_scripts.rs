@@ -1604,7 +1604,7 @@ mod tests {
     fn v83_example_catalog_is_complete_and_valid() {
         let source = include_str!("../../../examples/v83/quest-scripts.toml");
         let file = toml::from_str::<QuestScriptFile>(source).expect("parse v83 example catalog");
-        assert_eq!(file.scripts.len(), 663);
+        assert_eq!(file.scripts.len(), 678);
 
         let mut quests = file
             .scripts
@@ -1648,7 +1648,7 @@ mod tests {
         )
         .expect("valid v83 example catalog");
 
-        assert_eq!(catalog.len(), 663);
+        assert_eq!(catalog.len(), 678);
         assert_eq!(
             catalog
                 .programs
@@ -1665,7 +1665,7 @@ mod tests {
                         || !program.incomplete_pages.is_empty()
                 })
                 .count(),
-            53
+            132
         );
         for script in ["q6030e", "q6031e", "q6032e", "q10272e"] {
             let program = catalog.programs.get(script).expect("configured fallback");

@@ -46,6 +46,36 @@ struct Creator {
     sprites: RefCell<Option<CharacterSpriteSet>>,
 }
 
+thread_local! {
+    static EVENT_HANDLERS: RefCell<Option<CreatorEventHandlers>> = const { RefCell::new(None) };
+}
+
+type EventClosure = Closure<dyn FnMut(Event)>;
+
+struct CreatorEventHandlers {
+    gender: HtmlSelectElement,
+    gender_change: EventClosure,
+    styles: Vec<(HtmlSelectElement, EventClosure)>,
+    form: web_sys::Element,
+    submit: EventClosure,
+}
+
+impl Drop for CreatorEventHandlers {
+    fn drop(&mut self) {
+        let _ = self.gender.remove_event_listener_with_callback(
+            "change",
+            self.gender_change.as_ref().unchecked_ref(),
+        );
+        for (select, change) in &self.styles {
+            let _ = select
+                .remove_event_listener_with_callback("change", change.as_ref().unchecked_ref());
+        }
+        let _ = self
+            .form
+            .remove_event_listener_with_callback("submit", self.submit.as_ref().unchecked_ref());
+    }
+}
+
 pub fn show(options: CharacterCreationOptions) -> Result<(), String> {
     let document = web_sys::window()
         .and_then(|window| window.document())
@@ -77,8 +107,10 @@ pub fn show(options: CharacterCreationOptions) -> Result<(), String> {
 
     populate_select(&document, &creator.skin, &creator.options.skins)?;
     populate_gendered_styles(&document, &creator)?;
-    install_change_handlers(&document, &creator)?;
-    install_submit_handler(&document, &creator)?;
+    let event_handlers = install_event_handlers(&document, &creator)?;
+    EVENT_HANDLERS.with(|current| {
+        current.replace(Some(event_handlers));
+    });
     set_visible("character-create", true)?;
     set_visible("game-frame", false)?;
     set_visible("controls", false)?;
@@ -107,10 +139,13 @@ fn validate_options(options: &CharacterCreationOptions) -> Result<(), String> {
     Ok(())
 }
 
-fn install_change_handlers(
+fn install_event_handlers(
     document: &Document,
     creator: &Rc<Creator>,
-) -> Result<(), String> {
+) -> Result<CreatorEventHandlers, String> {
+    let form = document
+        .get_element_by_id("character-form")
+        .ok_or("character form is missing")?;
     let gender_creator = creator.clone();
     let gender_document = document.clone();
     let gender_change = Closure::<dyn FnMut(Event)>::new(move |_| {
@@ -120,32 +155,16 @@ fn install_change_handlers(
         }
         request_preview(&gender_creator);
     });
-    creator
-        .gender
-        .add_event_listener_with_callback("change", gender_change.as_ref().unchecked_ref())
-        .map_err(js_error)?;
-    gender_change.forget();
-
-    for select in [&creator.skin, &creator.face, &creator.hair] {
-        let change_creator = creator.clone();
-        let change = Closure::<dyn FnMut(Event)>::new(move |_| {
-            request_preview(&change_creator);
-        });
-        select
-            .add_event_listener_with_callback("change", change.as_ref().unchecked_ref())
-            .map_err(js_error)?;
-        change.forget();
-    }
-    Ok(())
-}
-
-fn install_submit_handler(
-    document: &Document,
-    creator: &Rc<Creator>,
-) -> Result<(), String> {
-    let form = document
-        .get_element_by_id("character-form")
-        .ok_or("character form is missing")?;
+    let styles = [&creator.skin, &creator.face, &creator.hair]
+        .into_iter()
+        .map(|select| {
+            let change_creator = creator.clone();
+            let change = Closure::<dyn FnMut(Event)>::new(move |_| {
+                request_preview(&change_creator);
+            });
+            (select.clone(), change)
+        })
+        .collect::<Vec<_>>();
     let submit_creator = creator.clone();
     let submit = Closure::<dyn FnMut(Event)>::new(move |event: Event| {
         event.prevent_default();
@@ -175,12 +194,32 @@ fn install_submit_handler(
                 return;
             }
             pending_creator.active.set(false);
+            EVENT_HANDLERS.with(|current| {
+                current.take();
+            });
         });
     });
-    form.add_event_listener_with_callback("submit", submit.as_ref().unchecked_ref())
+    let handlers = CreatorEventHandlers {
+        gender: creator.gender.clone(),
+        gender_change,
+        styles,
+        form,
+        submit,
+    };
+    handlers
+        .gender
+        .add_event_listener_with_callback("change", handlers.gender_change.as_ref().unchecked_ref())
         .map_err(js_error)?;
-    submit.forget();
-    Ok(())
+    for (select, change) in &handlers.styles {
+        select
+            .add_event_listener_with_callback("change", change.as_ref().unchecked_ref())
+            .map_err(js_error)?;
+    }
+    handlers
+        .form
+        .add_event_listener_with_callback("submit", handlers.submit.as_ref().unchecked_ref())
+        .map_err(js_error)?;
+    Ok(handlers)
 }
 
 async fn create_and_start(

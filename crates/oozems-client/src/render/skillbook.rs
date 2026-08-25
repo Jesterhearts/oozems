@@ -25,7 +25,7 @@ struct SkillUi<'a> {
 }
 
 pub(super) fn draw(game: &Game) {
-    let Some(window) = game.gui.skill_window.as_ref() else {
+    let Some(window) = game.ui.gui.skill_window.as_ref() else {
         return;
     };
     if !draw_window(game, window) {
@@ -36,14 +36,15 @@ pub(super) fn draw(game: &Game) {
     };
 
     draw_header(game, window.x, window.y, &ui);
-    if game.skill_book.skills.is_empty() {
+    if game.player.skill_book.skills.is_empty() {
         draw_empty_message(game, window.x, window.y, &ui);
         return;
     }
 
-    let page_count = game.skill_book.skills.len().div_ceil(ui.page_size);
-    let page = game.gui_state.borrow().skill_page % page_count;
+    let page_count = game.player.skill_book.skills.len().div_ceil(ui.page_size);
+    let page = game.ui.gui_state.borrow().skill_page % page_count;
     for (index, skill) in game
+        .player
         .skill_book
         .skills
         .iter()
@@ -108,7 +109,7 @@ fn draw_skill_point_button(
     row: &GuiSpriteTemplate,
     ui: &SkillUi<'_>,
 ) {
-    let enabled = game_gui::can_allocate_skill(&game.skill_book, skill_id);
+    let enabled = game_gui::can_allocate_skill(&game.player.skill_book, skill_id);
     let template = if enabled {
         ui.point_up
     } else {
@@ -128,23 +129,23 @@ fn draw_header(
     window_y: f32,
     ui: &SkillUi<'_>,
 ) {
-    game.context.set_fill_style_str("#30383b");
-    game.context.set_font("bold 10px Arial");
-    game.context.set_text_align("left");
-    let _ = game.context.fill_text_with_max_width(
-        &game.skill_book.name,
+    game.surface.context.set_fill_style_str("#30383b");
+    game.surface.context.set_font("bold 10px Arial");
+    game.surface.context.set_text_align("left");
+    let _ = game.surface.context.fill_text_with_max_width(
+        &game.player.skill_book.name,
         f64::from(window_x + ui.title.x),
         f64::from(window_y + text_baseline(ui.title)),
         f64::from(ui.title.width),
     );
-    game.context.set_text_align("center");
-    let _ = game.context.fill_text_with_max_width(
-        &game.skill_book.available_points.to_string(),
+    game.surface.context.set_text_align("center");
+    let _ = game.surface.context.fill_text_with_max_width(
+        &game.player.skill_book.available_points.to_string(),
         f64::from(window_x + ui.points.x + ui.points.width / 2.0),
         f64::from(window_y + text_baseline(ui.points)),
         f64::from(ui.points.width),
     );
-    game.context.set_text_align("left");
+    game.surface.context.set_text_align("left");
 }
 
 fn draw_page_controls(
@@ -158,22 +159,22 @@ fn draw_page_controls(
     if page_count <= 1 {
         return;
     }
-    game.context.set_fill_style_str("#30383b");
-    game.context.set_font("bold 11px Arial");
-    game.context.set_text_align("center");
+    game.surface.context.set_fill_style_str("#30383b");
+    game.surface.context.set_font("bold 11px Arial");
+    game.surface.context.set_text_align("center");
     for (text, region) in [
         ("<".to_owned(), ui.page_previous),
         (format!("{}/{}", page + 1, page_count), ui.page_label),
         (">".to_owned(), ui.page_next),
     ] {
-        let _ = game.context.fill_text_with_max_width(
+        let _ = game.surface.context.fill_text_with_max_width(
             &text,
             f64::from(window_x + region.x + region.width / 2.0),
             f64::from(window_y + text_baseline(region)),
             f64::from(region.width),
         );
     }
-    game.context.set_text_align("left");
+    game.surface.context.set_text_align("left");
 }
 
 fn draw_empty_message(
@@ -182,9 +183,9 @@ fn draw_empty_message(
     window_y: f32,
     ui: &SkillUi<'_>,
 ) {
-    game.context.set_fill_style_str("#596469");
-    game.context.set_font("10px Arial");
-    let _ = game.context.fill_text_with_max_width(
+    game.surface.context.set_fill_style_str("#596469");
+    game.surface.context.set_font("10px Arial");
+    let _ = game.surface.context.fill_text_with_max_width(
         "No skills available.",
         f64::from(window_x + ui.list.x + 7.0),
         f64::from(window_y + ui.list.y + ui.row.height - 9.0),
@@ -198,10 +199,11 @@ fn draw_sprite_template(
     x: f32,
     y: f32,
 ) {
-    let Some(image) = ready_image(&game.images, &template.asset_id) else {
+    let Some(image) = ready_image(&game.surface.images, &template.asset_id) else {
         return;
     };
     let _ = game
+        .surface
         .context
         .draw_image_with_html_image_element_and_dw_and_dh(
             image,
@@ -219,13 +221,14 @@ fn draw_skill_icon(
     row_y: f32,
     row_height: f32,
 ) {
-    let Some(image) = ready_image(&game.images, &definition.icon_asset_id) else {
+    let Some(image) = ready_image(&game.surface.images, &definition.icon_asset_id) else {
         return;
     };
     let slot_size = row_height - ICON_INSET;
     let x = row_x + (slot_size - definition.icon_width) / 2.0;
     let y = row_y + (slot_size - definition.icon_height) / 2.0;
     let _ = game
+        .surface
         .context
         .draw_image_with_html_image_element_and_dw_and_dh(
             image,
@@ -247,17 +250,17 @@ fn draw_skill_text(
 ) {
     let text_x = row_x + row.height + ROW_TEXT_GAP;
     let text_width = row.width - row.height - ROW_TEXT_GAP;
-    game.context.set_fill_style_str("#30383b");
-    game.context.set_font("bold 10px Arial");
-    let _ = game.context.fill_text_with_max_width(
+    game.surface.context.set_fill_style_str("#30383b");
+    game.surface.context.set_font("bold 10px Arial");
+    let _ = game.surface.context.fill_text_with_max_width(
         &definition.name,
         f64::from(text_x),
         f64::from(row_y + 12.0),
         f64::from(text_width),
     );
-    game.context.set_fill_style_str("#596469");
-    game.context.set_font("9px Arial");
-    let _ = game.context.fill_text_with_max_width(
+    game.surface.context.set_fill_style_str("#596469");
+    game.surface.context.set_font("9px Arial");
+    let _ = game.surface.context.fill_text_with_max_width(
         &format!("Level {level}/{maximum_level}"),
         f64::from(text_x),
         f64::from(row_y + 27.0),

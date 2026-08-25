@@ -1,4 +1,3 @@
-use std::cell::Cell;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -7,7 +6,6 @@ use oozems_proto::v1::MovementMode;
 use oozems_proto::v1::MovementSnapshot;
 use oozems_proto::v1::MovementUpdateResponse;
 use oozems_proto::v1::Vec2;
-use wasm_bindgen_futures::spawn_local;
 
 use super::Game;
 use crate::api;
@@ -15,7 +13,6 @@ use crate::character_render::CharacterAnimation;
 use crate::movement;
 use crate::movement::MapTransition;
 use crate::render;
-use crate::show_status;
 use crate::skill_effects;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -27,7 +24,6 @@ pub(super) struct MovementObservation {
 
 #[derive(Default)]
 pub(super) struct MovementSyncState {
-    in_flight: Rc<Cell<bool>>,
     next_snapshot_ms: Option<f64>,
     next_sequence: u64,
     last_response_sequence: u64,
@@ -52,6 +48,7 @@ pub(super) fn update(
     state: &mut MovementSyncState,
     snapshot_interval_ms: u64,
     can_submit: bool,
+    in_flight: bool,
     timestamp_ms: f64,
     observation: Option<MovementObservation>,
 ) -> bool {
@@ -59,40 +56,47 @@ pub(super) fn update(
         preserve_support_transition(state, observation);
     }
     let deadline_ms = state.next_snapshot_ms.get_or_insert(timestamp_ms);
-    if timestamp_ms < *deadline_ms || !can_submit || state.in_flight.get() {
+    if timestamp_ms < *deadline_ms || !can_submit || in_flight {
         return false;
     }
     state.next_snapshot_ms = Some(timestamp_ms + snapshot_interval_ms.max(1) as f64);
     true
 }
 
-pub(super) fn begin(game: Rc<RefCell<Game>>) {
-    let in_flight = game.borrow().movement_sync.in_flight.clone();
-    if in_flight.replace(true) {
-        return;
-    }
+pub(super) fn begin(
+    game: Rc<RefCell<Game>>,
+    permit: super::requests::RequestPermit,
+) {
     let request = {
         let mut game = game.borrow_mut();
         next_movement_snapshot(&mut game).map(|snapshot| (game.player.id.clone(), snapshot))
     };
     let Some((player_id, snapshot)) = request else {
-        in_flight.set(false);
         return;
     };
-    spawn_local(async move {
-        let request_started_ms = super::monotonic_time_ms();
-        match api::submit_movement(&player_id, snapshot).await {
-            Ok(response) => {
-                match install_response(&mut game.borrow_mut(), response, request_started_ms) {
-                    Ok(Some(reason)) => show_status(&format!("Movement corrected: {reason}"), true),
-                    Ok(None) => {}
-                    Err(error) => show_status(&format!("Movement sync failed: {error}"), true),
+    super::requests::spawn_request(
+        game,
+        permit,
+        move || async move {
+            api::submit_movement(&player_id, snapshot)
+                .await
+                .map_err(|error| error.to_string())
+        },
+        |game, result, request_started_ms| match result {
+            Ok(response) => match install_response(game, response, request_started_ms) {
+                Ok(Some(reason)) => {
+                    super::requests::RequestStatus::error(format!("Movement corrected: {reason}"))
                 }
+                Ok(None) => super::requests::RequestStatus::silent(),
+                Err(error) => {
+                    super::requests::RequestStatus::error(format!("Movement sync failed: {error}"))
+                }
+            },
+            Err(error) => {
+                super::requests::RequestStatus::error(format!("Movement sync failed: {error}"))
             }
-            Err(error) => show_status(&format!("Movement sync failed: {error}"), true),
-        }
-        in_flight.set(false);
-    });
+        },
+    );
 }
 
 pub(super) fn record_drop_through(
@@ -116,36 +120,25 @@ pub(super) fn record_drop_through(
 
 pub(super) fn begin_portal(
     game: Rc<RefCell<Game>>,
+    player_id: String,
+    source: MovementSnapshot,
     transition: MapTransition,
+    permit: super::requests::RequestPermit,
 ) {
-    let transition_in_flight = game.borrow().transition_in_flight.clone();
-    if game.borrow().item_action_in_flight.get() {
-        transition_in_flight.set(false);
-        show_status("An item action must finish before changing maps.", true);
-        return;
-    }
-    if game.borrow().skill_action_in_flight.get() {
-        transition_in_flight.set(false);
-        show_status("A skill action must finish before changing maps.", true);
-        return;
-    }
-    spawn_local(async move {
-        let request = {
-            let mut game = game.borrow_mut();
-            current_movement_snapshot(&mut game).map(|snapshot| (game.player.id.clone(), snapshot))
-        };
-        let result = match request {
-            Some((player_id, source)) => {
-                request_map_transition(&game, &player_id, source, &transition).await
+    let request_game = game.clone();
+    super::requests::spawn_request(
+        game,
+        permit,
+        move || async move {
+            request_map_transition(&request_game, &player_id, source, &transition).await
+        },
+        |_, result, _| match result {
+            Ok(name) => super::requests::RequestStatus::success(format!("Entered {name}.")),
+            Err(error) => {
+                super::requests::RequestStatus::error(format!("Could not enter map: {error}"))
             }
-            None => Err("character has no movement position".to_owned()),
-        };
-        match result {
-            Ok(name) => show_status(&format!("Entered {name}."), false),
-            Err(error) => show_status(&format!("Could not enter map: {error}"), true),
-        }
-        transition_in_flight.set(false);
-    });
+        },
+    );
 }
 
 async fn request_map_transition(
@@ -179,13 +172,13 @@ async fn request_map_transition(
         .map_err(|error| error.to_string())?;
     let name = map.name.clone();
     let mut game = game.borrow_mut();
-    if authoritative.sequence < game.movement_sync.last_response_sequence {
+    if authoritative.sequence < game.requests.movement.last_response_sequence {
         return Err("portal response was superseded while its map was loading".to_owned());
     }
     install_map(&mut game, map, position)?;
-    let timestamp_ms = game.frame_time_ms;
+    let timestamp_ms = game.clock.now_ms;
     crate::mob_render::install_combat_events(
-        &mut game.mob_render,
+        &mut game.world.mob_render,
         std::mem::take(&mut response.combat_events),
         timestamp_ms,
     );
@@ -198,23 +191,27 @@ fn install_map(
     position: Vec2,
 ) -> Result<(), String> {
     let position = movement::constrain_position(&map, position);
-    crate::assets::insert_assets(&mut game.images, map.assets.iter())?;
+    crate::assets::insert_assets(&mut game.surface.images, map.assets.iter())?;
     let motion = movement::initial_motion_state(&map, &position);
     let world_layers = render::world_layers(&map);
-    skill_effects::clear(&mut game.skill_effect_state);
-    crate::render::npc::clear(&mut game.npc_animations);
-    super::recovery_actions::reset(&mut game.recovery_state);
-    reset_schedule(&mut game.movement_sync, game.frame_time_ms);
+    skill_effects::clear(&mut game.world.skill_effect_state);
+    crate::render::npc::clear(&mut game.world.npc_animations);
+    super::recovery_actions::reset(&mut game.requests.recovery);
+    let now_ms = game.clock.now_ms;
+    reset_schedule(&mut game.requests.movement, now_ms);
 
     game.player.map_id = map.id;
     game.player.position = Some(position);
-    game.mob_render = crate::mob_render::new_map_state(map.simulation_sequence);
-    game.map = map;
-    game.interaction.close();
-    game.motion = motion;
-    game.world_layers = world_layers;
-    game.character_animation =
-        super::new_character_animation_state(CharacterAnimation::Idle, true, game.frame_time_ms);
+    game.world.mob_render = crate::mob_render::new_map_state(map.simulation_sequence);
+    game.world.map = map;
+    game.ui.interaction.close();
+    game.world.motion = motion;
+    game.world.world_layers = world_layers;
+    game.world.character_animation = super::runtime::new_character_animation_state(
+        CharacterAnimation::Idle,
+        true,
+        game.clock.now_ms,
+    );
     Ok(())
 }
 
@@ -226,37 +223,33 @@ pub(super) fn install_relocation(
     if authoritative.map_id != map.id {
         return Err("taxi response map does not match its authoritative position".to_owned());
     }
-    if authoritative.sequence < game.movement_sync.last_response_sequence {
+    if authoritative.sequence < game.requests.movement.last_response_sequence {
         return Ok(false);
     }
     let position = authoritative
         .position
         .ok_or("taxi response did not contain a destination position")?;
-    game.movement_sync.last_response_sequence = authoritative.sequence;
+    game.requests.movement.last_response_sequence = authoritative.sequence;
     install_map(game, map, position)?;
     Ok(true)
 }
 
 fn next_movement_snapshot(game: &mut Game) -> Option<MovementSnapshot> {
     let current = current_observation(game)?;
-    let (support, drop_through) = take_pending_contact(&mut game.movement_sync);
-    Some(snapshot_from_observation(
-        &mut game.movement_sync,
-        current,
-        support,
-        drop_through,
-    ))
+    capture_movement_snapshot(&mut game.requests.movement, Some(current))
 }
 
-fn current_movement_snapshot(game: &mut Game) -> Option<MovementSnapshot> {
-    let observation = current_observation(game)?;
-    game.movement_sync.pending_support = None;
-    game.movement_sync.pending_drop_through = None;
+pub(super) fn capture_movement_snapshot(
+    state: &mut MovementSyncState,
+    observation: Option<MovementObservation>,
+) -> Option<MovementSnapshot> {
+    let observation = observation?;
+    let (support, drop_through) = take_pending_contact(state);
     Some(snapshot_from_observation(
-        &mut game.movement_sync,
+        state,
         observation,
-        None,
-        false,
+        support,
+        drop_through,
     ))
 }
 
@@ -269,7 +262,7 @@ fn take_pending_contact(state: &mut MovementSyncState) -> (Option<MovementObserv
 }
 
 fn current_observation(game: &Game) -> Option<MovementObservation> {
-    observation(game.map.id, game.player.position, game.motion)
+    observation(game.world.map.id, game.player.position, game.world.motion)
 }
 
 fn snapshot_from_observation(
@@ -322,17 +315,13 @@ pub(super) fn portal_authoritative(
 ) -> Result<Option<MovementSnapshot>, String> {
     let authoritative = api::require_data(response.authoritative.take(), "authoritative snapshot")
         .map_err(|error| error.to_string())?;
-    let active_buffs = api::require_data(response.active_buffs.take(), "active buffs")
-        .map_err(|error| error.to_string())?;
-    let active_buffs = super::validate_active_buffs(active_buffs)?;
-    let player =
-        api::require_data(response.player.take(), "player").map_err(|error| error.to_string())?;
+    let (player, active_buffs) = super::responses::take_player_and_active_buffs(response)?;
     super::install_active_buffs(game, active_buffs, request_started_ms);
     super::install_full_player_update(game, player);
-    if authoritative.sequence < game.movement_sync.last_response_sequence {
+    if authoritative.sequence < game.requests.movement.last_response_sequence {
         return Ok(None);
     }
-    game.movement_sync.last_response_sequence = authoritative.sequence;
+    game.requests.movement.last_response_sequence = authoritative.sequence;
     Ok(Some(authoritative))
 }
 
@@ -343,82 +332,86 @@ pub(super) fn install_response(
 ) -> Result<Option<String>, String> {
     let authoritative = api::require_data(response.authoritative.take(), "authoritative snapshot")
         .map_err(|error| error.to_string())?;
-    let active_buffs = api::require_data(response.active_buffs.take(), "active buffs")
-        .map_err(|error| error.to_string())?;
-    let active_buffs = super::validate_active_buffs(active_buffs)?;
-    let player =
-        api::require_data(response.player.take(), "player").map_err(|error| error.to_string())?;
+    let (player, active_buffs) = super::responses::take_player_and_active_buffs(&mut response)?;
     super::install_active_buffs(game, active_buffs, request_started_ms);
-    if authoritative.map_id == game.map.id
+    if authoritative.map_id == game.world.map.id
         && crate::mob_render::accept_simulation_snapshot(
-            &mut game.mob_render,
+            &mut game.world.mob_render,
             response.simulation_sequence,
         )
     {
         crate::mob_render::install_snapshot(
-            &mut game.mob_render,
-            &mut game.map.mobs,
+            &mut game.world.mob_render,
+            &mut game.world.map.mobs,
             std::mem::take(&mut response.mobs),
-            game.frame_time_ms,
-            game.movement_rules.snapshot_interval_ms,
+            game.clock.now_ms,
+            game.world.movement_rules.snapshot_interval_ms,
         );
         crate::mob_render::install_projectile_snapshot(
-            &mut game.mob_render,
-            &mut game.map.mob_projectiles,
+            &mut game.world.mob_render,
+            &mut game.world.map.mob_projectiles,
             std::mem::take(&mut response.mob_projectiles),
-            game.frame_time_ms,
-            game.movement_rules.snapshot_interval_ms,
+            game.clock.now_ms,
+            game.world.movement_rules.snapshot_interval_ms,
         );
-        game.map.dropped_items = std::mem::take(&mut response.dropped_items);
+        game.world.map.dropped_items = std::mem::take(&mut response.dropped_items);
         crate::mob_render::install_combat_events(
-            &mut game.mob_render,
+            &mut game.world.mob_render,
             std::mem::take(&mut response.combat_events),
-            game.frame_time_ms,
+            game.clock.now_ms,
         );
     }
     super::install_full_player_update(game, player);
-    if authoritative.sequence < game.movement_sync.last_response_sequence {
+    if authoritative.sequence < game.requests.movement.last_response_sequence {
         return Ok(None);
     }
-    game.movement_sync.last_response_sequence = authoritative.sequence;
+    game.requests.movement.last_response_sequence = authoritative.sequence;
     if response.accepted {
         return Ok(None);
     }
-    if authoritative.map_id != game.map.id {
-        if game.transition_in_flight.get() {
+    if authoritative.map_id != game.world.map.id {
+        if game
+            .requests
+            .admission
+            .is_active(super::requests::RequestKind::Transition)
+        {
             return Ok(None);
         }
         return Err(format!(
             "server position is on map {}, but the client has map {}",
-            authoritative.map_id, game.map.id
+            authoritative.map_id, game.world.map.id
         ));
     }
     let position = authoritative
         .position
         .ok_or("authoritative movement snapshot has no position")?;
-    let position = movement::constrain_position(&game.map, position);
+    let position = movement::constrain_position(&game.world.map, position);
     let mode = MovementMode::try_from(authoritative.mode)
         .map_err(|_| "authoritative movement snapshot has an invalid mode")?;
     let motion = movement::authoritative_motion_state(
-        &game.map,
-        &game.movement_rules,
+        &game.world.map,
+        &game.world.movement_rules,
         &position,
         mode,
-        game.motion.platform_layer,
+        game.world.motion.platform_layer,
     )?;
-    reset_after_correction(&mut game.movement_sync, mode);
+    reset_after_correction(&mut game.requests.movement, mode);
     game.player.position = Some(position);
-    game.motion = motion;
-    let animation = super::character_animation(&game.map, motion, movement::PlayerInput::default());
+    game.world.motion = motion;
+    let animation = super::runtime::character_animation(
+        &game.world.map,
+        motion,
+        movement::PlayerInput::default(),
+    );
     let plays = !matches!(
         animation,
         CharacterAnimation::Ladder | CharacterAnimation::Rope
     );
-    super::update_character_animation(
-        &mut game.character_animation,
+    super::runtime::update_character_animation(
+        &mut game.world.character_animation,
         animation,
         plays,
-        game.frame_time_ms,
+        game.clock.now_ms,
     );
     Ok(Some(response.rejection_reason))
 }
@@ -440,6 +433,7 @@ mod tests {
 
     use super::MovementObservation;
     use super::MovementSyncState;
+    use super::capture_movement_snapshot;
     use super::record_drop_through;
     use super::snapshot_from_observation;
     use super::take_pending_contact;
@@ -454,6 +448,7 @@ mod tests {
             &mut state,
             200,
             true,
+            false,
             1_000.0,
             Some(observation(MovementMode::Grounded)),
         ));
@@ -461,6 +456,7 @@ mod tests {
             &mut state,
             200,
             true,
+            false,
             1_199.0,
             Some(observation(MovementMode::Grounded)),
         ));
@@ -468,6 +464,7 @@ mod tests {
             &mut state,
             200,
             true,
+            false,
             1_200.0,
             Some(observation(MovementMode::Grounded)),
         ));
@@ -481,6 +478,7 @@ mod tests {
             &mut state,
             200,
             false,
+            false,
             1_000.0,
             Some(observation(MovementMode::Grounded)),
         ));
@@ -488,6 +486,7 @@ mod tests {
             &mut state,
             200,
             true,
+            false,
             1_001.0,
             Some(observation(MovementMode::Grounded)),
         ));
@@ -500,13 +499,14 @@ mod tests {
             &mut state,
             200,
             true,
+            false,
             1_000.0,
             Some(observation(MovementMode::Grounded)),
         ));
-        state.in_flight.set(true);
         assert!(!update(
             &mut state,
             200,
+            true,
             true,
             1_050.0,
             Some(observation(MovementMode::Airborne)),
@@ -515,6 +515,7 @@ mod tests {
             &mut state,
             200,
             true,
+            true,
             1_100.0,
             Some(observation(MovementMode::Grounded)),
         ));
@@ -522,15 +523,16 @@ mod tests {
             &mut state,
             200,
             true,
+            true,
             1_150.0,
             Some(observation(MovementMode::Airborne)),
         ));
 
-        state.in_flight.set(false);
         assert!(update(
             &mut state,
             200,
             true,
+            false,
             1_200.0,
             Some(observation(MovementMode::Airborne)),
         ));
@@ -583,8 +585,8 @@ mod tests {
             position: Vec2 { x: 100.0, y: 302.0 },
             mode: MovementMode::Airborne,
         };
-        let (support, drop_through) = take_pending_contact(&mut state);
-        let snapshot = snapshot_from_observation(&mut state, current, support, drop_through);
+        let snapshot =
+            capture_movement_snapshot(&mut state, Some(current)).expect("portal snapshot");
 
         assert_eq!(state.next_snapshot_ms, Some(0.0));
         assert!(snapshot.drop_through);
@@ -595,6 +597,18 @@ mod tests {
             Some(Vec2 { x: 100.0, y: 300.0 }),
         );
         assert_eq!(take_pending_contact(&mut state), (None, false));
+        assert_eq!(snapshot.sequence, 1);
+
+        let later = capture_movement_snapshot(
+            &mut state,
+            Some(MovementObservation {
+                position: Vec2 { x: 500.0, y: 302.0 },
+                ..current
+            }),
+        )
+        .expect("later snapshot");
+        assert_eq!(later.sequence, 2);
+        assert_eq!(snapshot.position, Some(Vec2 { x: 100.0, y: 302.0 }));
     }
 
     fn observation(mode: MovementMode) -> MovementObservation {

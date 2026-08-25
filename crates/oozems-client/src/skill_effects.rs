@@ -48,7 +48,7 @@ pub(crate) fn install(
     effect: SkillEffect,
     target: Option<Vec2>,
 ) {
-    if let Err(error) = assets::insert_assets(&mut game.images, effect.assets.iter()) {
+    if let Err(error) = assets::insert_assets(&mut game.surface.images, effect.assets.iter()) {
         warn(&format!(
             "Could not prepare skill animation assets: {error}"
         ));
@@ -56,26 +56,26 @@ pub(crate) fn install(
     let sound_url = effect.sound.map(|sound| sound.url);
     let Some(position) = game.player.position else {
         if let Some(url) = sound_url {
-            play_sound(&mut game.skill_effect_state, &url, game.frame_time_ms);
+            play_sound(&mut game.world.skill_effect_state, &url, game.clock.now_ms);
         }
         return;
     };
     let duration_ms = effect_duration_ms(&effect.animations);
     if duration_ms == 0 {
         if let Some(url) = sound_url {
-            play_sound(&mut game.skill_effect_state, &url, game.frame_time_ms);
+            play_sound(&mut game.world.skill_effect_state, &url, game.clock.now_ms);
         }
         return;
     }
-    game.skill_effect_state.visuals.push(ActiveVisual {
+    game.world.skill_effect_state.visuals.push(ActiveVisual {
         animations: effect.animations,
         discarded: false,
-        queued_at_ms: game.frame_time_ms,
+        queued_at_ms: game.clock.now_ms,
         started_at_ms: None,
         duration_ms: f64::from(duration_ms),
         origin_x: position.x,
         origin_y: position.y,
-        facing_left: game.facing_left,
+        facing_left: game.world.facing_left,
         target,
         sound_url,
     });
@@ -158,11 +158,11 @@ pub(crate) fn draw(
     camera_x: f64,
     camera_y: f64,
 ) {
-    for visual in &game.skill_effect_state.visuals {
+    for visual in &game.world.skill_effect_state.visuals {
         let Some(started_at_ms) = visual.started_at_ms else {
             continue;
         };
-        let elapsed_ms = (game.frame_time_ms - started_at_ms).max(0.0);
+        let elapsed_ms = (game.clock.now_ms - started_at_ms).max(0.0);
         for animation in &visual.animations {
             draw_animation(game, visual, animation, elapsed_ms, camera_x, camera_y);
         }

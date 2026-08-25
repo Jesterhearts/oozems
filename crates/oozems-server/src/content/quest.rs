@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
-use std::collections::HashMap;
 use std::path::Path;
 
 use thiserror::Error;
@@ -24,7 +23,7 @@ const QUEST_ARCHIVE: &str = "Quest.wz";
 
 pub(crate) struct QuestContent {
     _base: WzNodeArc,
-    definitions: HashMap<u32, QuestDefinition>,
+    definitions: BTreeMap<u32, QuestDefinition>,
     item_reference_ids: BTreeSet<u32>,
     script_reference_names: BTreeSet<String>,
 }
@@ -101,7 +100,7 @@ impl QuestContent {
             None => archive_quest_ids.clone(),
         };
         let mut item_reference_ids = BTreeSet::new();
-        let mut definitions = HashMap::new();
+        let mut definitions = BTreeMap::new();
         let mut report = QuestLoadReport::default();
         for quest_id in quest_ids {
             let Some(references) = handle_quest_load_result(

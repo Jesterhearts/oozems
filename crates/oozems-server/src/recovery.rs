@@ -17,10 +17,24 @@ pub struct RecoveryTimers {
     deadlines: Mutex<HashMap<String, u64>>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RecoveryReservation {
-    Ready { deadline_ms: u64 },
+    Ready(RecoveryToken),
     Waiting { remaining_ms: u64 },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecoveryToken {
+    player_id: String,
+    previous_deadline_ms: u64,
+    deadline_ms: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecoveryActivityRollback {
+    player_id: String,
+    previous_deadline_ms: Option<u64>,
+    deadline_ms: u64,
 }
 
 pub struct PreparedRecovery {
@@ -45,6 +59,8 @@ pub enum RecoveryError {
     },
     #[error("the recovery timer store is unavailable")]
     TimerStore,
+    #[error("the recovery reservation changed before it could be restored")]
+    ReservationChanged,
 }
 
 pub fn prepare_recovery(
@@ -104,38 +120,68 @@ pub fn reserve_recovery(
             remaining_ms: deadline_ms - now_ms,
         });
     }
-    let deadline_ms = now_ms.saturating_add(RECOVERY_INTERVAL_MS);
-    deadlines.insert(player_id.to_owned(), deadline_ms);
-    Ok(RecoveryReservation::Ready { deadline_ms })
+    let next_deadline_ms = now_ms.saturating_add(RECOVERY_INTERVAL_MS);
+    deadlines.insert(player_id.to_owned(), next_deadline_ms);
+    Ok(RecoveryReservation::Ready(RecoveryToken {
+        player_id: player_id.to_owned(),
+        previous_deadline_ms: deadline_ms,
+        deadline_ms: next_deadline_ms,
+    }))
 }
 
 pub fn delay_recovery_after_activity(
     timers: &RecoveryTimers,
     player_id: &str,
     now_ms: u64,
-) -> Result<(), RecoveryError> {
-    timers
+) -> Result<RecoveryActivityRollback, RecoveryError> {
+    let deadline_ms = now_ms.saturating_add(RECOVERY_INTERVAL_MS);
+    let previous_deadline_ms = timers
         .deadlines
         .lock()
         .map_err(|_| RecoveryError::TimerStore)?
-        .insert(
-            player_id.to_owned(),
-            now_ms.saturating_add(RECOVERY_INTERVAL_MS),
-        );
-    Ok(())
+        .insert(player_id.to_owned(), deadline_ms);
+    Ok(RecoveryActivityRollback {
+        player_id: player_id.to_owned(),
+        previous_deadline_ms,
+        deadline_ms,
+    })
 }
 
 pub fn release_recovery(
     timers: &RecoveryTimers,
-    player_id: &str,
-    deadline_ms: u64,
+    reservation: &RecoveryToken,
 ) -> Result<(), RecoveryError> {
     let mut deadlines = timers
         .deadlines
         .lock()
         .map_err(|_| RecoveryError::TimerStore)?;
-    if deadlines.get(player_id) == Some(&deadline_ms) {
-        deadlines.remove(player_id);
+    if deadlines.get(&reservation.player_id) == Some(&reservation.deadline_ms) {
+        deadlines.insert(
+            reservation.player_id.clone(),
+            reservation.previous_deadline_ms,
+        );
+    }
+    Ok(())
+}
+
+pub fn restore_recovery_activity(
+    timers: &RecoveryTimers,
+    rollback: &RecoveryActivityRollback,
+) -> Result<(), RecoveryError> {
+    let mut deadlines = timers
+        .deadlines
+        .lock()
+        .map_err(|_| RecoveryError::TimerStore)?;
+    if deadlines.get(&rollback.player_id) != Some(&rollback.deadline_ms) {
+        return Err(RecoveryError::ReservationChanged);
+    }
+    match rollback.previous_deadline_ms {
+        Some(deadline_ms) => {
+            deadlines.insert(rollback.player_id.clone(), deadline_ms);
+        }
+        None => {
+            deadlines.remove(&rollback.player_id);
+        }
     }
     Ok(())
 }
@@ -225,9 +271,11 @@ mod tests {
         );
         assert_eq!(
             reserve_recovery(&timers, "player", 11_000).expect("eligible tick"),
-            RecoveryReservation::Ready {
-                deadline_ms: 11_000 + RECOVERY_INTERVAL_MS
-            }
+            RecoveryReservation::Ready(super::RecoveryToken {
+                player_id: "player".to_owned(),
+                previous_deadline_ms: 11_000,
+                deadline_ms: 11_000 + RECOVERY_INTERVAL_MS,
+            })
         );
         delay_recovery_after_activity(&timers, "player", 18_000).expect("activity");
         assert_eq!(

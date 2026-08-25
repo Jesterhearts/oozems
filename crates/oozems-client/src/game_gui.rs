@@ -1100,10 +1100,18 @@ fn rect_contains(
     rect: CanvasRect,
     point: CanvasPoint,
 ) -> bool {
-    point.x >= rect.x
-        && point.x < rect.x + rect.width
-        && point.y >= rect.y
-        && point.y < rect.y + rect.height
+    crate::hit_test::contains(
+        crate::hit_test::Rect {
+            x: f64::from(rect.x),
+            y: f64::from(rect.y),
+            width: f64::from(rect.width),
+            height: f64::from(rect.height),
+        },
+        crate::hit_test::Point {
+            x: f64::from(point.x),
+            y: f64::from(point.y),
+        },
+    )
 }
 
 #[cfg(test)]

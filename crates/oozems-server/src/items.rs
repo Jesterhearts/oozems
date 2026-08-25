@@ -1,3 +1,6 @@
+use std::collections::BTreeMap;
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
@@ -27,14 +30,26 @@ pub const SPARE_SHOES_ID: u32 = 1_072_001;
 pub const PICK_UP_RADIUS: f32 = 80.0;
 
 pub struct DropStore {
-    drops: Mutex<Vec<MapDrop>>,
+    drops: Mutex<DropIndex>,
     lifespan: Duration,
     next_id: AtomicU64,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Default)]
+struct DropIndex {
+    maps: HashMap<u32, MapDropIndex>,
+    drop_maps: HashMap<String, u32>,
+    expirations: BTreeMap<u64, HashSet<String>>,
+}
+
+#[derive(Default)]
+struct MapDropIndex {
+    drops: HashMap<String, MapDrop>,
+    order: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 struct MapDrop {
-    map_id: u32,
     item: DroppedItem,
     owner_player_id: Option<String>,
 }
@@ -191,6 +206,8 @@ pub enum DropStoreError {
     ExpiryOverflow,
     #[error("the dropped-item store lock was poisoned")]
     Lock,
+    #[error("dropped items changed during a player transaction")]
+    Conflict,
 }
 
 #[derive(Debug, Error)]
@@ -204,7 +221,7 @@ pub enum PickUpError {
 impl DropStore {
     pub fn new(lifespan: Duration) -> Self {
         Self {
-            drops: Mutex::new(Vec::new()),
+            drops: Mutex::new(DropIndex::default()),
             lifespan,
             next_id: AtomicU64::new(0),
         }
@@ -570,6 +587,7 @@ pub fn remove_inventory_item(
     })
 }
 
+#[cfg(test)]
 pub fn create_drop(
     store: &DropStore,
     removed: &RemovedItem,
@@ -578,6 +596,28 @@ pub fn create_drop(
     create_drop_at(store, removed, now_ms)
 }
 
+pub fn stage_inventory_drop(
+    store: &DropStore,
+    removed: &RemovedItem,
+) -> Result<StagedDropGrant, DropStoreError> {
+    let now_ms = unix_time_ms()?;
+    let despawn_at_unix_ms = drop_expiry(store, now_ms)?;
+    Ok(StagedDropGrant {
+        map_id: removed.map_id,
+        item: new_drop(
+            store,
+            removed.item_id,
+            removed.quantity,
+            removed.expires_at_unix_ms,
+            removed.position,
+            now_ms,
+            despawn_at_unix_ms,
+        ),
+        owner_player_id: None,
+    })
+}
+
+#[cfg(test)]
 fn create_drop_at(
     store: &DropStore,
     removed: &RemovedItem,
@@ -595,11 +635,7 @@ fn create_drop_at(
     );
     let mut drops = store.drops.lock().map_err(|_| DropStoreError::Lock)?;
     retain_active_drops(&mut drops, now_ms);
-    drops.push(MapDrop {
-        map_id: removed.map_id,
-        item: item.clone(),
-        owner_player_id: None,
-    });
+    insert_drop(&mut drops, removed.map_id, item.clone(), None);
     Ok(item)
 }
 
@@ -666,6 +702,7 @@ fn stage_mob_drops_at(
         .collect())
 }
 
+#[cfg(test)]
 pub fn commit_staged_drops(
     store: &DropStore,
     staged: &[StagedDropGrant],
@@ -674,15 +711,88 @@ pub fn commit_staged_drops(
         return Ok(());
     }
     let mut drops = store.drops.lock().map_err(|_| DropStoreError::Lock)?;
+    if staged.iter().any(|grant| {
+        drops
+            .drop_maps
+            .get(&grant.item.id)
+            .is_some_and(|map_id| *map_id != grant.map_id)
+            || drops
+                .maps
+                .get(&grant.map_id)
+                .and_then(|map| map.drops.get(&grant.item.id))
+                .is_some_and(|drop| {
+                    drop.item != grant.item || drop.owner_player_id != grant.owner_player_id
+                })
+    }) {
+        return Err(DropStoreError::Conflict);
+    }
     for grant in staged {
-        if drops.iter().any(|drop| drop.item.id == grant.item.id) {
-            continue;
-        }
-        drops.push(MapDrop {
-            map_id: grant.map_id,
+        insert_drop(
+            &mut drops,
+            grant.map_id,
+            grant.item.clone(),
+            grant.owner_player_id.clone(),
+        );
+    }
+    Ok(())
+}
+
+pub fn commit_new_staged_drops(
+    store: &DropStore,
+    staged: &[StagedDropGrant],
+) -> Result<(), DropStoreError> {
+    if staged.is_empty() {
+        return Ok(());
+    }
+    let mut drops = store.drops.lock().map_err(|_| DropStoreError::Lock)?;
+    let unique_ids = staged
+        .iter()
+        .map(|grant| grant.item.id.as_str())
+        .collect::<HashSet<_>>();
+    if unique_ids.len() != staged.len()
+        || staged
+            .iter()
+            .any(|grant| drops.drop_maps.contains_key(&grant.item.id))
+    {
+        return Err(DropStoreError::Conflict);
+    }
+    for grant in staged {
+        let inserted = insert_drop(
+            &mut drops,
+            grant.map_id,
+            grant.item.clone(),
+            grant.owner_player_id.clone(),
+        );
+        debug_assert!(inserted);
+    }
+    Ok(())
+}
+
+pub fn rollback_staged_drops(
+    store: &DropStore,
+    staged: &[StagedDropGrant],
+) -> Result<(), DropStoreError> {
+    if staged.is_empty() {
+        return Ok(());
+    }
+    let mut drops = store.drops.lock().map_err(|_| DropStoreError::Lock)?;
+    let all_match = staged.iter().all(|grant| {
+        let current = drops
+            .maps
+            .get(&grant.map_id)
+            .and_then(|map| map.drops.get(&grant.item.id));
+        let expected = MapDrop {
             item: grant.item.clone(),
             owner_player_id: grant.owner_player_id.clone(),
-        });
+        };
+        current == Some(&expected)
+    });
+    if !all_match {
+        return Err(DropStoreError::Conflict);
+    }
+    for grant in staged.iter().rev() {
+        remove_drop(&mut drops, grant.map_id, &grant.item.id)
+            .expect("the checked staged drop remains indexed");
     }
     Ok(())
 }
@@ -709,27 +819,40 @@ pub fn pick_up_nearest(
     let mut drops = store.drops.lock().map_err(|_| DropStoreError::Lock)?;
     retain_active_drops(&mut drops, now_ms);
     let radius_squared = PICK_UP_RADIUS * PICK_UP_RADIUS;
-    let index = drops
-        .iter()
-        .enumerate()
-        .filter(|(_, drop)| drop.map_id == player.map_id)
-        .filter(|(_, drop)| {
-            drop.owner_player_id
-                .as_deref()
-                .is_none_or(|owner| owner == player_id)
+    let drop_id = drops
+        .maps
+        .get(&player.map_id)
+        .and_then(|map_drops| {
+            map_drops
+                .order
+                .iter()
+                .filter_map(|drop_id| {
+                    let drop = map_drops.drops.get(drop_id)?;
+                    if drop
+                        .owner_player_id
+                        .as_deref()
+                        .is_some_and(|owner| owner != player_id)
+                    {
+                        return None;
+                    }
+                    let drop_position = drop.item.position.as_ref()?;
+                    let dx = drop_position.x - position.x;
+                    let dy = drop_position.y - position.y;
+                    let distance_squared = dx * dx + dy * dy;
+                    (distance_squared <= radius_squared).then_some((drop_id, distance_squared))
+                })
+                .min_by(|(_, left), (_, right)| left.total_cmp(right))
+                .map(|(drop_id, _)| drop_id.clone())
         })
-        .filter_map(|(index, drop)| {
-            let drop_position = drop.item.position.as_ref()?;
-            let dx = drop_position.x - position.x;
-            let dy = drop_position.y - position.y;
-            let distance_squared = dx * dx + dy * dy;
-            (distance_squared <= radius_squared).then_some((index, distance_squared))
-        })
-        .min_by(|(_, left), (_, right)| left.total_cmp(right))
-        .map(|(index, _)| index)
         .ok_or(ItemRuleError::NoNearbyDrop)?;
-    let item_id = drops[index].item.item_id;
-    let quantity = drops[index].item.quantity;
+    let selected = drops
+        .maps
+        .get(&player.map_id)
+        .and_then(|map_drops| map_drops.drops.get(&drop_id))
+        .cloned()
+        .expect("the selected drop is indexed on its map");
+    let item_id = selected.item.item_id;
+    let quantity = selected.item.quantity;
     if quantity == 0 {
         return Err(ItemRuleError::InvalidQuantity { item_id }.into());
     }
@@ -748,10 +871,11 @@ pub fn pick_up_nearest(
             definitions,
             item_id,
             u64::from(quantity),
-            drops[index].item.expires_at_unix_ms,
+            selected.item.expires_at_unix_ms,
         )?;
     }
-    let removed = drops.remove(index);
+    let removed = remove_drop(&mut drops, player.map_id, &drop_id)
+        .expect("the selected drop is indexed on its map");
     let drop = removed.item;
     player.position = Some(position);
     Ok(PickedUpItem {
@@ -761,6 +885,7 @@ pub fn pick_up_nearest(
     })
 }
 
+#[cfg(test)]
 pub fn restore_drop(
     store: &DropStore,
     map_id: u32,
@@ -768,13 +893,21 @@ pub fn restore_drop(
     owner_player_id: Option<String>,
 ) -> Result<(), DropStoreError> {
     let mut drops = store.drops.lock().map_err(|_| DropStoreError::Lock)?;
-    if !drops.iter().any(|drop| drop.item.id == item.id) {
-        drops.push(MapDrop {
-            map_id,
-            item,
-            owner_player_id,
-        });
+    insert_drop(&mut drops, map_id, item, owner_player_id);
+    Ok(())
+}
+
+pub fn restore_picked_up_drop(
+    store: &DropStore,
+    map_id: u32,
+    item: DroppedItem,
+    owner_player_id: Option<String>,
+) -> Result<(), DropStoreError> {
+    let mut drops = store.drops.lock().map_err(|_| DropStoreError::Lock)?;
+    if drops.drop_maps.contains_key(&item.id) {
+        return Err(DropStoreError::Conflict);
     }
+    insert_drop(&mut drops, map_id, item, owner_player_id);
     Ok(())
 }
 
@@ -977,9 +1110,13 @@ fn map_drops_at(
 ) -> Result<Vec<DroppedItem>, DropStoreError> {
     let mut drops = store.drops.lock().map_err(|_| DropStoreError::Lock)?;
     retain_active_drops(&mut drops, now_ms);
-    Ok(drops
+    let Some(map_drops) = drops.maps.get(&map_id) else {
+        return Ok(Vec::new());
+    };
+    Ok(map_drops
+        .order
         .iter()
-        .filter(|drop| drop.map_id == map_id)
+        .filter_map(|drop_id| map_drops.drops.get(drop_id))
         .map(|drop| drop.item.clone())
         .collect())
 }
@@ -1041,14 +1178,99 @@ fn spread_position(
     }
 }
 
+fn insert_drop(
+    drops: &mut DropIndex,
+    map_id: u32,
+    item: DroppedItem,
+    owner_player_id: Option<String>,
+) -> bool {
+    if drops.drop_maps.contains_key(&item.id) {
+        return false;
+    }
+    let drop_id = item.id.clone();
+    let deadline = drop_deadline(&item);
+    let map_drops = drops.maps.entry(map_id).or_default();
+    map_drops.order.push(drop_id.clone());
+    let previous = map_drops.drops.insert(
+        drop_id.clone(),
+        MapDrop {
+            item,
+            owner_player_id,
+        },
+    );
+    debug_assert!(previous.is_none());
+    drops.drop_maps.insert(drop_id.clone(), map_id);
+    drops
+        .expirations
+        .entry(deadline)
+        .or_default()
+        .insert(drop_id);
+    true
+}
+
+fn remove_drop(
+    drops: &mut DropIndex,
+    map_id: u32,
+    drop_id: &str,
+) -> Option<MapDrop> {
+    if drops.drop_maps.get(drop_id) != Some(&map_id) {
+        return None;
+    }
+    drops.drop_maps.remove(drop_id);
+    let map_drops = drops
+        .maps
+        .get_mut(&map_id)
+        .expect("a globally indexed drop has a map index");
+    let removed = map_drops
+        .drops
+        .remove(drop_id)
+        .expect("a globally indexed drop exists on its map");
+    let map_is_empty = map_drops.drops.is_empty();
+    if !map_is_empty && map_drops.order.len() > map_drops.drops.len().saturating_mul(2) + 16 {
+        map_drops
+            .order
+            .retain(|candidate| map_drops.drops.contains_key(candidate));
+    }
+    if map_is_empty {
+        drops.maps.remove(&map_id);
+    }
+    let deadline = drop_deadline(&removed.item);
+    let expiration_is_empty = drops
+        .expirations
+        .get_mut(&deadline)
+        .is_some_and(|drop_ids| {
+            drop_ids.remove(drop_id);
+            drop_ids.is_empty()
+        });
+    if expiration_is_empty {
+        drops.expirations.remove(&deadline);
+    }
+    Some(removed)
+}
+
 fn retain_active_drops(
-    drops: &mut Vec<MapDrop>,
+    drops: &mut DropIndex,
     now_ms: u64,
 ) {
-    drops.retain(|drop| {
-        drop.item.despawn_at_unix_ms > now_ms
-            && (drop.item.expires_at_unix_ms == 0 || drop.item.expires_at_unix_ms > now_ms)
-    });
+    let expired_drop_ids = drops
+        .expirations
+        .range(..=now_ms)
+        .flat_map(|(_, drop_ids)| drop_ids.iter().cloned())
+        .collect::<Vec<_>>();
+    for drop_id in expired_drop_ids {
+        if let Some(map_id) = drops.drop_maps.get(&drop_id).copied() {
+            remove_drop(drops, map_id, &drop_id)
+                .expect("an expiration entry refers to an indexed drop");
+        }
+    }
+}
+
+fn drop_deadline(item: &DroppedItem) -> u64 {
+    if item.expires_at_unix_ms == 0 {
+        item.despawn_at_unix_ms
+    } else {
+        item.despawn_at_unix_ms.min(item.expires_at_unix_ms)
+    }
 }
 
 fn unix_time_ms() -> Result<u64, DropStoreError> {
@@ -1061,8 +1283,11 @@ fn unix_time_ms() -> Result<u64, DropStoreError> {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::sync::Arc;
+    use std::sync::Barrier;
     use std::time::Duration;
 
+    use oozems_proto::v1::DroppedItem;
     use oozems_proto::v1::EquipmentSlot;
     use oozems_proto::v1::EquippedItem;
     use oozems_proto::v1::InventoryItemStack;
@@ -1072,15 +1297,18 @@ mod tests {
     use oozems_proto::v1::Vec2;
 
     use super::DropStore;
+    use super::DropStoreError;
     use super::ItemDefinitionLookup;
     use super::ItemRuleError;
     use super::PickUpError;
     use super::SPARE_TOP_ID;
     use super::STARTER_TOP_ID;
+    use super::StagedDropGrant;
     use super::apply_item_delta;
     use super::apply_item_grant;
     use super::buy_shop_item;
     use super::canonicalize_inventory;
+    use super::commit_new_staged_drops;
     use super::count_item_quantity;
     use super::create_drop;
     use super::create_drop_at;
@@ -1101,6 +1329,24 @@ mod tests {
 
     const STACKABLE_ITEM_ID: u32 = 2_000_000;
     const CARD_ITEM_ID: u32 = 2_380_000;
+
+    fn staged_drop(
+        map_id: u32,
+        id: &str,
+    ) -> StagedDropGrant {
+        StagedDropGrant {
+            map_id,
+            item: DroppedItem {
+                id: id.to_owned(),
+                item_id: STACKABLE_ITEM_ID,
+                position: Some(Vec2 { x: 10.0, y: 20.0 }),
+                despawn_at_unix_ms: u64::MAX,
+                quantity: 1,
+                expires_at_unix_ms: 0,
+            },
+            owner_player_id: None,
+        }
+    }
 
     struct TestCatalog {
         definitions: Vec<ItemDefinition>,
@@ -1158,6 +1404,33 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn one_drop_batch_rejects_duplicate_ids_atomically() {
+        let store = DropStore::new(Duration::from_secs(60));
+        let grant = staged_drop(1, "duplicate");
+
+        assert!(matches!(
+            commit_new_staged_drops(&store, &[grant.clone(), grant]),
+            Err(DropStoreError::Conflict)
+        ));
+        assert!(map_drops(&store, 1).expect("map drops").is_empty());
+    }
+
+    #[test]
+    fn one_drop_batch_rejects_duplicate_ids_across_maps_atomically() {
+        let store = DropStore::new(Duration::from_secs(60));
+
+        assert!(matches!(
+            commit_new_staged_drops(
+                &store,
+                &[staged_drop(1, "duplicate"), staged_drop(2, "duplicate")],
+            ),
+            Err(DropStoreError::Conflict)
+        ));
+        assert!(map_drops(&store, 1).expect("first map drops").is_empty());
+        assert!(map_drops(&store, 2).expect("second map drops").is_empty());
     }
 
     #[test]
@@ -1709,6 +1982,60 @@ mod tests {
         assert_eq!(drop.expires_at_unix_ms, 0);
         assert_eq!(map_drops(&store, 100).expect("map drops"), vec![drop]);
         assert!(map_drops(&store, 101).expect("other map drops").is_empty());
+    }
+
+    #[test]
+    fn map_drop_order_ignores_interleaved_drops_on_other_maps() {
+        let store = DropStore::new(Duration::from_secs(600));
+        let first = card_drop("first", Vec2 { x: 10.0, y: 20.0 });
+        let other = card_drop("other", Vec2 { x: 20.0, y: 20.0 });
+        let second = card_drop("second", Vec2 { x: 30.0, y: 20.0 });
+
+        super::restore_drop(&store, 100, first.clone(), None).expect("restore first drop");
+        super::restore_drop(&store, 200, other.clone(), None).expect("restore other map drop");
+        super::restore_drop(&store, 100, second.clone(), None).expect("restore second drop");
+
+        assert_eq!(
+            map_drops(&store, 100).expect("first map drops"),
+            vec![first, second]
+        );
+        assert_eq!(
+            map_drops(&store, 200).expect("other map drops"),
+            vec![other]
+        );
+    }
+
+    #[test]
+    fn concurrent_restore_keeps_each_drop_id_on_exactly_one_map() {
+        let store = Arc::new(DropStore::new(Duration::from_secs(600)));
+        let barrier = Arc::new(Barrier::new(3));
+        let drop = card_drop("shared-id", Vec2 { x: 20.0, y: 30.0 });
+        let workers = [100, 200].map(|map_id| {
+            let store = store.clone();
+            let barrier = barrier.clone();
+            let drop = drop.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                super::restore_drop(&store, map_id, drop, None).expect("restore shared drop");
+            })
+        });
+
+        barrier.wait();
+        for worker in workers {
+            worker.join().expect("restore worker");
+        }
+
+        let first_map = map_drops(&store, 100).expect("first map drops");
+        let second_map = map_drops(&store, 200).expect("second map drops");
+        assert_eq!(first_map.len() + second_map.len(), 1);
+        assert_eq!(
+            first_map
+                .into_iter()
+                .chain(second_map)
+                .next()
+                .expect("one restored drop"),
+            drop
+        );
     }
 
     #[test]

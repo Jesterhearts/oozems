@@ -62,12 +62,12 @@ const PLAYER_LAYER_PASSES: &[LayerPass] = &[
 ];
 
 pub fn draw(game: &Game) {
-    if game.cash_shop.open {
+    if game.ui.cash_shop.open {
         cash_shop::draw(game);
         return;
     }
-    let viewport_width = f64::from(game.canvas.width());
-    let viewport_height = f64::from(game.canvas.height());
+    let viewport_width = f64::from(game.surface.canvas.width());
+    let viewport_height = f64::from(game.surface.canvas.height());
     let player_x = game
         .player
         .position
@@ -78,12 +78,12 @@ pub fn draw(game: &Game) {
         .position
         .as_ref()
         .map_or(0.0, |position| f64::from(position.y));
-    let camera_x = camera_x(player_x, viewport_width, f64::from(game.map.width));
-    let camera_y = camera_y(player_y, viewport_height, f64::from(game.map.height));
+    let camera_x = camera_x(player_x, viewport_width, f64::from(game.world.map.width));
+    let camera_y = camera_y(player_y, viewport_height, f64::from(game.world.map.height));
 
     draw_background(game, viewport_width, viewport_height, camera_x);
-    for layer in &game.world_layers {
-        for pass in layer_passes(*layer == game.motion.platform_layer) {
+    for layer in &game.world.world_layers {
+        for pass in layer_passes(*layer == game.world.motion.platform_layer) {
             match pass {
                 LayerPass::Decorations => draw_decorations(game, camera_x, camera_y, *layer),
                 LayerPass::Portals => draw_portals(game, camera_x, camera_y, *layer),
@@ -140,18 +140,18 @@ pub(crate) fn npc_at_point(
     game: &Game,
     point: game_gui::CanvasPoint,
 ) -> Option<u32> {
-    let viewport_width = f64::from(game.canvas.width());
-    let viewport_height = f64::from(game.canvas.height());
+    let viewport_width = f64::from(game.surface.canvas.width());
+    let viewport_height = f64::from(game.surface.canvas.height());
     let position = game.player.position.as_ref()?;
     let camera_x = camera_x(
         f64::from(position.x),
         viewport_width,
-        f64::from(game.map.width),
+        f64::from(game.world.map.width),
     );
     let camera_y = camera_y(
         f64::from(position.y),
         viewport_height,
-        f64::from(game.map.height),
+        f64::from(game.world.map.height),
     );
     npc::at_point(game, point, camera_x, camera_y)
 }
@@ -186,7 +186,7 @@ fn draw_background(
     viewport_height: f64,
     camera_x: f64,
 ) {
-    let context = &game.context;
+    let context = &game.surface.context;
     context.set_fill_style_str("#87c9c0");
     context.fill_rect(0.0, 0.0, viewport_width, viewport_height);
 
@@ -219,7 +219,7 @@ fn draw_decorations(
     camera_y: f64,
     layer: i32,
 ) {
-    for decoration in &game.map.decorations {
+    for decoration in &game.world.map.decorations {
         if decoration.layer == layer {
             draw_decoration(game, decoration, camera_x, camera_y);
         }
@@ -232,7 +232,7 @@ fn draw_decoration(
     camera_x: f64,
     camera_y: f64,
 ) {
-    if let Some(preferred_index) = decoration_frame_index(&decoration.frames, game.frame_time_ms) {
+    if let Some(preferred_index) = decoration_frame_index(&decoration.frames, game.clock.now_ms) {
         let preferred = &decoration.frames[preferred_index];
         if !sprite_is_visible(
             game,
@@ -246,7 +246,7 @@ fn draw_decoration(
             return;
         }
         let Some(index) = assets::ready_or_fallback_index(
-            &game.images,
+            &game.surface.images,
             decoration
                 .frames
                 .iter()
@@ -303,24 +303,27 @@ pub(crate) fn draw_sprite(
     let width = f64::from(map_width);
     let height = f64::from(map_height);
 
-    let Some(image) = ready_image(&game.images, asset_id) else {
+    let Some(image) = ready_image(&game.surface.images, asset_id) else {
         return;
     };
 
     if flip_x {
-        game.context.save();
+        game.surface.context.save();
         let transformed = game
+            .surface
             .context
             .translate(x + width, y)
-            .and_then(|()| game.context.scale(-1.0, 1.0));
+            .and_then(|()| game.surface.context.scale(-1.0, 1.0));
         if transformed.is_ok() {
             let _ = game
+                .surface
                 .context
                 .draw_image_with_html_image_element_and_dw_and_dh(image, 0.0, 0.0, width, height);
         }
-        game.context.restore();
+        game.surface.context.restore();
     } else {
         let _ = game
+            .surface
             .context
             .draw_image_with_html_image_element_and_dw_and_dh(image, x, y, width, height);
     }
@@ -340,9 +343,9 @@ pub(crate) fn sprite_is_visible(
     let width = f64::from(map_width);
     let height = f64::from(map_height);
     x + width >= 0.0
-        && x <= f64::from(game.canvas.width())
+        && x <= f64::from(game.surface.canvas.width())
         && y + height >= 0.0
-        && y <= f64::from(game.canvas.height())
+        && y <= f64::from(game.surface.canvas.height())
 }
 
 fn draw_portals(
@@ -351,11 +354,11 @@ fn draw_portals(
     camera_y: f64,
     layer: i32,
 ) {
-    for portal in &game.map.portals {
+    for portal in &game.world.map.portals {
         if portal.layer != layer {
             continue;
         }
-        let Some(preferred_index) = portal_frame_index(&portal.frames, game.frame_time_ms) else {
+        let Some(preferred_index) = portal_frame_index(&portal.frames, game.clock.now_ms) else {
             continue;
         };
         let preferred = &portal.frames[preferred_index];
@@ -371,7 +374,7 @@ fn draw_portals(
             continue;
         }
         let Some(index) = assets::ready_or_fallback_index(
-            &game.images,
+            &game.surface.images,
             portal.frames.iter().map(|frame| frame.asset_id.as_str()),
             preferred_index,
         ) else {
@@ -398,7 +401,7 @@ fn draw_dropped_items(
     camera_y: f64,
 ) {
     let now_ms = js_sys::Date::now().max(0.0) as u64;
-    for drop in &game.map.dropped_items {
+    for drop in &game.world.map.dropped_items {
         if drop.despawn_at_unix_ms <= now_ms
             || (drop.expires_at_unix_ms != 0 && drop.expires_at_unix_ms <= now_ms)
         {
@@ -410,7 +413,7 @@ fn draw_dropped_items(
         let Some(definition) = item_definition(game, drop.item_id) else {
             continue;
         };
-        let bounce = (game.frame_time_ms / 220.0).sin() as f32 * 2.0;
+        let bounce = (game.clock.now_ms / 220.0).sin() as f32 * 2.0;
         draw_sprite(
             game,
             &definition.icon_asset_id,
@@ -429,37 +432,22 @@ fn portal_frame_index(
     frames: &[PortalFrame],
     timestamp_ms: f64,
 ) -> Option<usize> {
-    timed_frame_index(frames.iter().map(|frame| frame.delay_ms), timestamp_ms)
+    crate::animation::frame_index(
+        frames.iter().map(|frame| frame.delay_ms),
+        timestamp_ms,
+        crate::animation::Playback::Loop,
+    )
 }
 
 fn decoration_frame_index(
     frames: &[DecorationFrame],
     timestamp_ms: f64,
 ) -> Option<usize> {
-    timed_frame_index(frames.iter().map(|frame| frame.delay_ms), timestamp_ms)
-}
-
-fn timed_frame_index(
-    delays: impl Iterator<Item = u32> + Clone,
-    timestamp_ms: f64,
-) -> Option<usize> {
-    let total_duration = delays
-        .clone()
-        .map(|delay| u64::from(delay.max(1)))
-        .sum::<u64>();
-    if total_duration == 0 {
-        return None;
-    }
-
-    let mut animation_time = timestamp_ms.max(0.0) as u64 % total_duration;
-    for (index, delay) in delays.enumerate() {
-        let delay = u64::from(delay.max(1));
-        if animation_time < delay {
-            return Some(index);
-        }
-        animation_time -= delay;
-    }
-    None
+    crate::animation::frame_index(
+        frames.iter().map(|frame| frame.delay_ms),
+        timestamp_ms,
+        crate::animation::Playback::Loop,
+    )
 }
 
 fn draw_player(
@@ -473,31 +461,38 @@ fn draw_player(
     let x = f64::from(position.x) - camera_x;
     let y = f64::from(position.y) - camera_y;
 
-    game.context.set_fill_style_str("rgba(29, 45, 43, 0.25)");
-    game.context.fill_rect(x - 23.0, y - 3.0, 46.0, 6.0);
-    let elapsed_ms = character_animation_elapsed_ms(game.character_animation, game.frame_time_ms);
+    game.surface
+        .context
+        .set_fill_style_str("rgba(29, 45, 43, 0.25)");
+    game.surface.context.fill_rect(x - 23.0, y - 3.0, 46.0, 6.0);
+    let elapsed_ms =
+        character_animation_elapsed_ms(game.world.character_animation, game.clock.now_ms);
     let placement = || CharacterPlacement {
         anchor_x: x,
         anchor_y: y,
         scale: 1.0,
-        facing_left: game.facing_left,
+        facing_left: game.world.facing_left,
     };
-    let morph_drawn = game.morph_definition.as_ref().is_some_and(|definition| {
-        crate::morph_render::draw_morph(
-            &game.context,
-            &game.images,
-            definition,
-            game.character_animation.animation,
-            elapsed_ms,
-            placement(),
-        )
-    });
+    let morph_drawn = game
+        .world
+        .morph_definition
+        .as_ref()
+        .is_some_and(|definition| {
+            crate::morph_render::draw_morph(
+                &game.surface.context,
+                &game.surface.images,
+                definition,
+                game.world.character_animation.animation,
+                elapsed_ms,
+                placement(),
+            )
+        });
     if !morph_drawn {
         character_render::draw_character(
-            &game.context,
-            &game.images,
-            &game.character_sprites,
-            game.character_animation.animation,
+            &game.surface.context,
+            &game.surface.images,
+            &game.world.character_sprites,
+            game.world.character_animation.animation,
             elapsed_ms,
             placement(),
         );
@@ -509,19 +504,19 @@ fn draw_hud(game: &Game) {
         draw_fallback_hud(game);
     }
     skill_info::draw_active_buffs(game);
-    if game.gui_state.borrow().stats_open {
+    if game.ui.gui_state.borrow().stats_open {
         draw_stat_window(game);
     }
-    if game.gui_state.borrow().equipment_open {
+    if game.ui.gui_state.borrow().equipment_open {
         draw_equipment_window(game);
     }
-    if game.gui_state.borrow().inventory_open {
+    if game.ui.gui_state.borrow().inventory_open {
         draw_inventory_window(game);
     }
-    if game.gui_state.borrow().skills_open {
+    if game.ui.gui_state.borrow().skills_open {
         skillbook::draw(game);
     }
-    if game.gui_state.borrow().key_config_open {
+    if game.ui.gui_state.borrow().key_config_open {
         draw_key_config_window(game);
     }
     skill_info::draw_hovered_skill(game);
@@ -529,19 +524,20 @@ fn draw_hud(game: &Game) {
 }
 
 fn draw_key_config_window(game: &Game) {
-    let Some(window) = game.gui.key_config_window.as_ref() else {
+    let Some(window) = game.ui.gui.key_config_window.as_ref() else {
         return;
     };
     if !draw_window(game, window) {
         return;
     }
     for placement in
-        game_gui::bound_key_icons(&game.gui, &game.skill_book, &game.key_bindings.borrow())
+        game_gui::bound_key_icons(&game.ui.gui, &game.player.skill_book, &game.key_bindings())
     {
         draw_key_icon(game, &placement);
     }
-    if let Some(drag) = game.key_drag.as_ref()
-        && let Some(placement) = game_gui::dragged_key_icon(&game.gui, &game.skill_book, drag)
+    if let Some(drag) = game.ui.key_drag.as_ref()
+        && let Some(placement) =
+            game_gui::dragged_key_icon(&game.ui.gui, &game.player.skill_book, drag)
     {
         draw_key_icon(game, &placement);
     }
@@ -551,10 +547,11 @@ fn draw_key_icon(
     game: &Game,
     placement: &game_gui::KeyIconPlacement,
 ) {
-    let Some(image) = ready_image(&game.images, &placement.asset_id) else {
+    let Some(image) = ready_image(&game.surface.images, &placement.asset_id) else {
         return;
     };
     let _ = game
+        .surface
         .context
         .draw_image_with_html_image_element_and_dw_and_dh(
             image,
@@ -566,7 +563,7 @@ fn draw_key_icon(
 }
 
 fn draw_equipment_window(game: &Game) {
-    let Some(window) = game.gui.equipment_window.as_ref() else {
+    let Some(window) = game.ui.gui.equipment_window.as_ref() else {
         return;
     };
     if !draw_window(game, window) {
@@ -594,19 +591,19 @@ fn draw_equipment_window(game: &Game) {
 }
 
 fn draw_inventory_window(game: &Game) {
-    let Some(window) = game.gui.inventory_window.as_ref() else {
+    let Some(window) = game.ui.gui.inventory_window.as_ref() else {
         return;
     };
     if !draw_window(game, window) {
         return;
     }
-    let selected_tab = game.gui_state.borrow().inventory_tab;
+    let selected_tab = game.ui.gui_state.borrow().inventory_tab;
     draw_inventory_tabs(game, window, selected_tab);
     let Some(inventory) = game.player.inventory.as_ref() else {
         return;
     };
     let now_unix_ms = js_sys::Date::now().max(0.0) as u64;
-    for slot in game_gui::inventory_slots(&game.gui, inventory, selected_tab) {
+    for slot in game_gui::inventory_slots(&game.ui.gui, inventory, selected_tab) {
         let (x, y) = game_gui::inventory_slot_position(slot.visual_index);
         draw_item_icon(game, slot.definition, window.x + x, window.y + y);
         draw_item_quantity(game, slot.stack.quantity, window.x + x, window.y + y);
@@ -655,11 +652,12 @@ fn draw_inventory_tab_part(
     ) else {
         return;
     };
-    let Some(image) = ready_image(&game.images, &template.asset_id) else {
+    let Some(image) = ready_image(&game.surface.images, &template.asset_id) else {
         return;
     };
     let (x, y) = game_gui::inventory_tab_template_position(region, template, part == "background");
     let _ = game
+        .surface
         .context
         .draw_image_with_html_image_element_and_dw_and_dh(
             image,
@@ -684,12 +682,13 @@ fn draw_window(
     let Some(background) = layout.background.as_ref() else {
         return false;
     };
-    let Some(background_image) = ready_image(&game.images, &background.asset_id) else {
+    let Some(background_image) = ready_image(&game.surface.images, &background.asset_id) else {
         return false;
     };
     let origin_x = f64::from(window.x);
     let origin_y = f64::from(window.y);
     let _ = game
+        .surface
         .context
         .draw_image_with_html_image_element_and_dw_and_dh(
             background_image,
@@ -710,12 +709,13 @@ fn draw_item_icon(
     slot_x: f32,
     slot_y: f32,
 ) {
-    let Some(image) = ready_image(&game.images, &definition.icon_asset_id) else {
+    let Some(image) = ready_image(&game.surface.images, &definition.icon_asset_id) else {
         return;
     };
     let x = f64::from(slot_x + (32.0 - definition.icon_width) / 2.0);
     let y = f64::from(slot_y + (32.0 - definition.icon_height) / 2.0);
     let _ = game
+        .surface
         .context
         .draw_image_with_html_image_element_and_dw_and_dh(
             image,
@@ -736,13 +736,14 @@ fn draw_item_quantity(
         return;
     }
     let label = quantity.to_string();
-    game.context.set_fill_style_str("#202020");
-    game.context.set_font("bold 10px Arial");
+    game.surface.context.set_fill_style_str("#202020");
+    game.surface.context.set_font("bold 10px Arial");
     let width = game
+        .surface
         .context
         .measure_text(&label)
         .map_or(0.0, |metrics| metrics.width());
-    let _ = game.context.fill_text(
+    let _ = game.surface.context.fill_text(
         &label,
         f64::from(slot_x + 30.0) - width,
         f64::from(slot_y + 30.0),
@@ -816,21 +817,22 @@ fn draw_item_expiration(
         ItemExpiration::Expired => ("rgba(143, 39, 39, 0.92)", "#fff4f1"),
         ItemExpiration::RemainingMinutes(_) => ("rgba(89, 67, 21, 0.92)", "#fff4bf"),
     };
-    game.context.set_font("bold 8px Arial");
+    game.surface.context.set_font("bold 8px Arial");
     let width = game
+        .surface
         .context
         .measure_text(&label)
         .map_or(28.0, |metrics| metrics.width() + 4.0)
         .min(31.0);
-    game.context.set_fill_style_str(background);
-    game.context.fill_rect(
+    game.surface.context.set_fill_style_str(background);
+    game.surface.context.fill_rect(
         f64::from(slot_x + 1.0),
         f64::from(slot_y + 1.0),
         width,
         10.0,
     );
-    game.context.set_fill_style_str(foreground);
-    let _ = game.context.fill_text_with_max_width(
+    game.surface.context.set_fill_style_str(foreground);
+    let _ = game.surface.context.fill_text_with_max_width(
         &label,
         f64::from(slot_x + 3.0),
         f64::from(slot_y + 9.0),
@@ -842,7 +844,8 @@ fn item_definition(
     game: &Game,
     item_id: u32,
 ) -> Option<&ItemDefinition> {
-    game.gui
+    game.ui
+        .gui
         .items
         .iter()
         .find(|definition| definition.item_id == item_id)
@@ -850,6 +853,7 @@ fn item_definition(
 
 fn draw_wz_hud(game: &Game) -> bool {
     let Some(layout) = game
+        .ui
         .gui
         .status_bar
         .as_ref()
@@ -860,17 +864,18 @@ fn draw_wz_hud(game: &Game) -> bool {
     let Some(background) = layout.background.as_ref() else {
         return false;
     };
-    let Some(background_image) = ready_image(&game.images, &background.asset_id) else {
+    let Some(background_image) = ready_image(&game.surface.images, &background.asset_id) else {
         return false;
     };
-    let viewport_width = f64::from(game.canvas.width());
-    let viewport_height = f64::from(game.canvas.height());
+    let viewport_width = f64::from(game.surface.canvas.width());
+    let viewport_height = f64::from(game.surface.canvas.height());
     let origin_y = f64::from(game_gui::status_bar_top(
         viewport_height as f32,
         layout.height,
     ));
 
     let _ = game
+        .surface
         .context
         .draw_image_with_html_image_element_and_dw_and_dh(
             background_image,
@@ -879,7 +884,7 @@ fn draw_wz_hud(game: &Game) -> bool {
             viewport_width,
             f64::from(background.height),
         );
-    let gui_state = *game.gui_state.borrow();
+    let gui_state = *game.ui.gui_state.borrow();
     for sprite in layout
         .sprites
         .iter()
@@ -897,7 +902,7 @@ fn draw_wz_hud(game: &Game) -> bool {
         .sprites
         .iter()
         .find(|sprite| sprite.name == "gauge")
-        .filter(|sprite| ready_image(&game.images, &sprite.asset_id).is_some())
+        .filter(|sprite| ready_image(&game.surface.images, &sprite.asset_id).is_some())
         .map(|sprite| {
             (
                 f64::from(game_gui::sprite_screen_x(
@@ -919,7 +924,7 @@ fn draw_gui_sprite(
     layout_width: f64,
     origin_y: f64,
 ) {
-    let Some(image) = ready_image(&game.images, &sprite.asset_id) else {
+    let Some(image) = ready_image(&game.surface.images, &sprite.asset_id) else {
         return;
     };
     let destination_x = f64::from(game_gui::sprite_screen_x(
@@ -935,6 +940,7 @@ fn draw_gui_sprite(
         return;
     }
     let _ = game
+        .surface
         .context
         .draw_image_with_html_image_element_and_dw_and_dh(
             image,
@@ -957,6 +963,7 @@ fn draw_gauge_fill(
         return false;
     }
     let _ = game
+        .surface
         .context
         .draw_image_with_html_image_element_and_sw_and_sh_and_dx_and_dy_and_dw_and_dh(
             image,
@@ -974,6 +981,7 @@ fn draw_gauge_fill(
             continue;
         }
         let _ = game
+            .surface
             .context
             .draw_image_with_html_image_element_and_sw_and_sh_and_dx_and_dy_and_dw_and_dh(
                 image,
@@ -997,31 +1005,39 @@ fn draw_status_bar_text(
     gauge_origin: Option<(f64, f64)>,
 ) {
     let bar_top = origin_y + bar_y;
-    game.context.set_fill_style_str("#e9eef2");
-    game.context.set_font("bold 12px monospace");
+    game.surface.context.set_fill_style_str("#e9eef2");
+    game.surface.context.set_font("bold 12px monospace");
     let _ = game
+        .surface
         .context
         .fill_text(&game.player.level.to_string(), 44.0, bar_top + 61.0);
 
-    game.context.set_font("bold 10px monospace");
+    game.surface.context.set_font("bold 10px monospace");
     let job = game
         .player
         .stats
         .as_ref()
         .map_or("Beginner", |stats| job_name(stats.job_id));
     let _ = game
+        .surface
         .context
         .fill_text_with_max_width(job, 84.0, bar_top + 50.0, 118.0);
-    game.context.set_font("11px monospace");
-    let _ = game
-        .context
-        .fill_text_with_max_width(&game.player.name, 84.0, bar_top + 65.0, 118.0);
+    game.surface.context.set_font("11px monospace");
+    let _ = game.surface.context.fill_text_with_max_width(
+        &game.player.name,
+        84.0,
+        bar_top + 65.0,
+        118.0,
+    );
 
-    game.context.set_fill_style_str("#263139");
-    game.context.set_font("12px monospace");
-    let _ = game
-        .context
-        .fill_text_with_max_width(&game.map.name, 10.0, bar_top + 22.0, 550.0);
+    game.surface.context.set_fill_style_str("#263139");
+    game.surface.context.set_font("12px monospace");
+    let _ = game.surface.context.fill_text_with_max_width(
+        &game.world.map.name,
+        10.0,
+        bar_top + 22.0,
+        550.0,
+    );
 
     if let (Some(stats), Some((gauge_x, gauge_y))) = (game.player.stats.as_ref(), gauge_origin) {
         draw_gauge_text(game, stats, gauge_x, gauge_y);
@@ -1036,30 +1052,30 @@ fn draw_gauge_text(
 ) {
     let fills = game_gui::gauge_fills(stats);
     let labels = game_gui::gauge_labels(stats);
-    game.context.set_font("bold 10px Arial");
-    game.context.set_text_align("center");
+    game.surface.context.set_font("bold 10px Arial");
+    game.surface.context.set_text_align("center");
     for (fill, label) in fills.into_iter().zip(labels) {
         let center_x = gauge_x + fill.source_x + fill.full_width / 2.0;
-        game.context.set_fill_style_str("#202020");
-        let _ = game.context.fill_text_with_max_width(
+        game.surface.context.set_fill_style_str("#202020");
+        let _ = game.surface.context.fill_text_with_max_width(
             &label,
             center_x + 1.0,
             gauge_y + 28.0,
             fill.full_width - 4.0,
         );
-        game.context.set_fill_style_str("#ffffff");
-        let _ = game.context.fill_text_with_max_width(
+        game.surface.context.set_fill_style_str("#ffffff");
+        let _ = game.surface.context.fill_text_with_max_width(
             &label,
             center_x,
             gauge_y + 27.0,
             fill.full_width - 4.0,
         );
     }
-    game.context.set_text_align("left");
+    game.surface.context.set_text_align("left");
 }
 
 fn draw_stat_window(game: &Game) {
-    let Some(window) = game.gui.stat_window.as_ref() else {
+    let Some(window) = game.ui.gui.stat_window.as_ref() else {
         return;
     };
     let Some(layout) = window
@@ -1072,12 +1088,13 @@ fn draw_stat_window(game: &Game) {
     let Some(background) = layout.background.as_ref() else {
         return;
     };
-    let Some(background_image) = ready_image(&game.images, &background.asset_id) else {
+    let Some(background_image) = ready_image(&game.surface.images, &background.asset_id) else {
         return;
     };
     let origin_x = f64::from(window.x);
     let origin_y = f64::from(window.y);
     let _ = game
+        .surface
         .context
         .draw_image_with_html_image_element_and_dw_and_dh(
             background_image,
@@ -1100,10 +1117,11 @@ fn draw_window_sprite(
     origin_x: f64,
     origin_y: f64,
 ) {
-    let Some(image) = ready_image(&game.images, &sprite.asset_id) else {
+    let Some(image) = ready_image(&game.surface.images, &sprite.asset_id) else {
         return;
     };
     let _ = game
+        .surface
         .context
         .draw_image_with_html_image_element_and_dw_and_dh(
             image,
@@ -1129,15 +1147,18 @@ fn draw_stat_values(
         (stats.experience.to_string(), 160.0),
         (stats.fame.to_string(), 178.0),
     ];
-    game.context.set_fill_style_str("#30383b");
-    game.context.set_font("10px monospace");
+    game.surface.context.set_fill_style_str("#30383b");
+    game.surface.context.set_font("10px monospace");
     for (value, y) in values {
-        let _ = game
-            .context
-            .fill_text_with_max_width(&value, origin_x + 60.0, origin_y + y, 106.0);
+        let _ = game.surface.context.fill_text_with_max_width(
+            &value,
+            origin_x + 60.0,
+            origin_y + y,
+            106.0,
+        );
     }
 
-    let _ = game.context.fill_text_with_max_width(
+    let _ = game.surface.context.fill_text_with_max_width(
         &stats.ability_points.to_string(),
         origin_x + 64.0,
         origin_y + 226.0,
@@ -1149,7 +1170,7 @@ fn draw_stat_values(
         (stats.intelligence, 290.0),
         (stats.luck, 307.0),
     ] {
-        let _ = game.context.fill_text_with_max_width(
+        let _ = game.surface.context.fill_text_with_max_width(
             &value.to_string(),
             origin_x + 60.0,
             origin_y + y,
@@ -1166,17 +1187,22 @@ fn job_name(job_id: u32) -> &'static str {
 }
 
 fn draw_fallback_hud(game: &Game) {
-    game.context.set_fill_style_str("rgba(28, 45, 44, 0.82)");
-    game.context.fill_rect(16.0, 16.0, 260.0, 66.0);
-    game.context.set_fill_style_str("#fff8d8");
-    game.context.set_font("bold 18px monospace");
-    let _ = game.context.fill_text(
+    game.surface
+        .context
+        .set_fill_style_str("rgba(28, 45, 44, 0.82)");
+    game.surface.context.fill_rect(16.0, 16.0, 260.0, 66.0);
+    game.surface.context.set_fill_style_str("#fff8d8");
+    game.surface.context.set_font("bold 18px monospace");
+    let _ = game.surface.context.fill_text(
         &format!("{}  Lv.{}", game.player.name, game.player.level),
         28.0,
         43.0,
     );
-    game.context.set_font("14px monospace");
-    let _ = game.context.fill_text(&game.map.name, 28.0, 66.0);
+    game.surface.context.set_font("14px monospace");
+    let _ = game
+        .surface
+        .context
+        .fill_text(&game.world.map.name, 28.0, 66.0);
 }
 
 #[cfg(test)]
