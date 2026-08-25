@@ -68,14 +68,23 @@ impl CharacterName {
     }
 }
 
-pub async fn open_surreal_kv(path: &Path) -> surrealdb::Result<Database> {
+pub async fn open_surreal_kv(
+    path: &Path,
+    initial_cash_points: u64,
+) -> surrealdb::Result<Database> {
     let database = Surreal::new::<SurrealKv>(path).await?;
     database.use_ns("oozems").use_db("game").await?;
-    initialize_schema(&database).await?;
+    initialize_schema(&database, initial_cash_points).await?;
     Ok(database)
 }
 
-async fn initialize_schema(database: &Database) -> surrealdb::Result<()> {
+async fn initialize_schema(
+    database: &Database,
+    initial_cash_points: u64,
+) -> surrealdb::Result<()> {
+    let initial_cash_points = i64::try_from(initial_cash_points).map_err(|_| {
+        surrealdb::Error::internal("initial cash points exceed the persisted range".to_owned())
+    })?;
     database
         .query(
             r#"
@@ -132,6 +141,7 @@ async fn initialize_schema(database: &Database) -> surrealdb::Result<()> {
                 master_level: int
             }>;
             DEFINE FIELD OVERWRITE mesos ON player TYPE int;
+            DEFINE FIELD OVERWRITE cash_points ON player TYPE int;
             DEFINE FIELD OVERWRITE quests ON player TYPE array<{
                 quest_id: int,
                 status: int,
@@ -151,6 +161,11 @@ async fn initialize_schema(database: &Database) -> surrealdb::Result<()> {
             }>;
             "#,
         )
+        .await?
+        .check()?;
+    database
+        .query("UPDATE player SET cash_points = $initial_cash_points WHERE cash_points = NONE")
+        .bind(("initial_cash_points", initial_cash_points))
         .await?
         .check()?;
     Ok(())
@@ -175,6 +190,7 @@ pub async fn create_player(
     position: Vec2,
     experience_required: u64,
     initial_skill_points: u32,
+    initial_cash_points: u64,
 ) -> surrealdb::Result<PlayerState> {
     let mut stats = starter_character_stats();
     stats.experience_required = experience_required;
@@ -195,6 +211,7 @@ pub async fn create_player(
         revision: 0,
         quest_records: Vec::new(),
         monster_book_cards: Vec::new(),
+        cash_points: initial_cash_points,
     };
     save_player(database, &player).await
 }
@@ -329,6 +346,7 @@ mod tests {
             revision: u64::MAX,
             quest_records: Vec::new(),
             monster_book_cards: Vec::new(),
+            cash_points: 99_999,
         };
 
         let result = apply_player_preferences(current.clone(), &requested);
@@ -339,16 +357,17 @@ mod tests {
         assert_eq!(result.stats, current.stats);
         assert_eq!(result.inventory, current.inventory);
         assert_eq!(result.skill_points, current.skill_points);
+        assert_eq!(result.cash_points, current.cash_points);
         assert_eq!(result.revision, current.revision);
     }
 
     #[tokio::test]
     async fn player_round_trip_uses_the_current_nested_schema() {
         let directory = tempfile::tempdir().expect("temporary directory");
-        let database = open_surreal_kv(&directory.path().join("database"))
+        let database = open_surreal_kv(&directory.path().join("database"), 10_000)
             .await
             .expect("open SurrealKV");
-        super::initialize_schema(&database)
+        super::initialize_schema(&database, 10_000)
             .await
             .expect("schema initialization is idempotent");
         let player_id = PlayerId::parse("database-test").expect("valid player ID");
@@ -374,6 +393,7 @@ mod tests {
             },
         ];
         player.mesos = 1_234;
+        player.cash_points = 9_876;
         player.monster_book_cards = vec![
             MonsterBookCard {
                 card_item_id: 2_380_001,
@@ -434,7 +454,7 @@ mod tests {
     #[tokio::test]
     async fn position_updates_remain_partial_and_keep_revision() {
         let directory = tempfile::tempdir().expect("temporary directory");
-        let database = open_surreal_kv(&directory.path().join("database"))
+        let database = open_surreal_kv(&directory.path().join("database"), 10_000)
             .await
             .expect("open SurrealKV");
         let player_id = PlayerId::parse("position-test").expect("valid player ID");
@@ -460,7 +480,7 @@ mod tests {
     #[tokio::test]
     async fn full_saves_increment_past_the_input_and_current_revisions() {
         let directory = tempfile::tempdir().expect("temporary directory");
-        let database = open_surreal_kv(&directory.path().join("database"))
+        let database = open_surreal_kv(&directory.path().join("database"), 10_000)
             .await
             .expect("open SurrealKV");
         let player_id = PlayerId::parse("revision-test").expect("valid player ID");
@@ -490,6 +510,47 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn schema_backfills_only_missing_cash_point_balances() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let database = open_surreal_kv(&directory.path().join("database"), 100)
+            .await
+            .expect("open SurrealKV");
+        let player_id = PlayerId::parse("cash-migration").expect("valid player ID");
+        create_test_player(&database, &player_id).await;
+
+        super::initialize_schema(&database, 999)
+            .await
+            .expect("repeat schema initialization");
+        assert_eq!(
+            load_player(&database, &player_id)
+                .await
+                .expect("load current player")
+                .expect("current player exists")
+                .cash_points,
+            10_000
+        );
+
+        database
+            .query("REMOVE FIELD cash_points ON player; UPDATE player UNSET cash_points")
+            .await
+            .expect("remove legacy cash-point field")
+            .check()
+            .expect("write legacy player");
+        super::initialize_schema(&database, 999)
+            .await
+            .expect("migrate legacy schema");
+
+        assert_eq!(
+            load_player(&database, &player_id)
+                .await
+                .expect("load migrated player")
+                .expect("migrated player exists")
+                .cash_points,
+            999
+        );
+    }
+
     #[test]
     fn revision_increment_reports_overflow() {
         let error =
@@ -501,7 +562,7 @@ mod tests {
     #[tokio::test]
     async fn save_rejects_missing_nonfinite_and_invalid_current_data() {
         let directory = tempfile::tempdir().expect("temporary directory");
-        let database = open_surreal_kv(&directory.path().join("database"))
+        let database = open_surreal_kv(&directory.path().join("database"), 10_000)
             .await
             .expect("open SurrealKV");
         let player_id = PlayerId::parse("invalid-save").expect("valid player ID");
@@ -568,6 +629,13 @@ mod tests {
             .expect_err("duplicate learned skills must fail");
         assert!(error.to_string().contains("appears more than once"));
 
+        let mut oversized_balance = player.clone();
+        oversized_balance.cash_points = i64::MAX as u64 + 1;
+        let error = save_player(&database, &oversized_balance)
+            .await
+            .expect_err("oversized cash-point balance must fail");
+        assert!(error.to_string().contains("cash_points"));
+
         let mut invalid_inventory = player;
         invalid_inventory
             .inventory
@@ -588,7 +656,7 @@ mod tests {
     #[tokio::test]
     async fn load_reports_semantically_invalid_current_records_as_corrupt() {
         let directory = tempfile::tempdir().expect("temporary directory");
-        let database = open_surreal_kv(&directory.path().join("database"))
+        let database = open_surreal_kv(&directory.path().join("database"), 10_000)
             .await
             .expect("open SurrealKV");
         let player_id = PlayerId::parse("invalid-load").expect("valid player ID");
@@ -629,6 +697,7 @@ mod tests {
             Vec2 { x: 160.0, y: 420.0 },
             123,
             3,
+            10_000,
         )
         .await
         .expect("create player")
@@ -652,6 +721,7 @@ mod tests {
             revision: 10,
             quest_records: Vec::new(),
             monster_book_cards: Vec::new(),
+            cash_points: 5_000,
         }
     }
 

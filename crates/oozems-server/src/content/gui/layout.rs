@@ -5,6 +5,7 @@ use oozems_proto::v1::GuiSpriteTemplate;
 use oozems_proto::v1::GuiWindow;
 use oozems_proto::v1::KeyActionDefinition;
 
+use super::CashShopWindowSources;
 use super::GuiContentError;
 use super::InventoryWindowSources;
 use super::ItemWindowSources;
@@ -62,6 +63,10 @@ const NPC_DIALOG_Y: f32 = 100.0;
 const NPC_DIALOG_CENTER_ROWS: usize = 10;
 const SHOP_WINDOW_X: f32 = 168.0;
 const SHOP_WINDOW_Y: f32 = 80.0;
+const CASH_SHOP_CARD_COLUMNS: [f32; 2] = [278.0, 484.0];
+const CASH_SHOP_CARD_ROWS: [f32; 5] = [98.0, 179.0, 260.0, 341.0, 422.0];
+const CASH_SHOP_BUY_LEFT: f32 = 77.0;
+const CASH_SHOP_BUY_TOP: f32 = 57.0;
 
 pub(super) fn compose_npc_dialog_window(
     sources: &NpcDialogSources
@@ -154,6 +159,51 @@ pub(super) fn compose_shop_window(
     })
 }
 
+pub(super) fn compose_cash_shop_window(
+    sources: &CashShopWindowSources
+) -> Result<GuiWindow, GuiContentError> {
+    let mut sprites = vec![place_sprite(&sources.preview, 24.0, 40.0, false)];
+    let mut regions = Vec::with_capacity(11);
+    for (index, (x, y)) in CASH_SHOP_CARD_ROWS
+        .iter()
+        .flat_map(|y| CASH_SHOP_CARD_COLUMNS.iter().map(move |x| (*x, *y)))
+        .enumerate()
+    {
+        let mut item_card = place_sprite(&sources.item_card, x, y, false);
+        item_card.name = format!("cash-shop-item-card-{index}");
+        sprites.push(item_card);
+        regions.push(region(
+            &format!("cash-shop-buy-{index}"),
+            x + CASH_SHOP_BUY_LEFT,
+            y + CASH_SHOP_BUY_TOP,
+            sources.buy.width,
+            sources.buy.height,
+        ));
+    }
+    sprites.push(place_sprite(&sources.exit, 632.0, 535.0, false));
+    regions.push(region(
+        "cash-shop-exit",
+        632.0,
+        535.0,
+        sources.exit.width,
+        sources.exit.height,
+    ));
+    let layout = GuiLayout {
+        width: sources.background.width,
+        height: sources.background.height,
+        background: Some(place_sprite(&sources.background, 0.0, 0.0, false)),
+        sprites,
+        sprite_templates: vec![sprite_template(&sources.buy)],
+        regions,
+    };
+    validate_layout(&layout)?;
+    Ok(GuiWindow {
+        x: 0.0,
+        y: 0.0,
+        layout: Some(layout),
+    })
+}
+
 pub(super) fn compose_status_bar(sources: &StatusBarSources) -> Result<GuiLayout, GuiContentError> {
     let width = sources.background.width;
     let height = sources.background.height.max(sources.quick_slots.height);
@@ -178,6 +228,12 @@ pub(super) fn compose_status_bar(sources: &StatusBarSources) -> Result<GuiLayout
         ),
         place_sprite(&sources.quick_slots, quick_slots_x, 0.0, true),
     ];
+    sprites.push(place_sprite(
+        &sources.cash_shop,
+        quick_slots_x - sources.cash_shop.width - MENU_BUTTON_GAP,
+        height - sources.cash_shop.height,
+        true,
+    ));
     sprites.extend(
         sources
             .key_references

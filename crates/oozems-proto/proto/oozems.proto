@@ -27,6 +27,7 @@ message PlayerState {
   uint64 revision = 14;
   repeated QuestRecord quest_records = 15;
   repeated MonsterBookCard monster_book_cards = 16;
+  uint64 cash_points = 17;
 }
 
 message MonsterBookCard {
@@ -433,6 +434,7 @@ message GameGui {
   GuiWindow skill_window = 10;
   GuiWindow npc_dialog_window = 11;
   GuiWindow shop_window = 12;
+  GuiWindow cash_shop_window = 13;
 }
 
 message SkillBook {
@@ -701,6 +703,35 @@ message ItemActionResponse {
   ActiveBuffState active_buffs = 4;
 }
 
+message GetCashShopRequest {}
+
+message GetCashShopResponse {
+  repeated CashShopOffer offers = 1;
+  string currency_name = 2;
+}
+
+message CashShopOffer {
+  uint32 offer_id = 1;
+  uint32 item_id = 2;
+  uint64 price = 3;
+  // Zero means that the purchased item is permanent.
+  uint64 duration_ms = 4;
+}
+
+message PurchaseCashShopItemRequest {
+  string player_id = 1;
+  uint32 offer_id = 2;
+}
+
+message PurchaseCashShopItemResponse {
+  PlayerState player = 1;
+  uint32 offer_id = 2;
+  uint32 item_id = 3;
+  // Zero means that the purchased item is permanent.
+  uint64 expires_at_unix_ms = 4;
+  ActiveBuffState active_buffs = 5;
+}
+
 message NpcInteractionRequest {
   string player_id = 1;
   uint32 map_id = 2;
@@ -789,6 +820,14 @@ enum NpcDialogChoiceKind {
 
 message NpcShopView {
   repeated NpcShopOffer offers = 1;
+  NpcShopCurrency currency = 2;
+  string currency_name = 3;
+}
+
+enum NpcShopCurrency {
+  NPC_SHOP_CURRENCY_UNSPECIFIED = 0;
+  NPC_SHOP_CURRENCY_MESOS = 1;
+  NPC_SHOP_CURRENCY_CASH_POINTS = 2;
 }
 
 message NpcShopOffer {

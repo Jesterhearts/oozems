@@ -10,8 +10,11 @@ pub const PROTOBUF_CONTENT_TYPE: &str = "application/x-protobuf";
 mod tests {
     use prost::Message;
 
+    use crate::v1::ActiveBuffState;
+    use crate::v1::CashShopOffer;
     use crate::v1::EquipmentSlot;
     use crate::v1::EquippedItem;
+    use crate::v1::GetCashShopResponse;
     use crate::v1::LearnedSkill;
     use crate::v1::MonsterBookCard;
     use crate::v1::Npc;
@@ -19,8 +22,11 @@ mod tests {
     use crate::v1::NpcAnimationEvent;
     use crate::v1::NpcFrame;
     use crate::v1::NpcInteractionResponse;
+    use crate::v1::NpcShopCurrency;
+    use crate::v1::NpcShopView;
     use crate::v1::PlayerSkill;
     use crate::v1::PlayerState;
+    use crate::v1::PurchaseCashShopItemResponse;
     use crate::v1::QuestRecord;
     use crate::v1::QuestRecordEntry;
 
@@ -62,6 +68,78 @@ mod tests {
             PlayerState::decode(player.encode_to_vec().as_slice())
                 .expect("decode Monster Book cards"),
             player
+        );
+    }
+
+    #[test]
+    fn cash_points_round_trip_exactly() {
+        let player = PlayerState {
+            cash_points: u64::from(u32::MAX) + 1,
+            ..PlayerState::default()
+        };
+
+        assert_eq!(
+            PlayerState::decode(player.encode_to_vec().as_slice()).expect("decode cash points"),
+            player
+        );
+    }
+
+    #[test]
+    fn shop_currency_round_trips_exactly() {
+        for (currency, currency_name) in [
+            (NpcShopCurrency::Mesos, "mesos"),
+            (NpcShopCurrency::CashPoints, "Ooze"),
+        ] {
+            let shop = NpcShopView {
+                currency: currency as i32,
+                currency_name: currency_name.to_owned(),
+                ..NpcShopView::default()
+            };
+
+            assert_eq!(
+                NpcShopView::decode(shop.encode_to_vec().as_slice()).expect("decode shop currency"),
+                shop
+            );
+        }
+    }
+
+    #[test]
+    fn timed_cash_shop_purchase_round_trips_exactly() {
+        let response = PurchaseCashShopItemResponse {
+            player: Some(PlayerState {
+                cash_points: 8_800,
+                ..PlayerState::default()
+            }),
+            offer_id: 7,
+            item_id: 5_010_000,
+            expires_at_unix_ms: 1_800_000,
+            active_buffs: Some(ActiveBuffState::default()),
+        };
+        let offer = CashShopOffer {
+            offer_id: 7,
+            item_id: 5_010_000,
+            price: 1_200,
+            duration_ms: 30 * 24 * 60 * 60 * 1_000,
+        };
+        let catalog = GetCashShopResponse {
+            offers: vec![offer],
+            currency_name: "Ooze".to_owned(),
+        };
+
+        assert_eq!(
+            PurchaseCashShopItemResponse::decode(response.encode_to_vec().as_slice())
+                .expect("decode cash-shop purchase"),
+            response
+        );
+        assert_eq!(
+            CashShopOffer::decode(offer.encode_to_vec().as_slice())
+                .expect("decode cash-shop offer"),
+            offer
+        );
+        assert_eq!(
+            GetCashShopResponse::decode(catalog.encode_to_vec().as_slice())
+                .expect("decode cash-shop catalog"),
+            catalog
         );
     }
 

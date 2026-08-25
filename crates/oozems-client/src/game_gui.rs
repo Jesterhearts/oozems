@@ -115,6 +115,7 @@ struct BindingIcon {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GuiAction {
+    OpenCashShop,
     ToggleStats,
     ToggleEquipment,
     ToggleInventory,
@@ -169,6 +170,7 @@ pub fn apply_local_action(
     action: GuiAction,
 ) -> bool {
     match action {
+        GuiAction::OpenCashShop => return false,
         GuiAction::ToggleStats => {
             state.stats_open = !state.stats_open;
             state.equipment_open = false;
@@ -581,6 +583,7 @@ fn status_action(
         return None;
     }
     [
+        ("cash-shop", GuiAction::OpenCashShop),
         ("equip", GuiAction::ToggleEquipment),
         ("inventory", GuiAction::ToggleInventory),
         ("stats", GuiAction::ToggleStats),

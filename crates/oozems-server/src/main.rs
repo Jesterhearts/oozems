@@ -5,6 +5,7 @@ use std::collections::BTreeSet;
 mod api;
 mod app;
 mod attacks;
+mod cash_shop;
 mod config;
 mod content;
 mod database;
@@ -29,6 +30,7 @@ mod skill_formula;
 mod skills;
 
 use anyhow::Context;
+use cash_shop::CashShopCatalog;
 use config::Config;
 use content::ContentCatalog;
 use content::ContentConfig;
@@ -66,6 +68,7 @@ async fn main() -> anyhow::Result<()> {
         item_drop_despawn = %humantime::format_duration(gameplay.item_drop_despawn),
         initial_skill_points = gameplay.initial_skill_points,
         initial_map_id = gameplay.initial_map_id,
+        initial_cash_points = gameplay.initial_cash_points,
         world_id = gameplay.world_id,
         movement_snapshot_interval = %humantime::format_duration(gameplay.movement.snapshot_interval),
         movement_speed_cap = gameplay.movement.speed_cap,
@@ -93,6 +96,13 @@ async fn main() -> anyhow::Result<()> {
     let interactions =
         InteractionCatalog::load(&config.data_dir.join("interactions.toml"), &catalog)?;
     catalog.project_item_definitions(&interactions.item_reference_ids().collect())?;
+    let cash_shop = CashShopCatalog::load(&config.data_dir.join("cash-shop.toml"), &catalog)?;
+    catalog.project_item_definitions(&cash_shop.item_reference_ids().collect())?;
+    info!(
+        offer_count = cash_shop.offers().len(),
+        currency_name = cash_shop.currency_name(),
+        "cash shop ready"
+    );
     let empty_script_references = BTreeSet::new();
     let archive_script_references = catalog
         .quest_script_reference_names()
@@ -112,10 +122,15 @@ async fn main() -> anyhow::Result<()> {
     let loot = LootCatalog::load(&config.data_dir.join("loot.toml"), &catalog)?;
     catalog.project_item_definitions(&loot.item_reference_ids().collect())?;
     info!(table_count = loot.len(), "mob loot configuration ready");
-    let database = database::open_surreal_kv(&config.data_dir.join("surrealkv")).await?;
+    let database = database::open_surreal_kv(
+        &config.data_dir.join("surrealkv"),
+        gameplay.initial_cash_points,
+    )
+    .await?;
     let router = app::router(
         database,
         catalog,
+        cash_shop,
         interactions,
         quest_scripts,
         loot,

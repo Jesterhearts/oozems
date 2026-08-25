@@ -123,6 +123,7 @@ pub(super) fn install_player_update(
     if domains.progression && install_revision(&mut revisions.progression, revision) {
         current.level = update.level;
         current.mesos = update.mesos;
+        current.cash_points = update.cash_points;
         installed.progression = true;
     }
     if domains.skills && install_revision(&mut revisions.skills, revision) {
@@ -404,6 +405,7 @@ mod tests {
         let mut player = PlayerState {
             revision: 5,
             mesos: 10,
+            cash_points: 100,
             ..PlayerState::default()
         };
         let mut revisions = PlayerRevisions::new(5);
@@ -419,6 +421,7 @@ mod tests {
                 PlayerState {
                     revision: 6,
                     mesos: 20,
+                    cash_points: 200,
                     ..PlayerState::default()
                 },
                 progression,
@@ -426,7 +429,10 @@ mod tests {
             .domains
             .progression
         );
-        assert_eq!((player.revision, player.mesos), (6, 20));
+        assert_eq!(
+            (player.revision, player.mesos, player.cash_points),
+            (6, 20, 200)
+        );
 
         assert!(
             install_player_update(
@@ -435,6 +441,7 @@ mod tests {
                 PlayerState {
                     revision: 6,
                     mesos: 30,
+                    cash_points: 300,
                     ..PlayerState::default()
                 },
                 progression,
@@ -442,7 +449,10 @@ mod tests {
             .domains
             .progression
         );
-        assert_eq!((player.revision, player.mesos), (6, 30));
+        assert_eq!(
+            (player.revision, player.mesos, player.cash_points),
+            (6, 30, 300)
+        );
 
         assert!(
             !install_player_update(
@@ -451,6 +461,7 @@ mod tests {
                 PlayerState {
                     revision: 5,
                     mesos: 40,
+                    cash_points: 400,
                     ..PlayerState::default()
                 },
                 progression,
@@ -458,7 +469,10 @@ mod tests {
             .domains
             .progression
         );
-        assert_eq!((player.revision, player.mesos), (6, 30));
+        assert_eq!(
+            (player.revision, player.mesos, player.cash_points),
+            (6, 30, 300)
+        );
         assert_eq!(revisions.progression, 6);
     }
 

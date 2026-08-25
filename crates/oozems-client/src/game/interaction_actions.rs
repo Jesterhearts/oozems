@@ -67,6 +67,13 @@ pub(super) fn begin_action(
                 })
             }
             InteractionUiAction::Sell => {
+                let Some(npc_interaction::View::Shop(shop)) = interaction.view.as_ref() else {
+                    return;
+                };
+                if crate::interaction_ui::is_cash_point_shop(shop) {
+                    show_status("Cash-point shops do not buy items.", true);
+                    return;
+                }
                 let Some(index) = game.interaction.selected_inventory else {
                     show_status("Select an inventory item first.", true);
                     return;

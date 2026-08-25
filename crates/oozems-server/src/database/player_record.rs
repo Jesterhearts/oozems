@@ -40,6 +40,7 @@ pub(super) struct PlayerRecord {
     skill_points: i64,
     learned_skills: Vec<LearnedSkillRecord>,
     mesos: i64,
+    cash_points: i64,
     quests: Vec<QuestRecordData>,
     quest_records: Vec<PersistedQuestRecord>,
     monster_book_cards: Vec<MonsterBookCardRecord>,
@@ -214,6 +215,7 @@ pub(super) fn player_from_record(
         revision: persisted_u64(record.revision, "revision")?,
         quest_records,
         monster_book_cards,
+        cash_points: persisted_u64(record.cash_points, "cash_points")?,
     })
 }
 
@@ -273,6 +275,7 @@ pub(super) fn record_from_player(
         skill_points: i64::from(player.skill_points),
         learned_skills: learned_skills.iter().map(learned_skill_record).collect(),
         mesos: persisted_i64(player.mesos, "mesos")?,
+        cash_points: persisted_i64(player.cash_points, "cash_points")?,
         quests: quests
             .iter()
             .map(quest_record_data)

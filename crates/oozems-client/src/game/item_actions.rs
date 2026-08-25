@@ -151,7 +151,8 @@ async fn request_item_action(
             )
             .await
         }
-        GuiAction::ToggleStats
+        GuiAction::OpenCashShop
+        | GuiAction::ToggleStats
         | GuiAction::ToggleEquipment
         | GuiAction::ToggleInventory
         | GuiAction::ToggleKeyConfig
@@ -219,7 +220,8 @@ fn item_action_message(action: GuiAction) -> &'static str {
         GuiAction::Equip { .. } => "Item equipped.",
         GuiAction::Unequip { .. } => "Item moved to inventory.",
         GuiAction::Drop { .. } => "Item dropped.",
-        GuiAction::ToggleStats
+        GuiAction::OpenCashShop
+        | GuiAction::ToggleStats
         | GuiAction::ToggleEquipment
         | GuiAction::ToggleInventory
         | GuiAction::ToggleKeyConfig

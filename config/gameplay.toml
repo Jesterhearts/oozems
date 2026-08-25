@@ -7,7 +7,8 @@ drop_despawn = "10m"
 initial_points = 3
 
 [characters]
-initial_map_id = 10000
+initial_map_id      = 10000
+initial_cash_points = 10000
 
 [world]
 id = 0

@@ -6,6 +6,8 @@ use oozems_proto::v1::InventoryState;
 use oozems_proto::v1::NpcDialogChoiceKind;
 use oozems_proto::v1::NpcDialogView;
 use oozems_proto::v1::NpcInteraction;
+use oozems_proto::v1::NpcShopCurrency;
+use oozems_proto::v1::NpcShopView;
 use oozems_proto::v1::npc_interaction;
 
 use crate::game_gui::CanvasPoint;
@@ -150,6 +152,7 @@ pub fn click_action(
             Some(InteractionUiAction::Consume)
         }
         npc_interaction::View::Shop(shop) => {
+            let cash_point_shop = is_cash_point_shop(shop);
             let window = gui.shop_window.as_ref()?;
             if !contains_window(window, point) {
                 return Some(InteractionUiAction::Consume);
@@ -160,15 +163,18 @@ pub fn click_action(
             if contains_region(window, "shop-buy", point) {
                 return Some(InteractionUiAction::Buy);
             }
-            if contains_region(window, "shop-sell", point) {
+            if !cash_point_shop && contains_region(window, "shop-sell", point) {
                 return Some(InteractionUiAction::Sell);
             }
             let inventory_len = inventory.map_or(0, |inventory| inventory.stacks.len());
-            if state.inventory_page > 0 && contains_region(window, "shop-inventory-previous", point)
+            if !cash_point_shop
+                && state.inventory_page > 0
+                && contains_region(window, "shop-inventory-previous", point)
             {
                 return Some(InteractionUiAction::PreviousInventoryPage);
             }
-            if (state.inventory_page + 1) * SHOP_PAGE_SIZE < inventory_len
+            if !cash_point_shop
+                && (state.inventory_page + 1) * SHOP_PAGE_SIZE < inventory_len
                 && contains_region(window, "shop-inventory-next", point)
             {
                 return Some(InteractionUiAction::NextInventoryPage);
@@ -178,7 +184,9 @@ pub fn click_action(
             {
                 return Some(InteractionUiAction::SelectOffer { index });
             }
-            if let Some(index) = row_at(window, "shop-inventory", point, SHOP_ROW_HEIGHT) {
+            if !cash_point_shop
+                && let Some(index) = row_at(window, "shop-inventory", point, SHOP_ROW_HEIGHT)
+            {
                 let index = state.inventory_page * SHOP_PAGE_SIZE + index;
                 if index < inventory_len {
                     return Some(InteractionUiAction::SelectInventory { index });
@@ -204,6 +212,10 @@ pub fn click_action(
             Some(InteractionUiAction::Consume)
         }
     }
+}
+
+pub(crate) fn is_cash_point_shop(shop: &NpcShopView) -> bool {
+    NpcShopCurrency::try_from(shop.currency).ok() == Some(NpcShopCurrency::CashPoints)
 }
 
 pub fn apply_local_action(
@@ -343,9 +355,14 @@ mod tests {
     use oozems_proto::v1::GuiLayout;
     use oozems_proto::v1::GuiRegion;
     use oozems_proto::v1::GuiWindow;
+    use oozems_proto::v1::InventoryItemStack;
+    use oozems_proto::v1::InventoryState;
     use oozems_proto::v1::NpcDialogChoice;
     use oozems_proto::v1::NpcDialogView;
     use oozems_proto::v1::NpcInteraction;
+    use oozems_proto::v1::NpcShopCurrency;
+    use oozems_proto::v1::NpcShopOffer;
+    use oozems_proto::v1::NpcShopView;
     use oozems_proto::v1::npc_interaction;
 
     use super::InteractionState;
@@ -440,5 +457,126 @@ mod tests {
                 Some(InteractionUiAction::Consume)
             );
         }
+    }
+
+    #[test]
+    fn cash_point_shops_enable_buying_and_ignore_selling_controls() {
+        let window = GuiWindow {
+            layout: Some(GuiLayout {
+                width: 200.0,
+                height: 200.0,
+                regions: vec![
+                    GuiRegion {
+                        name: "shop-sell".to_owned(),
+                        x: 10.0,
+                        y: 10.0,
+                        width: 40.0,
+                        height: 20.0,
+                    },
+                    GuiRegion {
+                        name: "shop-inventory".to_owned(),
+                        x: 10.0,
+                        y: 40.0,
+                        width: 100.0,
+                        height: 40.0,
+                    },
+                    GuiRegion {
+                        name: "shop-buy".to_owned(),
+                        x: 60.0,
+                        y: 10.0,
+                        width: 40.0,
+                        height: 20.0,
+                    },
+                    GuiRegion {
+                        name: "shop-close".to_owned(),
+                        x: 110.0,
+                        y: 10.0,
+                        width: 40.0,
+                        height: 20.0,
+                    },
+                    GuiRegion {
+                        name: "shop-stock".to_owned(),
+                        x: 10.0,
+                        y: 90.0,
+                        width: 100.0,
+                        height: 40.0,
+                    },
+                ],
+                ..GuiLayout::default()
+            }),
+            ..GuiWindow::default()
+        };
+        let gui = GameGui {
+            shop_window: Some(window),
+            ..GameGui::default()
+        };
+        let state = InteractionState {
+            interaction: Some(NpcInteraction {
+                view: Some(npc_interaction::View::Shop(NpcShopView {
+                    currency: NpcShopCurrency::CashPoints as i32,
+                    currency_name: "Ooze".to_owned(),
+                    offers: vec![NpcShopOffer {
+                        item_id: 5_000_001,
+                        buy_price: 250,
+                    }],
+                })),
+                ..NpcInteraction::default()
+            }),
+            ..InteractionState::default()
+        };
+        let inventory = InventoryState {
+            stacks: vec![InventoryItemStack {
+                item_id: 5_000_001,
+                quantity: 1,
+                ..InventoryItemStack::default()
+            }],
+            ..InventoryState::default()
+        };
+
+        assert_eq!(
+            click_action(
+                &gui,
+                &state,
+                Some(&inventory),
+                CanvasPoint { x: 20.0, y: 20.0 },
+            ),
+            Some(InteractionUiAction::Consume)
+        );
+        assert_eq!(
+            click_action(
+                &gui,
+                &state,
+                Some(&inventory),
+                CanvasPoint { x: 20.0, y: 50.0 },
+            ),
+            Some(InteractionUiAction::Consume)
+        );
+        assert_eq!(
+            click_action(
+                &gui,
+                &state,
+                Some(&inventory),
+                CanvasPoint { x: 70.0, y: 20.0 },
+            ),
+            Some(InteractionUiAction::Buy)
+        );
+        assert_eq!(
+            click_action(
+                &gui,
+                &state,
+                Some(&inventory),
+                CanvasPoint { x: 120.0, y: 20.0 },
+            ),
+            Some(InteractionUiAction::Close)
+        );
+        assert_eq!(
+            click_action(
+                &gui,
+                &state,
+                Some(&inventory),
+                CanvasPoint { x: 20.0, y: 100.0 },
+            ),
+            Some(InteractionUiAction::SelectOffer { index: 0 })
+        );
     }
 }

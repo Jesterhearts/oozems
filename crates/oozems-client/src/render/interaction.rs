@@ -137,6 +137,7 @@ fn draw_shop(
     let Some(layout) = window.layout.as_ref() else {
         return;
     };
+    let cash_point_shop = crate::interaction_ui::is_cash_point_shop(shop);
     let now_unix_ms = js_sys::Date::now().max(0.0) as u64;
     draw_shop_portrait(game, interaction, window);
     if let Some(index) = game
@@ -152,11 +153,12 @@ fn draw_shop(
             123.0 + index as f32 * SHOP_ROW_HEIGHT,
         );
     }
-    if let Some(index) = game
-        .interaction
-        .selected_inventory
-        .and_then(|index| index.checked_sub(game.interaction.inventory_page * SHOP_PAGE_SIZE))
-        .filter(|index| *index < SHOP_PAGE_SIZE)
+    if !cash_point_shop
+        && let Some(index) = game
+            .interaction
+            .selected_inventory
+            .and_then(|index| index.checked_sub(game.interaction.inventory_page * SHOP_PAGE_SIZE))
+            .filter(|index| *index < SHOP_PAGE_SIZE)
     {
         draw_template(
             game,
@@ -175,11 +177,11 @@ fn draw_shop(
                 window.x + 44.0,
                 y,
                 &definition.name,
-                &format!("{} mesos", offer.buy_price),
+                &shop_price_label(offer.buy_price, &shop.currency_name),
             );
         }
     }
-    if let Some(inventory) = game.player.inventory.as_ref() {
+    if !cash_point_shop && let Some(inventory) = game.player.inventory.as_ref() {
         let start = game.interaction.inventory_page * SHOP_PAGE_SIZE;
         for (index, stack) in inventory
             .stacks
@@ -209,16 +211,34 @@ fn draw_shop(
         draw_inventory_page_controls(game, window, layout, inventory.stacks.len());
     }
     draw_template_in_region(game, window, layout, "shop-buy", "shop-buy");
-    draw_template_in_region(game, window, layout, "shop-sell", "shop-sell");
+    if !cash_point_shop {
+        draw_template_in_region(game, window, layout, "shop-sell", "shop-sell");
+    }
     draw_template_in_region(game, window, layout, "shop-exit", "shop-close");
-    draw_template_in_region(game, window, layout, "shop-meso", "shop-mesos");
     game.context.set_fill_style_str("#202020");
     game.context.set_font("bold 11px Arial");
-    let _ = game.context.fill_text(
-        &game.player.mesos.to_string(),
-        f64::from(window.x + 291.0),
-        f64::from(window.y + 107.0),
-    );
+    if cash_point_shop {
+        let _ = game.context.fill_text_with_max_width(
+            &format!("{}: {}", shop.currency_name, game.player.cash_points),
+            f64::from(window.x + 277.0),
+            f64::from(window.y + 107.0),
+            150.0,
+        );
+    } else {
+        draw_template_in_region(game, window, layout, "shop-meso", "shop-mesos");
+        let _ = game.context.fill_text(
+            &game.player.mesos.to_string(),
+            f64::from(window.x + 291.0),
+            f64::from(window.y + 107.0),
+        );
+    }
+}
+
+fn shop_price_label(
+    price: u64,
+    currency_name: &str,
+) -> String {
+    format!("{price} {currency_name}")
 }
 
 fn draw_inventory_page_controls(
@@ -536,6 +556,7 @@ fn wrap_text(
 #[cfg(test)]
 mod tests {
     use super::clean_wz_text;
+    use super::shop_price_label;
 
     #[test]
     fn dialogue_text_removes_wz_color_markers() {
@@ -543,5 +564,11 @@ mod tests {
             clean_wz_text("Press #bI#k to open it."),
             "Press I to open it."
         );
+    }
+
+    #[test]
+    fn shop_prices_use_the_authoritative_currency() {
+        assert_eq!(shop_price_label(250, "mesos"), "250 mesos");
+        assert_eq!(shop_price_label(250, "Ooze"), "250 Ooze");
     }
 }

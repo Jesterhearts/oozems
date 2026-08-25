@@ -44,6 +44,7 @@ use crate::app::AppState;
 use crate::database::CharacterName;
 use crate::database::PlayerId;
 
+pub(crate) mod cash_shop;
 pub(crate) mod combat;
 pub(crate) mod interactions;
 pub(crate) mod movement;
@@ -153,6 +154,7 @@ pub async fn create_character(
         position,
         experience_required,
         state.gameplay.initial_skill_points,
+        state.gameplay.initial_cash_points,
     )
     .await?;
     crate::movement::initialize_player(

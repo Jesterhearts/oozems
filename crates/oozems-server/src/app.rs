@@ -11,6 +11,7 @@ use tower_http::services::ServeFile;
 use tower_http::trace::TraceLayer;
 
 use crate::attacks::BasicAttackCooldowns;
+use crate::cash_shop::CashShopCatalog;
 use crate::content::ContentCatalog;
 use crate::database::Database;
 use crate::effects::ActiveEffects;
@@ -30,6 +31,7 @@ use crate::skills::SkillCooldowns;
 #[derive(Clone)]
 pub struct AppState {
     pub catalog: Arc<ContentCatalog>,
+    pub cash_shop: Arc<CashShopCatalog>,
     pub database: Database,
     pub experience: Arc<ExperienceCurves>,
     pub drops: Arc<DropStore>,
@@ -49,6 +51,7 @@ pub struct AppState {
 pub fn router(
     database: Database,
     catalog: ContentCatalog,
+    cash_shop: CashShopCatalog,
     interactions: InteractionCatalog,
     quest_scripts: QuestScriptCatalog,
     loot: LootCatalog,
@@ -61,6 +64,7 @@ pub fn router(
     let drops = Arc::new(DropStore::new(gameplay.item_drop_despawn));
     let state = AppState {
         catalog: Arc::new(catalog),
+        cash_shop: Arc::new(cash_shop),
         database,
         experience: Arc::new(experience),
         drops: drops.clone(),
@@ -83,6 +87,8 @@ pub fn router(
     };
     let api = Router::new()
         .route("/bootstrap", post(crate::api::bootstrap))
+        .route("/cash-shop/get", post(crate::api::cash_shop::get))
+        .route("/cash-shop/purchase", post(crate::api::cash_shop::purchase))
         .route("/characters/create", post(crate::api::create_character))
         .route("/morphs/get", post(crate::api::get_morph))
         .route(

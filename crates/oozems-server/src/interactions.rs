@@ -29,7 +29,16 @@ struct InteractionKey {
 
 #[derive(Clone, Debug)]
 pub struct ShopDefinition {
+    pub currency: ShopCurrency,
     pub offers: Vec<ShopOffer>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ShopCurrency {
+    #[default]
+    Mesos,
+    CashPoints,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -83,6 +92,8 @@ struct InteractionFile {
 struct ShopFile {
     map_id: u32,
     npc_spawn_id: u32,
+    #[serde(default)]
+    currency: ShopCurrency,
     offers: Vec<ShopOfferFile>,
 }
 
@@ -237,7 +248,7 @@ fn build_catalog(
                     message: format!("shop item {} is not in the item catalog", offer.item_id),
                 }
             })?;
-            if definition.sale_price > offer.buy_price {
+            if shop.currency == ShopCurrency::Mesos && definition.sale_price > offer.buy_price {
                 return invalid(
                     path,
                     format!(
@@ -257,7 +268,16 @@ fn build_catalog(
                 buy_price: offer.buy_price,
             });
         }
-        if shops.insert(key, ShopDefinition { offers }).is_some() {
+        if shops
+            .insert(
+                key,
+                ShopDefinition {
+                    currency: shop.currency,
+                    offers,
+                },
+            )
+            .is_some()
+        {
             return invalid(
                 path,
                 format!(
@@ -395,6 +415,7 @@ mod tests {
     use oozems_proto::v1::Npc;
 
     use super::InteractionContentLookup;
+    use super::ShopCurrency;
     use super::load_catalog;
     use crate::content::ContentError;
 
@@ -453,6 +474,13 @@ mod tests {
                 .item_id,
             item_id
         );
+        assert_eq!(
+            interactions
+                .shop(100_000_101, 1)
+                .expect("configured shop")
+                .currency,
+            ShopCurrency::Mesos
+        );
         assert!(content.eager_items.is_empty());
 
         fs::write(
@@ -468,6 +496,46 @@ mod tests {
                 .to_string()
                 .contains("shop item 4294967295 is not in the item catalog")
         );
+    }
+
+    #[test]
+    fn cash_point_shops_use_independent_prices_and_reject_unknown_currencies() {
+        let item_id = 5_000_001;
+        let mut item = item_definition(item_id);
+        item.sale_price = 10_000;
+        let content = FakeContent {
+            maps: vec![map_with_npc(100_000_101, 1)],
+            eager_items: vec![item],
+            indexed_items: Vec::new(),
+        };
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("interactions.toml");
+        fs::write(
+            &path,
+            format!(
+                "[[shops]]\nmap_id = 100000101\nnpc_spawn_id = 1\ncurrency = \
+                 \"cash_points\"\n[[shops.offers]]\nitem_id = {item_id}\nbuy_price = 25\n"
+            ),
+        )
+        .expect("write cash-point shop");
+
+        let interactions = load_catalog(&path, &content).expect("cash-point shop should load");
+
+        assert_eq!(
+            interactions
+                .shop(100_000_101, 1)
+                .expect("configured shop")
+                .currency,
+            ShopCurrency::CashPoints
+        );
+
+        fs::write(
+            &path,
+            "[[shops]]\nmap_id = 100000101\nnpc_spawn_id = 1\ncurrency = \
+             \"nx\"\n[[shops.offers]]\nitem_id = 5000001\nbuy_price = 25\n",
+        )
+        .expect("write unknown shop currency");
+        assert!(load_catalog(&path, &content).is_err());
     }
 
     fn map_with_npc(

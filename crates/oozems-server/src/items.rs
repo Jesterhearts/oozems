@@ -15,6 +15,8 @@ use oozems_proto::v1::PlayerState;
 use oozems_proto::v1::Vec2;
 use thiserror::Error;
 
+use crate::interactions::ShopCurrency;
+
 pub const INVENTORY_CAPACITY: u32 = 24;
 pub const STARTER_TOP_ID: u32 = 1_040_002;
 pub const STARTER_BOTTOM_ID: u32 = 1_060_002;
@@ -105,6 +107,8 @@ pub enum ItemRuleError {
     InventoryFull,
     #[error("the player does not have enough mesos")]
     InsufficientMesos,
+    #[error("the player does not have enough cash points")]
+    InsufficientCashPoints,
     #[error("item {item_id} cannot be sold")]
     UnsellableItem { item_id: u32 },
     #[error("the mesos balance exceeds the supported range")]
@@ -481,18 +485,28 @@ pub fn buy_shop_item(
     mut player: PlayerState,
     item_id: u32,
     price: u64,
+    currency: ShopCurrency,
     definitions: &(impl ItemDefinitionLookup + ?Sized),
 ) -> Result<PlayerState, ItemRuleError> {
     find_definition(definitions, item_id)?;
-    if player.mesos < price {
-        return Err(ItemRuleError::InsufficientMesos);
+    match currency {
+        ShopCurrency::Mesos if player.mesos < price => {
+            return Err(ItemRuleError::InsufficientMesos);
+        }
+        ShopCurrency::CashPoints if player.cash_points < price => {
+            return Err(ItemRuleError::InsufficientCashPoints);
+        }
+        ShopCurrency::Mesos | ShopCurrency::CashPoints => {}
     }
     let inventory = player
         .inventory
         .as_mut()
         .ok_or(ItemRuleError::MissingInventory)?;
     apply_item_delta(inventory, definitions, item_id, 1)?;
-    player.mesos -= price;
+    match currency {
+        ShopCurrency::Mesos => player.mesos -= price,
+        ShopCurrency::CashPoints => player.cash_points -= price,
+    }
     Ok(player)
 }
 
@@ -1083,6 +1097,7 @@ mod tests {
     use super::unequip_item;
     use super::validate_inventory;
     use super::validate_inventory_selection;
+    use crate::interactions::ShopCurrency;
 
     const STACKABLE_ITEM_ID: u32 = 2_000_000;
     const CARD_ITEM_ID: u32 = 2_380_000;
@@ -1585,7 +1600,14 @@ mod tests {
             ..stackable_definition()
         }];
 
-        let bought = buy_shop_item(player, STACKABLE_ITEM_ID, 100, &definitions).expect("buy item");
+        let bought = buy_shop_item(
+            player,
+            STACKABLE_ITEM_ID,
+            100,
+            ShopCurrency::Mesos,
+            &definitions,
+        )
+        .expect("buy item");
         assert_eq!(bought.mesos, 100);
         assert_eq!(
             bought.inventory.as_ref().expect("inventory").stacks[0].quantity,
@@ -1618,8 +1640,14 @@ mod tests {
             ..stackable_definition()
         }];
 
-        let bought = buy_shop_item(player, STACKABLE_ITEM_ID, 100, &definitions)
-            .expect("buy permanent item");
+        let bought = buy_shop_item(
+            player,
+            STACKABLE_ITEM_ID,
+            100,
+            ShopCurrency::Mesos,
+            &definitions,
+        )
+        .expect("buy permanent item");
         let stacks = &bought.inventory.as_ref().expect("inventory").stacks;
         assert_eq!(stacks.len(), 2);
         assert_eq!(stacks[0].expires_at_unix_ms, 10_000);
@@ -1631,6 +1659,42 @@ mod tests {
         assert_eq!(stacks[0].expires_at_unix_ms, 10_000);
         assert_eq!(stacks[1].quantity, 1);
         assert_eq!(stacks[1].expires_at_unix_ms, 0);
+    }
+
+    #[test]
+    fn cash_point_shop_purchases_only_debit_cash_points() {
+        let mut player = player();
+        player.mesos = 500;
+        player.cash_points = 200;
+        player.inventory.as_mut().expect("inventory").stacks.clear();
+        let definitions = vec![stackable_definition()];
+
+        let bought = buy_shop_item(
+            player.clone(),
+            STACKABLE_ITEM_ID,
+            125,
+            ShopCurrency::CashPoints,
+            &definitions,
+        )
+        .expect("buy item with cash points");
+
+        assert_eq!(bought.mesos, 500);
+        assert_eq!(bought.cash_points, 75);
+        assert_eq!(
+            bought.inventory.as_ref().expect("inventory").stacks[0].quantity,
+            1
+        );
+        player.cash_points = 124;
+        assert_eq!(
+            buy_shop_item(
+                player,
+                STACKABLE_ITEM_ID,
+                125,
+                ShopCurrency::CashPoints,
+                &definitions,
+            ),
+            Err(ItemRuleError::InsufficientCashPoints)
+        );
     }
 
     #[test]

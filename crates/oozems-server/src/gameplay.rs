@@ -11,6 +11,7 @@ pub struct GameplayConfig {
     pub item_drop_despawn: Duration,
     pub initial_skill_points: u32,
     pub initial_map_id: u32,
+    pub initial_cash_points: u64,
     pub world_id: u32,
     pub combat: CombatConfig,
     pub movement: MovementConfig,
@@ -85,6 +86,7 @@ struct SkillRulesFile {
 #[serde(deny_unknown_fields)]
 struct CharacterRulesFile {
     initial_map_id: u32,
+    initial_cash_points: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -147,6 +149,8 @@ pub enum GameplayConfigError {
     },
     #[error("items.drop_despawn in {path} must be greater than zero")]
     EmptyDropDespawn { path: PathBuf },
+    #[error("characters.initial_cash_points in {path} exceeds the persisted balance range")]
+    InvalidInitialCashPoints { path: PathBuf },
     #[error("movement.{field} in {path} is invalid")]
     InvalidMovementDuration {
         path: PathBuf,
@@ -196,6 +200,11 @@ impl GameplayConfig {
                 path: path.to_owned(),
             });
         }
+        if i64::try_from(file.characters.initial_cash_points).is_err() {
+            return Err(GameplayConfigError::InvalidInitialCashPoints {
+                path: path.to_owned(),
+            });
+        }
 
         let combat = parse_combat_config(file.combat, path)?;
         let movement = parse_movement_config(file.movement, path)?;
@@ -203,6 +212,7 @@ impl GameplayConfig {
             item_drop_despawn,
             initial_skill_points: file.skills.initial_points,
             initial_map_id: file.characters.initial_map_id,
+            initial_cash_points: file.characters.initial_cash_points,
             world_id: file.world.id,
             combat,
             movement,
@@ -379,6 +389,7 @@ mod tests {
         assert_eq!(config.item_drop_despawn, Duration::from_secs(600));
         assert_eq!(config.initial_skill_points, 3);
         assert_eq!(config.initial_map_id, 10_000);
+        assert_eq!(config.initial_cash_points, 10_000);
         assert_eq!(config.world_id, 0);
         assert_eq!(
             config.combat,
@@ -440,6 +451,7 @@ mod tests {
             ("items", "drop_despawn"),
             ("skills", "initial_points"),
             ("characters", "initial_map_id"),
+            ("characters", "initial_cash_points"),
             ("world", "id"),
             ("combat", "disengage_range"),
             ("combat", "player_attack_range"),
@@ -493,6 +505,32 @@ mod tests {
         let config = load(&source).expect("valid configuration");
 
         assert_eq!(config.initial_map_id, 12_345);
+    }
+
+    #[test]
+    fn loads_persistable_initial_cash_points() {
+        let source = with_field_value(
+            COMPLETE_CONFIG,
+            "characters",
+            "initial_cash_points",
+            "123456",
+        );
+        let config = load(&source).expect("valid configuration");
+
+        assert_eq!(config.initial_cash_points, 123_456);
+    }
+
+    #[test]
+    fn rejects_initial_cash_points_beyond_the_persisted_range() {
+        let source = with_field_value(
+            COMPLETE_CONFIG,
+            "characters",
+            "initial_cash_points",
+            "9223372036854775808",
+        );
+        let error = load(&source).expect_err("out-of-range cash points must fail");
+
+        assert!(error.to_string().contains("characters.initial_cash_points"));
     }
 
     #[test]

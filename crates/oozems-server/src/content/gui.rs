@@ -24,6 +24,7 @@ use super::wz::wrap_archive_root;
 
 mod layout;
 
+use layout::compose_cash_shop_window;
 use layout::compose_inventory_window;
 use layout::compose_item_window;
 use layout::compose_key_config;
@@ -35,6 +36,7 @@ use layout::compose_status_bar;
 
 const GUI_ARCHIVE: &str = "UI.wz";
 const STATUS_BAR_IMAGE: &str = "StatusBar.img";
+const CASH_SHOP_IMAGE: &str = "CashShop.img";
 const UI_WINDOW_IMAGE: &str = "UIWindow.img";
 const EQUIPMENT_WINDOW_X: f32 = 20.0;
 const EQUIPMENT_WINDOW_Y: f32 = 80.0;
@@ -85,6 +87,7 @@ struct StatusBarSources {
     key_settings: SourceSprite,
     key_settings_pressed: SourceSprite,
     quick_slot_toggle: SourceSprite,
+    cash_shop: SourceSprite,
     key_references: Vec<SourceSprite>,
 }
 
@@ -152,6 +155,14 @@ struct ShopWindowSources {
     exit: SourceSprite,
 }
 
+struct CashShopWindowSources {
+    background: SourceSprite,
+    preview: SourceSprite,
+    item_card: SourceSprite,
+    buy: SourceSprite,
+    exit: SourceSprite,
+}
+
 impl GuiContent {
     pub fn open_optional(directory: &Path) -> Result<Option<Self>, GuiContentError> {
         let path = directory.join(GUI_ARCHIVE);
@@ -176,6 +187,8 @@ impl GuiContent {
         )?;
         let ui_window = required_child(&root, UI_WINDOW_IMAGE)?;
         parse(&ui_window, format!("{} {UI_WINDOW_IMAGE}", path.display()))?;
+        let cash_shop = required_child(&root, CASH_SHOP_IMAGE)?;
+        parse(&cash_shop, format!("{} {CASH_SHOP_IMAGE}", path.display()))?;
 
         let mut content = Self {
             _base: base,
@@ -183,7 +196,7 @@ impl GuiContent {
             fingerprint: archive_fingerprint(&path)?,
             assets: RwLock::new(HashMap::new()),
         };
-        content.gui = build_game_gui(&content, &status_bar, &ui_window)?;
+        content.gui = build_game_gui(&content, &status_bar, &ui_window, &cash_shop)?;
 
         tracing::info!(
             path = %path.display(),
@@ -231,6 +244,7 @@ fn build_game_gui(
     content: &GuiContent,
     status_bar: &WzNodeArc,
     ui_window: &WzNodeArc,
+    cash_shop: &WzNodeArc,
 ) -> Result<GameGui, GuiContentError> {
     let (status_sources, mut assets) = load_status_bar_sources(content, status_bar)?;
     let status_bar = compose_status_bar(&status_sources)?;
@@ -258,6 +272,9 @@ fn build_game_gui(
     let (shop_sources, shop_assets) = load_shop_window_sources(content, ui_window)?;
     let shop_window = compose_shop_window(&shop_sources)?;
     assets.extend(shop_assets);
+    let (cash_shop_sources, cash_shop_assets) = load_cash_shop_window_sources(content, cash_shop)?;
+    let cash_shop_window = compose_cash_shop_window(&cash_shop_sources)?;
+    assets.extend(cash_shop_assets);
     let mut asset_ids = HashSet::new();
     assets.retain(|asset| asset_ids.insert(asset.id.clone()));
     Ok(GameGui {
@@ -282,6 +299,7 @@ fn build_game_gui(
         skill_window: Some(skill_window),
         npc_dialog_window: Some(npc_dialog_window),
         shop_window: Some(shop_window),
+        cash_shop_window: Some(cash_shop_window),
     })
 }
 
@@ -327,6 +345,24 @@ fn load_shop_window_sources(
         buy: load("shop-buy", &["Shop", "BtBuy", "normal", "0"])?,
         sell: load("shop-sell", &["Shop", "BtSell", "normal", "0"])?,
         exit: load("shop-exit", &["Shop", "BtExit", "normal", "0"])?,
+    };
+    Ok((sources, assets))
+}
+
+fn load_cash_shop_window_sources(
+    content: &GuiContent,
+    cash_shop: &WzNodeArc,
+) -> Result<(CashShopWindowSources, Vec<AssetDescriptor>), GuiContentError> {
+    let mut assets = Vec::new();
+    let mut load = |name: &str, path: &[&str]| {
+        load_source(content, cash_shop, CASH_SHOP_IMAGE, name, path, &mut assets)
+    };
+    let sources = CashShopWindowSources {
+        background: load("cash-shop-background", &["Base", "backgrnd"])?,
+        preview: load("cash-shop-preview", &["Base", "Preview", "0"])?,
+        item_card: load("cash-shop-item-card", &["CSList", "Base"])?,
+        buy: load("cash-shop-buy", &["CSList", "BtBuy", "normal", "0"])?,
+        exit: load("cash-shop-exit", &["CSStatus", "BtExit", "normal", "0"])?,
     };
     Ok((sources, assets))
 }
@@ -418,6 +454,7 @@ fn load_status_bar_sources(
         "QuickSlotD",
         &mut assets,
     )?;
+    let cash_shop = load_normal_button(content, status_bar, "cash-shop", "BtShop", &mut assets)?;
     let mut key_references = Vec::with_capacity(8);
     for index in 0..8 {
         let index = index.to_string();
@@ -448,6 +485,7 @@ fn load_status_bar_sources(
             key_settings,
             key_settings_pressed,
             quick_slot_toggle,
+            cash_shop,
             key_references,
         },
         assets,
@@ -810,6 +848,7 @@ fn invalid<T>(message: impl Into<String>) -> Result<T, GuiContentError> {
 
 #[cfg(test)]
 mod tests {
+    use super::CashShopWindowSources;
     use super::InventoryTabSources;
     use super::InventoryWindowSources;
     use super::ItemWindowSources;
@@ -818,6 +857,7 @@ mod tests {
     use super::SourceSprite;
     use super::StatWindowSources;
     use super::StatusBarSources;
+    use super::compose_cash_shop_window;
     use super::compose_inventory_window;
     use super::compose_item_window;
     use super::compose_key_config;
@@ -844,6 +884,7 @@ mod tests {
             key_settings: source("key-settings", 28.0, 20.0),
             key_settings_pressed: source("key-settings-pressed", 28.0, 20.0),
             quick_slot_toggle: source("quick-slot-toggle", 28.0, 20.0),
+            cash_shop: source("cash-shop", 54.0, 34.0),
             key_references: [
                 (28.0, 11.0),
                 (18.0, 11.0),
@@ -873,6 +914,14 @@ mod tests {
         assert_eq!(sprite_position(&layout, "status-overlay"), Some((0.0, 9.0)));
         assert_eq!(sprite_position(&layout, "gauge"), Some((209.0, 48.0)));
         assert_eq!(sprite_position(&layout, "quick-slots"), Some((649.0, 0.0)));
+        assert_eq!(sprite_position(&layout, "cash-shop"), Some((593.0, 46.0)));
+        assert!(
+            layout
+                .sprites
+                .iter()
+                .find(|sprite| sprite.name == "cash-shop")
+                .is_some_and(|sprite| sprite.anchor_right)
+        );
         assert_eq!(sprite_position(&layout, "key-0"), Some((657.0, 16.0)));
         assert_eq!(sprite_position(&layout, "stats"), Some((634.0, 17.0)));
         assert_eq!(
@@ -887,6 +936,41 @@ mod tests {
         assert_eq!(
             sprite_position(&layout, "quick-slot-toggle"),
             Some((724.0, 17.0))
+        );
+    }
+
+    #[test]
+    fn cash_shop_sources_form_the_fixed_classic_screen() {
+        let window = compose_cash_shop_window(&CashShopWindowSources {
+            background: source("cash-shop-background", 800.0, 600.0),
+            preview: source("cash-shop-preview", 212.0, 165.0),
+            item_card: source("cash-shop-item-card", 200.0, 80.0),
+            buy: source("cash-shop-buy", 37.0, 19.0),
+            exit: source("cash-shop-exit", 168.0, 49.0),
+        })
+        .expect("valid cash-shop screen");
+        let layout = window.layout.expect("cash-shop layout");
+
+        assert_eq!((layout.width, layout.height), (800.0, 600.0));
+        assert_eq!(
+            sprite_position(&layout, "cash-shop-preview"),
+            Some((24.0, 40.0))
+        );
+        assert_eq!(
+            sprite_position(&layout, "cash-shop-item-card-0"),
+            Some((278.0, 98.0))
+        );
+        assert_eq!(
+            sprite_position(&layout, "cash-shop-item-card-9"),
+            Some((484.0, 422.0))
+        );
+        assert_eq!(
+            region_geometry(&layout, "cash-shop-buy-0"),
+            Some((355.0, 155.0, 37.0, 19.0))
+        );
+        assert_eq!(
+            region_geometry(&layout, "cash-shop-exit"),
+            Some((632.0, 535.0, 168.0, 49.0))
         );
     }
 

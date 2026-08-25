@@ -18,6 +18,8 @@ use oozems_proto::v1::EquipItemRequest;
 use oozems_proto::v1::EquippedItem;
 use oozems_proto::v1::ErrorResponse;
 use oozems_proto::v1::GameGui;
+use oozems_proto::v1::GetCashShopRequest;
+use oozems_proto::v1::GetCashShopResponse;
 use oozems_proto::v1::GetCharacterSpritesRequest;
 use oozems_proto::v1::GetCharacterSpritesResponse;
 use oozems_proto::v1::GetGuiRequest;
@@ -39,6 +41,8 @@ use oozems_proto::v1::NpcInteractionRequest;
 use oozems_proto::v1::NpcInteractionResponse;
 use oozems_proto::v1::PickUpItemRequest;
 use oozems_proto::v1::PlayerState;
+use oozems_proto::v1::PurchaseCashShopItemRequest;
+use oozems_proto::v1::PurchaseCashShopItemResponse;
 use oozems_proto::v1::RecoverPlayerRequest;
 use oozems_proto::v1::RecoverPlayerResponse;
 use oozems_proto::v1::SavePlayerRequest;
@@ -257,6 +261,24 @@ pub async fn get_gui(
     .await?;
 
     require_data(response.gui, "game GUI")
+}
+
+pub async fn get_cash_shop() -> Result<GetCashShopResponse, ClientError> {
+    post_protobuf("/api/v1/cash-shop/get", GetCashShopRequest {}).await
+}
+
+pub async fn purchase_cash_shop_item(
+    player_id: &str,
+    offer_id: u32,
+) -> Result<PurchaseCashShopItemResponse, ClientError> {
+    post_protobuf(
+        "/api/v1/cash-shop/purchase",
+        PurchaseCashShopItemRequest {
+            player_id: player_id.to_owned(),
+            offer_id,
+        },
+    )
+    .await
 }
 
 pub async fn get_skill_book(player_id: &str) -> Result<LoadedSkillBook, ClientError> {

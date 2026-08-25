@@ -2,6 +2,7 @@
 
 mod api;
 mod assets;
+mod cash_shop_ui;
 mod character_create;
 mod character_render;
 mod game;

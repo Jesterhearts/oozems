@@ -25,6 +25,9 @@ use web_sys::MouseEvent;
 use crate::api;
 use crate::assets;
 use crate::assets::BrowserAsset;
+use crate::cash_shop_ui;
+use crate::cash_shop_ui::CashShopAction;
+use crate::cash_shop_ui::CashShopState;
 use crate::character_render::CharacterAnimation;
 use crate::game_gui;
 use crate::game_gui::CanvasPoint;
@@ -48,6 +51,7 @@ use crate::skill_effects;
 use crate::skill_effects::SkillEffectState;
 
 pub(crate) mod buffs;
+mod cash_shop_actions;
 mod interaction_actions;
 mod item_actions;
 mod movement_actions;
@@ -80,6 +84,7 @@ pub struct Game {
     pub character_animation: CharacterAnimationState,
     pub context: CanvasRenderingContext2d,
     pub character_sprites: CharacterSpriteSet,
+    pub cash_shop: CashShopState,
     pub facing_left: bool,
     pub gui: GameGui,
     pub gui_state: Rc<RefCell<GuiState>>,
@@ -536,6 +541,7 @@ fn build_game(
     let game = Rc::new(RefCell::new(Game {
         canvas: canvas.clone(),
         character_animation: new_character_animation_state(CharacterAnimation::Idle, true, 0.0),
+        cash_shop: CashShopState::default(),
         context,
         character_sprites,
         facing_left: false,
@@ -768,6 +774,7 @@ fn install_canvas_input(
                 || game.item_action_in_flight.get()
                 || game.skill_action_in_flight.get()
                 || game.transition_in_flight.get()
+                || game.cash_shop.open
                 || gui.stats_open
                 || gui.equipment_open
                 || gui.inventory_open
@@ -820,6 +827,27 @@ fn handle_canvas_pointer(
     let Some(point) = canvas_event_point(canvas, event) else {
         return false;
     };
+    if game.borrow().cash_shop.open {
+        let action = {
+            let game = game.borrow();
+            cash_shop_ui::action_at(
+                &game.cash_shop,
+                &game.gui,
+                canvas.width() as f32,
+                canvas.height() as f32,
+                point,
+                button,
+            )
+        };
+        match action {
+            Some(CashShopAction::Close) => game.borrow_mut().cash_shop.close(),
+            Some(CashShopAction::Buy { offer_id }) => {
+                cash_shop_actions::begin_purchase(game.clone(), offer_id);
+            }
+            Some(CashShopAction::Consume) | None => {}
+        }
+        return true;
+    }
     if game.borrow().interaction.is_busy() {
         if button != PointerButton::Left {
             return true;
@@ -866,6 +894,7 @@ fn handle_canvas_pointer(
         return true;
     }
     match action {
+        GuiAction::OpenCashShop => cash_shop_actions::begin_open(game.clone()),
         GuiAction::AllocateSkill { .. } | GuiAction::UseSkill { .. } => {
             skill_actions::begin(game.clone(), action);
         }
@@ -1158,7 +1187,8 @@ fn update(
             .retain(|action| *action == KeyAction::OpenKeyConfig);
     }
     let interaction_busy = game.interaction.is_busy();
-    if interaction_busy {
+    let cash_shop_open = game.cash_shop.open;
+    if interaction_busy || cash_shop_open {
         input.player = PlayerInput::default();
         input.skills.clear();
         input.actions.clear();
@@ -1216,7 +1246,8 @@ fn update(
         && !game.save_in_flight.get()
         && !game.skill_action_in_flight.get()
         && !game.transition_in_flight.get()
-        && !interaction_busy;
+        && !interaction_busy
+        && !cash_shop_open;
     let recover = recovery_actions::update(
         &mut game.recovery_state,
         needs_recovery,
@@ -1430,6 +1461,7 @@ fn save_if_due(
     if !game.dirty
         || timestamp_ms < game.next_save_ms
         || game.save_in_flight.get()
+        || game.cash_shop.request_in_flight()
         || recovery_actions::is_in_flight(&game.recovery_state)
     {
         return None;

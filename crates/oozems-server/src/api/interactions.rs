@@ -10,6 +10,7 @@ use oozems_proto::v1::NpcDialogView;
 use oozems_proto::v1::NpcInteraction;
 use oozems_proto::v1::NpcInteractionRequest;
 use oozems_proto::v1::NpcInteractionResponse;
+use oozems_proto::v1::NpcShopCurrency;
 use oozems_proto::v1::NpcShopOffer;
 use oozems_proto::v1::NpcShopView;
 use oozems_proto::v1::NpcTaxiDestination;
@@ -33,6 +34,7 @@ use super::unix_time_ms;
 use crate::app::AppState;
 use crate::content::QuestDefinition;
 use crate::content::QuestItemExpiration;
+use crate::interactions::ShopCurrency;
 use crate::quests::QuestProgress;
 
 const NPC_HORIZONTAL_REACH: f32 = 320.0;
@@ -276,9 +278,14 @@ async fn buy_item(
         .iter()
         .find(|offer| offer.item_id == item_id)
         .ok_or_else(|| invalid("the selected item is not sold by this shop"))?;
-    let player =
-        crate::items::buy_shop_item(current, item_id, offer.buy_price, state.catalog.as_ref())
-            .map_err(item_rule_error)?;
+    let player = crate::items::buy_shop_item(
+        current,
+        item_id,
+        offer.buy_price,
+        shop.currency,
+        state.catalog.as_ref(),
+    )
+    .map_err(|error| shop_item_rule_error(error, shop, state.cash_shop.currency_name()))?;
     let effects = crate::effects::snapshot(&state.active_effects, &player.id, now_unix_ms)?;
     let advanced = advance_automatic_player(state, player, effects, now_unix_ms);
     let player = crate::database::save_player(&state.database, &advanced.player).await?;
@@ -300,6 +307,7 @@ async fn sell_item(
         .interactions
         .shop(current.map_id, npc.spawn_id)
         .ok_or_else(|| invalid("this NPC does not operate a shop"))?;
+    validate_shop_sale(shop)?;
     crate::items::validate_inventory_selection(
         &current,
         inventory_index,
@@ -316,6 +324,31 @@ async fn sell_item(
     crate::effects::commit(&state.active_effects, &player.id, advanced.effects)?;
     record_recovery_activity(state, &player.id, now_unix_ms);
     Ok(shop_response(state, player, npc, shop))
+}
+
+fn validate_shop_sale(shop: &crate::interactions::ShopDefinition) -> Result<(), ApiError> {
+    if shop.currency == ShopCurrency::CashPoints {
+        Err(invalid("cash-point shops do not buy items"))
+    } else {
+        Ok(())
+    }
+}
+
+fn shop_item_rule_error(
+    error: crate::items::ItemRuleError,
+    shop: &crate::interactions::ShopDefinition,
+    premium_currency_name: &str,
+) -> ApiError {
+    match error {
+        crate::items::ItemRuleError::InsufficientCashPoints
+            if shop.currency == ShopCurrency::CashPoints =>
+        {
+            invalid(format!(
+                "the player does not have enough {premium_currency_name}"
+            ))
+        }
+        error => item_rule_error(error),
+    }
 }
 
 async fn take_taxi(
@@ -557,7 +590,7 @@ async fn open_interaction(
         return Ok(interaction_response(
             &player,
             npc,
-            npc_interaction::View::Shop(shop_view(shop)),
+            npc_interaction::View::Shop(shop_view(shop, state.cash_shop.currency_name())),
         ));
     }
     if let Some(taxi) = state.interactions.taxi(player.map_id, npc.spawn_id) {
@@ -958,7 +991,7 @@ fn selectable_reward_dialog(
 }
 
 fn shop_response(
-    _state: &AppState,
+    state: &AppState,
     player: PlayerState,
     npc: &Npc,
     shop: &crate::interactions::ShopDefinition,
@@ -967,7 +1000,7 @@ fn shop_response(
         interaction: Some(interaction(
             player.map_id,
             npc,
-            npc_interaction::View::Shop(shop_view(shop)),
+            npc_interaction::View::Shop(shop_view(shop, state.cash_shop.currency_name())),
         )),
         player: Some(player),
         authoritative: None,
@@ -977,7 +1010,10 @@ fn shop_response(
     }
 }
 
-fn shop_view(shop: &crate::interactions::ShopDefinition) -> NpcShopView {
+fn shop_view(
+    shop: &crate::interactions::ShopDefinition,
+    premium_currency_name: &str,
+) -> NpcShopView {
     NpcShopView {
         offers: shop
             .offers
@@ -987,6 +1023,15 @@ fn shop_view(shop: &crate::interactions::ShopDefinition) -> NpcShopView {
                 buy_price: offer.buy_price,
             })
             .collect(),
+        currency: match shop.currency {
+            ShopCurrency::Mesos => NpcShopCurrency::Mesos as i32,
+            ShopCurrency::CashPoints => NpcShopCurrency::CashPoints as i32,
+        },
+        currency_name: match shop.currency {
+            ShopCurrency::Mesos => "mesos",
+            ShopCurrency::CashPoints => premium_currency_name,
+        }
+        .to_owned(),
     }
 }
 
@@ -1063,6 +1108,7 @@ mod tests {
     use oozems_proto::v1::Npc;
     use oozems_proto::v1::NpcAnimation;
     use oozems_proto::v1::NpcDialogChoiceKind;
+    use oozems_proto::v1::NpcShopCurrency;
     use oozems_proto::v1::PlayerQuest;
     use oozems_proto::v1::PlayerState;
     use oozems_proto::v1::QuestStatus;
@@ -1076,8 +1122,10 @@ mod tests {
     use super::persist_quest_selection;
     use super::quest_offer_dialog;
     use super::selection_dialog;
+    use super::shop_view;
     use super::validate_quest_npc_animation;
     use super::validate_reach;
+    use super::validate_shop_sale;
     use crate::content::QuestActions;
     use crate::content::QuestChoice;
     use crate::content::QuestCompletionDialogue;
@@ -1097,6 +1145,9 @@ mod tests {
     use crate::content::QuestRewardGender;
     use crate::content::QuestSelectableItemReward;
     use crate::content::QuestStartRequirements;
+    use crate::interactions::ShopCurrency;
+    use crate::interactions::ShopDefinition;
+    use crate::interactions::ShopOffer;
 
     fn environment(now_unix_ms: u64) -> crate::quests::QuestEnvironment {
         crate::quests::QuestEnvironment {
@@ -1140,6 +1191,47 @@ mod tests {
 
         assert!(validate_reach(&nearby, &npc).is_ok());
         assert!(validate_reach(&far_away, &npc).is_err());
+    }
+
+    #[test]
+    fn cash_point_shop_view_is_buy_only_on_the_server() {
+        let shop = ShopDefinition {
+            currency: ShopCurrency::CashPoints,
+            offers: vec![ShopOffer {
+                item_id: 5_000_001,
+                buy_price: 250,
+            }],
+        };
+
+        let view = shop_view(&shop, "Ooze");
+
+        assert_eq!(
+            NpcShopCurrency::try_from(view.currency),
+            Ok(NpcShopCurrency::CashPoints)
+        );
+        assert_eq!(view.offers[0].buy_price, 250);
+        assert_eq!(view.currency_name, "Ooze");
+        assert!(validate_shop_sale(&shop).is_err());
+        assert!(
+            validate_shop_sale(&ShopDefinition {
+                currency: ShopCurrency::Mesos,
+                offers: Vec::new(),
+            })
+            .is_ok()
+        );
+        assert_eq!(
+            NpcShopCurrency::try_from(
+                shop_view(
+                    &ShopDefinition {
+                        currency: ShopCurrency::Mesos,
+                        offers: Vec::new(),
+                    },
+                    "Ooze",
+                )
+                .currency
+            ),
+            Ok(NpcShopCurrency::Mesos)
+        );
     }
 
     #[test]
@@ -1208,7 +1300,7 @@ mod tests {
     #[tokio::test]
     async fn failed_quest_persistence_cannot_produce_an_animation_event() {
         let directory = tempfile::tempdir().expect("temporary database directory");
-        let database = crate::database::open_surreal_kv(directory.path())
+        let database = crate::database::open_surreal_kv(directory.path(), 0)
             .await
             .expect("open database");
         let player = PlayerState {
@@ -1232,7 +1324,7 @@ mod tests {
     #[tokio::test]
     async fn failed_restoration_persistence_keeps_the_saved_inventory_unchanged() {
         let directory = tempfile::tempdir().expect("temporary database directory");
-        let database = crate::database::open_surreal_kv(directory.path())
+        let database = crate::database::open_surreal_kv(directory.path(), 0)
             .await
             .expect("open database");
         let quest = QuestDefinition {

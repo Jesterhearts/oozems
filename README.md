@@ -20,7 +20,7 @@ likely be needed after such a release.
 Install Rust, the `wasm32-unknown-unknown` target, and Trunk. Local interaction
 definitions require matching `Map.wz`, `Npc.wz`, and `Character.wz` archives in
 `./data`. `Quest.wz` is optional. Add `UI.wz` to display the configured native
-interaction windows, then run:
+interaction windows and Cash Shop screen, then run:
 
 ```sh
 make run
@@ -30,9 +30,9 @@ Open <http://127.0.0.1:3000>. The Make target builds the WASM client into the
 server's generated `public` directory before starting the server.
 
 The default data directory is `./data`. It contains the local WZ archives,
-SurrealKV state, and version-specific `interactions.toml`, `loot.toml`, and
-`quest-scripts.toml` files. It is ignored by Git. These environment variables
-override the defaults:
+SurrealKV state, and version-specific `cash-shop.toml`, `interactions.toml`,
+`loot.toml`, and `quest-scripts.toml` files. It is ignored by Git. These
+environment variables override the defaults:
 
 | Variable             | Default                             |
 | -------------------- | ----------------------------------- |
@@ -110,6 +110,7 @@ browser
   -> POST /api/v1/movement/submit movement correction, combat, and world snapshot
   -> POST /api/v1/movement/portal server-authorized portal transition
   -> POST /api/v1/items/...       equip, unequip, drop, or pick up an item
+  -> POST /api/v1/cash-shop/...   list offers or buy an authoritative cash item
   -> POST /api/v1/npcs/interact   open or act on an authoritative NPC interaction
   -> POST /api/v1/combat/...      use a server-authoritative basic attack
   -> POST /api/v1/skills/...      allocate a skill point or use a skill
@@ -123,6 +124,7 @@ server
   -> config/content.toml          WZ content inclusion rules
   -> config/skill-formulas.toml   validated combat formulas
   -> data/interactions.toml       version-specific shop stock and taxi routes
+  -> data/cash-shop.toml          global Cash Shop offers, prices, and lifetimes
   -> data/loot.toml               version-specific mob item drop rates
   -> data/quest-scripts.toml      version-specific replacements for WZ quest scripts
   -> data/Map.wz                  required, lazy WZ map source
@@ -252,10 +254,12 @@ definitions that are not loaded.
 Quest `timeLimit` and `timeLimit2` values are seconds. The server converts both
 to checked milliseconds, expires an active quest at its
 accepted time plus that duration, and resets it without rewards. An expired
-quest cannot be reaccepted during the same automatic transition pass. Mesos and
-quest state are stored with the player. SurrealKV accepts one current persisted
-player schema. It does not upgrade or fill missing fields from older schemas. A
-record that does not satisfy the current schema fails to load.
+quest cannot be reaccepted during the same automatic transition pass. Mesos,
+cash points, and quest state are stored with the player. SurrealKV accepts one
+current persisted player schema. Startup backfills only a missing `cash_points`
+field as described below. It does not otherwise upgrade or fill missing fields
+from older schemas. A record that does not satisfy the current schema fails to
+load.
 
 Quest record progress is stored as canonical, typed quest records. Record IDs
 are nonzero and unique, entry indices are unique, and both levels are sorted
@@ -423,6 +427,61 @@ item's WZ `info/price`; an absent or zero price makes an item unsellable. Buying
 and selling one item, paying a taxi fare, changing maps, and claiming a quest
 reward are all validated and persisted by the server.
 
+A shop can charge the character's cash-point balance instead of mesos:
+
+```toml
+[[shops]]
+map_id       = 100000101
+npc_spawn_id = 1
+currency     = "cash_points"
+
+[[shops.offers]]
+item_id   = 5000001
+buy_price = 250
+```
+
+Replace the map, NPC spawn, and item IDs with entries from the local WZ
+archives. A shop without `currency` remains a meso shop. Cash-point shops are
+buy-only and do not compare their prices with WZ meso sale prices. Each purchase
+grants one permanent item. Packages, gifting, timed purchases, and cash-shop
+storage are not part of this pseudo shop. An item with a WZ sale price can still
+be sold for mesos at a normal shop.
+
+The status bar's original Cash Shop button opens a separate fixed 800 by 600
+screen from `UI.wz/CashShop.img`. It is global and does not require an NPC or a
+specific map. Offers come from `data/cash-shop.toml`:
+
+```toml
+currency_name = "Ooze"
+
+[[offers]]
+offer_id = 1
+item_id = 5010000
+price = 1200
+duration = "30d"
+
+[[offers]]
+offer_id = 2
+item_id = 5010010
+price = 1500
+duration = "permanent"
+```
+
+The optional `currency_name` controls the premium-currency label in both the
+global Cash Shop and cash-point NPC shops. It defaults to `"Ooze"` when omitted
+and may contain at most 24 characters. The catalogue may contain at most 10
+offers. Each `offer_id` must be unique and positive, each price must be positive,
+and every item must exist in the local WZ item catalogue. A duration is either
+the exact value `"permanent"` or a positive humantime value such as `"7d"` or
+`"12h"`. The browser submits only the stable offer ID. The server resolves its
+item, price, and lifetime, computes the expiration deadline at purchase time,
+and persists the item and remaining Cash Points together. An absent
+`cash-shop.toml` creates an empty Cash Shop that uses the `"Ooze"` label.
+
+The current screen is intentionally limited to listing and buying one item at a
+time. It does not implement packages, gifting, wishlists, search, try-on, or
+cash storage.
+
 Place `Character.wz` beside the map archives to enable character creation. The
 server indexes the available skin, face, and hair styles, then composes idle,
 walk, jump, ladder, and rope frames from each sprite's WZ anchor points and z
@@ -430,11 +489,11 @@ layer. The browser receives only frame metadata at first. It requests the
 individual PNG layers while the preview or game renderer needs them. The
 chosen name and appearance are stored with the player in SurrealKV.
 
-Place `UI.wz` beside the other archives to use its classic `StatusBar.img` and
-`UIWindow.img` sprites for the in-game HUD. The server sends the layouts
-through protobuf. The browser then requests backgrounds, gauges, quick-slot
-panels, buttons, and open windows as normal versioned PNG assets. If `UI.wz`
-is absent, the client keeps using its built-in fallback HUD.
+Place `UI.wz` beside the other archives to use its classic `StatusBar.img`,
+`UIWindow.img`, and `CashShop.img` sprites for the in-game UI. The server sends
+the layouts through protobuf. The browser then requests backgrounds, gauges,
+quick-slot panels, buttons, and open windows as normal versioned PNG assets. If
+`UI.wz` is absent, the client keeps using its built-in fallback HUD.
 
 GUI sprite metadata retains the WZ dimensions and origins. Dynamic components
 are sent as named sprite templates, while named regions record destinations
@@ -556,7 +615,8 @@ drop_despawn = "10m"
 initial_points = 3
 
 [characters]
-initial_map_id = 10000
+initial_map_id      = 10000
+initial_cash_points = 10000
 
 [world]
 id = 0
@@ -610,6 +670,12 @@ replaced when this setting changes.
 characters. The server verifies the map during startup and places each new
 character at its first spawn portal. Changing it does not move existing
 characters.
+
+`characters.initial_cash_points` sets the cash-point balance for new
+characters. It must fit the persisted signed 64-bit range. When this field is
+first introduced to an existing database, startup also assigns its value to
+players that do not yet have a `cash_points` field. Later setting changes do not
+replace existing balances.
 
 Combat distances are measured in map pixels. Mobs acquire an aggro target when
 that player damages them. `disengage_range` controls how far a mob can remain

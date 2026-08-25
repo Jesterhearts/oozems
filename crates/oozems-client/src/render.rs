@@ -16,6 +16,7 @@ use crate::game::Game;
 use crate::game::character_animation_elapsed_ms;
 use crate::game_gui;
 
+mod cash_shop;
 mod interaction;
 mod mob;
 pub(crate) mod npc;
@@ -61,6 +62,10 @@ const PLAYER_LAYER_PASSES: &[LayerPass] = &[
 ];
 
 pub fn draw(game: &Game) {
+    if game.cash_shop.open {
+        cash_shop::draw(game);
+        return;
+    }
     let viewport_width = f64::from(game.canvas.width());
     let viewport_height = f64::from(game.canvas.height());
     let player_x = game
