@@ -430,6 +430,7 @@ fn draw_player(
         .context
         .set_fill_style_str("rgba(29, 45, 43, 0.25)");
     game.surface.context.fill_rect(x - 23.0, y - 3.0, 46.0, 6.0);
+    draw_death_tomb(game, x, y);
     let elapsed_ms =
         character_animation_elapsed_ms(game.world.character_animation, game.clock.now_ms);
     let placement = || CharacterPlacement {
@@ -461,5 +462,77 @@ fn draw_player(
             elapsed_ms,
             placement(),
         );
+    }
+}
+
+fn draw_death_tomb(
+    game: &Game,
+    player_x: f64,
+    player_y: f64,
+) {
+    let Some(started_ms) = game.ui.death.started_ms else {
+        return;
+    };
+    let frames = &game.ui.gui.death_tomb_frames;
+    let elapsed_ms = (game.clock.now_ms - started_ms).max(0.0);
+    let preferred_index = crate::animation::frame_index(
+        frames.iter().map(|frame| frame.delay_ms),
+        elapsed_ms,
+        crate::animation::Playback::Once,
+    )
+    .or_else(|| frames.len().checked_sub(1));
+    let Some(preferred_index) = preferred_index else {
+        return;
+    };
+    let Some(index) = assets::ready_or_fallback_index(
+        &game.surface.images,
+        frames.iter().map(|frame| frame.asset_id.as_str()),
+        preferred_index,
+    ) else {
+        return;
+    };
+    let frame = &frames[index];
+    let duration_ms = frames
+        .iter()
+        .map(|frame| u64::from(frame.delay_ms.max(1)))
+        .sum::<u64>();
+    let anchor_y = tomb_anchor_y(player_y, elapsed_ms, duration_ms as f64);
+    let Some(image) = ready_image(&game.surface.images, &frame.asset_id) else {
+        return;
+    };
+    let _ = game
+        .surface
+        .context
+        .draw_image_with_html_image_element_and_dw_and_dh(
+            image,
+            player_x - f64::from(frame.origin_x),
+            anchor_y - f64::from(frame.origin_y),
+            f64::from(frame.width),
+            f64::from(frame.height),
+        );
+}
+
+fn tomb_anchor_y(
+    target_y: f64,
+    elapsed_ms: f64,
+    duration_ms: f64,
+) -> f64 {
+    if duration_ms <= 0.0 {
+        return target_y;
+    }
+    let progress = (elapsed_ms / duration_ms).clamp(0.0, 1.0);
+    target_y * progress * progress
+}
+
+#[cfg(test)]
+mod death_tests {
+    use super::tomb_anchor_y;
+
+    #[test]
+    fn tomb_accelerates_from_the_screen_top_and_stops_at_the_player() {
+        assert_eq!(tomb_anchor_y(400.0, 0.0, 2_000.0), 0.0);
+        assert_eq!(tomb_anchor_y(400.0, 1_000.0, 2_000.0), 100.0);
+        assert_eq!(tomb_anchor_y(400.0, 2_000.0, 2_000.0), 400.0);
+        assert_eq!(tomb_anchor_y(400.0, 3_000.0, 2_000.0), 400.0);
     }
 }

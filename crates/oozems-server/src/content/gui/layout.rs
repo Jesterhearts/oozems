@@ -6,6 +6,7 @@ use oozems_proto::v1::GuiWindow;
 use oozems_proto::v1::KeyActionDefinition;
 
 use super::CashShopWindowSources;
+use super::DeathNoticeSources;
 use super::EquipmentWindowSources;
 use super::GuiContentError;
 use super::InventoryWindowSources;
@@ -79,6 +80,48 @@ const CASH_SHOP_CATEGORY_TOP: f32 = 16.0;
 const CASH_SHOP_BUY_LEFT: f32 = 77.0;
 const CASH_SHOP_BUY_TOP: f32 = 57.0;
 const CASH_SHOP_GIFT_LEFT: f32 = 118.0;
+const DEATH_NOTICE_WINDOW_X: f32 = 348.0;
+const DEATH_NOTICE_WINDOW_Y: f32 = 234.0;
+const DEATH_NOTICE_BUTTON_BOTTOM: f32 = 16.0;
+
+pub(super) fn compose_death_notice_window(
+    sources: &DeathNoticeSources
+) -> Result<GuiWindow, GuiContentError> {
+    let button_x = ((sources.background.width - sources.ok.width) / 2.0)
+        .round()
+        .max(0.0);
+    let button_y =
+        (sources.background.height - sources.ok.height - DEATH_NOTICE_BUTTON_BOTTOM).max(0.0);
+    let layout = GuiLayout {
+        width: sources.background.width,
+        height: sources.background.height,
+        background: Some(place_sprite(&sources.background, 0.0, 0.0, false)),
+        sprites: vec![place_sprite(&sources.ok, button_x, button_y, false)],
+        sprite_templates: Vec::new(),
+        regions: vec![
+            region(
+                "death-notice-text",
+                14.0,
+                40.0,
+                (sources.background.width - 28.0).max(0.0),
+                45.0,
+            ),
+            region(
+                "death-notice-ok",
+                button_x,
+                button_y,
+                sources.ok.width,
+                sources.ok.height,
+            ),
+        ],
+    };
+    validate_layout(&layout)?;
+    Ok(GuiWindow {
+        x: DEATH_NOTICE_WINDOW_X,
+        y: DEATH_NOTICE_WINDOW_Y,
+        layout: Some(layout),
+    })
+}
 
 pub(super) fn compose_npc_dialog_window(
     sources: &NpcDialogSources

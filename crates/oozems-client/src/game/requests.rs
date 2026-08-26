@@ -21,6 +21,7 @@ const TRANSITION: u32 = 1 << 9;
 const RECOVERY: u32 = 1 << 10;
 const PURCHASE: u32 = 1 << 11;
 const INTERACTION: u32 = 1 << 12;
+const RESPAWN: u32 = 1 << 13;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum RequestKind {
@@ -29,6 +30,7 @@ pub(super) enum RequestKind {
     Skill,
     Transition,
     Recovery,
+    Respawn,
     CashShopCatalog,
     CashShopPurchase,
     Interaction,
@@ -46,6 +48,7 @@ impl RequestKind {
             Self::Skill => PLAYER_MUTATION | SKILL,
             Self::Transition => PLAYER_MUTATION | TRANSITION,
             Self::Recovery => PLAYER_MUTATION | RECOVERY,
+            Self::Respawn => PLAYER_MUTATION | MOVEMENT | RESPAWN,
             Self::CashShopCatalog => CASH_SHOP,
             Self::CashShopPurchase => PLAYER_MUTATION | CASH_SHOP | PURCHASE,
             Self::Interaction => PLAYER_MUTATION | INTERACTION,
@@ -173,6 +176,7 @@ mod tests {
             RequestKind::Skill,
             RequestKind::Transition,
             RequestKind::Recovery,
+            RequestKind::Respawn,
             RequestKind::CashShopPurchase,
             RequestKind::Interaction,
         ] {
@@ -210,5 +214,23 @@ mod tests {
         assert!(admission.is_active(RequestKind::CashShopCatalog));
         drop(catalog);
         assert!(admission.admit(RequestKind::CashShopPurchase).is_some());
+    }
+
+    #[test]
+    fn respawn_waits_for_movement_and_blocks_new_snapshots() {
+        let admission = RequestAdmission::default();
+        let movement = admission
+            .admit(RequestKind::Movement)
+            .expect("movement permit");
+
+        assert!(admission.admit(RequestKind::Respawn).is_none());
+        drop(movement);
+
+        let respawn = admission
+            .admit(RequestKind::Respawn)
+            .expect("respawn permit");
+        assert!(admission.admit(RequestKind::Movement).is_none());
+        drop(respawn);
+        assert!(admission.admit(RequestKind::Movement).is_some());
     }
 }

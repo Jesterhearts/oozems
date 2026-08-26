@@ -48,6 +48,8 @@ use oozems_proto::v1::PurchaseCashShopItemRequest;
 use oozems_proto::v1::PurchaseCashShopItemResponse;
 use oozems_proto::v1::RecoverPlayerRequest;
 use oozems_proto::v1::RecoverPlayerResponse;
+use oozems_proto::v1::RespawnPlayerRequest;
+use oozems_proto::v1::RespawnPlayerResponse;
 use oozems_proto::v1::SavePlayerRequest;
 use oozems_proto::v1::SavePlayerResponse;
 use oozems_proto::v1::SkillBook;
@@ -377,6 +379,16 @@ pub async fn recover_player(player_id: &str) -> Result<RecoverPlayerResponse, Cl
     post_protobuf(
         "/api/v1/players/recover",
         RecoverPlayerRequest {
+            player_id: player_id.to_owned(),
+        },
+    )
+    .await
+}
+
+pub async fn respawn_player(player_id: &str) -> Result<RespawnPlayerResponse, ClientError> {
+    post_protobuf(
+        "/api/v1/players/respawn",
+        RespawnPlayerRequest {
             player_id: player_id.to_owned(),
         },
     )

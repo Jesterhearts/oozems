@@ -48,6 +48,7 @@ mod recovery_actions;
 mod refresh;
 mod request_dispatch;
 mod requests;
+mod respawn_actions;
 mod responses;
 mod runtime;
 mod skill_actions;
@@ -139,6 +140,7 @@ pub struct WorldRuntime {
 
 pub struct UiRuntime {
     pub cash_shop: CashShopState,
+    pub(crate) death: crate::death_ui::DeathUiState,
     pub gui: GameGui,
     pub gui_state: Rc<RefCell<GuiState>>,
     pub interaction: InteractionState,
@@ -411,6 +413,7 @@ fn build_game(
         },
         ui: UiRuntime {
             cash_shop: CashShopState::default(),
+            death: crate::death_ui::DeathUiState::default(),
             gui,
             gui_state,
             interaction: InteractionState::default(),

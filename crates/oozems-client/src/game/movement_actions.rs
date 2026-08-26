@@ -221,14 +221,14 @@ pub(super) fn install_relocation(
     authoritative: MovementSnapshot,
 ) -> Result<bool, String> {
     if authoritative.map_id != map.id {
-        return Err("taxi response map does not match its authoritative position".to_owned());
+        return Err("relocation response map does not match its authoritative position".to_owned());
     }
     if authoritative.sequence < game.requests.movement.last_response_sequence {
         return Ok(false);
     }
     let position = authoritative
         .position
-        .ok_or("taxi response did not contain a destination position")?;
+        .ok_or("relocation response did not contain a destination position")?;
     game.requests.movement.last_response_sequence = authoritative.sequence;
     install_map(game, map, position)?;
     Ok(true)

@@ -1,0 +1,28 @@
+name: "death-notice"
+x: 348.0
+y: 234.0
+background {
+  name: "death-notice-background"
+  wz_path: "Basic.img/Notice/backgrnd"
+}
+sprites: [{
+  name: "death-notice-ok"
+  wz_path: "Basic.img/BtOK/normal/0"
+  x: 100.0
+  y: 92.0
+}]
+regions: [{
+  name: "death-notice-text"
+  x: 14.0
+  y: 40.0
+  width: 236.0
+  height: 45.0
+}, {
+  name: "death-notice-ok"
+  x: 100.0
+  y: 92.0
+  width: 65.0
+  height: 24.0
+}]
+width: 264.0
+height: 132.0

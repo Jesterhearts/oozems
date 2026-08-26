@@ -48,6 +48,7 @@ pub(crate) mod interactions;
 pub(crate) mod movement;
 mod player_mutation;
 mod protocol;
+pub(crate) mod respawn;
 
 pub(crate) use self::player_mutation::PlayerMutation;
 use self::player_mutation::active_buff_state;
@@ -748,6 +749,7 @@ pub async fn recover_player(
     let player_guard = lock_player(&state, &player_id).await?;
     let now_ms = unix_time_ms()?;
     let mutation = begin_player_mutation(&state, &player_guard, &player_id, now_ms).await?;
+    require_living_player(&mutation.player, "recover")?;
     let reservation = match crate::recovery::reserve_recovery(
         &state.recovery_timers,
         player_id.as_str(),

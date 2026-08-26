@@ -24,6 +24,7 @@ use super::player_updates::visible_appearance_identity;
 use super::recovery_actions;
 use super::refresh;
 use super::requests;
+use super::respawn_actions;
 use super::responses;
 use super::runtime::PersistenceState;
 use super::runtime::defer_transition;
@@ -79,6 +80,7 @@ pub(super) enum PendingRequest {
     BasicAttack,
     Skill(GuiAction),
     Recovery,
+    Respawn,
     Save(Box<PendingSave>),
     Transition(PendingTransition),
 }
@@ -98,6 +100,7 @@ impl PendingRequest {
             Self::Movement => requests::RequestKind::Movement,
             Self::BasicAttack | Self::Skill(_) => requests::RequestKind::Skill,
             Self::Recovery => requests::RequestKind::Recovery,
+            Self::Respawn => requests::RequestKind::Respawn,
             Self::Save(_) => requests::RequestKind::Save,
             Self::Transition(_) => requests::RequestKind::Transition,
         }
@@ -126,6 +129,7 @@ impl PendingRequests {
                     | requests::RequestKind::Skill
                     | requests::RequestKind::Transition
                     | requests::RequestKind::Recovery
+                    | requests::RequestKind::Respawn
                     | requests::RequestKind::CashShopPurchase
                     | requests::RequestKind::Interaction
             )
@@ -417,6 +421,7 @@ pub(super) fn dispatch_requests(
             PendingRequest::BasicAttack => skill_actions::begin_basic_attack(game.clone(), permit),
             PendingRequest::Skill(action) => skill_actions::begin(game.clone(), action, permit),
             PendingRequest::Recovery => recovery_actions::begin(game.clone(), permit),
+            PendingRequest::Respawn => respawn_actions::begin(game.clone(), permit),
             PendingRequest::Save(pending) => begin_save(game.clone(), *pending, permit),
             PendingRequest::Transition(transition) => {
                 let player_id = game.borrow().player.id.clone();
@@ -457,6 +462,7 @@ fn request_not_admitted(
                 game.world.map.id,
             );
         }
+        PendingRequest::Respawn => {}
         PendingRequest::PickUp
         | PendingRequest::Movement
         | PendingRequest::BasicAttack

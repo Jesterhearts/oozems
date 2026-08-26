@@ -2,6 +2,7 @@ use crate::game::Game;
 use crate::game_gui;
 
 mod cash_shop;
+mod death;
 mod hud;
 mod interaction;
 mod mob;
@@ -26,10 +27,12 @@ pub(crate) use world::world_layers;
 pub fn draw(game: &Game) {
     if game.ui.cash_shop.open {
         hud::draw_cash_shop(game);
+        death::draw(game);
         return;
     }
     world::draw(game);
     hud::draw(game);
+    death::draw(game);
 }
 
 pub(crate) fn select_active_buff(

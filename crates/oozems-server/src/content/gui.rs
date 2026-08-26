@@ -33,6 +33,7 @@ use super::wz::wrap_archive_root;
 mod layout;
 
 use layout::compose_cash_shop_window;
+use layout::compose_death_notice_window;
 use layout::compose_equipment_window;
 use layout::compose_inventory_window;
 use layout::compose_key_config;
@@ -46,6 +47,7 @@ use layout::sprite_template;
 use layout::validate_layout;
 
 const GUI_ARCHIVE: &str = "UI.wz";
+const BASIC_IMAGE: &str = "Basic.img";
 const STATUS_BAR_IMAGE: &str = "StatusBar.img";
 const CASH_SHOP_IMAGE: &str = "CashShop.img";
 const UI_WINDOW_IMAGE: &str = "UIWindow.img";
@@ -196,6 +198,11 @@ struct CashShopWindowSources {
     exit: SourceSprite,
 }
 
+struct DeathNoticeSources {
+    background: SourceSprite,
+    ok: SourceSprite,
+}
+
 impl GuiContent {
     pub fn open_optional(
         directory: &Path,
@@ -225,6 +232,8 @@ impl GuiContent {
         parse(&ui_window, format!("{} {UI_WINDOW_IMAGE}", path.display()))?;
         let cash_shop = required_child(&root, CASH_SHOP_IMAGE)?;
         parse(&cash_shop, format!("{} {CASH_SHOP_IMAGE}", path.display()))?;
+        let basic = required_child(&root, BASIC_IMAGE)?;
+        parse(&basic, format!("{} {BASIC_IMAGE}", path.display()))?;
 
         let definitions = oozems_ui_layout::load_directory(layout_directory)?;
         let mut content = Self {
@@ -239,6 +248,7 @@ impl GuiContent {
             &status_bar,
             &ui_window,
             &cash_shop,
+            &basic,
             &definitions,
         )?;
 
@@ -291,6 +301,7 @@ fn build_game_gui(
     status_bar: &WzNodeArc,
     ui_window: &WzNodeArc,
     cash_shop: &WzNodeArc,
+    basic: &WzNodeArc,
     definitions: &[GuiWindowDefinition],
 ) -> Result<GameGui, GuiContentError> {
     let (status_sources, mut assets) = load_status_bar_sources(content, status_bar)?;
@@ -321,6 +332,9 @@ fn build_game_gui(
     let (cash_shop_sources, cash_shop_assets) = load_cash_shop_window_sources(content, cash_shop)?;
     let cash_shop_window = compose_cash_shop_window(&cash_shop_sources)?;
     assets.extend(cash_shop_assets);
+    let (death_notice_sources, death_notice_assets) = load_death_notice_sources(content, basic)?;
+    let death_notice_window = compose_death_notice_window(&death_notice_sources)?;
+    assets.extend(death_notice_assets);
     let (quest_available_frames, quest_available_assets) =
         load_quest_icon_frames(content, ui_window, QUEST_AVAILABLE_ICON_ID)?;
     assets.extend(quest_available_assets);
@@ -352,6 +366,8 @@ fn build_game_gui(
         cash_shop_window: Some(cash_shop_window),
         quest_available_frames,
         quest_ready_frames,
+        death_notice_window: Some(death_notice_window),
+        death_tomb_frames: Vec::new(),
     };
     for definition in definitions {
         let (window, definition_assets) = compose_window_definition(content, root, definition)?;
@@ -505,6 +521,7 @@ fn install_window_definition(
         "npc-dialog" => gui.npc_dialog_window = Some(window),
         "shop" => gui.shop_window = Some(window),
         "cash-shop" => gui.cash_shop_window = Some(window),
+        "death-notice" => gui.death_notice_window = Some(window),
         _ => unreachable!("validated GUI window name"),
     }
 }
@@ -617,6 +634,21 @@ fn load_cash_shop_window_sources(
         item_card: load("cash-shop-item-card", &["CSList", "Base"])?,
         buy: load("cash-shop-buy", &["CSList", "BtBuy", "normal", "0"])?,
         exit: load("cash-shop-exit", &["CSStatus", "BtExit", "normal", "0"])?,
+    };
+    Ok((sources, assets))
+}
+
+fn load_death_notice_sources(
+    content: &GuiContent,
+    basic: &WzNodeArc,
+) -> Result<(DeathNoticeSources, Vec<AssetDescriptor>), GuiContentError> {
+    let mut assets = Vec::new();
+    let mut load = |name: &str, path: &[&str]| {
+        load_source(content, basic, BASIC_IMAGE, name, path, &mut assets)
+    };
+    let sources = DeathNoticeSources {
+        background: load("death-notice-background", &["Notice", "backgrnd"])?,
+        ok: load("death-notice-ok", &["BtOK", "normal", "0"])?,
     };
     Ok((sources, assets))
 }
@@ -1591,6 +1623,7 @@ mod tests {
                 "npc-dialog" => assert_eq!(gui.npc_dialog_window, Some(expected)),
                 "shop" => assert_eq!(gui.shop_window, Some(expected)),
                 "cash-shop" => assert_eq!(gui.cash_shop_window, Some(expected)),
+                "death-notice" => assert_eq!(gui.death_notice_window, Some(expected)),
                 _ => unreachable!("supported GUI window"),
             }
         }

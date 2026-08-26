@@ -79,14 +79,35 @@ pub(super) fn update(
             && (drop.expires_at_unix_ms == 0 || drop.expires_at_unix_ms > now_ms)
     });
 
+    let dead = player_is_dead(&game.player.state);
+    let death_started = dead && !crate::death_ui::is_open(game.ui.death);
+    crate::death_ui::synchronize(&mut game.ui.death, dead, timestamp_ms);
+    if death_started {
+        let mut gui = game.ui.gui_state.borrow_mut();
+        gui.stats_open = false;
+        gui.equipment_open = false;
+        gui.inventory_open = false;
+        gui.key_config_open = false;
+        gui.skills_open = false;
+        drop(gui);
+        game.ui.cash_shop.close();
+        game.ui.interaction.close();
+        game.ui.key_drag = None;
+        game.ui.window_drag = None;
+        super::input::clear_suppressed_click(&mut game.input);
+    }
     let mut pending = PendingRequests::default();
     apply_canvas_input(game, &mut pending);
+    if crate::death_ui::should_dispatch_respawn(game.ui.death)
+        && !pending.has_kind(requests::RequestKind::Respawn)
+    {
+        pending.push(PendingRequest::Respawn);
+    }
 
     let mut input = {
         let bindings = game.player.key_bindings.current.borrow();
         keymap::drain_frame_input(&mut game.input.keyboard.borrow_mut(), &bindings)
     };
-    let dead = player_is_dead(&game.player.state);
     let key_config_open = game.ui.gui_state.borrow().key_config_open;
     if key_config_open {
         input.player = PlayerInput::default();
@@ -107,16 +128,7 @@ pub(super) fn update(
     if dead {
         input.player = PlayerInput::default();
         input.skills.clear();
-        input.actions.retain(|action| {
-            matches!(
-                action,
-                KeyAction::OpenCharacter
-                    | KeyAction::OpenEquipment
-                    | KeyAction::OpenInventory
-                    | KeyAction::OpenKeyConfig
-                    | KeyAction::OpenSkills
-            )
-        });
+        input.actions.clear();
     }
     let pick_up = apply_key_actions(
         &mut game.ui.gui_state.borrow_mut(),
@@ -183,8 +195,11 @@ pub(super) fn update(
             || game.requests.admission.player_mutation_is_active(),
     );
     let transition_pending = transition.is_some() || !game.requests.deferred_transitions.is_empty();
-    let movement_observation_mode =
-        movement_observation_mode(dead, transition_pending, transition_active);
+    let movement_observation_mode = movement_observation_mode(
+        dead,
+        transition_pending || game.ui.death.respawn_requested,
+        transition_active,
+    );
     let (basic_attack, skill_id) = select_combat_requests(
         game.player.active_buffs.attacks_disabled || dead,
         transition_pending,
@@ -207,20 +222,14 @@ pub(super) fn update(
         timestamp_ms,
         movement_observation,
     );
-    let needs_recovery = game
-        .player
-        .state
-        .stats
-        .as_ref()
-        .is_some_and(|stats| stats.hp < stats.max_hp || stats.mp < stats.max_mp);
-    let death_animation_finished = dead
-        && character_animation_elapsed_ms(game.world.character_animation, timestamp_ms)
-            >= crate::character_render::animation_duration_ms(
-                &game.world.character_sprites,
-                CharacterAnimation::Death,
-            ) as f64;
-    let can_poll_recovery = (game.world.character_animation.animation == CharacterAnimation::Idle
-        || death_animation_finished)
+    let needs_recovery = !dead
+        && game
+            .player
+            .state
+            .stats
+            .as_ref()
+            .is_some_and(|stats| stats.hp < stats.max_hp || stats.mp < stats.max_mp);
+    let can_poll_recovery = game.world.character_animation.animation == CharacterAnimation::Idle
         && !pick_up
         && !basic_attack
         && skill_id.is_none()

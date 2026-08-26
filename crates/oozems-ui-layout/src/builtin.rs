@@ -23,6 +23,7 @@ pub fn builtin_definition<E>(
         "npc-dialog" => npc_dialog(&mut dimensions)?,
         "shop" => shop(&mut dimensions)?,
         "cash-shop" => cash_shop(&mut dimensions)?,
+        "death-notice" => death_notice(&mut dimensions)?,
         _ => return Ok(None),
     };
     Ok(Some(definition))
@@ -576,6 +577,39 @@ fn cash_shop<E>(
     Ok(definition)
 }
 
+fn death_notice<E>(
+    dimensions: &mut impl FnMut(&str) -> Result<SpriteDimensions, E>
+) -> Result<GuiWindowDefinition, E> {
+    let background_path = "Basic.img/Notice/backgrnd";
+    let ok_path = "Basic.img/BtOK/normal/0";
+    let background = dimensions(background_path)?;
+    let ok = dimensions(ok_path)?;
+    let button_x = ((background.width - ok.width) / 2.0).round().max(0.0);
+    let button_y = (background.height - ok.height - 16.0).max(0.0);
+    let mut definition = window(
+        "death-notice",
+        348.0,
+        234.0,
+        background.width,
+        background.height,
+        source("death-notice-background", background_path, 0.0, 0.0),
+    );
+    definition
+        .sprites
+        .push(source("death-notice-ok", ok_path, button_x, button_y));
+    definition.regions.extend([
+        region(
+            "death-notice-text",
+            14.0,
+            40.0,
+            (background.width - 28.0).max(0.0),
+            45.0,
+        ),
+        region("death-notice-ok", button_x, button_y, ok.width, ok.height),
+    ]);
+    Ok(definition)
+}
+
 fn window(
     name: &str,
     x: f32,
@@ -732,6 +766,31 @@ mod tests {
         assert_eq!(dialog.sprites.len(), 11);
     }
 
+    #[test]
+    fn death_notice_uses_the_authored_canonical_geometry() {
+        let definition = builtin_definition("death-notice", |path| {
+            Ok::<_, std::convert::Infallible>(dimensions(path))
+        })
+        .expect("infallible dimensions")
+        .expect("death notice");
+        let ok = definition
+            .sprites
+            .iter()
+            .find(|sprite| sprite.name == "death-notice-ok")
+            .expect("OK sprite");
+        let text = definition
+            .regions
+            .iter()
+            .find(|region| region.name == "death-notice-text")
+            .expect("text region");
+
+        assert_eq!((ok.x, ok.y), (100.0, 92.0));
+        assert_eq!(
+            (text.x, text.y, text.width, text.height),
+            (14.0, 40.0, 236.0, 45.0)
+        );
+    }
+
     fn dimensions(path: &str) -> SpriteDimensions {
         let (width, height) = match path {
             "StatusBar.img/base/backgrnd" => (800.0, 71.0),
@@ -748,6 +807,8 @@ mod tests {
             "UIWindow.img/Shop/backgrnd" => (445.0, 333.0),
             "CashShop.img/Base/backgrnd" => (800.0, 600.0),
             "CashShop.img/CSStatus/BtExit/normal/0" => (168.0, 49.0),
+            "Basic.img/Notice/backgrnd" => (264.0, 132.0),
+            "Basic.img/BtOK/normal/0" => (65.0, 24.0),
             _ => (20.0, 20.0),
         };
         SpriteDimensions { width, height }

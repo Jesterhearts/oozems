@@ -6,6 +6,7 @@ mod assets;
 mod cash_shop_ui;
 mod character_create;
 mod character_render;
+mod death_ui;
 mod game;
 mod game_gui;
 mod gui_dump;

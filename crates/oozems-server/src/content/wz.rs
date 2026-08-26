@@ -107,6 +107,12 @@ struct Bounds {
     bottom: i32,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct MapMetadata {
+    return_map_id: Option<u32>,
+    town: bool,
+}
+
 #[derive(Clone, Copy, Debug)]
 struct RawPlatform {
     id: u32,
@@ -338,6 +344,7 @@ fn build_map(
     map_id: u32,
     node: &WzNodeArc,
 ) -> Result<Map, WzContentError> {
+    let metadata = read_map_metadata(node, map_id)?;
     let raw_platforms = read_platforms(node)?;
     let mut raw_decorations = read_decorations(&source.root, node, map_id)?;
     let raw_ladders = features::read_ladders(node)?;
@@ -429,6 +436,39 @@ fn build_map(
         simulation_sequence: 0,
         npcs,
         movement_bounds: Some(movement_bounds),
+        return_map_id: metadata.return_map_id,
+        town: metadata.town,
+    })
+}
+
+fn read_map_metadata(
+    node: &WzNodeArc,
+    map_id: u32,
+) -> Result<MapMetadata, WzContentError> {
+    let Some(info) = child(node, "info")? else {
+        return Ok(MapMetadata::default());
+    };
+    let return_map_id = int_value(&info, "returnMap")?
+        .map(|value| {
+            u32::try_from(value).map_err(|_| WzContentError::InvalidMap {
+                map_id,
+                message: format!("returnMap must be nonnegative, not {value}"),
+            })
+        })
+        .transpose()?;
+    let town = match int_value(&info, "town")? {
+        None | Some(0) => false,
+        Some(1) => true,
+        Some(value) => {
+            return Err(WzContentError::InvalidMap {
+                map_id,
+                message: format!("town must be 0 or 1, not {value}"),
+            });
+        }
+    };
+    Ok(MapMetadata {
+        return_map_id,
+        town,
     })
 }
 
@@ -1032,6 +1072,7 @@ mod tests {
     use super::derive_bounds;
     use super::object_order;
     use super::read_bounds;
+    use super::read_map_metadata;
     use super::sorted_named_children;
     use super::tile_order;
 
@@ -1154,6 +1195,22 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(keys, vec!["0", "2"]);
+    }
+
+    #[test]
+    fn map_metadata_preserves_the_death_return_town() {
+        let map = wz_reader::WzNode::from_str("map", 0, None).into_lock();
+        let info = wz_reader::WzNode::from_str("info", 0, Some(&map)).into_lock();
+        for (name, value) in [("returnMap", 100_000_000), ("town", 1)] {
+            let child = wz_reader::WzNode::from_str(name, value, Some(&info)).into_lock();
+            info.write().expect("info lock").add(&child);
+        }
+        map.write().expect("map lock").add(&info);
+
+        let metadata = read_map_metadata(&map, 100_000_100).expect("map metadata");
+
+        assert_eq!(metadata.return_map_id, Some(100_000_000));
+        assert!(metadata.town);
     }
 
     #[test]

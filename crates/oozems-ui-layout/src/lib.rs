@@ -21,7 +21,7 @@ use thiserror::Error;
 
 const DEFINITION_MESSAGE: &str = "oozems.v1.GuiWindowDefinition";
 
-pub const SUPPORTED_WINDOWS: [&str; 9] = [
+pub const SUPPORTED_WINDOWS: [&str; 10] = [
     "status-bar",
     "stats",
     "equipment",
@@ -31,6 +31,7 @@ pub const SUPPORTED_WINDOWS: [&str; 9] = [
     "npc-dialog",
     "shop",
     "cash-shop",
+    "death-notice",
 ];
 
 #[derive(Clone, Debug, PartialEq)]
@@ -668,6 +669,12 @@ const LAYOUT_CONTRACTS: &[LayoutContract] = &[
             "cash-shop-buy-9",
             "cash-shop-exit",
         ],
+    },
+    LayoutContract {
+        name: "death-notice",
+        sprites: &["death-notice-ok"],
+        templates: EMPTY_NAMES,
+        regions: &["death-notice-text", "death-notice-ok"],
     },
 ];
 

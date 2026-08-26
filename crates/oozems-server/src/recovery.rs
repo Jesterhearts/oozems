@@ -47,6 +47,8 @@ pub struct PreparedRecovery {
 pub enum RecoveryError {
     #[error("the player does not have character stats")]
     MissingStats,
+    #[error("dead players must respawn before natural recovery")]
+    PlayerDead,
     #[error("no recovery formula is selected for {identifier:?}")]
     MissingProfile { identifier: &'static str },
     #[error("configured recovery formula failed")]
@@ -68,7 +70,9 @@ pub fn prepare_recovery(
     formulas: &FormulaCatalog,
 ) -> Result<PreparedRecovery, RecoveryError> {
     let stats = player.stats.as_ref().ok_or(RecoveryError::MissingStats)?;
-    let was_dead = stats.hp == 0;
+    if stats.hp == 0 {
+        return Err(RecoveryError::PlayerDead);
+    }
     let identifier = recovery_identifier(stats.job_id);
     let profile = formulas
         .recovery_profile(identifier)
@@ -88,11 +92,7 @@ pub fn prepare_recovery(
 
     let stats = player.stats.as_mut().ok_or(RecoveryError::MissingStats)?;
     let hp_before = stats.hp;
-    stats.hp = if was_dead {
-        stats.max_hp
-    } else {
-        stats.hp.saturating_add(hp).min(stats.max_hp)
-    };
+    stats.hp = stats.hp.saturating_add(hp).min(stats.max_hp);
     let mp_before = stats.mp;
     stats.mp = stats.mp.saturating_add(mp).min(stats.max_mp);
     Ok(PreparedRecovery {
@@ -244,12 +244,12 @@ mod tests {
     }
 
     #[test]
-    fn dead_players_revive_at_full_health() {
-        let recovered =
-            prepare_recovery(player(0, 10, 20, 0, 2), &formulas()).expect("death recovery");
+    fn dead_players_cannot_use_natural_recovery() {
+        let error = prepare_recovery(player(0, 10, 20, 0, 2), &formulas())
+            .err()
+            .expect("dead recovery must fail");
 
-        assert_eq!(recovered.hp_restored, 20);
-        assert_eq!(recovered.player.stats.expect("stats").hp, 20);
+        assert!(matches!(error, super::RecoveryError::PlayerDead));
     }
 
     #[test]

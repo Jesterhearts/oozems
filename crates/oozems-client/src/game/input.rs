@@ -281,6 +281,13 @@ fn handle_canvas_pointer(
     button: PointerButton,
     pending: &mut PendingRequests,
 ) -> bool {
+    if crate::death_ui::is_open(game.ui.death) {
+        if crate::death_ui::click_requests_respawn(&game.ui.gui, &mut game.ui.death, point, button)
+        {
+            pending.push(PendingRequest::Respawn);
+        }
+        return true;
+    }
     if button == PointerButton::Left && std::mem::take(&mut game.input.suppress_click) {
         return true;
     }
@@ -379,6 +386,19 @@ pub(super) fn apply_canvas_input(
         .drain(..)
         .collect::<Vec<_>>();
     for action in actions {
+        if crate::death_ui::is_open(game.ui.death) {
+            match action {
+                CanvasInputAction::Move(point) => game.ui.pointer = Some(point),
+                CanvasInputAction::Leave => game.ui.pointer = None,
+                CanvasInputAction::Pointer(point, button) => {
+                    let _ = handle_canvas_pointer(game, point, button, pending);
+                }
+                CanvasInputAction::Down(_)
+                | CanvasInputAction::Up(_)
+                | CanvasInputAction::DoubleClick(_) => {}
+            }
+            continue;
+        }
         match action {
             CanvasInputAction::Down(point) => {
                 let state = *game.ui.gui_state.borrow();
@@ -432,6 +452,10 @@ pub(super) fn apply_canvas_input(
             CanvasInputAction::DoubleClick(point) => queue_npc_interaction(game, point, pending),
         }
     }
+}
+
+pub(super) fn clear_suppressed_click(input: &mut GameInput) {
+    input.suppress_click = false;
 }
 
 fn finish_drag(

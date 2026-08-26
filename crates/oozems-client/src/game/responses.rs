@@ -7,6 +7,7 @@ use oozems_proto::v1::NpcInteractionResponse;
 use oozems_proto::v1::PlayerState;
 use oozems_proto::v1::PurchaseCashShopItemResponse;
 use oozems_proto::v1::RecoverPlayerResponse;
+use oozems_proto::v1::RespawnPlayerResponse;
 use oozems_proto::v1::SavePlayerResponse;
 use oozems_proto::v1::UseSkillResponse;
 
@@ -42,6 +43,7 @@ player_buff_response!(
     NpcInteractionResponse,
     PurchaseCashShopItemResponse,
     RecoverPlayerResponse,
+    RespawnPlayerResponse,
     SavePlayerResponse,
     UseSkillResponse,
 );

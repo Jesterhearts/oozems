@@ -13,6 +13,7 @@ use thiserror::Error;
 
 mod character;
 mod config;
+mod effect;
 mod gui;
 mod item;
 mod morph;
@@ -23,6 +24,8 @@ mod wz;
 use character::CharacterContent;
 use character::CharacterContentError;
 pub use config::ContentConfig;
+use effect::EffectContent;
+use effect::EffectContentError;
 use gui::GuiContent;
 use gui::GuiContentError;
 pub(crate) use item::ConsumeEffectDefinition;
@@ -46,6 +49,7 @@ const PLAYER_HALF_WIDTH: f32 = 18.0;
 
 pub struct ContentCatalog {
     characters: Option<CharacterContent>,
+    effects: Option<EffectContent>,
     gui: Option<GuiContent>,
     items: Option<ItemContent>,
     morphs: Option<MorphContent>,
@@ -60,6 +64,8 @@ pub enum ContentError {
     Wz(#[from] WzContentError),
     #[error(transparent)]
     Character(#[from] CharacterContentError),
+    #[error(transparent)]
+    Effect(#[from] EffectContentError),
     #[error(transparent)]
     Gui(#[from] GuiContentError),
     #[error(transparent)]
@@ -142,6 +148,7 @@ impl ContentCatalog {
         }
         Ok(Self {
             characters,
+            effects: EffectContent::open_optional(wz_dir)?,
             gui: GuiContent::open_optional(wz_dir, gui_layout_dir)?,
             items,
             morphs,
@@ -169,6 +176,11 @@ impl ContentCatalog {
             .get_asset(asset_id)
             .or_else(|| {
                 self.characters
+                    .as_ref()
+                    .and_then(|source| source.get_asset(asset_id))
+            })
+            .or_else(|| {
+                self.effects
                     .as_ref()
                     .and_then(|source| source.get_asset(asset_id))
             })
@@ -212,6 +224,11 @@ impl ContentCatalog {
                 asset_count = gui.assets.len(),
                 "game GUI payload ready"
             );
+        }
+        if let Some(effects) = &self.effects {
+            let (frames, assets) = effects.tomb_projection();
+            gui.death_tomb_frames = frames;
+            gui.assets.extend(assets);
         }
         Ok(gui)
     }

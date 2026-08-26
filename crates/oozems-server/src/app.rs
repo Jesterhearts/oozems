@@ -117,6 +117,10 @@ pub fn router(
             post(crate::api::combat::use_basic_attack),
         )
         .route("/players/recover", post(crate::api::recover_player))
+        .route(
+            "/players/respawn",
+            post(crate::api::respawn::respawn_player),
+        )
         .route("/maps/get", post(crate::api::get_map))
         .route("/items/equip", post(crate::api::equip_item))
         .route("/items/unequip", post(crate::api::unequip_item))

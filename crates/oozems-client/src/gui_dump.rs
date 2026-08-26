@@ -23,9 +23,9 @@ use crate::game::Game;
 use crate::game_gui;
 use crate::js_error;
 
-const GUI_ELEMENT_NAMES: &str = "game, status-bar, stat-window, equipment-window, \
-                                 inventory-window, key-config-window, skill-window, \
-                                 npc-dialog-window, shop-window, cash-shop-window";
+const GUI_ELEMENT_NAMES: &str =
+    "game, status-bar, stat-window, equipment-window, inventory-window, key-config-window, \
+     skill-window, npc-dialog-window, shop-window, cash-shop-window, death-notice-window";
 
 type DumpGuiBridge = Closure<dyn Fn(String, f64, f64, f64, f64, String) -> js_sys::Promise>;
 
@@ -61,6 +61,7 @@ enum InteractionElement {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct VisibleGui {
     cash_shop: bool,
+    death_notice: bool,
     equipment: bool,
     interaction: InteractionElement,
     inventory: bool,
@@ -81,6 +82,7 @@ enum GuiElement {
     NpcDialogWindow,
     ShopWindow,
     CashShopWindow,
+    DeathNoticeWindow,
 }
 
 impl GuiElement {
@@ -96,6 +98,7 @@ impl GuiElement {
             "npc-dialog-window" => Ok(Self::NpcDialogWindow),
             "shop-window" => Ok(Self::ShopWindow),
             "cash-shop-window" => Ok(Self::CashShopWindow),
+            "death-notice-window" => Ok(Self::DeathNoticeWindow),
             _ => Err(format!(
                 "unknown GUI element '{value}'; expected one of: {GUI_ELEMENT_NAMES}"
             )),
@@ -250,6 +253,7 @@ fn visible_gui(game: &Game) -> Result<VisibleGui, String> {
         });
     Ok(VisibleGui {
         cash_shop: game.ui.cash_shop.open,
+        death_notice: crate::death_ui::is_open(game.ui.death),
         equipment: state.equipment_open,
         interaction,
         inventory: state.inventory_open,
@@ -316,6 +320,20 @@ fn resolve_element_bounds(
         GuiElement::CashShopWindow => {
             require_visible(visible.cash_shop, "cash-shop-window")?;
             cash_shop_bounds(gui.cash_shop_window.as_ref(), canvas_width, canvas_height)
+        }
+        GuiElement::DeathNoticeWindow => {
+            require_visible(visible.death_notice, "death-notice-window")?;
+            match gui.death_notice_window.as_ref() {
+                Some(window) if window.layout.as_ref().is_some_and(game_gui::valid_layout) => {
+                    window_element_bounds(Some(window), true, "death-notice-window")
+                }
+                _ => Ok(Rect {
+                    x: f64::from(crate::death_ui::FALLBACK_WINDOW_X),
+                    y: f64::from(crate::death_ui::FALLBACK_WINDOW_Y),
+                    width: f64::from(crate::death_ui::FALLBACK_WINDOW_WIDTH),
+                    height: f64::from(crate::death_ui::FALLBACK_WINDOW_HEIGHT),
+                }),
+            }
         }
     }
 }
