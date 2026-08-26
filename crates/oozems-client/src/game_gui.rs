@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 
+use oozems_proto::v1::AbilityStat;
 use oozems_proto::v1::CharacterStats;
 use oozems_proto::v1::EquipmentSlot;
 use oozems_proto::v1::GameGui;
@@ -14,6 +15,8 @@ use oozems_proto::v1::ItemDefinition;
 use oozems_proto::v1::SkillBook;
 
 mod key_config;
+mod window;
+mod window_action;
 
 pub use key_config::KeyDrag;
 pub use key_config::KeyIconPlacement;
@@ -22,6 +25,15 @@ pub use key_config::bound_key_icons;
 pub use key_config::dragged_key_icon;
 pub use key_config::finish_key_drag;
 pub use key_config::move_key_drag;
+pub use window::WindowDrag;
+pub use window::WindowKind;
+pub use window::WindowPlacements;
+pub use window::begin_window_drag;
+pub use window::finish_window_drag;
+use window::frontmost_window_at_point;
+pub use window::move_window_drag;
+pub use window::resolve_window;
+use window_action::window_action;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum InventoryTab {
@@ -53,7 +65,7 @@ impl InventoryTab {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct GuiState {
     pub stats_open: bool,
     pub equipment_open: bool,
@@ -62,9 +74,10 @@ pub struct GuiState {
     pub key_config_open: bool,
     pub skill_page: usize,
     pub skills_open: bool,
+    pub window_placements: WindowPlacements,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct CanvasPoint {
     pub x: f32,
     pub y: f32,
@@ -116,6 +129,7 @@ pub enum GuiAction {
     Equip { inventory_index: u32 },
     Unequip { slot: i32 },
     Drop { inventory_index: u32 },
+    AllocateAbility { stat: AbilityStat },
     AllocateSkill { skill_id: u32 },
     UseSkill { skill_id: u32 },
 }
@@ -143,11 +157,41 @@ pub fn click_action(
     point: CanvasPoint,
     button: PointerButton,
 ) -> Option<GuiAction> {
+    let frontmost_window =
+        frontmost_window_at_point(state, gui, viewport_width, viewport_height, point);
     if state.key_config_open {
-        return window_action(state, gui, inventory, skill_book, point, button);
+        return window_action(
+            state,
+            gui,
+            inventory,
+            skill_book,
+            viewport_width,
+            viewport_height,
+            point,
+            button,
+        )
+        .or_else(|| {
+            frontmost_window.is_none().then(|| {
+                status_action(gui, viewport_width, viewport_height, point, button)
+                    .filter(|action| *action == GuiAction::ToggleKeyConfig)
+            })?
+        });
     }
-    window_action(state, gui, inventory, skill_book, point, button)
-        .or_else(|| status_action(gui, viewport_width, viewport_height, point, button))
+    window_action(
+        state,
+        gui,
+        inventory,
+        skill_book,
+        viewport_width,
+        viewport_height,
+        point,
+        button,
+    )
+    .or_else(|| {
+        frontmost_window
+            .is_none()
+            .then(|| status_action(gui, viewport_width, viewport_height, point, button))?
+    })
 }
 
 pub fn apply_local_action(
@@ -188,6 +232,7 @@ pub fn apply_local_action(
                 state.stats_open = false;
                 state.equipment_open = false;
                 state.inventory_open = false;
+                state.skills_open = false;
             }
         }
         GuiAction::CloseStats => state.stats_open = false,
@@ -199,6 +244,7 @@ pub fn apply_local_action(
         GuiAction::Equip { .. }
         | GuiAction::Unequip { .. }
         | GuiAction::Drop { .. }
+        | GuiAction::AllocateAbility { .. }
         | GuiAction::AllocateSkill { .. }
         | GuiAction::UseSkill { .. } => {
             return false;
@@ -353,6 +399,7 @@ pub fn equipment_slot_position(slot_value: i32) -> Option<(f32, f32)> {
         EquipmentSlot::Top => Some((71.0, 134.0)),
         EquipmentSlot::Bottom => Some((38.0, 167.0)),
         EquipmentSlot::Shoes => Some((71.0, 167.0)),
+        EquipmentSlot::Weapon => Some((5.0, 134.0)),
         EquipmentSlot::Unspecified => None,
     }
 }
@@ -391,93 +438,6 @@ pub fn valid_layout(layout: &GuiLayout) -> bool {
             .regions
             .iter()
             .all(|region| valid_region(region, layout.width, layout.height))
-}
-
-fn window_action(
-    state: GuiState,
-    gui: &GameGui,
-    inventory: Option<&InventoryState>,
-    skill_book: Option<&SkillBook>,
-    point: CanvasPoint,
-    button: PointerButton,
-) -> Option<GuiAction> {
-    if state.key_config_open {
-        if button == PointerButton::Left
-            && window_close_rect(gui.key_config_window.as_ref(), "key-config-close")
-                .is_some_and(|rect| rect_contains(rect, point))
-        {
-            return Some(GuiAction::CloseKeyConfig);
-        }
-        return None;
-    }
-    if state.inventory_open {
-        if window_close_rect(gui.inventory_window.as_ref(), "inventory-close")
-            .is_some_and(|rect| rect_contains(rect, point))
-        {
-            return Some(GuiAction::CloseInventory);
-        }
-        if button == PointerButton::Left
-            && let Some(tab) = inventory_tab_at(gui, point)
-        {
-            return Some(GuiAction::SelectInventoryTab { tab });
-        }
-        if let Some(hit) = inventory_item_at(gui, inventory?, state.inventory_tab, point) {
-            return match button {
-                PointerButton::Left
-                    if state.inventory_tab == InventoryTab::Equipment && hit.can_equip =>
-                {
-                    Some(GuiAction::Equip {
-                        inventory_index: hit.inventory_index,
-                    })
-                }
-                PointerButton::Left => None,
-                PointerButton::Right => Some(GuiAction::Drop {
-                    inventory_index: hit.inventory_index,
-                }),
-            };
-        }
-    }
-    if button == PointerButton::Left && state.equipment_open {
-        if window_close_rect(gui.equipment_window.as_ref(), "equipment-close")
-            .is_some_and(|rect| rect_contains(rect, point))
-        {
-            return Some(GuiAction::CloseEquipment);
-        }
-        if let Some(slot) = equipped_item_at(gui, inventory?, point) {
-            return Some(GuiAction::Unequip { slot });
-        }
-    }
-    if button == PointerButton::Left
-        && state.skills_open
-        && window_close_rect(gui.skill_window.as_ref(), "skill-close")
-            .is_some_and(|rect| rect_contains(rect, point))
-    {
-        return Some(GuiAction::CloseSkills);
-    }
-    if button == PointerButton::Left && state.skills_open {
-        if let Some(skill_book) = skill_book
-            && let Some(action) = skill_action_at(state, gui, skill_book, point)
-        {
-            return Some(action);
-        }
-        let window = gui.skill_window.as_ref()?;
-        for (name, action) in [
-            ("skill-page-previous", GuiAction::PreviousSkillPage),
-            ("skill-page-next", GuiAction::NextSkillPage),
-        ] {
-            if window_region_rect(window, name).is_some_and(|rect| rect_contains(rect, point)) {
-                return Some(action);
-            }
-        }
-    }
-    if button == PointerButton::Left
-        && state.stats_open
-        && window_close_rect(gui.stat_window.as_ref(), "stat-close")
-            .is_some_and(|rect| rect_contains(rect, point))
-    {
-        return Some(GuiAction::CloseStats);
-    }
-    None
 }
 
 fn status_action(
@@ -538,6 +498,10 @@ pub fn can_allocate_skill(
         })
 }
 
+pub fn can_allocate_ability(stats: Option<&CharacterStats>) -> bool {
+    stats.is_some_and(|stats| stats.ability_points > 0)
+}
+
 pub(crate) fn maximum_skill_level(skill: &oozems_proto::v1::PlayerSkill) -> u32 {
     let definition_maximum = skill
         .definition
@@ -554,12 +518,20 @@ fn skill_action_at(
     state: GuiState,
     gui: &GameGui,
     book: &SkillBook,
+    viewport_width: f32,
+    viewport_height: f32,
     point: CanvasPoint,
 ) -> Option<GuiAction> {
-    let (skill, row) = skill_row_at(state, gui, book, point)?;
+    let (skill, row) = skill_row_at(state, gui, book, viewport_width, viewport_height, point)?;
     let definition = skill.definition.as_ref()?;
-    let window = gui.skill_window.as_ref()?;
-    let layout = window.layout.as_ref()?;
+    let placement = resolve_window(
+        gui,
+        state.window_placements,
+        WindowKind::Skills,
+        viewport_width,
+        viewport_height,
+    )?;
+    let layout = placement.layout;
     let button = named_sprite_template(layout, "skill-point-up")?;
     let button_rect = CanvasRect {
         x: row.x + row.width - button.width - 2.0,
@@ -587,9 +559,11 @@ fn skill_at_point(
     state: GuiState,
     gui: &GameGui,
     book: &SkillBook,
+    viewport_width: f32,
+    viewport_height: f32,
     point: CanvasPoint,
 ) -> Option<u32> {
-    let (skill, row) = skill_row_at(state, gui, book, point)?;
+    let (skill, row) = skill_row_at(state, gui, book, viewport_width, viewport_height, point)?;
     let icon_slot = CanvasRect {
         x: row.x,
         y: row.y,
@@ -610,29 +584,39 @@ pub fn hovered_skill<'a>(
     state: GuiState,
     gui: &GameGui,
     book: &'a SkillBook,
+    viewport_width: f32,
+    viewport_height: f32,
     point: CanvasPoint,
 ) -> Option<&'a oozems_proto::v1::PlayerSkill> {
-    skill_row_at(state, gui, book, point).map(|(skill, _)| skill)
+    skill_row_at(state, gui, book, viewport_width, viewport_height, point).map(|(skill, _)| skill)
 }
 
 pub(crate) fn hovered_inventory_item<'a>(
     state: GuiState,
     gui: &'a GameGui,
     inventory: &'a InventoryState,
+    viewport_width: f32,
+    viewport_height: f32,
     point: CanvasPoint,
 ) -> Option<InventorySlot<'a>> {
     if !state.inventory_open {
         return None;
     }
-    let window = gui.inventory_window.as_ref()?;
+    let placement = resolve_window(
+        gui,
+        state.window_placements,
+        WindowKind::Inventory,
+        viewport_width,
+        viewport_height,
+    )?;
     inventory_slots(gui, inventory, state.inventory_tab)
         .into_iter()
         .find(|slot| {
             let (x, y) = inventory_slot_position(slot.visual_index);
             rect_contains(
                 CanvasRect {
-                    x: window.x + x,
-                    y: window.y + y,
+                    x: placement.origin.x + x,
+                    y: placement.origin.y + y,
                     width: ITEM_SLOT_SIZE,
                     height: ITEM_SLOT_SIZE,
                 },
@@ -645,16 +629,21 @@ fn skill_row_at<'a>(
     state: GuiState,
     gui: &GameGui,
     book: &'a SkillBook,
+    viewport_width: f32,
+    viewport_height: f32,
     point: CanvasPoint,
 ) -> Option<(&'a oozems_proto::v1::PlayerSkill, CanvasRect)> {
     if !state.skills_open || book.skills.is_empty() {
         return None;
     }
-    let window = gui.skill_window.as_ref()?;
-    let layout = window
-        .layout
-        .as_ref()
-        .filter(|layout| valid_layout(layout))?;
+    let placement = resolve_window(
+        gui,
+        state.window_placements,
+        WindowKind::Skills,
+        viewport_width,
+        viewport_height,
+    )?;
+    let layout = placement.layout;
     let list = named_region(layout, "skill-list")?;
     let row = named_sprite_template(layout, "skill-row")?;
     let page_size = (list.height / row.height).floor() as usize;
@@ -670,8 +659,8 @@ fn skill_row_at<'a>(
         .enumerate()
         .find_map(|(index, skill)| {
             let rect = CanvasRect {
-                x: window.x + list.x,
-                y: window.y + list.y + index as f32 * row.height,
+                x: placement.origin.x + list.x,
+                y: placement.origin.y + list.y + index as f32 * row.height,
                 width: row.width,
                 height: row.height,
             };
@@ -717,55 +706,76 @@ fn status_button_rect(
 }
 
 fn window_close_rect(
-    window: Option<&oozems_proto::v1::GuiWindow>,
+    state: GuiState,
+    gui: &GameGui,
+    kind: WindowKind,
+    viewport_width: f32,
+    viewport_height: f32,
     name: &str,
 ) -> Option<CanvasRect> {
-    let window = window?;
-    let layout = window
-        .layout
-        .as_ref()
-        .filter(|layout| valid_layout(layout))?;
-    let sprite = named_sprite(layout, name)?;
+    let placement = resolve_window(
+        gui,
+        state.window_placements,
+        kind,
+        viewport_width,
+        viewport_height,
+    )?;
+    let sprite = named_sprite(placement.layout, name)?;
     Some(CanvasRect {
-        x: window.x + sprite.x,
-        y: window.y + sprite.y,
+        x: placement.origin.x + sprite.x,
+        y: placement.origin.y + sprite.y,
         width: sprite.width,
         height: sprite.height,
     })
 }
 
 fn window_region_rect(
-    window: &oozems_proto::v1::GuiWindow,
+    state: GuiState,
+    gui: &GameGui,
+    kind: WindowKind,
+    viewport_width: f32,
+    viewport_height: f32,
     name: &str,
 ) -> Option<CanvasRect> {
-    let layout = window
-        .layout
-        .as_ref()
-        .filter(|layout| valid_layout(layout))?;
-    let region = named_region(layout, name)?;
+    let placement = resolve_window(
+        gui,
+        state.window_placements,
+        kind,
+        viewport_width,
+        viewport_height,
+    )?;
+    let region = named_region(placement.layout, name)?;
     Some(CanvasRect {
-        x: window.x + region.x,
-        y: window.y + region.y,
+        x: placement.origin.x + region.x,
+        y: placement.origin.y + region.y,
         width: region.width,
         height: region.height,
     })
 }
 
 fn inventory_item_at(
+    state: GuiState,
     gui: &GameGui,
     inventory: &InventoryState,
-    tab: InventoryTab,
+    viewport_width: f32,
+    viewport_height: f32,
     point: CanvasPoint,
 ) -> Option<InventoryHit> {
-    let window = gui.inventory_window.as_ref()?;
-    inventory_slots(gui, inventory, tab)
+    let placement = resolve_window(
+        gui,
+        state.window_placements,
+        WindowKind::Inventory,
+        viewport_width,
+        viewport_height,
+    )?;
+    inventory_slots(gui, inventory, state.inventory_tab)
         .into_iter()
         .find_map(|slot| {
             let (x, y) = inventory_slot_position(slot.visual_index);
             rect_contains(
                 CanvasRect {
-                    x: window.x + x,
-                    y: window.y + y,
+                    x: placement.origin.x + x,
+                    y: placement.origin.y + y,
                     width: ITEM_SLOT_SIZE,
                     height: ITEM_SLOT_SIZE,
                 },
@@ -785,13 +795,22 @@ fn inventory_item_at(
 }
 
 fn inventory_tab_at(
+    state: GuiState,
     gui: &GameGui,
+    viewport_width: f32,
+    viewport_height: f32,
     point: CanvasPoint,
 ) -> Option<InventoryTab> {
-    let window = gui.inventory_window.as_ref()?;
     InventoryTab::ALL.into_iter().find(|tab| {
-        window_region_rect(window, &format!("inventory-tab-{}", tab.key()))
-            .is_some_and(|rect| rect_contains(rect, point))
+        window_region_rect(
+            state,
+            gui,
+            WindowKind::Inventory,
+            viewport_width,
+            viewport_height,
+            &format!("inventory-tab-{}", tab.key()),
+        )
+        .is_some_and(|rect| rect_contains(rect, point))
     })
 }
 
@@ -807,17 +826,26 @@ fn item_category_tab(category: i32) -> Option<InventoryTab> {
 }
 
 fn equipped_item_at(
+    state: GuiState,
     gui: &GameGui,
     inventory: &InventoryState,
+    viewport_width: f32,
+    viewport_height: f32,
     point: CanvasPoint,
 ) -> Option<i32> {
-    let window = gui.equipment_window.as_ref()?;
+    let placement = resolve_window(
+        gui,
+        state.window_placements,
+        WindowKind::Equipment,
+        viewport_width,
+        viewport_height,
+    )?;
     inventory.equipment.iter().find_map(|equipped| {
         let (x, y) = equipment_slot_position(equipped.slot)?;
         rect_contains(
             CanvasRect {
-                x: window.x + x,
-                y: window.y + y,
+                x: placement.origin.x + x,
+                y: placement.origin.y + y,
                 width: ITEM_SLOT_SIZE,
                 height: ITEM_SLOT_SIZE,
             },
@@ -947,7 +975,9 @@ mod tests {
     use super::GuiState;
     use super::InventoryTab;
     use super::PointerButton;
+    use super::WindowKind;
     use super::apply_local_action;
+    use super::can_allocate_ability;
     use super::canvas_point;
     use super::click_action;
     use super::gauge_fills;
@@ -960,6 +990,17 @@ mod tests {
     use super::sprite_screen_x;
     use super::status_sprite_visible;
     use super::valid_layout;
+    use super::window::set_window_offset;
+
+    #[test]
+    fn ability_allocation_requires_an_available_point() {
+        assert!(!can_allocate_ability(None));
+        assert!(!can_allocate_ability(Some(&CharacterStats::default())));
+        assert!(can_allocate_ability(Some(&CharacterStats {
+            ability_points: 1,
+            ..CharacterStats::default()
+        })));
+    }
 
     #[test]
     fn stat_button_toggles_the_window_and_close_hides_it() {
@@ -1207,8 +1248,15 @@ mod tests {
         assert_eq!(slots.len(), 24);
         assert_eq!(slots[23].inventory_index, 23);
         assert_eq!(
-            hovered_inventory_item(state, &gui, &inventory, CanvasPoint { x: 213.0, y: 131.0 },)
-                .map(|slot| slot.definition.item_id),
+            hovered_inventory_item(
+                state,
+                &gui,
+                &inventory,
+                960.0,
+                600.0,
+                CanvasPoint { x: 213.0, y: 131.0 },
+            )
+            .map(|slot| slot.definition.item_id),
             Some(1_040_000)
         );
         assert!(
@@ -1216,6 +1264,8 @@ mod tests {
                 GuiState::default(),
                 &gui,
                 &inventory,
+                960.0,
+                600.0,
                 CanvasPoint { x: 213.0, y: 131.0 },
             )
             .is_none()
@@ -1357,13 +1407,133 @@ mod tests {
             None,
             960.0,
             600.0,
-            CanvasPoint { x: 780.0, y: 70.0 },
+            CanvasPoint { x: 700.0, y: 540.0 },
             PointerButton::Left,
         )
         .expect("key settings close action");
-        assert_eq!(close, GuiAction::CloseKeyConfig);
+        assert_eq!(close, GuiAction::ToggleKeyConfig);
         assert!(apply_local_action(&mut state, close));
         assert!(!state.key_config_open);
+    }
+
+    #[test]
+    fn normal_window_hit_tests_follow_client_offsets() {
+        let gui = gui_fixture();
+        let inventory = InventoryState {
+            equipment: vec![EquippedItem {
+                slot: EquipmentSlot::Top as i32,
+                item_id: 1_040_002,
+                expires_at_unix_ms: 0,
+            }],
+            capacity: 24,
+            stacks: vec![inventory_stack(1_040_003)],
+        };
+
+        let mut inventory_state = GuiState {
+            inventory_open: true,
+            ..GuiState::default()
+        };
+        set_window_offset(
+            &mut inventory_state.window_placements,
+            WindowKind::Inventory,
+            CanvasPoint { x: 100.0, y: 20.0 },
+        );
+        assert_eq!(
+            click_action(
+                inventory_state,
+                &gui,
+                Some(&inventory),
+                None,
+                960.0,
+                600.0,
+                CanvasPoint { x: 313.0, y: 151.0 },
+                PointerButton::Right,
+            ),
+            Some(GuiAction::Drop { inventory_index: 0 })
+        );
+        assert!(
+            hovered_inventory_item(
+                inventory_state,
+                &gui,
+                &inventory,
+                960.0,
+                600.0,
+                CanvasPoint { x: 313.0, y: 151.0 },
+            )
+            .is_some()
+        );
+
+        let mut equipment_state = GuiState {
+            equipment_open: true,
+            ..GuiState::default()
+        };
+        set_window_offset(
+            &mut equipment_state.window_placements,
+            WindowKind::Equipment,
+            CanvasPoint { x: 100.0, y: 20.0 },
+        );
+        assert_eq!(
+            click_action(
+                equipment_state,
+                &gui,
+                Some(&inventory),
+                None,
+                960.0,
+                600.0,
+                CanvasPoint { x: 192.0, y: 235.0 },
+                PointerButton::Left,
+            ),
+            Some(GuiAction::Unequip {
+                slot: EquipmentSlot::Top as i32
+            })
+        );
+
+        let mut skill_state = GuiState {
+            skills_open: true,
+            ..GuiState::default()
+        };
+        set_window_offset(
+            &mut skill_state.window_placements,
+            WindowKind::Skills,
+            CanvasPoint { x: 100.0, y: 20.0 },
+        );
+        let book = skill_book_fixture(1, 0);
+        assert_eq!(
+            click_action(
+                skill_state,
+                &gui,
+                None,
+                Some(&book),
+                960.0,
+                600.0,
+                CanvasPoint { x: 140.0, y: 200.0 },
+                PointerButton::Left,
+            ),
+            Some(GuiAction::UseSkill { skill_id: 1_000 })
+        );
+
+        let mut stat_state = GuiState {
+            stats_open: true,
+            ..GuiState::default()
+        };
+        set_window_offset(
+            &mut stat_state.window_placements,
+            WindowKind::Stats,
+            CanvasPoint { x: 100.0, y: 20.0 },
+        );
+        assert_eq!(
+            click_action(
+                stat_state,
+                &gui,
+                None,
+                None,
+                960.0,
+                600.0,
+                CanvasPoint { x: 281.0, y: 106.0 },
+                PointerButton::Left,
+            ),
+            Some(GuiAction::CloseStats)
+        );
     }
 
     #[test]

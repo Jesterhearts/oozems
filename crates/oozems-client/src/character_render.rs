@@ -24,6 +24,7 @@ pub enum CharacterAnimation {
     Ladder,
     Rope,
     Attack,
+    Death,
 }
 
 pub fn draw_character(
@@ -35,11 +36,22 @@ pub fn draw_character(
     placement: CharacterPlacement,
 ) {
     let frames = animation_frames(sprites, animation);
-    let Some(preferred_index) = crate::animation::frame_index(
+    let playback = if animation == CharacterAnimation::Death {
+        crate::animation::Playback::Once
+    } else {
+        crate::animation::Playback::Loop
+    };
+    let preferred_index = crate::animation::frame_index(
         frames.iter().map(|frame| frame.delay_ms),
         timestamp_ms,
-        crate::animation::Playback::Loop,
-    ) else {
+        playback,
+    )
+    .or_else(|| {
+        (animation == CharacterAnimation::Death)
+            .then(|| frames.len().checked_sub(1))
+            .flatten()
+    });
+    let Some(preferred_index) = preferred_index else {
         return;
     };
     let Some(frame) = drawable_frame(assets, sprites, frames, preferred_index) else {
@@ -97,6 +109,7 @@ fn all_frames(sprites: &CharacterSpriteSet) -> impl Iterator<Item = &CharacterFr
         .chain(&sprites.ladder_frames)
         .chain(&sprites.rope_frames)
         .chain(&sprites.attack_frames)
+        .chain(&sprites.death_frames)
 }
 
 pub fn animation_duration_ms(
@@ -120,6 +133,7 @@ fn animation_frames(
         CharacterAnimation::Ladder => &sprites.ladder_frames,
         CharacterAnimation::Rope => &sprites.rope_frames,
         CharacterAnimation::Attack => &sprites.attack_frames,
+        CharacterAnimation::Death => &sprites.death_frames,
     };
     if selected.is_empty() {
         &sprites.idle_frames
@@ -177,6 +191,10 @@ mod tests {
         );
         assert_eq!(
             animation_frames(&sprites, CharacterAnimation::Attack),
+            sprites.idle_frames
+        );
+        assert_eq!(
+            animation_frames(&sprites, CharacterAnimation::Death),
             sprites.idle_frames
         );
     }

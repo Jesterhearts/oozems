@@ -51,6 +51,7 @@ mod actions;
 mod automatic;
 mod availability;
 mod choices;
+mod indicators;
 mod readiness;
 mod rewards;
 
@@ -58,6 +59,7 @@ pub(crate) use actions::*;
 pub(crate) use automatic::*;
 pub(crate) use availability::*;
 pub(crate) use choices::*;
+pub(crate) use indicators::*;
 pub(crate) use readiness::*;
 pub(crate) use rewards::*;
 

@@ -94,6 +94,7 @@ pub fn authoritative_motion_state(
             map,
             position,
             rules.platform_edge_tolerance,
+            rules.ground_tolerance,
         )),
         MovementMode::Airborne => Ok(MotionState {
             platform_layer: airborne_platform_layer,
@@ -143,15 +144,16 @@ pub fn initial_motion_state(
     map: &Map,
     position: &Vec2,
 ) -> MotionState {
-    grounded_motion_state(map, position, 0.0)
+    grounded_motion_state(map, position, 0.0, PLATFORM_CONTACT_TOLERANCE)
 }
 
 fn grounded_motion_state(
     map: &Map,
     position: &Vec2,
     edge_tolerance: f32,
+    contact_tolerance: f32,
 ) -> MotionState {
-    supporting_platform(map, position, edge_tolerance).map_or_else(
+    supporting_platform(map, position, edge_tolerance, contact_tolerance).map_or_else(
         MotionState::default,
         |contact| MotionState {
             on_ground: true,
@@ -571,6 +573,7 @@ fn supporting_platform(
     map: &Map,
     position: &Vec2,
     edge_tolerance: f32,
+    contact_tolerance: f32,
 ) -> Option<GroundContact> {
     map.platforms
         .iter()
@@ -581,7 +584,7 @@ fn supporting_platform(
                 return None;
             }
             let y = platform_y(platform, position.x.clamp(minimum_x, maximum_x))?;
-            ((y - position.y).abs() <= PLATFORM_CONTACT_TOLERANCE).then_some(GroundContact {
+            ((y - position.y).abs() <= contact_tolerance).then_some(GroundContact {
                 y,
                 layer: platform.layer,
             })
@@ -1031,6 +1034,30 @@ mod tests {
             0,
         )
         .expect("authoritative state");
+
+        assert!(state.on_ground);
+        assert_eq!(state.platform_layer, 2);
+    }
+
+    #[test]
+    fn authoritative_grounding_uses_the_server_contact_tolerance() {
+        let map = Map {
+            platforms: vec![Platform {
+                x: 100.0,
+                y: 300.0,
+                end_x: 200.0,
+                end_y: 300.0,
+                layer: 2,
+                ..Platform::default()
+            }],
+            ..Map::default()
+        };
+        let position = Vec2 { x: 150.0, y: 294.0 };
+
+        assert!(!initial_motion_state(&map, &position).on_ground);
+        let state =
+            authoritative_motion_state(&map, &rules(), &position, MovementMode::Grounded, 0)
+                .expect("authoritative state");
 
         assert!(state.on_ground);
         assert_eq!(state.platform_layer, 2);

@@ -178,6 +178,29 @@ mod tests {
     }
 
     #[test]
+    fn equipped_weapon_attack_increases_basic_attack_damage() {
+        let player = PlayerState {
+            level: 1,
+            stats: Some(CharacterStats {
+                job_id: 0,
+                strength: 12,
+                dexterity: 5,
+                intelligence: 4,
+                luck: 4,
+                ..CharacterStats::default()
+            }),
+            ..PlayerState::default()
+        };
+        let formulas = formulas();
+
+        let bare_hands = calculate_basic_attack(&player, &formulas, 0).expect("bare-hands damage");
+        let weapon = calculate_basic_attack(&player, &formulas, 17).expect("weapon damage");
+
+        assert!(weapon.minimum > bare_hands.minimum);
+        assert!(weapon.maximum > bare_hands.maximum);
+    }
+
+    #[test]
     fn basic_attack_cooldown_is_atomic_and_expires() {
         let cooldowns = BasicAttackCooldowns::default();
         let interval = std::time::Duration::from_millis(600);

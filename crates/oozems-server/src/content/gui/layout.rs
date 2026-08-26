@@ -572,15 +572,34 @@ pub(super) fn compose_stat_window(
     ];
     sprites.extend(
         [117.0, 135.0, 246.0, 264.0, 282.0, 300.0]
-            .map(|y| place_sprite(&sources.ability_up, 153.0, y, false)),
+            .map(|y| place_sprite(&sources.ability_up_disabled, 153.0, y, false)),
     );
+    sprites.extend(
+        [246.0, 264.0, 282.0, 300.0].map(|y| place_sprite(&sources.ability_up, 153.0, y, false)),
+    );
+    let regions = [
+        ("stat-strength-up", 246.0),
+        ("stat-dexterity-up", 264.0),
+        ("stat-intelligence-up", 282.0),
+        ("stat-luck-up", 300.0),
+    ]
+    .map(|(name, y)| {
+        region(
+            name,
+            153.0,
+            y,
+            sources.ability_up.width,
+            sources.ability_up.height,
+        )
+    })
+    .into();
     let layout = GuiLayout {
         width,
         height,
         background: Some(background),
         sprites,
         sprite_templates: Vec::new(),
-        regions: Vec::new(),
+        regions,
     };
     validate_layout(&layout)?;
     Ok(GuiWindow {

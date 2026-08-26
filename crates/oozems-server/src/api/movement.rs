@@ -42,6 +42,13 @@ pub async fn submit_movement(
     let player_guard = lock_player(&state, &player_id).await?;
     let now_ms = unix_time_ms()?;
     let mutation = begin_player_mutation(&state, &player_guard, &player_id, now_ms).await?;
+    let player_is_dead = mutation
+        .player
+        .stats
+        .as_ref()
+        .ok_or_else(|| ApiError::PlayerData("character stats are missing".to_owned()))?
+        .hp
+        == 0;
     let submitted = request
         .snapshot
         .ok_or_else(|| {
@@ -58,8 +65,12 @@ pub async fn submit_movement(
         speed: projected.speed,
         jump: projected.jump,
     };
-    let decision =
-        submit_with_lazy_map(&state, &mutation.player, submitted, modifiers, now_ms).await?;
+    let decision = if player_is_dead {
+        submit_stationary_with_lazy_map(&state, &mutation.player, submitted, modifiers, now_ms)
+            .await?
+    } else {
+        submit_with_lazy_map(&state, &mutation.player, submitted, modifiers, now_ms).await?
+    };
     Ok(Protobuf(
         movement_response(
             &state,
@@ -108,6 +119,40 @@ async fn submit_with_lazy_map(
     }
 }
 
+async fn submit_stationary_with_lazy_map(
+    state: &AppState,
+    current: &PlayerState,
+    submitted: crate::movement::SubmittedMovement,
+    modifiers: crate::movement::MovementModifiers,
+    now_ms: u64,
+) -> Result<crate::movement::MovementDecision, ApiError> {
+    match crate::movement::submit_stationary_observation(
+        &state.movement,
+        current,
+        submitted,
+        modifiers,
+        state.gameplay.movement,
+        now_ms,
+    ) {
+        Ok(decision) => Ok(decision),
+        Err(crate::movement::MovementError::MissingMap { map_id }) => {
+            let map = load_map(state, map_id).await?.ok_or_else(|| {
+                ApiError::not_found("map_not_found", format!("map {map_id} does not exist"))
+            })?;
+            crate::movement::register_map(&state.movement, &map)?;
+            Ok(crate::movement::submit_stationary_observation(
+                &state.movement,
+                current,
+                submitted,
+                modifiers,
+                state.gameplay.movement,
+                now_ms,
+            )?)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
 pub async fn enter_portal(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -118,6 +163,7 @@ pub async fn enter_portal(
     let player_guard = lock_player(&state, &player_id).await?;
     let now_ms = unix_time_ms()?;
     let mutation = begin_player_mutation(&state, &player_guard, &player_id, now_ms).await?;
+    super::require_living_player(&mutation.player, "enter a portal")?;
     let source = request
         .source
         .ok_or_else(|| {
@@ -229,12 +275,15 @@ async fn movement_response(
         let authoritative_player =
             crate::movement::synchronize_player(&state.movement, current.clone())?;
         let effects = mutation.effects;
+        let equipment =
+            crate::items::equipment_stats(&authoritative_player, state.catalog.as_ref())
+                .map_err(super::item_rule_error)?;
         let dropped_items = crate::items::map_drops(&state.drops, map_id)?;
         let simulation = crate::mobs::observe_player_with_effects(
             &state.mobs,
             &map,
             &authoritative_player,
-            effects.projected(),
+            super::project_combat_effects(effects.projected(), equipment),
         )
         .await?;
         let has_player_effects =
@@ -402,6 +451,7 @@ mod tests {
                 face_id: 21_000,
                 hair_id: 31_000,
             },
+            crate::items::starter_inventory(),
             100,
             Vec2 { x: 10.0, y: 20.0 },
             15,

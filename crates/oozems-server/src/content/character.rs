@@ -142,7 +142,8 @@ impl CharacterContent {
         let coats = index_directory(&root, "Coat")?;
         let pants = index_directory(&root, "Pants")?;
         let shoes = index_directory(&root, "Shoes")?;
-        let equipment = index_supported_equipment(&coats, &pants, &shoes)?;
+        let weapons = index_directory(&root, "Weapon")?;
+        let equipment = index_supported_equipment(&coats, &pants, &shoes, &weapons)?;
         let pajamas = load_pajama_sources(&coats, &pants)?;
         let options = build_creation_options(&bodies, &heads, &faces, &hairs);
         validate_options(&options)?;
@@ -348,7 +349,7 @@ fn load_pajama_sources(
     })
 }
 
-fn character_clothing_sources(
+fn character_equipment_sources(
     content: &CharacterContent,
     key: &CharacterKey,
 ) -> Result<Vec<WzNodeArc>, CharacterContentError> {
@@ -388,6 +389,7 @@ fn index_supported_equipment(
     coats: &HashMap<u32, WzNodeArc>,
     pants: &HashMap<u32, WzNodeArc>,
     shoes: &HashMap<u32, WzNodeArc>,
+    weapons: &HashMap<u32, WzNodeArc>,
 ) -> Result<HashMap<u32, WzNodeArc>, CharacterContentError> {
     equipment_specs()
         .into_iter()
@@ -396,6 +398,7 @@ fn index_supported_equipment(
                 EquipmentSlot::Top => required_style(coats, item_id, "equipment top")?,
                 EquipmentSlot::Bottom => required_style(pants, item_id, "equipment bottom")?,
                 EquipmentSlot::Shoes => required_style(shoes, item_id, "equipment shoes")?,
+                EquipmentSlot::Weapon => required_style(weapons, item_id, "equipment weapon")?,
                 EquipmentSlot::Unspecified => unreachable!("item specifications use valid slots"),
             };
             Ok((item_id, source))
@@ -403,7 +406,7 @@ fn index_supported_equipment(
         .collect()
 }
 
-fn equipment_specs() -> [(u32, EquipmentSlot); 6] {
+fn equipment_specs() -> [(u32, EquipmentSlot); 11] {
     [
         (crate::items::STARTER_TOP_ID, EquipmentSlot::Top),
         (crate::items::STARTER_BOTTOM_ID, EquipmentSlot::Bottom),
@@ -411,10 +414,15 @@ fn equipment_specs() -> [(u32, EquipmentSlot); 6] {
         (crate::items::SPARE_TOP_ID, EquipmentSlot::Top),
         (crate::items::SPARE_BOTTOM_ID, EquipmentSlot::Bottom),
         (crate::items::SPARE_SHOES_ID, EquipmentSlot::Shoes),
+        (1_072_005, EquipmentSlot::Shoes),
+        (1_072_038, EquipmentSlot::Shoes),
+        (1_302_000, EquipmentSlot::Weapon),
+        (1_312_004, EquipmentSlot::Weapon),
+        (1_322_005, EquipmentSlot::Weapon),
     ]
 }
 
-pub(super) fn supported_equipment_ids() -> [u32; 6] {
+pub(super) fn supported_equipment_ids() -> [u32; 11] {
     equipment_specs().map(|(item_id, _)| item_id)
 }
 
@@ -466,6 +474,7 @@ fn build_creation_options(
         ),
         faces: gendered_style_options(faces, 20_000, 21_000, "Face"),
         hairs: gendered_style_options(hairs, 30_000, 31_000, "Hair"),
+        equipment: Vec::new(),
     }
 }
 
@@ -568,7 +577,7 @@ fn build_sprite_set(
     ] {
         parse(node, format!("Character.wz {label} {}", appearance.skin_id))?;
     }
-    let equipment = character_clothing_sources(source, &key)?;
+    let equipment = character_equipment_sources(source, &key)?;
     for node in &equipment {
         parse(node, node_path(node)?)?;
     }
@@ -588,6 +597,7 @@ fn build_sprite_set(
     let ladder_frames = build_animation(source, parts, "ladder", &mut assets, &mut asset_ids)?;
     let rope_frames = build_animation(source, parts, "rope", &mut assets, &mut asset_ids)?;
     let attack_frames = build_animation(source, parts, "swingO1", &mut assets, &mut asset_ids)?;
+    let death_frames = build_animation(source, parts, "dead", &mut assets, &mut asset_ids)?;
 
     Ok(CharacterSpriteSet {
         idle_frames,
@@ -597,6 +607,7 @@ fn build_sprite_set(
         ladder_frames,
         rope_frames,
         attack_frames,
+        death_frames,
     })
 }
 
@@ -683,7 +694,7 @@ fn build_frame(
 
     for clothing in parts.equipment {
         if let Some(frame) = animation_frame(clothing, animation_name, frame_name)? {
-            add_direct_layers(&frame, &["navel"], None, &mut bones, &mut layers)?;
+            add_direct_layers(&frame, &["navel", "hand"], None, &mut bones, &mut layers)?;
         }
     }
 
@@ -864,6 +875,7 @@ fn build_layer(
 fn z_rank(z: &str) -> u16 {
     match z {
         "backBody" => 0,
+        "backWeapon" => 0,
         "backMailChestBelowPants" => 1,
         "backPantsBelowShoes" => 2,
         "backShoesBelowPants" => 3,
@@ -876,13 +888,17 @@ fn z_rank(z: &str) -> u16 {
         "backHead" | "hair" => 10,
         "backHairBelowCap" => 11,
         "backHair" => 15,
+        "weaponBelowBody" => 19,
         "body" => 20,
         "pants" | "pantsBelowShoes" => 30,
         "shoes" | "shoesOverPants" => 40,
         "mailChest" => 50,
+        "weaponBelowArm" => 59,
         "arm" => 60,
         "mailArm" => 70,
+        "weapon" => 75,
         "glove" | "gloveWrist" | "hand" => 80,
+        "weaponOverHand" => 85,
         "head" | "ear" => 90,
         "face" => 100,
         "hairOverHead" | "hairBelowCap" => 110,
@@ -913,9 +929,10 @@ mod tests {
     use super::HeadView;
     use super::PajamaSources;
     use super::attachment_translation;
-    use super::character_clothing_sources;
+    use super::character_equipment_sources;
     use super::hair_frame;
     use super::head_view;
+    use super::supported_equipment_slot;
     use super::z_rank;
 
     #[test]
@@ -992,6 +1009,7 @@ mod tests {
         let female_top = WzNode::from_str("female-top", 0, None).into_lock();
         let female_bottom = WzNode::from_str("female-bottom", 0, None).into_lock();
         let equipped_top = WzNode::from_str("equipped-top", 0, None).into_lock();
+        let equipped_weapon = WzNode::from_str("equipped-weapon", 0, None).into_lock();
         let content = CharacterContent {
             _base: Arc::clone(&root),
             root,
@@ -999,7 +1017,10 @@ mod tests {
             heads: HashMap::new(),
             faces: HashMap::new(),
             hairs: HashMap::new(),
-            equipment: HashMap::from([(crate::items::STARTER_TOP_ID, Arc::clone(&equipped_top))]),
+            equipment: HashMap::from([
+                (crate::items::STARTER_TOP_ID, Arc::clone(&equipped_top)),
+                (1_302_000, Arc::clone(&equipped_weapon)),
+            ]),
             pajamas: PajamaSources {
                 male_top: Arc::clone(&male_top),
                 male_bottom: Arc::clone(&male_bottom),
@@ -1018,7 +1039,7 @@ mod tests {
             hair_id: 0,
         };
 
-        let naked = character_clothing_sources(
+        let naked = character_equipment_sources(
             &content,
             &CharacterKey {
                 appearance: male,
@@ -1029,7 +1050,7 @@ mod tests {
         assert!(naked.iter().any(|source| Arc::ptr_eq(source, &male_top)));
         assert!(naked.iter().any(|source| Arc::ptr_eq(source, &male_bottom)));
 
-        let top_equipped = character_clothing_sources(
+        let top_equipped = character_equipment_sources(
             &content,
             &CharacterKey {
                 appearance: male,
@@ -1053,7 +1074,21 @@ mod tests {
                 .any(|source| Arc::ptr_eq(source, &male_top))
         );
 
-        let female = character_clothing_sources(
+        let armed = character_equipment_sources(
+            &content,
+            &CharacterKey {
+                appearance: male,
+                equipment: vec![(EquipmentSlot::Weapon as i32, 1_302_000)],
+            },
+        )
+        .expect("equipped weapon and pajamas");
+        assert!(
+            armed
+                .iter()
+                .any(|source| Arc::ptr_eq(source, &equipped_weapon))
+        );
+
+        let female = character_equipment_sources(
             &content,
             &CharacterKey {
                 appearance: AppearanceKey {
@@ -1070,6 +1105,31 @@ mod tests {
                 .iter()
                 .any(|source| Arc::ptr_eq(source, &female_bottom))
         );
+    }
+
+    #[test]
+    fn starter_character_equipment_ids_have_authoritative_slots() {
+        for item_id in [1_040_002, 1_040_003] {
+            assert_eq!(supported_equipment_slot(item_id), Some(EquipmentSlot::Top));
+        }
+        for item_id in [1_060_001, 1_060_002] {
+            assert_eq!(
+                supported_equipment_slot(item_id),
+                Some(EquipmentSlot::Bottom)
+            );
+        }
+        for item_id in [1_072_001, 1_072_005, 1_072_038] {
+            assert_eq!(
+                supported_equipment_slot(item_id),
+                Some(EquipmentSlot::Shoes)
+            );
+        }
+        for item_id in [1_302_000, 1_312_004, 1_322_005] {
+            assert_eq!(
+                supported_equipment_slot(item_id),
+                Some(EquipmentSlot::Weapon)
+            );
+        }
     }
 
     fn add(

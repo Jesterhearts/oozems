@@ -149,6 +149,7 @@ async fn request_item_action(
         | GuiAction::SelectInventoryTab { .. }
         | GuiAction::CloseKeyConfig
         | GuiAction::CloseSkills
+        | GuiAction::AllocateAbility { .. }
         | GuiAction::AllocateSkill { .. }
         | GuiAction::UseSkill { .. } => unreachable!("non-item GUI action reached the item server"),
     }
@@ -214,6 +215,7 @@ fn item_action_message(action: GuiAction) -> &'static str {
         | GuiAction::SelectInventoryTab { .. }
         | GuiAction::CloseKeyConfig
         | GuiAction::CloseSkills
+        | GuiAction::AllocateAbility { .. }
         | GuiAction::AllocateSkill { .. }
         | GuiAction::UseSkill { .. } => "GUI updated.",
     }

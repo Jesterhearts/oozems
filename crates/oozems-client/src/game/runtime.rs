@@ -44,6 +44,19 @@ pub struct CharacterAnimationState {
     one_shot_until_ms: Option<f64>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MovementObservationMode {
+    Active,
+    Stationary,
+    Paused,
+}
+
+impl MovementObservationMode {
+    fn enabled(self) -> bool {
+        self != Self::Paused
+    }
+}
+
 pub(super) fn update(
     game: &mut Game,
     timestamp_ms: f64,
@@ -73,6 +86,7 @@ pub(super) fn update(
         let bindings = game.player.key_bindings.current.borrow();
         keymap::drain_frame_input(&mut game.input.keyboard.borrow_mut(), &bindings)
     };
+    let dead = player_is_dead(&game.player.state);
     let key_config_open = game.ui.gui_state.borrow().key_config_open;
     if key_config_open {
         input.player = PlayerInput::default();
@@ -89,6 +103,20 @@ pub(super) fn update(
         input.player = PlayerInput::default();
         input.skills.clear();
         input.actions.clear();
+    }
+    if dead {
+        input.player = PlayerInput::default();
+        input.skills.clear();
+        input.actions.retain(|action| {
+            matches!(
+                action,
+                KeyAction::OpenCharacter
+                    | KeyAction::OpenEquipment
+                    | KeyAction::OpenInventory
+                    | KeyAction::OpenKeyConfig
+                    | KeyAction::OpenSkills
+            )
+        });
     }
     let pick_up = apply_key_actions(
         &mut game.ui.gui_state.borrow_mut(),
@@ -114,7 +142,7 @@ pub(super) fn update(
         .requests
         .admission
         .is_active(requests::RequestKind::Transition);
-    let selected_transition = if transition_active {
+    let selected_transition = if transition_active || dead {
         None
     } else {
         update_player(
@@ -126,6 +154,14 @@ pub(super) fn update(
             input.player,
         )
     };
+    if dead {
+        update_character_animation(
+            &mut game.world.character_animation,
+            CharacterAnimation::Death,
+            true,
+            timestamp_ms,
+        );
+    }
     let selected_transition = selected_transition.and_then(|transition| {
         let observation = movement_actions::observation(
             game.world.map.id,
@@ -135,17 +171,22 @@ pub(super) fn update(
         movement_actions::capture_movement_snapshot(&mut game.requests.movement, observation)
             .map(|source| PendingTransition { source, transition })
     });
+    if dead {
+        game.requests.deferred_transitions.clear();
+    }
     let transition = select_transition_request(
         &mut game.requests.deferred_transitions,
         selected_transition,
         game.world.map.id,
-        transition_active
+        dead || transition_active
             || pending.has_player_mutation()
             || game.requests.admission.player_mutation_is_active(),
     );
     let transition_pending = transition.is_some() || !game.requests.deferred_transitions.is_empty();
+    let movement_observation_mode =
+        movement_observation_mode(dead, transition_pending, transition_active);
     let (basic_attack, skill_id) = select_combat_requests(
-        game.player.active_buffs.attacks_disabled,
+        game.player.active_buffs.attacks_disabled || dead,
         transition_pending,
         transition_active,
         basic_attack_requested,
@@ -159,7 +200,7 @@ pub(super) fn update(
     let movement_snapshot = movement_actions::update(
         &mut game.requests.movement,
         game.world.movement_rules.snapshot_interval_ms,
-        !transition_pending && !transition_active,
+        movement_observation_mode.enabled(),
         game.requests
             .admission
             .is_active(requests::RequestKind::Movement),
@@ -172,7 +213,14 @@ pub(super) fn update(
         .stats
         .as_ref()
         .is_some_and(|stats| stats.hp < stats.max_hp || stats.mp < stats.max_mp);
-    let can_poll_recovery = game.world.character_animation.animation == CharacterAnimation::Idle
+    let death_animation_finished = dead
+        && character_animation_elapsed_ms(game.world.character_animation, timestamp_ms)
+            >= crate::character_render::animation_duration_ms(
+                &game.world.character_sprites,
+                CharacterAnimation::Death,
+            ) as f64;
+    let can_poll_recovery = (game.world.character_animation.animation == CharacterAnimation::Idle
+        || death_animation_finished)
         && !pick_up
         && !basic_attack
         && skill_id.is_none()
@@ -229,6 +277,20 @@ pub(super) fn update(
         requests.push(PendingRequest::Transition(transition));
     }
     requests
+}
+
+fn movement_observation_mode(
+    dead: bool,
+    transition_pending: bool,
+    transition_active: bool,
+) -> MovementObservationMode {
+    if transition_pending || transition_active {
+        MovementObservationMode::Paused
+    } else if dead {
+        MovementObservationMode::Stationary
+    } else {
+        MovementObservationMode::Active
+    }
 }
 
 fn select_combat_requests(
@@ -363,6 +425,10 @@ pub(super) fn character_animation(
     }
 }
 
+pub(super) fn player_is_dead(player: &PlayerState) -> bool {
+    player.stats.as_ref().is_some_and(|stats| stats.hp == 0)
+}
+
 pub(super) fn new_character_animation_state(
     animation: CharacterAnimation,
     plays: bool,
@@ -393,6 +459,10 @@ pub(super) fn update_character_animation(
     plays: bool,
     timestamp_ms: f64,
 ) {
+    if next == CharacterAnimation::Death && state.animation != CharacterAnimation::Death {
+        *state = new_character_animation_state(next, true, timestamp_ms);
+        return;
+    }
     if state
         .one_shot_until_ms
         .is_some_and(|deadline_ms| timestamp_ms < deadline_ms)
@@ -453,23 +523,67 @@ pub(crate) fn character_animation_elapsed_ms(
 mod tests {
     use std::collections::VecDeque;
 
+    use oozems_proto::v1::CharacterStats;
+    use oozems_proto::v1::GameGui;
+    use oozems_proto::v1::GuiWindow;
+    use oozems_proto::v1::KeyAction;
+    use oozems_proto::v1::KeyBinding;
     use oozems_proto::v1::Ladder;
     use oozems_proto::v1::Map;
     use oozems_proto::v1::MovementContact;
     use oozems_proto::v1::MovementMode;
     use oozems_proto::v1::MovementSnapshot;
+    use oozems_proto::v1::PlayerState;
     use oozems_proto::v1::Vec2;
 
+    use super::MovementObservationMode;
+    use super::apply_key_actions;
     use super::character_animation;
     use super::character_animation_elapsed_ms;
     use super::character_animation_plays;
+    use super::movement_observation_mode;
     use super::new_character_animation_state;
+    use super::player_is_dead;
     use super::restart_character_animation;
     use super::select_combat_requests;
     use super::select_transition_request;
     use super::update_character_animation;
+
+    #[test]
+    fn zero_health_is_the_authoritative_death_state() {
+        let mut player = PlayerState {
+            stats: Some(CharacterStats {
+                hp: 1,
+                ..CharacterStats::default()
+            }),
+            ..PlayerState::default()
+        };
+        assert!(!player_is_dead(&player));
+
+        player.stats.as_mut().expect("stats").hp = 0;
+        assert!(player_is_dead(&player));
+    }
+
+    #[test]
+    fn dead_players_keep_stationary_observations_until_a_transition_starts() {
+        assert_eq!(
+            movement_observation_mode(true, false, false),
+            MovementObservationMode::Stationary
+        );
+        assert!(movement_observation_mode(true, false, false).enabled());
+        assert_eq!(
+            movement_observation_mode(true, true, false),
+            MovementObservationMode::Paused
+        );
+        assert_eq!(
+            movement_observation_mode(true, false, true),
+            MovementObservationMode::Paused
+        );
+    }
     use crate::character_render::CharacterAnimation;
     use crate::game::request_dispatch::PendingTransition;
+    use crate::game_gui::GuiState;
+    use crate::keymap;
     use crate::movement::MapTransition;
     use crate::movement::MotionState;
     use crate::movement::PlayerInput;
@@ -556,6 +670,32 @@ mod tests {
     }
 
     #[test]
+    fn configured_key_config_hotkey_toggles_open_and_closed() {
+        let bindings = vec![KeyBinding {
+            code: "KeyK".to_owned(),
+            action: KeyAction::OpenKeyConfig as i32,
+            skill_id: 0,
+        }];
+        let gui = GameGui {
+            key_config_window: Some(GuiWindow::default()),
+            ..GameGui::default()
+        };
+        let mut keyboard = keymap::KeyboardState::default();
+        let mut state = GuiState::default();
+
+        assert!(keymap::set_key(&mut keyboard, &bindings, "KeyK", true));
+        let input = keymap::drain_frame_input(&mut keyboard, &bindings);
+        assert!(!apply_key_actions(&mut state, &gui, &input.actions));
+        assert!(state.key_config_open);
+
+        assert!(keymap::set_key(&mut keyboard, &bindings, "KeyK", false));
+        assert!(keymap::set_key(&mut keyboard, &bindings, "KeyK", true));
+        let input = keymap::drain_frame_input(&mut keyboard, &bindings);
+        assert!(!apply_key_actions(&mut state, &gui, &input.actions));
+        assert!(!state.key_config_open);
+    }
+
+    #[test]
     fn movement_state_selects_the_character_animation() {
         let map = Map {
             ladders: vec![
@@ -636,6 +776,18 @@ mod tests {
         update_character_animation(&mut animation, CharacterAnimation::Walk, true, 400.0);
         assert_eq!(animation.animation, CharacterAnimation::Walk);
         assert_eq!(character_animation_elapsed_ms(animation, 400.0), 0.0);
+    }
+
+    #[test]
+    fn death_interrupts_an_active_attack_animation() {
+        let mut animation = new_character_animation_state(CharacterAnimation::Attack, true, 100.0);
+        animation.one_shot_until_ms = Some(400.0);
+
+        update_character_animation(&mut animation, CharacterAnimation::Death, true, 200.0);
+
+        assert_eq!(animation.animation, CharacterAnimation::Death);
+        assert_eq!(character_animation_elapsed_ms(animation, 200.0), 0.0);
+        assert_eq!(animation.one_shot_until_ms, None);
     }
 
     #[test]

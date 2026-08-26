@@ -13,6 +13,7 @@ use super::lock_player;
 use super::merge_dropped_items;
 use super::parse_player_id;
 use super::prepare_simulation_player_effects;
+use super::project_combat_effects;
 use super::unix_time_ms;
 use crate::app::AppState;
 
@@ -28,16 +29,23 @@ pub async fn use_basic_attack(
     let mutation = begin_player_mutation(&state, &player_guard, &player_id, now_ms).await?;
     let player = mutation.player.clone();
     let effects = mutation.effects.clone();
+    super::require_living_player(&player, "attack")?;
     if effects.attacks_disabled() {
         return Err(ApiError::bad_request(
             "invalid_attack_action",
             "the active morph does not allow attacks",
         ));
     }
+    let equipment = crate::items::equipment_stats(&player, state.catalog.as_ref())
+        .map_err(super::item_rule_error)?;
     let damage = crate::attacks::calculate_basic_attack(
         &player,
         &state.formulas,
-        effects.projected().modifiers.weapon_attack,
+        effects
+            .projected()
+            .modifiers
+            .weapon_attack
+            .saturating_add(equipment.weapon_attack),
     )
     .map_err(attack_rule_error)?;
     let map = load_map(&state, player.map_id).await?.ok_or_else(|| {
@@ -77,7 +85,7 @@ pub async fn use_basic_attack(
             fixed_damage: false,
             attack_type: crate::jobs::SkillAttackType::Physical,
         },
-        effects.projected(),
+        project_combat_effects(effects.projected(), equipment),
     )
     .await
     {

@@ -107,6 +107,10 @@ pub fn router(
         .route("/movement/portal", post(crate::api::movement::enter_portal))
         .route("/skills/book", post(crate::api::get_skill_book))
         .route("/skills/allocate", post(crate::api::allocate_skill_point))
+        .route(
+            "/abilities/allocate",
+            post(crate::api::allocate_ability_point),
+        )
         .route("/skills/use", post(crate::api::use_skill))
         .route(
             "/combat/basic-attack",

@@ -129,6 +129,7 @@ fn shop_response(
         map: None,
         npc_animation: None,
         active_buffs: None,
+        quest_indicators: Vec::new(),
     }
 }
 

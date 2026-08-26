@@ -286,6 +286,27 @@ pub fn submit_movement_with_modifiers(
     ))
 }
 
+pub fn submit_stationary_observation(
+    tracker: &MovementTracker,
+    player: &PlayerState,
+    submitted: SubmittedMovement,
+    modifiers: MovementModifiers,
+    config: MovementConfig,
+    now_ms: u64,
+) -> Result<MovementDecision, MovementError> {
+    let map = movement_map(tracker, player.map_id)?;
+    let mut players = tracker.players.lock().map_err(|_| MovementError::Tracker)?;
+    let movement = players.entry(player.id.clone()).or_default();
+    ensure_session(movement, player, &map, config, now_ms)?;
+    let session = movement
+        .session
+        .as_mut()
+        .expect("movement session was initialized above");
+    Ok(apply_stationary_observation(
+        session, submitted, modifiers, config, now_ms,
+    ))
+}
+
 pub fn enter_portal_with_modifiers(
     tracker: &MovementTracker,
     player: &PlayerState,
@@ -723,6 +744,33 @@ fn apply_snapshot(
     accept(session, activity, now_ms, config)
 }
 
+fn apply_stationary_observation(
+    session: &mut MovementSession,
+    submitted: SubmittedMovement,
+    modifiers: MovementModifiers,
+    config: MovementConfig,
+    now_ms: u64,
+) -> MovementDecision {
+    if submitted.sequence <= session.sequence {
+        return reject(session, "the movement sequence is not newer", false);
+    }
+    session.sequence = submitted.sequence;
+    session.received_at_ms = now_ms;
+    session.modifiers = modifiers;
+    if submitted.map_id != session.map_id {
+        return reject(session, "map changes require an accepted portal", false);
+    }
+    if submitted.position != session.position || submitted.mode != session.mode {
+        return reject(
+            session,
+            "a dead player cannot change position or movement mode",
+            false,
+        );
+    }
+    session.airborne = airborne_state(session.mode, session.position.y, now_ms);
+    accept(session, false, now_ms, config)
+}
+
 fn replenish_movement_credit(
     session: &mut MovementSession,
     config: MovementConfig,
@@ -1143,6 +1191,7 @@ mod tests {
     use super::restore_relocation;
     use super::submit_movement;
     use super::submit_movement_with_modifiers;
+    use super::submit_stationary_observation;
     use super::synchronize_player;
     use crate::gameplay::MovementConfig;
 
@@ -1201,6 +1250,98 @@ mod tests {
         assert!(!movement.persist);
         assert!(!heartbeat.activity);
         assert!(heartbeat.persist);
+    }
+
+    #[test]
+    fn stationary_observation_advances_sequence_without_reporting_activity() {
+        let tracker = initialized_tracker();
+        let observation = submit_stationary_observation(
+            &tracker,
+            &player(),
+            submitted(1, 100.0, 300.0, MovementMode::Grounded),
+            MovementModifiers::default(),
+            config(),
+            1_200,
+        )
+        .expect("stationary observation");
+
+        assert!(observation.accepted);
+        assert!(!observation.activity);
+        assert_eq!(observation.authoritative.sequence, 1);
+    }
+
+    #[test]
+    fn stationary_observation_rejects_position_and_mode_changes() {
+        let tracker = initialized_tracker();
+        let moved = submit_stationary_observation(
+            &tracker,
+            &player(),
+            submitted(1, 120.0, 300.0, MovementMode::Grounded),
+            MovementModifiers::default(),
+            config(),
+            1_200,
+        )
+        .expect("displaced observation");
+        let changed_mode = submit_stationary_observation(
+            &tracker,
+            &player(),
+            submitted(2, 100.0, 300.0, MovementMode::Airborne),
+            MovementModifiers::default(),
+            config(),
+            1_300,
+        )
+        .expect("mode-changing observation");
+
+        assert!(!moved.accepted);
+        assert!(!changed_mode.accepted);
+        assert_eq!(moved.authoritative.position.expect("position").x, 100.0);
+        assert_eq!(
+            synchronize_player(&tracker, player())
+                .expect("authoritative player")
+                .position
+                .expect("position")
+                .x,
+            100.0
+        );
+    }
+
+    #[test]
+    fn stationary_observation_refreshes_modifiers_before_revival() {
+        let tracker = initialized_tracker();
+        let haste = MovementModifiers {
+            speed: 100,
+            jump: 0,
+        };
+        submit_movement_with_modifiers(
+            &tracker,
+            &player(),
+            submitted(1, 100.0, 300.0, MovementMode::Grounded),
+            haste,
+            config(),
+            1_100,
+        )
+        .expect("active Haste endpoint");
+        submit_stationary_observation(
+            &tracker,
+            &player(),
+            submitted(2, 100.0, 300.0, MovementMode::Grounded),
+            MovementModifiers::default(),
+            config(),
+            1_200,
+        )
+        .expect("observation after Haste expires");
+
+        let movement = submit_movement_with_modifiers(
+            &tracker,
+            &player(),
+            submitted(3, 180.0, 300.0, MovementMode::Grounded),
+            MovementModifiers::default(),
+            config(),
+            1_400,
+        )
+        .expect("movement after revival");
+
+        assert!(!movement.accepted);
     }
 
     #[test]

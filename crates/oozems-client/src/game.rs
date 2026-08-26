@@ -25,6 +25,7 @@ use crate::character_render::CharacterAnimation;
 use crate::game_gui::CanvasPoint;
 use crate::game_gui::GuiState;
 use crate::game_gui::KeyDrag;
+use crate::game_gui::WindowDrag;
 use crate::interaction_ui::InteractionState;
 use crate::js_error;
 use crate::keymap;
@@ -142,6 +143,7 @@ pub struct UiRuntime {
     pub gui_state: Rc<RefCell<GuiState>>,
     pub interaction: InteractionState,
     pub key_drag: Option<KeyDrag>,
+    pub window_drag: Option<WindowDrag>,
     pub pointer: Option<CanvasPoint>,
     pub(crate) selected_buff: Option<buffs::BuffKey>,
 }
@@ -242,7 +244,7 @@ pub async fn run(
     bootstrap_requested_at_ms: f64,
 ) -> Result<(), String> {
     show_status("Loading map, GUI, and skills...", false);
-    let map = api::get_map(player.map_id)
+    let map = api::get_map(&player.id, player.map_id)
         .await
         .map_err(|error| error.to_string())?;
     let movement_rules = api::get_movement_rules()
@@ -413,6 +415,7 @@ fn build_game(
             gui_state,
             interaction: InteractionState::default(),
             key_drag: None,
+            window_drag: None,
             pointer: None,
             selected_buff: None,
         },

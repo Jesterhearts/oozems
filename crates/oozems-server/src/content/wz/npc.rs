@@ -371,6 +371,7 @@ fn build_npc(
         function,
         ambient_lines,
         animations,
+        quest_indicator: 0,
     }
 }
 

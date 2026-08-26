@@ -2,7 +2,7 @@ use oozems_proto::v1::GuiLayout;
 use oozems_proto::v1::GuiRegion;
 use oozems_proto::v1::GuiSpriteTemplate;
 
-use super::draw_window;
+use super::draw_window_at;
 use crate::assets::ready_image;
 use crate::game::Game;
 use crate::game_gui;
@@ -33,20 +33,28 @@ struct SkillTabUi<'a> {
 }
 
 pub(super) fn draw(game: &Game) {
-    let Some(window) = game.ui.gui.skill_window.as_ref() else {
+    let Some(placement) = game_gui::resolve_window(
+        &game.ui.gui,
+        game.ui.gui_state.borrow().window_placements,
+        game_gui::WindowKind::Skills,
+        game.surface.canvas.width() as f32,
+        game.surface.canvas.height() as f32,
+    ) else {
         return;
     };
-    if !draw_window(game, window) {
+    if !draw_window_at(game, placement.window, placement.origin) {
         return;
     }
-    let Some(ui) = window.layout.as_ref().and_then(resolve_skill_ui) else {
+    let Some(ui) = resolve_skill_ui(placement.layout) else {
         return;
     };
+    let window_x = placement.origin.x;
+    let window_y = placement.origin.y;
 
-    draw_job_tabs(game, window.x, window.y, &ui);
-    draw_header(game, window.x, window.y, &ui);
+    draw_job_tabs(game, window_x, window_y, &ui);
+    draw_header(game, window_x, window_y, &ui);
     if game.player.skill_book.skills.is_empty() {
-        draw_empty_message(game, window.x, window.y, &ui);
+        draw_empty_message(game, window_x, window_y, &ui);
         return;
     }
 
@@ -64,8 +72,8 @@ pub(super) fn draw(game: &Game) {
         let Some(definition) = skill.definition.as_ref() else {
             continue;
         };
-        let row_x = window.x + ui.list.x;
-        let row_y = window.y + ui.list.y + index as f32 * ui.row.height;
+        let row_x = window_x + ui.list.x;
+        let row_y = window_y + ui.list.y + index as f32 * ui.row.height;
         let row = if game.ui.pointer.is_some_and(|point| {
             point.x >= row_x
                 && point.x < row_x + ui.row.width
@@ -89,7 +97,7 @@ pub(super) fn draw(game: &Game) {
         );
         draw_skill_point_button(game, definition.skill_id, row_x, row_y, ui.row, &ui);
     }
-    draw_page_controls(game, window.x, window.y, page, page_count, &ui);
+    draw_page_controls(game, window_x, window_y, page, page_count, &ui);
 }
 
 fn resolve_skill_ui(layout: &GuiLayout) -> Option<SkillUi<'_>> {

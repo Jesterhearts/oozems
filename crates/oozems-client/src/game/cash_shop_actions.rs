@@ -16,7 +16,11 @@ pub(super) fn begin_open(
         return;
     }
     game.borrow_mut().ui.cash_shop.begin_open();
-    *game.borrow().ui.gui_state.borrow_mut() = crate::game_gui::GuiState::default();
+    let window_placements = game.borrow().ui.gui_state.borrow().window_placements;
+    *game.borrow().ui.gui_state.borrow_mut() = crate::game_gui::GuiState {
+        window_placements,
+        ..crate::game_gui::GuiState::default()
+    };
     super::requests::spawn_request(
         game,
         permit,

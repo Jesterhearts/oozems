@@ -13,6 +13,7 @@ mod world;
 use hud::draw_item_icon;
 use hud::draw_item_quantity;
 use hud::draw_window;
+use hud::draw_window_at;
 use hud::item_definition;
 use hud::item_expiration;
 use hud::item_expiration_detail;

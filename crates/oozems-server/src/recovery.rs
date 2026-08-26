@@ -68,6 +68,7 @@ pub fn prepare_recovery(
     formulas: &FormulaCatalog,
 ) -> Result<PreparedRecovery, RecoveryError> {
     let stats = player.stats.as_ref().ok_or(RecoveryError::MissingStats)?;
+    let was_dead = stats.hp == 0;
     let identifier = recovery_identifier(stats.job_id);
     let profile = formulas
         .recovery_profile(identifier)
@@ -87,7 +88,11 @@ pub fn prepare_recovery(
 
     let stats = player.stats.as_mut().ok_or(RecoveryError::MissingStats)?;
     let hp_before = stats.hp;
-    stats.hp = stats.hp.saturating_add(hp).min(stats.max_hp);
+    stats.hp = if was_dead {
+        stats.max_hp
+    } else {
+        stats.hp.saturating_add(hp).min(stats.max_hp)
+    };
     let mp_before = stats.mp;
     stats.mp = stats.mp.saturating_add(mp).min(stats.max_mp);
     Ok(PreparedRecovery {
@@ -236,6 +241,15 @@ mod tests {
         assert_eq!(recovered.mp_restored, 3);
         let stats = recovered.player.stats.expect("stats");
         assert_eq!((stats.hp, stats.mp), (11, 5));
+    }
+
+    #[test]
+    fn dead_players_revive_at_full_health() {
+        let recovered =
+            prepare_recovery(player(0, 10, 20, 0, 2), &formulas()).expect("death recovery");
+
+        assert_eq!(recovered.hp_restored, 20);
+        assert_eq!(recovered.player.stats.expect("stats").hp, 20);
     }
 
     #[test]

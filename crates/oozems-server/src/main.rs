@@ -2,6 +2,7 @@
 
 use std::collections::BTreeSet;
 
+mod abilities;
 mod api;
 mod app;
 mod attacks;

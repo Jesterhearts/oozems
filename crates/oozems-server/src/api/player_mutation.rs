@@ -9,6 +9,8 @@ use crate::database::Database;
 use crate::database::PlayerId;
 use crate::effects::ActiveEffects;
 use crate::effects::PlayerEffects;
+use crate::effects::ProjectedEffects;
+use crate::items::EquipmentStats;
 use crate::player_lock::PlayerGuard;
 
 pub(super) struct LoadedPlayer {
@@ -23,6 +25,25 @@ pub(crate) struct PlayerMutation {
     pub(crate) original_effects: PlayerEffects,
     pub(crate) effects: PlayerEffects,
     pub(crate) now_unix_ms: u64,
+}
+
+pub(crate) fn project_combat_effects(
+    mut effects: ProjectedEffects,
+    equipment: EquipmentStats,
+) -> ProjectedEffects {
+    effects.modifiers.weapon_attack = effects
+        .modifiers
+        .weapon_attack
+        .saturating_add(equipment.weapon_attack);
+    effects.modifiers.weapon_defense = effects
+        .modifiers
+        .weapon_defense
+        .saturating_add(equipment.weapon_defense);
+    effects.modifiers.magic_defense = effects
+        .modifiers
+        .magic_defense
+        .saturating_add(equipment.magic_defense);
+    effects
 }
 
 pub(crate) async fn begin_player_mutation(
@@ -357,10 +378,36 @@ mod tests {
 
     use super::LoadedPlayer;
     use super::persist_player_baseline;
+    use super::project_combat_effects;
     use crate::database::CharacterName;
     use crate::database::PlayerId;
     use crate::player_lock::PlayerLocks;
     use crate::player_lock::acquire_player;
+
+    #[test]
+    fn equipment_stats_are_added_to_active_effect_modifiers() {
+        let effects = crate::effects::ProjectedEffects {
+            modifiers: crate::effects::EffectModifiers {
+                weapon_defense: 4,
+                magic_defense: 6,
+                ..crate::effects::EffectModifiers::default()
+            },
+            ..crate::effects::ProjectedEffects::default()
+        };
+
+        let projected = project_combat_effects(
+            effects,
+            crate::items::EquipmentStats {
+                weapon_attack: 20,
+                weapon_defense: 8,
+                magic_defense: 5,
+            },
+        );
+
+        assert_eq!(projected.modifiers.weapon_defense, 12);
+        assert_eq!(projected.modifiers.magic_defense, 11);
+        assert_eq!(projected.modifiers.weapon_attack, 20);
+    }
 
     #[tokio::test]
     async fn rejected_action_and_later_rollback_keep_the_eager_automatic_baseline() {
@@ -384,6 +431,7 @@ mod tests {
                 face_id: 21_000,
                 hair_id: 31_000,
             },
+            crate::items::starter_inventory(),
             100,
             Vec2 { x: 10.0, y: 20.0 },
             15,

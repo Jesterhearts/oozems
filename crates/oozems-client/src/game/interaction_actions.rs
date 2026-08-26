@@ -236,6 +236,12 @@ fn install_response(
         (None, None) => false,
         _ => return Err("NPC response contains an incomplete map transition".to_owned()),
     };
+    if (context_is_current && !relocation_requested) || relocated {
+        crate::render::npc::install_quest_indicators(
+            &mut game.world.map,
+            &update.response.quest_indicators,
+        )?;
+    }
     if context_is_current && !relocation_requested {
         game.ui.interaction.install(update.response.interaction);
         if let Some(event) = npc_animation

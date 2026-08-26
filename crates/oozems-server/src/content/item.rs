@@ -602,6 +602,14 @@ fn build_definition_from_source(
         numeric_property(&info, "slotMax", item_id)?,
     )
     .map_err(|message| ItemContentError::Invalid { message })?;
+    let (weapon_attack, weapon_defense, magic_defense) = match indexed.archive {
+        SourceArchive::Character => (
+            nonnegative_property(&info, "incPAD", item_id)?,
+            nonnegative_property(&info, "incPDD", item_id)?,
+            nonnegative_property(&info, "incMDD", item_id)?,
+        ),
+        SourceArchive::Item => (0, 0, 0),
+    };
     let text = content.texts.get(&item_id);
     let name = text
         .map(|text| text.name.as_str())
@@ -644,6 +652,9 @@ fn build_definition_from_source(
         stack_max,
         description,
         appearance_supported,
+        weapon_attack,
+        weapon_defense,
+        magic_defense,
     })
 }
 
@@ -773,6 +784,20 @@ fn boolean_property(
     numeric_property(node, name, item_id).map(|value| value.map(|value| value != 0))
 }
 
+fn nonnegative_property(
+    node: &WzNodeArc,
+    name: &str,
+    item_id: u32,
+) -> Result<u32, ItemContentError> {
+    numeric_property(node, name, item_id)?.map_or(Ok(0), |value| {
+        u32::try_from(value).map_err(|_| ItemContentError::Invalid {
+            message: format!(
+                "item {item_id} property {name} is outside the supported range: {value}"
+            ),
+        })
+    })
+}
+
 fn normalize_sale_price(
     price: Option<i64>,
     not_sale: bool,
@@ -860,6 +885,7 @@ mod tests {
     use std::sync::OnceLock;
     use std::sync::RwLock;
 
+    use oozems_proto::v1::EquipmentSlot;
     use oozems_proto::v1::ItemCategory;
     use wz_reader::WzNode;
     use wz_reader::WzObjectType;
@@ -932,7 +958,51 @@ mod tests {
         assert!(error.to_string().contains("absent from the item index"));
     }
 
+    #[test]
+    fn character_equipment_projects_slot_and_combat_stats() {
+        let item_id = 1_302_000;
+        let content = synthetic_content(
+            item_id,
+            SourceArchive::Character,
+            ItemCategory::Equipment,
+            &[("incPAD", 17), ("incPDD", 3), ("incMDD", 2)],
+        );
+
+        let definition = content
+            .definition(item_id)
+            .expect("equipment definition")
+            .expect("known equipment");
+
+        assert_eq!(definition.slot, EquipmentSlot::Weapon as i32);
+        assert!(definition.appearance_supported);
+        assert_eq!(definition.weapon_attack, 17);
+        assert_eq!(definition.weapon_defense, 3);
+        assert_eq!(definition.magic_defense, 2);
+    }
+
     fn synthetic_item_content(item_id: u32) -> ItemContent {
+        let mut content = synthetic_content(
+            item_id,
+            SourceArchive::Item,
+            ItemCategory::Etc,
+            &[("price", 123), ("slotMax", 200)],
+        );
+        content.texts.insert(
+            item_id,
+            ItemText {
+                name: "Synthetic item".to_owned(),
+                description: "Synthetic description".to_owned(),
+            },
+        );
+        content
+    }
+
+    fn synthetic_content(
+        item_id: u32,
+        archive: SourceArchive,
+        category: ItemCategory,
+        properties: &[(&str, i32)],
+    ) -> ItemContent {
         let item = WzNode::from_str(
             &item_id.to_string(),
             WzObjectType::Property(WzSubProperty::Property),
@@ -958,7 +1028,7 @@ mod tests {
             .expect("info lock")
             .children
             .insert("icon".into(), icon);
-        for (name, value) in [("price", 123), ("slotMax", 200)] {
+        for &(name, value) in properties {
             let child = WzNode::from_str(name, value, Some(&info)).into_lock();
             info.write()
                 .expect("info lock")
@@ -971,24 +1041,20 @@ mod tests {
             sources: BTreeMap::from([(
                 item_id,
                 ItemSource {
-                    archive: SourceArchive::Item,
-                    category: ItemCategory::Etc,
+                    archive,
+                    category,
                     image: item,
                     inner_path: None,
                     source_path: format!("synthetic/{item_id}"),
                     definition: OnceLock::new(),
                 },
             )]),
-            texts: HashMap::from([(
-                item_id,
-                ItemText {
-                    name: "Synthetic item".to_owned(),
-                    description: "Synthetic description".to_owned(),
-                },
-            )]),
+            texts: HashMap::new(),
             fingerprints: SourceFingerprints {
-                item: Some("synthetic-item-fingerprint".to_owned()),
-                character: None,
+                item: matches!(archive, SourceArchive::Item)
+                    .then(|| "synthetic-item-fingerprint".to_owned()),
+                character: matches!(archive, SourceArchive::Character)
+                    .then(|| "synthetic-character-fingerprint".to_owned()),
             },
             eager_definitions: Vec::new(),
             consume_effects: BTreeMap::new(),

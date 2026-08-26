@@ -124,6 +124,7 @@ pub(super) async fn select_choice(
         map: None,
         npc_animation,
         active_buffs: None,
+        quest_indicators: Vec::new(),
     })
 }
 
@@ -472,6 +473,7 @@ fn interaction_response(
         map: None,
         npc_animation: None,
         active_buffs: None,
+        quest_indicators: Vec::new(),
     }
 }
 

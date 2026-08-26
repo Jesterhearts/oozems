@@ -216,10 +216,13 @@ impl ContentCatalog {
     }
 
     pub fn character_creation_options(&self) -> CharacterCreationOptions {
-        self.characters
+        let mut options = self
+            .characters
             .as_ref()
             .map(CharacterContent::creation_options)
-            .unwrap_or_default()
+            .unwrap_or_default();
+        options.equipment = crate::items::starter_equipment_options(self.item_definition_slice());
+        options
     }
 
     pub(crate) fn skill_book_context(

@@ -155,6 +155,24 @@ h2 {
   gap: 12px;
 }
 
+.equipment-fields {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid #536e63;
+  border-radius: 4px;
+}
+
+.equipment-fields legend {
+  padding: 0 6px;
+  color: #b4cb62;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
 .creator-form button {
   min-height: 44px;
   border: 1px solid #d3e77d;

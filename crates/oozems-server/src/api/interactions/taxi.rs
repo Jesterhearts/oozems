@@ -79,6 +79,7 @@ pub(super) async fn take_taxi(
         map: Some(target_map),
         npc_animation: None,
         active_buffs: None,
+        quest_indicators: Vec::new(),
     })
 }
 

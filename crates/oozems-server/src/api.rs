@@ -5,6 +5,9 @@ use axum::http::HeaderMap;
 use axum::http::header;
 use axum::response::IntoResponse;
 use axum::response::Response;
+use oozems_proto::v1::AbilityStat;
+use oozems_proto::v1::AllocateAbilityPointRequest;
+use oozems_proto::v1::AllocateAbilityPointResponse;
 use oozems_proto::v1::AllocateSkillPointRequest;
 use oozems_proto::v1::AllocateSkillPointResponse;
 use oozems_proto::v1::BootstrapRequest;
@@ -56,6 +59,7 @@ pub(crate) use self::player_mutation::persist_player_mutation;
 pub(crate) use self::player_mutation::prepare_player_mutation;
 pub(crate) use self::player_mutation::prepare_simulation_player_effects;
 use self::player_mutation::process_automatic_quests;
+pub(crate) use self::player_mutation::project_combat_effects;
 use self::player_mutation::require_player;
 use self::protocol::ApiError;
 use self::protocol::Protobuf;
@@ -137,6 +141,8 @@ pub async fn create_character(
             "the selected character appearance is not available",
         ));
     }
+    let inventory =
+        crate::items::selected_starter_inventory(&request.equipment).map_err(item_rule_error)?;
     if load_player(&state, &player_id)
         .await?
         .is_some_and(|loaded| loaded.player.appearance.is_some())
@@ -164,6 +170,7 @@ pub async fn create_character(
         &player_id,
         &name,
         appearance,
+        inventory,
         initial_map_id,
         position,
         experience_required,
@@ -198,7 +205,7 @@ pub async fn get_character_sprites(
         )
     })?;
     let equipment = if request.use_starter_equipment {
-        crate::items::starter_inventory().equipment
+        crate::items::default_starter_equipment()
     } else {
         request.equipment
     };
@@ -237,12 +244,42 @@ pub async fn get_map(
     body: Bytes,
 ) -> Result<Protobuf<GetMapResponse>, ApiError> {
     let request: GetMapRequest = decode_request(&headers, body)?;
+    let player_id = parse_player_id(&request.player_id)?;
+    let player_guard = lock_player(&state, &player_id).await?;
+    let now_unix_ms = unix_time_ms()?;
+    let loaded = load_player(&state, &player_id)
+        .await?
+        .ok_or_else(|| ApiError::not_found("player_not_found", "player does not exist"))?;
+    if request.map_id != loaded.player.map_id {
+        return Err(ApiError::bad_request(
+            "invalid_map_request",
+            "the requested map is not the player's current map",
+        ));
+    }
     let mut map = load_map(&state, request.map_id).await?.ok_or_else(|| {
         ApiError::not_found(
             "map_not_found",
             format!("map {} does not exist", request.map_id),
         )
     })?;
+    let player = loaded.player;
+    let effects = crate::effects::snapshot(&state.active_effects, &player.id, now_unix_ms)?;
+    drop(player_guard);
+
+    let quest_definitions = state.catalog.quest_definitions().collect::<Vec<_>>();
+    let environment = crate::quests::QuestEnvironment {
+        now_unix_ms,
+        world_id: state.gameplay.world_id,
+    };
+    crate::quests::project_npc_quest_indicators(
+        &mut map,
+        &player,
+        &effects,
+        &quest_definitions,
+        state.catalog.item_definition_slice(),
+        &state.quest_scripts,
+        environment,
+    );
     map.dropped_items = crate::items::map_drops(&state.drops, map.id)?;
     let simulation = crate::mobs::map_snapshot(&state.mobs, &map).await?;
     map.mobs = simulation.mobs;
@@ -381,6 +418,7 @@ pub async fn pick_up_item(
     let activity_time_ms = unix_time_ms()?;
     let mutation =
         begin_player_mutation(&state, &player_guard, &player_id, activity_time_ms).await?;
+    require_living_player(&mutation.player, "pick up items")?;
     let position = mutation
         .player
         .position
@@ -501,6 +539,36 @@ pub async fn allocate_skill_point(
     }))
 }
 
+pub async fn allocate_ability_point(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Protobuf<AllocateAbilityPointResponse>, ApiError> {
+    let request: AllocateAbilityPointRequest = decode_request(&headers, body)?;
+    let player_id = parse_player_id(&request.player_id)?;
+    let stat = AbilityStat::try_from(request.stat)
+        .ok()
+        .filter(|stat| *stat != AbilityStat::Unspecified)
+        .ok_or_else(|| {
+            ApiError::bad_request(
+                "invalid_ability_stat",
+                "the selected ability stat is invalid",
+            )
+        })?;
+    let player_guard = lock_player(&state, &player_id).await?;
+    let activity_time_ms = unix_time_ms()?;
+    let mutation =
+        begin_player_mutation(&state, &player_guard, &player_id, activity_time_ms).await?;
+    let updated = crate::abilities::allocate_ability_point(mutation.player.clone(), stat)
+        .map_err(ability_rule_error)?;
+    let committed =
+        persist_player_mutation(&state, &player_guard, mutation, updated, true, true).await?;
+
+    Ok(Protobuf(AllocateAbilityPointResponse {
+        player: Some(committed.player),
+    }))
+}
+
 pub async fn use_skill(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -511,7 +579,11 @@ pub async fn use_skill(
     let player_guard = lock_player(&state, &player_id).await?;
     let now_ms = unix_time_ms()?;
     let mutation = begin_player_mutation(&state, &player_guard, &player_id, now_ms).await?;
+    require_living_player(&mutation.player, "use skills")?;
     let mut effects = mutation.effects.clone();
+    let equipment = crate::items::equipment_stats(&mutation.player, state.catalog.as_ref())
+        .map_err(item_rule_error)?;
+    let projected_effects = project_combat_effects(effects.projected(), equipment);
     let skill_context = load_skill_book(&state, &mutation.player).await?;
     let skill_job_id = skill_context
         .book
@@ -534,7 +606,7 @@ pub async fn use_skill(
         &skill_context,
         request.skill_id,
         &state.formulas,
-        effects.projected(),
+        projected_effects,
     )
     .map_err(skill_rule_error)?;
     if prepared.result.has_damage && effects.attacks_disabled() {
@@ -578,6 +650,7 @@ pub async fn use_skill(
         reservation,
     );
     crate::effects::apply_skill_effect(&mut effects, &prepared.result, now_ms);
+    let combat_effects = project_combat_effects(effects.projected(), equipment);
     let simulation = match crate::mobs::use_player_attack_with_effects(
         &state.mobs,
         &map,
@@ -591,7 +664,7 @@ pub async fn use_skill(
             fixed_damage: prepared.result.fixed_damage,
             attack_type: prepared.attack_type,
         },
-        effects.projected(),
+        combat_effects,
     )
     .await
     {
@@ -869,6 +942,23 @@ fn parse_player_id(value: &str) -> Result<PlayerId, ApiError> {
         .map_err(|error| ApiError::bad_request("invalid_player_id", error.to_string()))
 }
 
+pub(crate) fn require_living_player(
+    player: &PlayerState,
+    action: &str,
+) -> Result<(), ApiError> {
+    let stats = player
+        .stats
+        .as_ref()
+        .ok_or_else(|| ApiError::PlayerData("character stats are missing".to_owned()))?;
+    if stats.hp == 0 {
+        return Err(ApiError::bad_request(
+            "player_dead",
+            format!("a dead player cannot {action}"),
+        ));
+    }
+    Ok(())
+}
+
 async fn lock_player(
     state: &AppState,
     player_id: &PlayerId,
@@ -892,6 +982,16 @@ fn skill_rule_error(error: crate::skills::SkillRuleError) -> ApiError {
         crate::skills::SkillRuleError::CooldownStore
         | crate::skills::SkillRuleError::Formula { .. } => ApiError::SkillRules(error),
         _ => ApiError::bad_request("invalid_skill_action", error.to_string()),
+    }
+}
+
+fn ability_rule_error(error: crate::abilities::AbilityRuleError) -> ApiError {
+    match error {
+        crate::abilities::AbilityRuleError::NoAbilityPoints
+        | crate::abilities::AbilityRuleError::MaximumStat => {
+            ApiError::bad_request("invalid_ability_allocation", error.to_string())
+        }
+        crate::abilities::AbilityRuleError::MissingStats => ApiError::PlayerData(error.to_string()),
     }
 }
 

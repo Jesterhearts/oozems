@@ -94,12 +94,16 @@ fn animation_for(
     definition: &MorphDefinition,
     animation: CharacterAnimation,
 ) -> Option<&MorphAnimation> {
+    if animation == CharacterAnimation::Death {
+        return None;
+    }
     let preferred = match animation {
         CharacterAnimation::Idle | CharacterAnimation::Attack => "stand",
         CharacterAnimation::Walk => "walk",
         CharacterAnimation::Jump => "jump",
         CharacterAnimation::Ladder => "ladder",
         CharacterAnimation::Rope => "rope",
+        CharacterAnimation::Death => unreachable!("death was handled above"),
     };
     definition
         .animations

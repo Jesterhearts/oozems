@@ -15,6 +15,7 @@ use crate::formula_parser::Expression;
 use crate::formula_parser::Parser;
 
 const MAX_CONFIGURED_LEVEL: u32 = 10_000;
+const ABILITY_POINTS_PER_LEVEL: u32 = 5;
 
 #[derive(Clone, Debug)]
 pub struct ExperienceCurves {
@@ -184,6 +185,12 @@ pub fn grant_experience(
     while level < curve.max_level() && stats.experience >= stats.experience_required {
         stats.experience -= stats.experience_required;
         level += 1;
+        stats.ability_points = stats
+            .ability_points
+            .checked_add(ABILITY_POINTS_PER_LEVEL)
+            .ok_or_else(|| ExperienceRuleError::Overflow {
+                player_id: player_id.clone(),
+            })?;
         stats.experience_required = required_for_level(curve, level)?;
     }
     player.level = level;
@@ -670,6 +677,7 @@ formula = "10"
         assert_eq!(rewarded.level, 3);
         assert_eq!(stats.experience, 5);
         assert_eq!(stats.experience_required, 10);
+        assert_eq!(stats.ability_points, 10);
     }
 
     #[test]

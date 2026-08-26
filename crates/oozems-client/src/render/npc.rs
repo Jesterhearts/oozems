@@ -4,6 +4,8 @@ use oozems_proto::v1::Map;
 use oozems_proto::v1::Npc;
 use oozems_proto::v1::NpcAnimationEvent;
 use oozems_proto::v1::NpcFrame;
+use oozems_proto::v1::NpcQuestIndicator;
+use oozems_proto::v1::NpcQuestIndicatorUpdate;
 
 use crate::assets;
 use crate::game::Game;
@@ -104,6 +106,40 @@ pub(crate) fn clear(state: &mut NpcAnimationPlaybackState) {
     *state = NpcAnimationPlaybackState::default();
 }
 
+pub(crate) fn install_quest_indicators(
+    map: &mut Map,
+    updates: &[NpcQuestIndicatorUpdate],
+) -> Result<(), String> {
+    let mut projected = HashMap::new();
+    for update in updates {
+        NpcQuestIndicator::try_from(update.indicator)
+            .map_err(|_| format!("NPC {} has an invalid quest indicator", update.npc_spawn_id))?;
+        if projected
+            .insert(update.npc_spawn_id, update.indicator)
+            .is_some()
+        {
+            return Err(format!(
+                "NPC {} has more than one quest indicator update",
+                update.npc_spawn_id
+            ));
+        }
+    }
+    if let Some(spawn_id) = projected
+        .keys()
+        .find(|spawn_id| !map.npcs.iter().any(|npc| npc.spawn_id == **spawn_id))
+    {
+        return Err(format!(
+            "quest indicator update references missing NPC spawn {spawn_id}"
+        ));
+    }
+    for npc in &mut map.npcs {
+        if let Some(indicator) = projected.get(&npc.spawn_id) {
+            npc.quest_indicator = *indicator;
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn draw(
     game: &Game,
     camera_x: f64,
@@ -142,7 +178,79 @@ pub(super) fn draw(
             camera_x,
             camera_y,
         );
+        draw_quest_indicator(game, npc, position.x, position.y, frame, camera_x, camera_y);
     }
+}
+
+fn draw_quest_indicator(
+    game: &Game,
+    npc: &Npc,
+    npc_x: f32,
+    npc_y: f32,
+    npc_frame: &NpcFrame,
+    camera_x: f64,
+    camera_y: f64,
+) {
+    let Some(frame) = quest_indicator_frame(game, npc) else {
+        return;
+    };
+    let (x, y) = quest_indicator_position(npc_x, npc_y, npc_frame, npc.flip_x, frame);
+    if !super::sprite_is_visible(game, x, y, frame.width, frame.height, camera_x, camera_y) {
+        return;
+    }
+    super::draw_sprite(
+        game,
+        &frame.asset_id,
+        x,
+        y,
+        frame.width,
+        frame.height,
+        false,
+        camera_x,
+        camera_y,
+    );
+}
+
+fn quest_indicator_frame<'a>(
+    game: &'a Game,
+    npc: &Npc,
+) -> Option<&'a NpcFrame> {
+    let frames = quest_indicator_frames(&game.ui.gui, npc)?;
+    let preferred_index = animation_frame_index(frames, game.clock.now_ms)?;
+    let index = assets::ready_or_fallback_index(
+        &game.surface.images,
+        frames.iter().map(|frame| frame.asset_id.as_str()),
+        preferred_index,
+    )?;
+    frames.get(index)
+}
+
+fn quest_indicator_frames<'a>(
+    gui: &'a oozems_proto::v1::GameGui,
+    npc: &Npc,
+) -> Option<&'a [NpcFrame]> {
+    match NpcQuestIndicator::try_from(npc.quest_indicator).ok()? {
+        NpcQuestIndicator::Available => Some(gui.quest_available_frames.as_slice()),
+        NpcQuestIndicator::Ready => Some(gui.quest_ready_frames.as_slice()),
+        NpcQuestIndicator::Unspecified => None,
+    }
+    .filter(|frames| !frames.is_empty())
+}
+
+fn quest_indicator_position(
+    npc_x: f32,
+    npc_y: f32,
+    npc_frame: &NpcFrame,
+    npc_flip_x: bool,
+    indicator_frame: &NpcFrame,
+) -> (f32, f32) {
+    let npc_left = frame_x(npc_x, npc_frame, npc_flip_x);
+    let npc_center_x = npc_left + npc_frame.width / 2.0;
+    let npc_top = npc_y - npc_frame.origin_y;
+    (
+        npc_center_x - indicator_frame.origin_x,
+        (npc_top - indicator_frame.origin_y).min(npc_top - indicator_frame.height),
+    )
 }
 
 pub(super) fn at_point(
@@ -312,6 +420,8 @@ mod tests {
     use oozems_proto::v1::NpcAnimation;
     use oozems_proto::v1::NpcAnimationEvent;
     use oozems_proto::v1::NpcFrame;
+    use oozems_proto::v1::NpcQuestIndicator;
+    use oozems_proto::v1::NpcQuestIndicatorUpdate;
 
     use super::NpcAnimationPlaybackState;
     use super::animation_frame_index;
@@ -319,7 +429,10 @@ mod tests {
     use super::frame_sequence;
     use super::frame_x;
     use super::install_event;
+    use super::install_quest_indicators;
     use super::point_in_frame;
+    use super::quest_indicator_frames;
+    use super::quest_indicator_position;
     use super::standing_frames;
     use crate::game_gui::CanvasPoint;
 
@@ -380,6 +493,84 @@ mod tests {
             30.0,
             40.0,
         ));
+    }
+
+    #[test]
+    fn quest_indicator_selects_the_server_requested_native_animation() {
+        let gui = oozems_proto::v1::GameGui {
+            quest_available_frames: vec![NpcFrame {
+                asset_id: "available".to_owned(),
+                ..NpcFrame::default()
+            }],
+            quest_ready_frames: vec![NpcFrame {
+                asset_id: "ready".to_owned(),
+                ..NpcFrame::default()
+            }],
+            ..oozems_proto::v1::GameGui::default()
+        };
+        let mut npc = Npc {
+            quest_indicator: NpcQuestIndicator::Available as i32,
+            ..Npc::default()
+        };
+
+        assert_eq!(
+            quest_indicator_frames(&gui, &npc).expect("available frames")[0].asset_id,
+            "available"
+        );
+        npc.quest_indicator = NpcQuestIndicator::Ready as i32;
+        assert_eq!(
+            quest_indicator_frames(&gui, &npc).expect("ready frames")[0].asset_id,
+            "ready"
+        );
+        npc.quest_indicator = NpcQuestIndicator::Unspecified as i32;
+        assert!(quest_indicator_frames(&gui, &npc).is_none());
+    }
+
+    #[test]
+    fn interaction_updates_replace_authoritative_quest_indicators() {
+        let mut map = animation_map();
+
+        install_quest_indicators(
+            &mut map,
+            &[NpcQuestIndicatorUpdate {
+                npc_spawn_id: 7,
+                indicator: NpcQuestIndicator::Ready as i32,
+            }],
+        )
+        .expect("valid quest indicator update");
+
+        assert_eq!(map.npcs[0].quest_indicator, NpcQuestIndicator::Ready as i32);
+        assert!(
+            install_quest_indicators(
+                &mut map,
+                &[NpcQuestIndicatorUpdate {
+                    npc_spawn_id: 99,
+                    indicator: NpcQuestIndicator::Available as i32,
+                }],
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn quest_indicator_origin_is_anchored_above_the_visible_npc_frame() {
+        let npc_frame = NpcFrame {
+            width: 40.0,
+            origin_x: 10.0,
+            origin_y: 50.0,
+            ..NpcFrame::default()
+        };
+        let indicator_frame = NpcFrame {
+            height: 10.0,
+            origin_x: 5.0,
+            origin_y: 10.0,
+            ..NpcFrame::default()
+        };
+
+        assert_eq!(
+            quest_indicator_position(100.0, 200.0, &npc_frame, true, &indicator_frame),
+            (85.0, 140.0)
+        );
     }
 
     #[test]

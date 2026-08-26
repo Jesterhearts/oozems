@@ -96,6 +96,8 @@ pub(super) fn draw_hovered_skill(game: &Game) {
             *game.ui.gui_state.borrow(),
             &game.ui.gui,
             &game.player.skill_book,
+            game.surface.canvas.width() as f32,
+            game.surface.canvas.height() as f32,
             pointer,
         )
         .and_then(|skill| {
@@ -108,6 +110,8 @@ pub(super) fn draw_hovered_skill(game: &Game) {
                 *game.ui.gui_state.borrow(),
                 &game.ui.gui,
                 inventory,
+                game.surface.canvas.width() as f32,
+                game.surface.canvas.height() as f32,
                 pointer,
             )
             .map(|slot| build_item_info(slot.definition, slot.stack.quantity))

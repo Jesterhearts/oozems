@@ -36,6 +36,12 @@ pub(super) fn begin(
         permit,
         move || async move {
             match action {
+                GuiAction::AllocateAbility { stat } => {
+                    api::allocate_ability_point(&player_id, stat)
+                        .await
+                        .map(SkillResponse::Ability)
+                        .map_err(|error| format!("Ability point allocation failed: {error}"))
+                }
                 GuiAction::AllocateSkill { skill_id } => {
                     api::allocate_skill_point(&player_id, skill_id)
                         .await
@@ -53,6 +59,7 @@ pub(super) fn begin(
         },
         |game, result, request_started_ms| {
             let result = match result {
+                Ok(SkillResponse::Ability(response)) => install_ability(game, response),
                 Ok(SkillResponse::Allocation(response)) => {
                     install_allocation(game, response, request_started_ms)
                 }
@@ -68,8 +75,19 @@ pub(super) fn begin(
 }
 
 enum SkillResponse {
+    Ability(oozems_proto::v1::AllocateAbilityPointResponse),
     Allocation(oozems_proto::v1::AllocateSkillPointResponse),
     Use(oozems_proto::v1::UseSkillResponse),
+}
+
+fn install_ability(
+    game: &mut Game,
+    mut response: oozems_proto::v1::AllocateAbilityPointResponse,
+) -> Result<String, String> {
+    let player =
+        api::require_data(response.player.take(), "player").map_err(|error| error.to_string())?;
+    super::install_full_player_update(game, player);
+    Ok("Ability point allocated.".to_owned())
 }
 
 pub(super) fn begin_basic_attack(

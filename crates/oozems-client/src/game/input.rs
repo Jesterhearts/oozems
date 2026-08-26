@@ -343,9 +343,16 @@ fn handle_canvas_pointer(
     if game_gui::apply_local_action(&mut game.ui.gui_state.borrow_mut(), action) {
         return true;
     }
+    if matches!(action, GuiAction::AllocateAbility { .. })
+        && !game_gui::can_allocate_ability(game.player.state.stats.as_ref())
+    {
+        return true;
+    }
     match action {
         GuiAction::OpenCashShop => pending.push(PendingRequest::CashShopOpen),
-        GuiAction::AllocateSkill { .. } | GuiAction::UseSkill { .. } => {
+        GuiAction::AllocateAbility { .. }
+        | GuiAction::AllocateSkill { .. }
+        | GuiAction::UseSkill { .. } => {
             pending.push(PendingRequest::Skill(action));
         }
         _ => pending.push(PendingRequest::Item(action)),
@@ -374,12 +381,26 @@ pub(super) fn apply_canvas_input(
     for action in actions {
         match action {
             CanvasInputAction::Down(point) => {
-                if game.ui.gui_state.borrow().key_config_open {
+                let state = *game.ui.gui_state.borrow();
+                game.ui.key_drag = None;
+                game.ui.window_drag = None;
+                if state.key_config_open {
                     game.ui.key_drag = game_gui::begin_key_drag(
-                        *game.ui.gui_state.borrow(),
+                        state,
                         &game.ui.gui,
                         &game.player.skill_book,
                         &game.player.key_bindings.current.borrow(),
+                        game.surface.canvas.width() as f32,
+                        game.surface.canvas.height() as f32,
+                        point,
+                    );
+                }
+                if game.ui.key_drag.is_none() {
+                    game.ui.window_drag = game_gui::begin_window_drag(
+                        state,
+                        &game.ui.gui,
+                        game.surface.canvas.width() as f32,
+                        game.surface.canvas.height() as f32,
                         point,
                     );
                 }
@@ -388,13 +409,23 @@ pub(super) fn apply_canvas_input(
                 game.ui.pointer = Some(point);
                 if let Some(drag) = game.ui.key_drag.as_mut() {
                     game_gui::move_key_drag(drag, point);
+                } else if let Some(drag) = game.ui.window_drag.as_mut() {
+                    game_gui::move_window_drag(
+                        &mut game.ui.gui_state.borrow_mut().window_placements,
+                        &game.ui.gui,
+                        drag,
+                        game.surface.canvas.width() as f32,
+                        game.surface.canvas.height() as f32,
+                        point,
+                    );
                 }
             }
             CanvasInputAction::Leave => {
                 game.ui.key_drag = None;
+                game.ui.window_drag = None;
                 game.ui.pointer = None;
             }
-            CanvasInputAction::Up(point) => finish_key_drag(game, point),
+            CanvasInputAction::Up(point) => finish_drag(game, point),
             CanvasInputAction::Pointer(point, button) => {
                 let _ = handle_canvas_pointer(game, point, button, pending);
             }
@@ -403,16 +434,33 @@ pub(super) fn apply_canvas_input(
     }
 }
 
-fn finish_key_drag(
+fn finish_drag(
     game: &mut Game,
     point: CanvasPoint,
 ) {
-    let Some(drag) = game.ui.key_drag.take() else {
+    if let Some(drag) = game.ui.key_drag.take() {
+        finish_key_drag(game, drag, point);
+        return;
+    }
+    let Some(drag) = game.ui.window_drag.take() else {
         return;
     };
+    if game_gui::finish_window_drag(drag) {
+        game.input.suppress_click = true;
+    }
+}
+
+fn finish_key_drag(
+    game: &mut Game,
+    drag: game_gui::KeyDrag,
+    point: CanvasPoint,
+) {
     let updated = game_gui::finish_key_drag(
+        *game.ui.gui_state.borrow(),
         &game.ui.gui,
         &game.player.key_bindings.current.borrow(),
+        game.surface.canvas.width() as f32,
+        game.surface.canvas.height() as f32,
         &drag,
         point,
     );
@@ -434,6 +482,9 @@ fn queue_npc_interaction(
     point: CanvasPoint,
     pending: &mut PendingRequests,
 ) {
+    if super::runtime::player_is_dead(&game.player.state) {
+        return;
+    }
     let gui = *game.ui.gui_state.borrow();
     if interaction_is_busy(game)
         || game.requests.admission.player_mutation_is_active()

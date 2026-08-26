@@ -1,9 +1,11 @@
+use oozems_proto::v1::CharacterEquipmentOption;
 use oozems_proto::v1::EquipmentSlot;
 use oozems_proto::v1::EquippedItem;
 use oozems_proto::v1::InventoryItemStack;
 use oozems_proto::v1::InventoryState;
 use oozems_proto::v1::ItemDefinition;
 use oozems_proto::v1::PlayerState;
+use oozems_proto::v1::StartingEquipmentSelection;
 use oozems_proto::v1::Vec2;
 use thiserror::Error;
 
@@ -16,6 +18,17 @@ pub const STARTER_SHOES_ID: u32 = 1_072_000;
 pub const SPARE_TOP_ID: u32 = 1_040_003;
 pub const SPARE_BOTTOM_ID: u32 = 1_060_001;
 pub const SPARE_SHOES_ID: u32 = 1_072_001;
+pub const STARTING_TOP_IDS: [u32; 2] = [1_040_002, 1_040_003];
+pub const STARTING_BOTTOM_IDS: [u32; 2] = [1_060_002, 1_060_001];
+pub const STARTING_SHOES_IDS: [u32; 3] = [1_072_001, 1_072_005, 1_072_038];
+pub const STARTING_WEAPON_IDS: [u32; 3] = [1_302_000, 1_312_004, 1_322_005];
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EquipmentStats {
+    pub weapon_attack: i32,
+    pub weapon_defense: i32,
+    pub magic_defense: i32,
+}
 
 #[derive(Clone, Debug)]
 pub struct RemovedItem {
@@ -59,6 +72,8 @@ pub enum ItemRuleError {
     InvalidEquipment { item_id: u32 },
     #[error("equipment slot is invalid")]
     InvalidEquipmentSlot,
+    #[error("the starter equipment selection must contain one supported item for every slot")]
+    InvalidStarterEquipment,
     #[error("equipment slot {slot:?} is empty")]
     EmptyEquipmentSlot { slot: EquipmentSlot },
     #[error("the inventory is full")]
@@ -180,6 +195,41 @@ pub fn validate_inventory(
     Ok(())
 }
 
+pub fn equipment_stats(
+    player: &PlayerState,
+    definitions: &(impl ItemDefinitionLookup + ?Sized),
+) -> Result<EquipmentStats, ItemRuleError> {
+    let inventory = player
+        .inventory
+        .as_ref()
+        .ok_or(ItemRuleError::MissingInventory)?;
+    inventory
+        .equipment
+        .iter()
+        .try_fold(EquipmentStats::default(), |mut stats, equipped| {
+            let definition = find_definition(definitions, equipped.item_id)?;
+            let slot =
+                supported_equipment_slot(definition).ok_or(ItemRuleError::InvalidEquipment {
+                    item_id: equipped.item_id,
+                })?;
+            if equipped.slot != slot as i32 {
+                return Err(ItemRuleError::InvalidEquipment {
+                    item_id: equipped.item_id,
+                });
+            }
+            stats.weapon_attack = stats
+                .weapon_attack
+                .saturating_add(bounded_equipment_stat(definition.weapon_attack));
+            stats.weapon_defense = stats
+                .weapon_defense
+                .saturating_add(bounded_equipment_stat(definition.weapon_defense));
+            stats.magic_defense = stats
+                .magic_defense
+                .saturating_add(bounded_equipment_stat(definition.magic_defense));
+            Ok(stats)
+        })
+}
+
 pub fn count_item_quantity(
     stacks: &[InventoryItemStack],
     item_id: u32,
@@ -294,6 +344,7 @@ pub fn apply_item_delta(
     Ok(())
 }
 
+#[cfg(test)]
 pub fn starter_inventory() -> InventoryState {
     InventoryState {
         equipment: vec![
@@ -323,6 +374,82 @@ pub fn starter_inventory() -> InventoryState {
             })
             .collect(),
     }
+}
+
+pub fn default_starter_equipment() -> Vec<EquippedItem> {
+    [
+        (EquipmentSlot::Top, STARTING_TOP_IDS[0]),
+        (EquipmentSlot::Bottom, STARTING_BOTTOM_IDS[0]),
+        (EquipmentSlot::Shoes, STARTING_SHOES_IDS[0]),
+        (EquipmentSlot::Weapon, STARTING_WEAPON_IDS[0]),
+    ]
+    .map(|(slot, item_id)| EquippedItem {
+        slot: slot as i32,
+        item_id,
+        expires_at_unix_ms: 0,
+    })
+    .into()
+}
+
+pub fn selected_starter_inventory(
+    selections: &[StartingEquipmentSelection]
+) -> Result<InventoryState, ItemRuleError> {
+    let expected = [
+        (EquipmentSlot::Top, STARTING_TOP_IDS.as_slice()),
+        (EquipmentSlot::Bottom, STARTING_BOTTOM_IDS.as_slice()),
+        (EquipmentSlot::Shoes, STARTING_SHOES_IDS.as_slice()),
+        (EquipmentSlot::Weapon, STARTING_WEAPON_IDS.as_slice()),
+    ];
+    if selections.len() != expected.len() {
+        return Err(ItemRuleError::InvalidStarterEquipment);
+    }
+
+    let equipment = expected
+        .into_iter()
+        .map(|(slot, allowed_ids)| {
+            let mut matching = selections
+                .iter()
+                .filter(|selection| selection.slot == slot as i32);
+            let selection = matching
+                .next()
+                .filter(|_| matching.next().is_none())
+                .filter(|selection| allowed_ids.contains(&selection.item_id))
+                .ok_or(ItemRuleError::InvalidStarterEquipment)?;
+            Ok(EquippedItem {
+                slot: slot as i32,
+                item_id: selection.item_id,
+                expires_at_unix_ms: 0,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(InventoryState {
+        equipment,
+        capacity: INVENTORY_CAPACITY,
+        stacks: Vec::new(),
+    })
+}
+
+pub fn starter_equipment_options(definitions: &[ItemDefinition]) -> Vec<CharacterEquipmentOption> {
+    [
+        (EquipmentSlot::Top, STARTING_TOP_IDS.as_slice()),
+        (EquipmentSlot::Bottom, STARTING_BOTTOM_IDS.as_slice()),
+        (EquipmentSlot::Shoes, STARTING_SHOES_IDS.as_slice()),
+        (EquipmentSlot::Weapon, STARTING_WEAPON_IDS.as_slice()),
+    ]
+    .into_iter()
+    .flat_map(|(slot, item_ids)| {
+        item_ids.iter().filter_map(move |item_id| {
+            definitions
+                .iter()
+                .find(|definition| definition.item_id == *item_id)
+                .map(|definition| CharacterEquipmentOption {
+                    item_id: *item_id,
+                    label: definition.name.clone(),
+                    slot: slot as i32,
+                })
+        })
+    })
+    .collect()
 }
 
 pub fn equip_inventory_item(
@@ -676,6 +803,10 @@ fn definition_stack_max(definition: &ItemDefinition) -> Result<u32, ItemRuleErro
         })
 }
 
+fn bounded_equipment_stat(value: u32) -> i32 {
+    i32::try_from(value).unwrap_or(i32::MAX)
+}
+
 fn supported_equipment_slot(definition: &ItemDefinition) -> Option<EquipmentSlot> {
     if !definition.appearance_supported {
         return None;
@@ -700,7 +831,7 @@ fn valid_inventory_index(
 fn is_supported_slot(slot: EquipmentSlot) -> bool {
     matches!(
         slot,
-        EquipmentSlot::Top | EquipmentSlot::Bottom | EquipmentSlot::Shoes
+        EquipmentSlot::Top | EquipmentSlot::Bottom | EquipmentSlot::Shoes | EquipmentSlot::Weapon
     )
 }
 
@@ -712,6 +843,7 @@ mod tests {
     use oozems_proto::v1::InventoryState;
     use oozems_proto::v1::ItemDefinition;
     use oozems_proto::v1::PlayerState;
+    use oozems_proto::v1::StartingEquipmentSelection;
     use oozems_proto::v1::Vec2;
 
     use super::ItemRuleError;
@@ -721,15 +853,21 @@ mod tests {
     use super::STARTER_BOTTOM_ID;
     use super::STARTER_SHOES_ID;
     use super::STARTER_TOP_ID;
+    use super::STARTING_BOTTOM_IDS;
+    use super::STARTING_SHOES_IDS;
+    use super::STARTING_TOP_IDS;
+    use super::STARTING_WEAPON_IDS;
     use super::apply_item_delta;
     use super::apply_item_grant;
     use super::buy_shop_item;
     use super::canonicalize_inventory;
     use super::count_item_quantity;
     use super::equip_inventory_item;
+    use super::equipment_stats;
     use super::prune_and_validate_inventory;
     use super::prune_expired_inventory;
     use super::remove_inventory_item;
+    use super::selected_starter_inventory;
     use super::sell_inventory_item;
     use super::starter_inventory;
     use super::unequip_item;
@@ -738,6 +876,65 @@ mod tests {
     use crate::interactions::ShopCurrency;
 
     const STACKABLE_ITEM_ID: u32 = 2_000_000;
+
+    #[test]
+    fn selected_starter_inventory_equips_exactly_one_item_per_slot() {
+        let selections = [
+            selection(EquipmentSlot::Top, STARTING_TOP_IDS[1]),
+            selection(EquipmentSlot::Bottom, STARTING_BOTTOM_IDS[1]),
+            selection(EquipmentSlot::Shoes, STARTING_SHOES_IDS[2]),
+            selection(EquipmentSlot::Weapon, STARTING_WEAPON_IDS[1]),
+        ];
+
+        let inventory = selected_starter_inventory(&selections).expect("valid starter equipment");
+
+        assert_eq!(inventory.capacity, super::INVENTORY_CAPACITY);
+        assert!(inventory.stacks.is_empty());
+        assert_eq!(inventory.equipment.len(), 4);
+        for selection in selections {
+            assert!(inventory.equipment.iter().any(|equipped| {
+                equipped.slot == selection.slot && equipped.item_id == selection.item_id
+            }));
+        }
+    }
+
+    #[test]
+    fn selected_starter_inventory_rejects_missing_duplicate_and_unsupported_items() {
+        let valid = [
+            selection(EquipmentSlot::Top, STARTING_TOP_IDS[0]),
+            selection(EquipmentSlot::Bottom, STARTING_BOTTOM_IDS[0]),
+            selection(EquipmentSlot::Shoes, STARTING_SHOES_IDS[0]),
+            selection(EquipmentSlot::Weapon, STARTING_WEAPON_IDS[0]),
+        ];
+        assert_eq!(
+            selected_starter_inventory(&valid[..3]),
+            Err(ItemRuleError::InvalidStarterEquipment)
+        );
+
+        let mut duplicate = valid;
+        duplicate[3] = duplicate[0];
+        assert_eq!(
+            selected_starter_inventory(&duplicate),
+            Err(ItemRuleError::InvalidStarterEquipment)
+        );
+
+        let mut unsupported = valid;
+        unsupported[3].item_id = 1;
+        assert_eq!(
+            selected_starter_inventory(&unsupported),
+            Err(ItemRuleError::InvalidStarterEquipment)
+        );
+    }
+
+    fn selection(
+        slot: EquipmentSlot,
+        item_id: u32,
+    ) -> StartingEquipmentSelection {
+        StartingEquipmentSelection {
+            slot: slot as i32,
+            item_id,
+        }
+    }
 
     #[test]
     fn stacks_are_merged_and_split_using_catalog_limits() {
@@ -1061,6 +1258,71 @@ mod tests {
         assert_eq!(
             inventory.stacks.last().map(|stack| stack.item_id),
             Some(SPARE_TOP_ID)
+        );
+    }
+
+    #[test]
+    fn weapon_slots_are_equippable_and_equipment_stats_are_aggregated() {
+        const WEAPON_ID: u32 = 1_302_000;
+        let definitions = [
+            ItemDefinition {
+                weapon_attack: 17,
+                ..equipment_definition(WEAPON_ID, EquipmentSlot::Weapon)
+            },
+            ItemDefinition {
+                weapon_defense: 8,
+                magic_defense: 5,
+                ..equipment_definition(STARTER_TOP_ID, EquipmentSlot::Top)
+            },
+        ];
+        let player = PlayerState {
+            inventory: Some(InventoryState {
+                equipment: vec![
+                    EquippedItem {
+                        slot: EquipmentSlot::Weapon as i32,
+                        item_id: WEAPON_ID,
+                        expires_at_unix_ms: 0,
+                    },
+                    EquippedItem {
+                        slot: EquipmentSlot::Top as i32,
+                        item_id: STARTER_TOP_ID,
+                        expires_at_unix_ms: 0,
+                    },
+                ],
+                ..InventoryState::default()
+            }),
+            ..PlayerState::default()
+        };
+
+        assert_eq!(
+            equipment_stats(&player, &definitions),
+            Ok(super::EquipmentStats {
+                weapon_attack: 17,
+                weapon_defense: 8,
+                magic_defense: 5,
+            })
+        );
+
+        let player = PlayerState {
+            inventory: Some(InventoryState {
+                capacity: 1,
+                stacks: vec![InventoryItemStack {
+                    item_id: WEAPON_ID,
+                    quantity: 1,
+                    expires_at_unix_ms: 0,
+                }],
+                ..InventoryState::default()
+            }),
+            ..PlayerState::default()
+        };
+        let equipped = equip_inventory_item(player, 0, &definitions).expect("equip weapon");
+        assert_eq!(
+            equipped.inventory.expect("inventory").equipment,
+            vec![EquippedItem {
+                slot: EquipmentSlot::Weapon as i32,
+                item_id: WEAPON_ID,
+                expires_at_unix_ms: 0,
+            }]
         );
     }
 

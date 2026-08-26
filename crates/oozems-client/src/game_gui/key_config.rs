@@ -6,7 +6,9 @@ use oozems_proto::v1::SkillBook;
 use super::CanvasPoint;
 use super::CanvasRect;
 use super::GuiState;
+use super::WindowKind;
 use super::rect_contains;
+use super::resolve_window;
 use super::skill_at_point;
 use super::valid_layout;
 use super::valid_sprite;
@@ -39,12 +41,24 @@ pub fn begin_key_drag(
     gui: &GameGui,
     skill_book: &SkillBook,
     bindings: &[KeyBinding],
+    viewport_width: f32,
+    viewport_height: f32,
     point: CanvasPoint,
 ) -> Option<KeyDrag> {
-    let target = skill_at_point(state, gui, skill_book, point)
-        .map(BindingTarget::Skill)
-        .or_else(|| palette_action_at(gui, point).map(BindingTarget::Action))
-        .or_else(|| bound_target_at(gui, bindings, point))?;
+    let target = skill_at_point(
+        state,
+        gui,
+        skill_book,
+        viewport_width,
+        viewport_height,
+        point,
+    )
+    .map(BindingTarget::Skill)
+    .or_else(|| {
+        palette_action_at(state, gui, viewport_width, viewport_height, point)
+            .map(BindingTarget::Action)
+    })
+    .or_else(|| bound_target_at(state, gui, bindings, viewport_width, viewport_height, point))?;
     Some(KeyDrag { target, point })
 }
 
@@ -56,26 +70,36 @@ pub fn move_key_drag(
 }
 
 pub fn finish_key_drag(
+    state: GuiState,
     gui: &GameGui,
     bindings: &[KeyBinding],
+    viewport_width: f32,
+    viewport_height: f32,
     drag: &KeyDrag,
     point: CanvasPoint,
 ) -> Option<Vec<KeyBinding>> {
-    let code = key_code_at(gui, point)?;
+    let code = key_code_at(state, gui, viewport_width, viewport_height, point)?;
     Some(crate::keymap::assign_target(bindings, code, drag.target))
 }
 
 pub fn bound_key_icons(
+    state: GuiState,
     gui: &GameGui,
     skill_book: &SkillBook,
     bindings: &[KeyBinding],
+    viewport_width: f32,
+    viewport_height: f32,
 ) -> Vec<KeyIconPlacement> {
-    let Some(window) = valid_key_config_window(gui) else {
+    let Some(placement) = resolve_window(
+        gui,
+        state.window_placements,
+        WindowKind::KeyConfig,
+        viewport_width,
+        viewport_height,
+    ) else {
         return Vec::new();
     };
-    let Some(layout) = window.layout.as_ref() else {
-        return Vec::new();
-    };
+    let layout = placement.layout;
     bindings
         .iter()
         .filter_map(|binding| {
@@ -87,8 +111,8 @@ pub fn bound_key_icons(
             Some(KeyIconPlacement {
                 target,
                 asset_id: icon.asset_id,
-                x: window.x + slot.x + (slot.width - icon.width) / 2.0,
-                y: window.y + slot.y + (slot.height - icon.height) / 2.0,
+                x: placement.origin.x + slot.x + (slot.width - icon.width) / 2.0,
+                y: placement.origin.y + slot.y + (slot.height - icon.height) / 2.0,
                 width: icon.width,
                 height: icon.height,
             })
@@ -113,11 +137,20 @@ pub fn dragged_key_icon(
 }
 
 fn palette_action_at(
+    state: GuiState,
     gui: &GameGui,
+    viewport_width: f32,
+    viewport_height: f32,
     point: CanvasPoint,
 ) -> Option<KeyAction> {
-    let window = valid_key_config_window(gui)?;
-    let layout = window.layout.as_ref()?;
+    let placement = resolve_window(
+        gui,
+        state.window_placements,
+        WindowKind::KeyConfig,
+        viewport_width,
+        viewport_height,
+    )?;
+    let layout = placement.layout;
     gui.key_actions.iter().find_map(|definition| {
         let icon = definition.icon.as_ref()?;
         if !valid_sprite(icon, layout.width, layout.height) {
@@ -125,8 +158,8 @@ fn palette_action_at(
         }
         rect_contains(
             CanvasRect {
-                x: window.x + icon.x,
-                y: window.y + icon.y,
+                x: placement.origin.x + icon.x,
+                y: placement.origin.y + icon.y,
                 width: icon.width,
                 height: icon.height,
             },
@@ -138,11 +171,14 @@ fn palette_action_at(
 }
 
 fn bound_target_at(
+    state: GuiState,
     gui: &GameGui,
     bindings: &[KeyBinding],
+    viewport_width: f32,
+    viewport_height: f32,
     point: CanvasPoint,
 ) -> Option<BindingTarget> {
-    let code = key_code_at(gui, point)?;
+    let code = key_code_at(state, gui, viewport_width, viewport_height, point)?;
     crate::keymap::target_for_code(bindings, code)
 }
 
@@ -176,19 +212,28 @@ fn target_icon(
 }
 
 fn key_code_at(
+    state: GuiState,
     gui: &GameGui,
+    viewport_width: f32,
+    viewport_height: f32,
     point: CanvasPoint,
 ) -> Option<&str> {
-    let window = valid_key_config_window(gui)?;
-    let layout = window.layout.as_ref()?;
+    let placement = resolve_window(
+        gui,
+        state.window_placements,
+        WindowKind::KeyConfig,
+        viewport_width,
+        viewport_height,
+    )?;
+    let layout = placement.layout;
     gui.key_slots.iter().find_map(|slot| {
         if !valid_key_slot(slot, layout.width, layout.height) {
             return None;
         }
         rect_contains(
             CanvasRect {
-                x: window.x + slot.x,
-                y: window.y + slot.y,
+                x: placement.origin.x + slot.x,
+                y: placement.origin.y + slot.y,
                 width: slot.width,
                 height: slot.height,
             },
@@ -257,6 +302,9 @@ mod tests {
     use super::finish_key_drag;
     use crate::game_gui::CanvasPoint;
     use crate::game_gui::GuiState;
+    use crate::game_gui::WindowKind;
+    use crate::game_gui::begin_window_drag;
+    use crate::game_gui::window::set_window_offset;
     use crate::keymap::BindingTarget;
 
     #[test]
@@ -264,17 +312,26 @@ mod tests {
         let gui = gui_fixture();
         let skill_book = SkillBook::default();
         let point = CanvasPoint { x: 175.0, y: 330.0 };
-        let drag = begin_key_drag(GuiState::default(), &gui, &skill_book, &[], point)
+        let state = GuiState::default();
+        let drag = begin_key_drag(state, &gui, &skill_book, &[], 960.0, 600.0, point)
             .expect("pickup palette icon");
 
         assert_eq!(drag.target, BindingTarget::Action(KeyAction::PickUp));
-        let bindings = finish_key_drag(&gui, &[], &drag, CanvasPoint { x: 250.0, y: 197.0 })
-            .expect("KeyA target");
+        let bindings = finish_key_drag(
+            state,
+            &gui,
+            &[],
+            960.0,
+            600.0,
+            &drag,
+            CanvasPoint { x: 250.0, y: 197.0 },
+        )
+        .expect("KeyA target");
         assert_eq!(bindings.len(), 1);
         assert_eq!(bindings[0].code, "KeyA");
         assert_eq!(bindings[0].action, KeyAction::PickUp as i32);
 
-        let icons = bound_key_icons(&gui, &skill_book, &bindings);
+        let icons = bound_key_icons(state, &gui, &skill_book, &bindings, 960.0, 600.0);
         assert_eq!(icons.len(), 1);
         assert_eq!((icons[0].x, icons[0].y), (246.0, 193.0));
     }
@@ -289,13 +346,100 @@ mod tests {
             ..GuiState::default()
         };
 
-        let drag = begin_key_drag(state, &gui, &book, &[], CanvasPoint { x: 40.0, y: 180.0 })
-            .expect("learned skill drag");
+        let drag = begin_key_drag(
+            state,
+            &gui,
+            &book,
+            &[],
+            960.0,
+            600.0,
+            CanvasPoint { x: 40.0, y: 180.0 },
+        )
+        .expect("learned skill drag");
         assert_eq!(drag.target, BindingTarget::Skill(1_000));
-        let bindings = finish_key_drag(&gui, &[], &drag, CanvasPoint { x: 250.0, y: 197.0 })
-            .expect("KeyA target");
+        let bindings = finish_key_drag(
+            state,
+            &gui,
+            &[],
+            960.0,
+            600.0,
+            &drag,
+            CanvasPoint { x: 250.0, y: 197.0 },
+        )
+        .expect("KeyA target");
         assert_eq!(bindings[0].skill_id, 1_000);
         assert_eq!(bindings[0].action, KeyAction::Unspecified as i32);
+    }
+
+    #[test]
+    fn key_icons_and_slots_follow_the_moved_key_config_window() {
+        let gui = gui_fixture();
+        let skill_book = SkillBook::default();
+        let mut state = GuiState {
+            key_config_open: true,
+            ..GuiState::default()
+        };
+        set_window_offset(
+            &mut state.window_placements,
+            WindowKind::KeyConfig,
+            CanvasPoint { x: 40.0, y: 25.0 },
+        );
+        let palette_point = CanvasPoint { x: 215.0, y: 355.0 };
+
+        let drag = begin_key_drag(state, &gui, &skill_book, &[], 960.0, 600.0, palette_point)
+            .expect("moved pickup palette icon");
+        let bindings = finish_key_drag(
+            state,
+            &gui,
+            &[],
+            960.0,
+            600.0,
+            &drag,
+            CanvasPoint { x: 290.0, y: 222.0 },
+        )
+        .expect("moved KeyA target");
+        let icons = bound_key_icons(state, &gui, &skill_book, &bindings, 960.0, 600.0);
+
+        assert_eq!(icons.len(), 1);
+        assert_eq!((icons[0].x, icons[0].y), (286.0, 218.0));
+        assert!(
+            begin_key_drag(
+                state,
+                &gui,
+                &skill_book,
+                &bindings,
+                960.0,
+                600.0,
+                CanvasPoint { x: 290.0, y: 222.0 },
+            )
+            .is_some()
+        );
+        assert!(
+            begin_window_drag(
+                state,
+                &gui,
+                960.0,
+                600.0,
+                CanvasPoint { x: 290.0, y: 222.0 },
+            )
+            .is_none()
+        );
+        assert!(
+            begin_key_drag(
+                state,
+                &gui,
+                &skill_book,
+                &bindings,
+                960.0,
+                600.0,
+                CanvasPoint { x: 210.0, y: 90.0 },
+            )
+            .is_none()
+        );
+        assert!(
+            begin_window_drag(state, &gui, 960.0, 600.0, CanvasPoint { x: 210.0, y: 90.0 },)
+                .is_some()
+        );
     }
 
     fn gui_fixture() -> GameGui {

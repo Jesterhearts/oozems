@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use oozems_proto::v1::CharacterAppearance;
 use oozems_proto::v1::CharacterStats;
+use oozems_proto::v1::InventoryState;
 use oozems_proto::v1::PlayerState;
 use oozems_proto::v1::Vec2;
 use surrealdb::Surreal;
@@ -177,6 +178,23 @@ async fn initialize_schema(
         .bind(("initial_cash_points", initial_cash_points))
         .await?
         .check()?;
+    database
+        .query(
+            r#"
+            UPDATE player SET
+                stats.ability_points = 9,
+                stats.strength = 4,
+                stats.dexterity = 4
+            WHERE level = 1
+                AND stats.ability_points = 0
+                AND stats.strength = 12
+                AND stats.dexterity = 5
+                AND stats.intelligence = 4
+                AND stats.luck = 4;
+            "#,
+        )
+        .await?
+        .check()?;
     Ok(())
 }
 
@@ -196,6 +214,7 @@ pub async fn create_player(
     player_id: &PlayerId,
     name: &CharacterName,
     appearance: CharacterAppearance,
+    inventory: InventoryState,
     map_id: u32,
     position: Vec2,
     experience_required: u64,
@@ -213,7 +232,7 @@ pub async fn create_player(
         position: Some(position),
         appearance: Some(appearance),
         stats: Some(stats),
-        inventory: Some(crate::items::starter_inventory()),
+        inventory: Some(inventory),
         key_bindings: crate::keymap::default_bindings(),
         skill_points: initial_skill_points,
         learned_skills: Vec::new(),
@@ -386,9 +405,9 @@ fn starter_character_stats() -> CharacterStats {
         experience: 0,
         experience_required: 15,
         fame: 0,
-        ability_points: 0,
-        strength: 12,
-        dexterity: 5,
+        ability_points: 9,
+        strength: 4,
+        dexterity: 4,
         intelligence: 4,
         luck: 4,
     }
@@ -736,6 +755,7 @@ mod tests {
             &player_id,
             &CharacterName::parse("Mina").expect("valid name"),
             appearance(),
+            crate::items::starter_inventory(),
             10_000,
             Vec2 { x: 160.0, y: 420.0 },
             123,
@@ -812,6 +832,36 @@ mod tests {
                 .cash_points,
             999
         );
+    }
+
+    #[tokio::test]
+    async fn schema_migrates_only_the_legacy_unallocated_starter_stats() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let database = open_surreal_kv(&directory.path().join("database"), 100)
+            .await
+            .expect("open SurrealKV");
+        let player_id = PlayerId::parse("stats-migration").expect("valid player ID");
+        let guard = test_guard(&player_id).await;
+        let mut player = create_test_player(&database, &guard, &player_id).await;
+        let stats = player.stats.as_mut().expect("stats");
+        stats.ability_points = 0;
+        stats.strength = 12;
+        stats.dexterity = 5;
+        save_player(&database, &guard, &player)
+            .await
+            .expect("save legacy starter stats");
+
+        super::initialize_schema(&database, 100)
+            .await
+            .expect("migrate legacy stats");
+
+        let migrated = load_player(&database, &player_id)
+            .await
+            .expect("load migrated player")
+            .expect("migrated player exists");
+        let stats = migrated.stats.expect("stats");
+        assert_eq!(stats.ability_points, 9);
+        assert_eq!((stats.strength, stats.dexterity), (4, 4));
     }
 
     #[test]
@@ -968,6 +1018,7 @@ mod tests {
             player_id,
             &CharacterName::parse("Mina").expect("valid name"),
             appearance(),
+            crate::items::starter_inventory(),
             10_000,
             Vec2 { x: 160.0, y: 420.0 },
             123,

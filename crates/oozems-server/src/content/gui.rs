@@ -7,6 +7,7 @@ use std::sync::RwLock;
 use oozems_proto::v1::AssetDescriptor;
 use oozems_proto::v1::GameGui;
 use oozems_proto::v1::KeySlot;
+use oozems_proto::v1::NpcFrame;
 use sha2::Digest;
 use sha2::Sha256;
 use thiserror::Error;
@@ -17,8 +18,11 @@ use super::WzAsset;
 use super::wz::WzContentError;
 use super::wz::archive_fingerprint;
 use super::wz::child;
+use super::wz::int_value;
+use super::wz::node_name;
 use super::wz::open_archive;
 use super::wz::parse;
+use super::wz::sorted_children;
 use super::wz::vector_value;
 use super::wz::wrap_archive_root;
 
@@ -38,6 +42,9 @@ const GUI_ARCHIVE: &str = "UI.wz";
 const STATUS_BAR_IMAGE: &str = "StatusBar.img";
 const CASH_SHOP_IMAGE: &str = "CashShop.img";
 const UI_WINDOW_IMAGE: &str = "UIWindow.img";
+const DEFAULT_QUEST_ICON_FRAME_DELAY_MS: u32 = 100;
+const QUEST_AVAILABLE_ICON_ID: &str = "0";
+const QUEST_READY_ICON_ID: &str = "2";
 const EQUIPMENT_WINDOW_X: f32 = 20.0;
 const EQUIPMENT_WINDOW_Y: f32 = 80.0;
 const INVENTORY_WINDOW_X: f32 = 205.0;
@@ -96,6 +103,7 @@ struct StatWindowSources {
     close: SourceSprite,
     job: SourceSprite,
     ability_up: SourceSprite,
+    ability_up_disabled: SourceSprite,
     auto_assign: SourceSprite,
     detail: SourceSprite,
 }
@@ -290,6 +298,12 @@ fn build_game_gui(
     let (cash_shop_sources, cash_shop_assets) = load_cash_shop_window_sources(content, cash_shop)?;
     let cash_shop_window = compose_cash_shop_window(&cash_shop_sources)?;
     assets.extend(cash_shop_assets);
+    let (quest_available_frames, quest_available_assets) =
+        load_quest_icon_frames(content, ui_window, QUEST_AVAILABLE_ICON_ID)?;
+    assets.extend(quest_available_assets);
+    let (quest_ready_frames, quest_ready_assets) =
+        load_quest_icon_frames(content, ui_window, QUEST_READY_ICON_ID)?;
+    assets.extend(quest_ready_assets);
     let mut asset_ids = HashSet::new();
     assets.retain(|asset| asset_ids.insert(asset.id.clone()));
     Ok(GameGui {
@@ -315,7 +329,52 @@ fn build_game_gui(
         npc_dialog_window: Some(npc_dialog_window),
         shop_window: Some(shop_window),
         cash_shop_window: Some(cash_shop_window),
+        quest_available_frames,
+        quest_ready_frames,
     })
+}
+
+fn load_quest_icon_frames(
+    content: &GuiContent,
+    ui_window: &WzNodeArc,
+    icon_id: &str,
+) -> Result<(Vec<NpcFrame>, Vec<AssetDescriptor>), GuiContentError> {
+    let animation = required_path(ui_window, &["QuestIcon", icon_id])?;
+    let mut frames = Vec::new();
+    let mut assets = Vec::new();
+    for node in sorted_children(&animation)? {
+        let frame_name = node_name(&node)?;
+        if frame_name.parse::<u32>().is_err() {
+            continue;
+        }
+        let path = ["QuestIcon", icon_id, frame_name.as_str()];
+        let source = load_source(
+            content,
+            ui_window,
+            UI_WINDOW_IMAGE,
+            &format!("quest-icon-{icon_id}-{frame_name}"),
+            &path,
+            &mut assets,
+        )?;
+        let delay_ms = int_value(&node, "delay")?
+            .and_then(|delay| u32::try_from(delay).ok())
+            .filter(|delay| *delay > 0)
+            .unwrap_or(DEFAULT_QUEST_ICON_FRAME_DELAY_MS);
+        frames.push(NpcFrame {
+            asset_id: source.asset_id,
+            width: source.width,
+            height: source.height,
+            origin_x: source.origin_x,
+            origin_y: source.origin_y,
+            delay_ms,
+        });
+    }
+    if frames.is_empty() {
+        return invalid(format!(
+            "{UI_WINDOW_IMAGE}/QuestIcon/{icon_id} has no animation frames"
+        ));
+    }
+    Ok((frames, assets))
 }
 
 fn load_npc_dialog_sources(
@@ -599,25 +658,28 @@ fn load_inventory_window_sources(
     ui_window: &WzNodeArc,
 ) -> Result<(InventoryWindowSources, Vec<AssetDescriptor>), GuiContentError> {
     let mut assets = Vec::new();
-    let mut load = |name: &str, path: &[&str]| {
-        load_source(content, ui_window, UI_WINDOW_IMAGE, name, path, &mut assets)
+    let (background, close, gather, sort, expand, locked_slot) = {
+        let mut load = |name: &str, path: &[&str]| {
+            load_source(content, ui_window, UI_WINDOW_IMAGE, name, path, &mut assets)
+        };
+        (
+            load("inventory-background", &["Item", "backgrnd"])?,
+            load("inventory-close", &["BtUIClose", "normal", "0"])?,
+            load(
+                "inventory-gather-disabled",
+                &["Item", "BtGather", "disabled", "0"],
+            )?,
+            load(
+                "inventory-sort-disabled",
+                &["Item", "BtSort", "disabled", "0"],
+            )?,
+            load(
+                "inventory-expand-disabled",
+                &["Item", "BtFull", "disabled", "0"],
+            )?,
+            load("inventory-locked-slot", &["Item", "disabled"])?,
+        )
     };
-    let background = load("inventory-background", &["Item", "backgrnd"])?;
-    let close = load("inventory-close", &["BtUIClose", "normal", "0"])?;
-    let gather = load(
-        "inventory-gather-disabled",
-        &["Item", "BtGather", "disabled", "0"],
-    )?;
-    let sort = load(
-        "inventory-sort-disabled",
-        &["Item", "BtSort", "disabled", "0"],
-    )?;
-    let expand = load(
-        "inventory-expand-disabled",
-        &["Item", "BtFull", "disabled", "0"],
-    )?;
-    let locked_slot = load("inventory-locked-slot", &["Item", "disabled"])?;
-    drop(load);
     let mut tabs = Vec::with_capacity(5);
     for (index, name) in ["equipment", "consume", "install", "etc", "cash"]
         .into_iter()
@@ -790,12 +852,20 @@ fn load_stat_window_sources(
         &["Stat", "Job", "main", "0"],
         &mut assets,
     )?;
-    let ability_up = load_source(
+    let ability_up_disabled = load_source(
         content,
         ui_window,
         UI_WINDOW_IMAGE,
         "stat-ability-up-disabled",
         &["Stat", "BtApUp", "disabled", "0"],
+        &mut assets,
+    )?;
+    let ability_up = load_source(
+        content,
+        ui_window,
+        UI_WINDOW_IMAGE,
+        "stat-ability-up",
+        &["Stat", "BtApUp", "normal", "0"],
         &mut assets,
     )?;
     let auto_assign = load_source(
@@ -821,6 +891,7 @@ fn load_stat_window_sources(
             close,
             job,
             ability_up,
+            ability_up_disabled,
             auto_assign,
             detail,
         },
@@ -1126,7 +1197,8 @@ mod tests {
             background: source("stat-background", 175.0, 347.0),
             close: source("stat-close", 10.0, 10.0),
             job: source("stat-job", 50.0, 7.0),
-            ability_up: source("stat-ability-up-disabled", 12.0, 12.0),
+            ability_up: source("stat-ability-up", 12.0, 12.0),
+            ability_up_disabled: source("stat-ability-up-disabled", 12.0, 12.0),
             auto_assign: source("stat-auto-assign-disabled", 73.0, 35.0),
             detail: source("stat-detail-disabled", 47.0, 18.0),
         };
@@ -1158,6 +1230,22 @@ mod tests {
                 .count(),
             6
         );
+        assert_eq!(
+            layout
+                .sprites
+                .iter()
+                .filter(|sprite| sprite.name == "stat-ability-up")
+                .count(),
+            4
+        );
+        for name in [
+            "stat-strength-up",
+            "stat-dexterity-up",
+            "stat-intelligence-up",
+            "stat-luck-up",
+        ] {
+            assert!(layout.regions.iter().any(|region| region.name == name));
+        }
     }
 
     #[test]

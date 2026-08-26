@@ -118,6 +118,7 @@ enum EquipmentSlot {
   EQUIPMENT_SLOT_TOP = 1;
   EQUIPMENT_SLOT_BOTTOM = 2;
   EQUIPMENT_SLOT_SHOES = 3;
+  EQUIPMENT_SLOT_WEAPON = 4;
 }
 
 message CharacterStats {
@@ -159,6 +160,13 @@ message CharacterCreationOptions {
   repeated CharacterStyleOption skins = 1;
   repeated CharacterStyleOption faces = 2;
   repeated CharacterStyleOption hairs = 3;
+  repeated CharacterEquipmentOption equipment = 4;
+}
+
+message CharacterEquipmentOption {
+  uint32 item_id = 1;
+  string label = 2;
+  EquipmentSlot slot = 3;
 }
 
 message BootstrapRequest {
@@ -245,6 +253,12 @@ message CreateCharacterRequest {
   string player_id = 1;
   string name = 2;
   CharacterAppearance appearance = 3;
+  repeated StartingEquipmentSelection equipment = 4;
+}
+
+message StartingEquipmentSelection {
+  EquipmentSlot slot = 1;
+  uint32 item_id = 2;
 }
 
 message CreateCharacterResponse {
@@ -288,6 +302,23 @@ message AllocateSkillPointResponse {
   PlayerState player = 1;
   SkillBook skill_book = 2;
   ActiveBuffState active_buffs = 3;
+}
+
+message AllocateAbilityPointRequest {
+  string player_id = 1;
+  AbilityStat stat = 2;
+}
+
+message AllocateAbilityPointResponse {
+  PlayerState player = 1;
+}
+
+enum AbilityStat {
+  ABILITY_STAT_UNSPECIFIED = 0;
+  ABILITY_STAT_STRENGTH = 1;
+  ABILITY_STAT_DEXTERITY = 2;
+  ABILITY_STAT_INTELLIGENCE = 3;
+  ABILITY_STAT_LUCK = 4;
 }
 
 message UseSkillRequest {
@@ -435,6 +466,8 @@ message GameGui {
   GuiWindow npc_dialog_window = 11;
   GuiWindow shop_window = 12;
   GuiWindow cash_shop_window = 13;
+  repeated NpcFrame quest_available_frames = 14;
+  repeated NpcFrame quest_ready_frames = 15;
 }
 
 message SkillBook {
@@ -548,6 +581,9 @@ message ItemDefinition {
   uint32 stack_max = 9;
   string description = 10;
   bool appearance_supported = 11;
+  uint32 weapon_attack = 12;
+  uint32 weapon_defense = 13;
+  uint32 magic_defense = 14;
 }
 
 enum ItemCategory {
@@ -612,6 +648,7 @@ message CharacterSpriteSet {
   repeated CharacterFrame ladder_frames = 5;
   repeated CharacterFrame rope_frames = 6;
   repeated CharacterFrame attack_frames = 7;
+  repeated CharacterFrame death_frames = 8;
 }
 
 message GetMorphRequest {
@@ -658,6 +695,7 @@ message CharacterLayer {
 
 message GetMapRequest {
   uint32 map_id = 1;
+  string player_id = 2;
 }
 
 message GetMapResponse {
@@ -773,6 +811,12 @@ message NpcInteractionResponse {
   Map map = 4;
   NpcAnimationEvent npc_animation = 5;
   ActiveBuffState active_buffs = 6;
+  repeated NpcQuestIndicatorUpdate quest_indicators = 7;
+}
+
+message NpcQuestIndicatorUpdate {
+  uint32 npc_spawn_id = 1;
+  NpcQuestIndicator indicator = 2;
 }
 
 message NpcAnimationEvent {
@@ -881,6 +925,13 @@ message Npc {
   string function = 7;
   repeated string ambient_lines = 8;
   repeated NpcAnimation animations = 9;
+  NpcQuestIndicator quest_indicator = 10;
+}
+
+enum NpcQuestIndicator {
+  NPC_QUEST_INDICATOR_UNSPECIFIED = 0;
+  NPC_QUEST_INDICATOR_AVAILABLE = 1;
+  NPC_QUEST_INDICATOR_READY = 2;
 }
 
 message NpcAnimation {

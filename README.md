@@ -5,8 +5,8 @@ use. It does not include MapleStory code or assets.
 
 > **Status: not ready for general use.** Combat is limited to basic player
 > attacks, player skills, mob contact attacks, and basic mob projectiles. Player
-> death handling is not implemented. Quest support covers a typed subset of
-> `Quest.wz`.
+> death uses the native animation and revives through timed recovery. Quest
+> support covers a typed subset of `Quest.wz`.
 
 A future version 0.1 release tag will mark the first version intended for
 general use. That release will probably still need polish and bug fixes.

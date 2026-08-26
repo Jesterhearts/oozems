@@ -1,7 +1,10 @@
 use gloo_net::http::Request;
 use js_sys::Uint8Array;
 use oozems_proto::PROTOBUF_CONTENT_TYPE;
+use oozems_proto::v1::AbilityStat;
 use oozems_proto::v1::ActiveBuffState;
+use oozems_proto::v1::AllocateAbilityPointRequest;
+use oozems_proto::v1::AllocateAbilityPointResponse;
 use oozems_proto::v1::AllocateSkillPointRequest;
 use oozems_proto::v1::AllocateSkillPointResponse;
 use oozems_proto::v1::BasicAttackRequest;
@@ -48,6 +51,7 @@ use oozems_proto::v1::RecoverPlayerResponse;
 use oozems_proto::v1::SavePlayerRequest;
 use oozems_proto::v1::SavePlayerResponse;
 use oozems_proto::v1::SkillBook;
+use oozems_proto::v1::StartingEquipmentSelection;
 use oozems_proto::v1::SubmitMovementRequest;
 use oozems_proto::v1::UnequipItemRequest;
 use oozems_proto::v1::UseSkillRequest;
@@ -97,6 +101,7 @@ pub async fn create_character(
     player_id: &str,
     name: &str,
     appearance: CharacterAppearance,
+    equipment: Vec<StartingEquipmentSelection>,
 ) -> Result<PlayerState, ClientError> {
     let response: CreateCharacterResponse = post_protobuf(
         "/api/v1/characters/create",
@@ -104,6 +109,7 @@ pub async fn create_character(
             player_id: player_id.to_owned(),
             name: name.to_owned(),
             appearance: Some(appearance),
+            equipment,
         },
     )
     .await?;
@@ -201,9 +207,18 @@ pub async fn interact_npc(
     post_protobuf("/api/v1/npcs/interact", request).await
 }
 
-pub async fn get_map(map_id: u32) -> Result<Map, ClientError> {
-    let response: GetMapResponse =
-        post_protobuf("/api/v1/maps/get", GetMapRequest { map_id }).await?;
+pub async fn get_map(
+    player_id: &str,
+    map_id: u32,
+) -> Result<Map, ClientError> {
+    let response: GetMapResponse = post_protobuf(
+        "/api/v1/maps/get",
+        GetMapRequest {
+            map_id,
+            player_id: player_id.to_owned(),
+        },
+    )
+    .await?;
 
     require_data(response.map, "map")
 }
@@ -307,6 +322,20 @@ pub async fn allocate_skill_point(
         AllocateSkillPointRequest {
             player_id: player_id.to_owned(),
             skill_id,
+        },
+    )
+    .await
+}
+
+pub async fn allocate_ability_point(
+    player_id: &str,
+    stat: AbilityStat,
+) -> Result<AllocateAbilityPointResponse, ClientError> {
+    post_protobuf(
+        "/api/v1/abilities/allocate",
+        AllocateAbilityPointRequest {
+            player_id: player_id.to_owned(),
+            stat: stat as i32,
         },
     )
     .await

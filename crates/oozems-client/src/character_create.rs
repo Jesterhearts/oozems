@@ -5,9 +5,13 @@ use std::rc::Rc;
 
 use oozems_proto::v1::CharacterAppearance;
 use oozems_proto::v1::CharacterCreationOptions;
+use oozems_proto::v1::CharacterEquipmentOption;
 use oozems_proto::v1::CharacterGender;
 use oozems_proto::v1::CharacterSpriteSet;
 use oozems_proto::v1::CharacterStyleOption;
+use oozems_proto::v1::EquipmentSlot;
+use oozems_proto::v1::EquippedItem;
+use oozems_proto::v1::StartingEquipmentSelection;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen_futures::spawn_local;
@@ -33,6 +37,7 @@ use crate::show_status;
 
 struct Creator {
     active: Cell<bool>,
+    bottom: HtmlSelectElement,
     button: HtmlButtonElement,
     context: CanvasRenderingContext2d,
     face: HtmlSelectElement,
@@ -43,7 +48,10 @@ struct Creator {
     options: CharacterCreationOptions,
     preview_generation: Cell<u32>,
     skin: HtmlSelectElement,
+    shoes: HtmlSelectElement,
     sprites: RefCell<Option<CharacterSpriteSet>>,
+    top: HtmlSelectElement,
+    weapon: HtmlSelectElement,
 }
 
 thread_local! {
@@ -92,6 +100,7 @@ pub fn show(options: CharacterCreationOptions) -> Result<(), String> {
 
     let creator = Rc::new(Creator {
         active: Cell::new(true),
+        bottom: element(&document, "character-bottom")?,
         button: element(&document, "create-button")?,
         context,
         face: element(&document, "character-face")?,
@@ -102,10 +111,37 @@ pub fn show(options: CharacterCreationOptions) -> Result<(), String> {
         options,
         preview_generation: Cell::new(0),
         skin: element(&document, "character-skin")?,
+        shoes: element(&document, "character-shoes")?,
         sprites: RefCell::new(None),
+        top: element(&document, "character-top")?,
+        weapon: element(&document, "character-weapon")?,
     });
 
     populate_select(&document, &creator.skin, &creator.options.skins)?;
+    populate_equipment_select(
+        &document,
+        &creator.top,
+        &creator.options.equipment,
+        EquipmentSlot::Top,
+    )?;
+    populate_equipment_select(
+        &document,
+        &creator.bottom,
+        &creator.options.equipment,
+        EquipmentSlot::Bottom,
+    )?;
+    populate_equipment_select(
+        &document,
+        &creator.shoes,
+        &creator.options.equipment,
+        EquipmentSlot::Shoes,
+    )?;
+    populate_equipment_select(
+        &document,
+        &creator.weapon,
+        &creator.options.equipment,
+        EquipmentSlot::Weapon,
+    )?;
     populate_gendered_styles(&document, &creator)?;
     let event_handlers = install_event_handlers(&document, &creator)?;
     EVENT_HANDLERS.with(|current| {
@@ -130,6 +166,19 @@ fn validate_options(options: &CharacterCreationOptions) -> Result<(), String> {
         || !has_gender(&options.faces, CharacterGender::Female)
         || !has_gender(&options.hairs, CharacterGender::Male)
         || !has_gender(&options.hairs, CharacterGender::Female)
+        || [
+            EquipmentSlot::Top,
+            EquipmentSlot::Bottom,
+            EquipmentSlot::Shoes,
+            EquipmentSlot::Weapon,
+        ]
+        .into_iter()
+        .any(|slot| {
+            !options
+                .equipment
+                .iter()
+                .any(|option| option.slot == slot as i32)
+        })
     {
         return Err(
             "Character creation is unavailable because Character.wz has no complete styles."
@@ -155,16 +204,24 @@ fn install_event_handlers(
         }
         request_preview(&gender_creator);
     });
-    let styles = [&creator.skin, &creator.face, &creator.hair]
-        .into_iter()
-        .map(|select| {
-            let change_creator = creator.clone();
-            let change = Closure::<dyn FnMut(Event)>::new(move |_| {
-                request_preview(&change_creator);
-            });
-            (select.clone(), change)
-        })
-        .collect::<Vec<_>>();
+    let styles = [
+        &creator.skin,
+        &creator.face,
+        &creator.hair,
+        &creator.top,
+        &creator.bottom,
+        &creator.shoes,
+        &creator.weapon,
+    ]
+    .into_iter()
+    .map(|select| {
+        let change_creator = creator.clone();
+        let change = Closure::<dyn FnMut(Event)>::new(move |_| {
+            request_preview(&change_creator);
+        });
+        (select.clone(), change)
+    })
+    .collect::<Vec<_>>();
     let submit_creator = creator.clone();
     let submit = Closure::<dyn FnMut(Event)>::new(move |event: Event| {
         event.prevent_default();
@@ -180,13 +237,20 @@ fn install_event_handlers(
                 return;
             }
         };
+        let equipment = match selected_equipment(&submit_creator) {
+            Ok(equipment) => equipment,
+            Err(error) => {
+                show_create_error(&error);
+                return;
+            }
+        };
         submit_creator.button.set_disabled(true);
         show_create_error("");
         show_status("Creating character...", false);
 
         let pending_creator = submit_creator.clone();
         spawn_local(async move {
-            let result = create_and_start(name, appearance).await;
+            let result = create_and_start(name, appearance, equipment).await;
             if let Err(error) = result {
                 pending_creator.button.set_disabled(false);
                 show_create_error(&error);
@@ -225,11 +289,13 @@ fn install_event_handlers(
 async fn create_and_start(
     name: String,
     appearance: CharacterAppearance,
+    equipment: Vec<StartingEquipmentSelection>,
 ) -> Result<(), String> {
-    let sprites = api::get_character_sprites(appearance, None)
+    let equipped = sprite_equipment(&equipment);
+    let sprites = api::get_character_sprites(appearance, Some(&equipped))
         .await
         .map_err(|error| error.to_string())?;
-    let player = api::create_character(PLAYER_ID, &name, appearance)
+    let player = api::create_character(PLAYER_ID, &name, appearance, equipment)
         .await
         .map_err(|error| error.to_string())?;
     set_visible("character-create", false)?;
@@ -252,11 +318,19 @@ fn request_preview(creator: &Rc<Creator>) {
             return;
         }
     };
+    let equipment = match selected_equipment(creator) {
+        Ok(equipment) => equipment,
+        Err(error) => {
+            show_create_error(&error);
+            return;
+        }
+    };
     let generation = creator.preview_generation.get().wrapping_add(1);
     creator.preview_generation.set(generation);
     let pending_creator = creator.clone();
     spawn_local(async move {
-        match api::get_character_sprites(appearance, None).await {
+        let equipped = sprite_equipment(&equipment);
+        match api::get_character_sprites(appearance, Some(&equipped)).await {
             Ok(sprites) if pending_creator.preview_generation.get() == generation => {
                 match assets::prepare_assets(sprites.assets.iter()) {
                     Ok(images) => {
@@ -367,6 +441,28 @@ fn populate_select(
     Ok(())
 }
 
+fn populate_equipment_select(
+    document: &Document,
+    select: &HtmlSelectElement,
+    options: &[CharacterEquipmentOption],
+    slot: EquipmentSlot,
+) -> Result<(), String> {
+    select.set_inner_html("");
+    let mut first_id = None;
+    for option in options.iter().filter(|option| option.slot == slot as i32) {
+        let element = document.create_element("option").map_err(js_error)?;
+        element
+            .set_attribute("value", &option.item_id.to_string())
+            .map_err(js_error)?;
+        element.set_text_content(Some(&option.label));
+        select.append_child(&element).map_err(js_error)?;
+        first_id.get_or_insert(option.item_id);
+    }
+    let first_id = first_id.ok_or_else(|| format!("no starting {slot:?} options are available"))?;
+    select.set_value(&first_id.to_string());
+    Ok(())
+}
+
 fn selected_appearance(creator: &Creator) -> Result<CharacterAppearance, String> {
     Ok(CharacterAppearance {
         gender: selected_gender(&creator.gender)? as i32,
@@ -374,6 +470,34 @@ fn selected_appearance(creator: &Creator) -> Result<CharacterAppearance, String>
         face_id: selected_id(&creator.face, "face")?,
         hair_id: selected_id(&creator.hair, "hair")?,
     })
+}
+
+fn selected_equipment(creator: &Creator) -> Result<Vec<StartingEquipmentSelection>, String> {
+    [
+        (EquipmentSlot::Top, &creator.top),
+        (EquipmentSlot::Bottom, &creator.bottom),
+        (EquipmentSlot::Shoes, &creator.shoes),
+        (EquipmentSlot::Weapon, &creator.weapon),
+    ]
+    .into_iter()
+    .map(|(slot, select)| {
+        Ok(StartingEquipmentSelection {
+            slot: slot as i32,
+            item_id: selected_id(select, "equipment")?,
+        })
+    })
+    .collect()
+}
+
+fn sprite_equipment(selections: &[StartingEquipmentSelection]) -> Vec<EquippedItem> {
+    selections
+        .iter()
+        .map(|selection| EquippedItem {
+            slot: selection.slot,
+            item_id: selection.item_id,
+            expires_at_unix_ms: 0,
+        })
+        .collect()
 }
 
 fn selected_gender(select: &HtmlSelectElement) -> Result<CharacterGender, String> {

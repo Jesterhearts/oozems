@@ -167,7 +167,7 @@ async fn request_map_transition(
     let position = authoritative
         .position
         .ok_or("portal response did not contain a destination position")?;
-    let map = api::get_map(authoritative.map_id)
+    let map = api::get_map(player_id, authoritative.map_id)
         .await
         .map_err(|error| error.to_string())?;
     let name = map.name.clone();

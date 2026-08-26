@@ -39,12 +39,13 @@ pub async fn interact(
     let player_guard = lock_player(&state, &player_id).await?;
     let now_unix_ms = unix_time_ms()?;
     let mutation = begin_player_mutation(&state, &player_guard, &player_id, now_unix_ms).await?;
+    super::require_living_player(&mutation.player, "interact with NPCs")?;
     if request.map_id != mutation.player.map_id {
         return Err(invalid(
             "the requested NPC is not on the player's current map",
         ));
     }
-    let map = load_map(&state, mutation.player.map_id)
+    let mut map = load_map(&state, mutation.player.map_id)
         .await?
         .ok_or_else(|| ApiError::not_found("map_not_found", "the current map does not exist"))?;
     let npc = map
@@ -113,6 +114,24 @@ pub async fn interact(
         }
     };
     let effects = crate::effects::snapshot(&state.active_effects, player_id.as_str(), now_unix_ms)?;
+    let response_player = response
+        .player
+        .as_ref()
+        .ok_or_else(|| ApiError::PlayerData("NPC response does not contain a player".to_owned()))?;
+    let environment = crate::quests::QuestEnvironment {
+        now_unix_ms,
+        world_id: state.gameplay.world_id,
+    };
+    let indicator_map = response.map.as_mut().unwrap_or(&mut map);
+    response.quest_indicators = crate::quests::project_npc_quest_indicators(
+        indicator_map,
+        response_player,
+        &effects,
+        &quest_definitions,
+        state.catalog.item_definition_slice(),
+        &state.quest_scripts,
+        environment,
+    );
     response.active_buffs = Some(crate::effects::state(&effects, now_unix_ms));
     Ok(Protobuf(response))
 }

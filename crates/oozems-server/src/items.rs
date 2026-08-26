@@ -17,6 +17,7 @@ pub use drops::restore_picked_up_drop;
 pub use drops::rollback_staged_drops;
 pub use drops::stage_inventory_drop;
 pub use drops::stage_mob_drops;
+pub use inventory::EquipmentStats;
 pub use inventory::ItemDefinitionLookup;
 pub use inventory::ItemRuleError;
 #[cfg(test)]
@@ -33,10 +34,15 @@ pub use inventory::buy_shop_item;
 pub use inventory::count_inventory_item;
 #[cfg(test)]
 pub use inventory::count_item_quantity;
+pub use inventory::default_starter_equipment;
 pub use inventory::equip_inventory_item;
+pub use inventory::equipment_stats;
 pub use inventory::prune_and_validate_inventory;
 pub use inventory::remove_inventory_item;
+pub use inventory::selected_starter_inventory;
 pub use inventory::sell_inventory_item;
+pub use inventory::starter_equipment_options;
+#[cfg(test)]
 pub use inventory::starter_inventory;
 pub use inventory::unequip_item;
 pub use inventory::validate_inventory_selection;

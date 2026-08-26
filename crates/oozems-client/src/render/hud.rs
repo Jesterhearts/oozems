@@ -48,16 +48,28 @@ pub(super) fn draw(game: &Game) {
 }
 
 fn draw_key_config_window(game: &Game) {
-    let Some(window) = game.ui.gui.key_config_window.as_ref() else {
+    let state = *game.ui.gui_state.borrow();
+    let Some(placement) = game_gui::resolve_window(
+        &game.ui.gui,
+        state.window_placements,
+        game_gui::WindowKind::KeyConfig,
+        game.surface.canvas.width() as f32,
+        game.surface.canvas.height() as f32,
+    ) else {
         return;
     };
-    if !draw_window(game, window) {
+    if !draw_window_at(game, placement.window, placement.origin) {
         return;
     }
-    for placement in
-        game_gui::bound_key_icons(&game.ui.gui, &game.player.skill_book, &game.key_bindings())
-    {
-        draw_key_icon(game, &placement);
+    for icon in game_gui::bound_key_icons(
+        state,
+        &game.ui.gui,
+        &game.player.skill_book,
+        &game.key_bindings(),
+        game.surface.canvas.width() as f32,
+        game.surface.canvas.height() as f32,
+    ) {
+        draw_key_icon(game, &icon);
     }
     if let Some(drag) = game.ui.key_drag.as_ref()
         && let Some(placement) =
@@ -87,10 +99,16 @@ fn draw_key_icon(
 }
 
 fn draw_equipment_window(game: &Game) {
-    let Some(window) = game.ui.gui.equipment_window.as_ref() else {
+    let Some(placement) = game_gui::resolve_window(
+        &game.ui.gui,
+        game.ui.gui_state.borrow().window_placements,
+        game_gui::WindowKind::Equipment,
+        game.surface.canvas.width() as f32,
+        game.surface.canvas.height() as f32,
+    ) else {
         return;
     };
-    if !draw_window(game, window) {
+    if !draw_window_at(game, placement.window, placement.origin) {
         return;
     }
     let Some(inventory) = game.player.inventory.as_ref() else {
@@ -102,13 +120,18 @@ fn draw_equipment_window(game: &Game) {
             continue;
         };
         if let Some(definition) = item_definition(game, equipped.item_id) {
-            draw_item_icon(game, definition, window.x + x, window.y + y);
+            draw_item_icon(
+                game,
+                definition,
+                placement.origin.x + x,
+                placement.origin.y + y,
+            );
             draw_item_expiration(
                 game,
                 item_expiration(equipped.expires_at_unix_ms, now_unix_ms),
                 false,
-                window.x + x,
-                window.y + y,
+                placement.origin.x + x,
+                placement.origin.y + y,
             );
         }
     }
@@ -117,6 +140,7 @@ fn draw_equipment_window(game: &Game) {
 fn draw_inventory_locked_slots(
     game: &Game,
     window: &GuiWindow,
+    origin: game_gui::CanvasPoint,
     capacity: usize,
 ) {
     let Some(layout) = window.layout.as_ref() else {
@@ -136,8 +160,8 @@ fn draw_inventory_locked_slots(
             .context
             .draw_image_with_html_image_element_and_dw_and_dh(
                 image,
-                f64::from(window.x + x),
-                f64::from(window.y + y),
+                f64::from(origin.x + x),
+                f64::from(origin.y + y),
                 f64::from(template.width),
                 f64::from(template.height),
             );
@@ -146,45 +170,66 @@ fn draw_inventory_locked_slots(
 
 fn draw_inventory_mesos(
     game: &Game,
-    window: &GuiWindow,
+    origin: game_gui::CanvasPoint,
 ) {
     game.surface.context.set_fill_style_str("#30383b");
     game.surface.context.set_font("10px Arial");
     game.surface.context.set_text_align("right");
     let _ = game.surface.context.fill_text_with_max_width(
         &format_number(game.player.mesos),
-        f64::from(window.x + 137.0),
-        f64::from(window.y + 285.0),
+        f64::from(origin.x + 137.0),
+        f64::from(origin.y + 285.0),
         111.0,
     );
     game.surface.context.set_text_align("left");
 }
 
 fn draw_inventory_window(game: &Game) {
-    let Some(window) = game.ui.gui.inventory_window.as_ref() else {
+    let Some(placement) = game_gui::resolve_window(
+        &game.ui.gui,
+        game.ui.gui_state.borrow().window_placements,
+        game_gui::WindowKind::Inventory,
+        game.surface.canvas.width() as f32,
+        game.surface.canvas.height() as f32,
+    ) else {
         return;
     };
-    if !draw_window(game, window) {
+    if !draw_window_at(game, placement.window, placement.origin) {
         return;
     }
     let selected_tab = game.ui.gui_state.borrow().inventory_tab;
-    draw_inventory_tabs(game, window, selected_tab);
+    draw_inventory_tabs(game, placement.window, placement.origin, selected_tab);
     let Some(inventory) = game.player.inventory.as_ref() else {
         return;
     };
-    draw_inventory_locked_slots(game, window, inventory.capacity as usize);
-    draw_inventory_mesos(game, window);
+    draw_inventory_locked_slots(
+        game,
+        placement.window,
+        placement.origin,
+        inventory.capacity as usize,
+    );
+    draw_inventory_mesos(game, placement.origin);
     let now_unix_ms = js_sys::Date::now().max(0.0) as u64;
     for slot in game_gui::inventory_slots(&game.ui.gui, inventory, selected_tab) {
         let (x, y) = game_gui::inventory_slot_position(slot.visual_index);
-        draw_item_icon(game, slot.definition, window.x + x, window.y + y);
-        draw_item_quantity(game, slot.stack.quantity, window.x + x, window.y + y);
+        draw_item_icon(
+            game,
+            slot.definition,
+            placement.origin.x + x,
+            placement.origin.y + y,
+        );
+        draw_item_quantity(
+            game,
+            slot.stack.quantity,
+            placement.origin.x + x,
+            placement.origin.y + y,
+        );
         draw_item_expiration(
             game,
             item_expiration(slot.stack.expires_at_unix_ms, now_unix_ms),
             permanent_stack_needs_label(&inventory.stacks, slot.stack),
-            window.x + x,
-            window.y + y,
+            placement.origin.x + x,
+            placement.origin.y + y,
         );
     }
 }
@@ -192,22 +237,23 @@ fn draw_inventory_window(game: &Game) {
 fn draw_inventory_tabs(
     game: &Game,
     window: &GuiWindow,
+    origin: game_gui::CanvasPoint,
     selected: game_gui::InventoryTab,
 ) {
     let Some(layout) = window.layout.as_ref() else {
         return;
     };
     for tab in game_gui::InventoryTab::ALL {
-        draw_inventory_tab_part(game, window, layout, tab, tab == selected, "background");
+        draw_inventory_tab_part(game, origin, layout, tab, tab == selected, "background");
     }
     for tab in game_gui::InventoryTab::ALL {
-        draw_inventory_tab_part(game, window, layout, tab, tab == selected, "label");
+        draw_inventory_tab_part(game, origin, layout, tab, tab == selected, "label");
     }
 }
 
 fn draw_inventory_tab_part(
     game: &Game,
-    window: &GuiWindow,
+    origin: game_gui::CanvasPoint,
     layout: &oozems_proto::v1::GuiLayout,
     tab: game_gui::InventoryTab,
     active: bool,
@@ -233,8 +279,8 @@ fn draw_inventory_tab_part(
         .context
         .draw_image_with_html_image_element_and_dw_and_dh(
             image,
-            f64::from(window.x + x),
-            f64::from(window.y + y),
+            f64::from(origin.x + x),
+            f64::from(origin.y + y),
             f64::from(template.width),
             f64::from(template.height),
         );
@@ -243,6 +289,21 @@ fn draw_inventory_tab_part(
 pub(super) fn draw_window(
     game: &Game,
     window: &GuiWindow,
+) -> bool {
+    draw_window_at(
+        game,
+        window,
+        game_gui::CanvasPoint {
+            x: window.x,
+            y: window.y,
+        },
+    )
+}
+
+pub(super) fn draw_window_at(
+    game: &Game,
+    window: &GuiWindow,
+    origin: game_gui::CanvasPoint,
 ) -> bool {
     let Some(layout) = window
         .layout
@@ -257,8 +318,8 @@ pub(super) fn draw_window(
     let Some(background_image) = ready_image(&game.surface.images, &background.asset_id) else {
         return false;
     };
-    let origin_x = f64::from(window.x);
-    let origin_y = f64::from(window.y);
+    let origin_x = f64::from(origin.x);
+    let origin_y = f64::from(origin.y);
     let _ = game
         .surface
         .context
@@ -653,24 +714,24 @@ fn draw_gauge_text(
 }
 
 fn draw_stat_window(game: &Game) {
-    let Some(window) = game.ui.gui.stat_window.as_ref() else {
+    let Some(placement) = game_gui::resolve_window(
+        &game.ui.gui,
+        game.ui.gui_state.borrow().window_placements,
+        game_gui::WindowKind::Stats,
+        game.surface.canvas.width() as f32,
+        game.surface.canvas.height() as f32,
+    ) else {
         return;
     };
-    let Some(layout) = window
-        .layout
-        .as_ref()
-        .filter(|layout| game_gui::valid_layout(layout))
-    else {
-        return;
-    };
+    let layout = placement.layout;
     let Some(background) = layout.background.as_ref() else {
         return;
     };
     let Some(background_image) = ready_image(&game.surface.images, &background.asset_id) else {
         return;
     };
-    let origin_x = f64::from(window.x);
-    let origin_y = f64::from(window.y);
+    let origin_x = f64::from(placement.origin.x);
+    let origin_y = f64::from(placement.origin.y);
     let _ = game
         .surface
         .context
@@ -681,7 +742,15 @@ fn draw_stat_window(game: &Game) {
             f64::from(background.width),
             f64::from(background.height),
         );
+    let can_allocate_ability = game_gui::can_allocate_ability(game.player.stats.as_ref());
     for sprite in &layout.sprites {
+        let enabled_ability_button = sprite.name == "stat-ability-up";
+        let allocated_stat_button = sprite.name == "stat-ability-up-disabled" && sprite.y >= 246.0;
+        if (enabled_ability_button && !can_allocate_ability)
+            || (allocated_stat_button && can_allocate_ability)
+        {
+            continue;
+        }
         draw_window_sprite(game, sprite, origin_x, origin_y);
     }
     if let Some(stats) = game.player.stats.as_ref() {
