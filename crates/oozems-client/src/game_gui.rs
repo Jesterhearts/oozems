@@ -399,7 +399,7 @@ pub fn equipment_slot_position(slot_value: i32) -> Option<(f32, f32)> {
         EquipmentSlot::Top => Some((71.0, 134.0)),
         EquipmentSlot::Bottom => Some((38.0, 167.0)),
         EquipmentSlot::Shoes => Some((71.0, 167.0)),
-        EquipmentSlot::Weapon => Some((5.0, 134.0)),
+        EquipmentSlot::Weapon => Some((104.0, 134.0)),
         EquipmentSlot::Unspecified => None,
     }
 }
@@ -787,7 +787,10 @@ fn inventory_item_at(
                     && EquipmentSlot::try_from(slot.definition.slot).is_ok_and(|slot| {
                         matches!(
                             slot,
-                            EquipmentSlot::Top | EquipmentSlot::Bottom | EquipmentSlot::Shoes
+                            EquipmentSlot::Top
+                                | EquipmentSlot::Bottom
+                                | EquipmentSlot::Shoes
+                                | EquipmentSlot::Weapon
                         )
                     }),
             })
@@ -982,6 +985,7 @@ mod tests {
     use super::can_allocate_ability;
     use super::canvas_point;
     use super::click_action;
+    use super::equipment_slot_position;
     use super::gauge_fills;
     use super::gauge_labels;
     use super::hovered_inventory_item;
@@ -1099,6 +1103,50 @@ mod tests {
             Some(GuiAction::Unequip {
                 slot: EquipmentSlot::Top as i32
             })
+        );
+    }
+
+    #[test]
+    fn unequipped_weapons_can_be_equipped_again() {
+        const WEAPON_ID: u32 = 1_302_000;
+        let mut gui = gui_fixture();
+        gui.items.push(ItemDefinition {
+            item_id: WEAPON_ID,
+            category: ItemCategory::Equipment as i32,
+            slot: EquipmentSlot::Weapon as i32,
+            appearance_supported: true,
+            ..ItemDefinition::default()
+        });
+        let inventory = InventoryState {
+            capacity: 24,
+            stacks: vec![inventory_stack(WEAPON_ID)],
+            ..InventoryState::default()
+        };
+        let state = GuiState {
+            inventory_open: true,
+            ..GuiState::default()
+        };
+
+        assert_eq!(
+            click_action(
+                state,
+                &gui,
+                Some(&inventory),
+                None,
+                960.0,
+                600.0,
+                CanvasPoint { x: 213.0, y: 131.0 },
+                PointerButton::Left,
+            ),
+            Some(GuiAction::Equip { inventory_index: 0 })
+        );
+    }
+
+    #[test]
+    fn weapon_uses_the_native_weapon_slot() {
+        assert_eq!(
+            equipment_slot_position(EquipmentSlot::Weapon as i32),
+            Some((104.0, 134.0))
         );
     }
 

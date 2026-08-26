@@ -894,9 +894,9 @@ fn z_rank(z: &str) -> u16 {
         "shoes" | "shoesOverPants" => 40,
         "mailChest" => 50,
         "weaponBelowArm" => 59,
+        "weapon" => 59,
         "arm" => 60,
         "mailArm" => 70,
-        "weapon" => 75,
         "glove" | "gloveWrist" | "hand" => 80,
         "weaponOverHand" => 85,
         "head" | "ear" => 90,
@@ -950,6 +950,12 @@ mod tests {
     fn front_hair_is_drawn_after_the_face() {
         assert!(z_rank("hair") < z_rank("body"));
         assert!(z_rank("face") < z_rank("hairOverHead"));
+    }
+
+    #[test]
+    fn weapon_is_drawn_behind_the_arm_and_hand() {
+        assert!(z_rank("weapon") < z_rank("arm"));
+        assert!(z_rank("weapon") < z_rank("hand"));
     }
 
     #[test]
