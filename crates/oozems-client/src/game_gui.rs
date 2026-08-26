@@ -131,6 +131,7 @@ const INVENTORY_SLOT_LEFT: f32 = 7.0;
 const INVENTORY_SLOT_TOP: f32 = 50.0;
 const INVENTORY_SLOT_STEP: f32 = 36.0;
 const ITEM_SLOT_SIZE: f32 = 32.0;
+pub(crate) const INVENTORY_VISIBLE_SLOTS: usize = 24;
 
 pub fn click_action(
     state: GuiState,
@@ -287,6 +288,7 @@ pub(crate) fn inventory_slots<'a>(
                 .find(|definition| definition.item_id == stack.item_id)?;
             (item_category_tab(definition.category)? == tab).then_some((index, stack, definition))
         })
+        .take(INVENTORY_VISIBLE_SLOTS)
         .enumerate()
         .filter_map(|(visual_index, (inventory_index, stack, definition))| {
             Some(InventorySlot {
@@ -613,6 +615,32 @@ pub fn hovered_skill<'a>(
     skill_row_at(state, gui, book, point).map(|(skill, _)| skill)
 }
 
+pub(crate) fn hovered_inventory_item<'a>(
+    state: GuiState,
+    gui: &'a GameGui,
+    inventory: &'a InventoryState,
+    point: CanvasPoint,
+) -> Option<InventorySlot<'a>> {
+    if !state.inventory_open {
+        return None;
+    }
+    let window = gui.inventory_window.as_ref()?;
+    inventory_slots(gui, inventory, state.inventory_tab)
+        .into_iter()
+        .find(|slot| {
+            let (x, y) = inventory_slot_position(slot.visual_index);
+            rect_contains(
+                CanvasRect {
+                    x: window.x + x,
+                    y: window.y + y,
+                    width: ITEM_SLOT_SIZE,
+                    height: ITEM_SLOT_SIZE,
+                },
+                point,
+            )
+        })
+}
+
 fn skill_row_at<'a>(
     state: GuiState,
     gui: &GameGui,
@@ -924,6 +952,7 @@ mod tests {
     use super::click_action;
     use super::gauge_fills;
     use super::gauge_labels;
+    use super::hovered_inventory_item;
     use super::inventory_slots;
     use super::inventory_tab_template_position;
     use super::item_definition_refresh_ids;
@@ -1154,6 +1183,43 @@ mod tests {
         let cash = inventory_slots(&gui, &inventory, InventoryTab::Cash);
         assert_eq!(cash.len(), 1);
         assert_eq!(cash[0].inventory_index, 2);
+    }
+
+    #[test]
+    fn inventory_grid_caps_visible_items_and_hover_uses_window_offsets() {
+        let mut gui = gui_fixture();
+        gui.items = (0..25)
+            .map(|index| item_definition(1_040_000 + index, ItemCategory::Equipment))
+            .collect();
+        let inventory = InventoryState {
+            capacity: 24,
+            stacks: (0..25)
+                .map(|index| inventory_stack(1_040_000 + index))
+                .collect(),
+            ..InventoryState::default()
+        };
+        let state = GuiState {
+            inventory_open: true,
+            ..GuiState::default()
+        };
+
+        let slots = inventory_slots(&gui, &inventory, InventoryTab::Equipment);
+        assert_eq!(slots.len(), 24);
+        assert_eq!(slots[23].inventory_index, 23);
+        assert_eq!(
+            hovered_inventory_item(state, &gui, &inventory, CanvasPoint { x: 213.0, y: 131.0 },)
+                .map(|slot| slot.definition.item_id),
+            Some(1_040_000)
+        );
+        assert!(
+            hovered_inventory_item(
+                GuiState::default(),
+                &gui,
+                &inventory,
+                CanvasPoint { x: 213.0, y: 131.0 },
+            )
+            .is_none()
+        );
     }
 
     #[test]

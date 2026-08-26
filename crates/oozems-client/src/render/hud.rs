@@ -114,6 +114,52 @@ fn draw_equipment_window(game: &Game) {
     }
 }
 
+fn draw_inventory_locked_slots(
+    game: &Game,
+    window: &GuiWindow,
+    capacity: usize,
+) {
+    let Some(layout) = window.layout.as_ref() else {
+        return;
+    };
+    let Some(template) = game_gui::named_sprite_template(layout, "inventory-locked-slot") else {
+        return;
+    };
+    let Some(image) = ready_image(&game.surface.images, &template.asset_id) else {
+        return;
+    };
+    let visible_capacity = capacity.min(game_gui::INVENTORY_VISIBLE_SLOTS);
+    for index in visible_capacity..game_gui::INVENTORY_VISIBLE_SLOTS {
+        let (x, y) = game_gui::inventory_slot_position(index);
+        let _ = game
+            .surface
+            .context
+            .draw_image_with_html_image_element_and_dw_and_dh(
+                image,
+                f64::from(window.x + x),
+                f64::from(window.y + y),
+                f64::from(template.width),
+                f64::from(template.height),
+            );
+    }
+}
+
+fn draw_inventory_mesos(
+    game: &Game,
+    window: &GuiWindow,
+) {
+    game.surface.context.set_fill_style_str("#30383b");
+    game.surface.context.set_font("10px Arial");
+    game.surface.context.set_text_align("right");
+    let _ = game.surface.context.fill_text_with_max_width(
+        &format_number(game.player.mesos),
+        f64::from(window.x + 137.0),
+        f64::from(window.y + 285.0),
+        111.0,
+    );
+    game.surface.context.set_text_align("left");
+}
+
 fn draw_inventory_window(game: &Game) {
     let Some(window) = game.ui.gui.inventory_window.as_ref() else {
         return;
@@ -126,6 +172,8 @@ fn draw_inventory_window(game: &Game) {
     let Some(inventory) = game.player.inventory.as_ref() else {
         return;
     };
+    draw_inventory_locked_slots(game, window, inventory.capacity as usize);
+    draw_inventory_mesos(game, window);
     let now_unix_ms = js_sys::Date::now().max(0.0) as u64;
     for slot in game_gui::inventory_slots(&game.ui.gui, inventory, selected_tab) {
         let (x, y) = game_gui::inventory_slot_position(slot.visual_index);
@@ -260,13 +308,19 @@ pub(super) fn draw_item_quantity(
         return;
     }
     let label = quantity.to_string();
-    game.surface.context.set_fill_style_str("#202020");
     game.surface.context.set_font("bold 10px Arial");
     let width = game
         .surface
         .context
         .measure_text(&label)
         .map_or(0.0, |metrics| metrics.width());
+    game.surface.context.set_fill_style_str("#202020");
+    let _ = game.surface.context.fill_text(
+        &label,
+        f64::from(slot_x + 31.0) - width,
+        f64::from(slot_y + 31.0),
+    );
+    game.surface.context.set_fill_style_str("#ffffff");
     let _ = game.surface.context.fill_text(
         &label,
         f64::from(slot_x + 30.0) - width,
@@ -530,13 +584,13 @@ fn draw_status_bar_text(
 ) {
     let bar_top = origin_y + bar_y;
     game.surface.context.set_fill_style_str("#e9eef2");
-    game.surface.context.set_font("bold 12px monospace");
+    game.surface.context.set_font("bold 12px Arial");
     let _ = game
         .surface
         .context
         .fill_text(&game.player.level.to_string(), 44.0, bar_top + 61.0);
 
-    game.surface.context.set_font("bold 10px monospace");
+    game.surface.context.set_font("bold 10px Arial");
     let job = game
         .player
         .stats
@@ -546,7 +600,7 @@ fn draw_status_bar_text(
         .surface
         .context
         .fill_text_with_max_width(job, 84.0, bar_top + 50.0, 118.0);
-    game.surface.context.set_font("11px monospace");
+    game.surface.context.set_font("11px Arial");
     let _ = game.surface.context.fill_text_with_max_width(
         &game.player.name,
         84.0,
@@ -555,7 +609,7 @@ fn draw_status_bar_text(
     );
 
     game.surface.context.set_fill_style_str("#263139");
-    game.surface.context.set_font("12px monospace");
+    game.surface.context.set_font("12px Arial");
     let _ = game.surface.context.fill_text_with_max_width(
         &game.world.map.name,
         10.0,
@@ -668,11 +722,14 @@ fn draw_stat_values(
         ("-".to_owned(), 106.0),
         (format!("{} / {}", stats.hp, stats.max_hp), 124.0),
         (format!("{} / {}", stats.mp, stats.max_mp), 142.0),
-        (stats.experience.to_string(), 160.0),
+        (
+            experience_label(stats.experience, stats.experience_required),
+            160.0,
+        ),
         (stats.fame.to_string(), 178.0),
     ];
     game.surface.context.set_fill_style_str("#30383b");
-    game.surface.context.set_font("10px monospace");
+    game.surface.context.set_font("10px Arial");
     for (value, y) in values {
         let _ = game.surface.context.fill_text_with_max_width(
             &value,
@@ -706,8 +763,101 @@ fn draw_stat_values(
 fn job_name(job_id: u32) -> &'static str {
     match job_id {
         0 => "Beginner",
+        100 => "Warrior",
+        110 => "Fighter",
+        111 => "Crusader",
+        112 => "Hero",
+        120 => "Page",
+        121 => "White Knight",
+        122 => "Paladin",
+        130 => "Spearman",
+        131 => "Dragon Knight",
+        132 => "Dark Knight",
+        200 => "Magician",
+        210 => "Wizard (F/P)",
+        211 => "Mage (F/P)",
+        212 => "Arch Mage (F/P)",
+        220 => "Wizard (I/L)",
+        221 => "Mage (I/L)",
+        222 => "Arch Mage (I/L)",
+        230 => "Cleric",
+        231 => "Priest",
+        232 => "Bishop",
+        300 => "Bowman",
+        310 => "Hunter",
+        311 => "Ranger",
+        312 => "Bowmaster",
+        320 => "Crossbowman",
+        321 => "Sniper",
+        322 => "Marksman",
+        400 => "Thief",
+        410 => "Assassin",
+        411 => "Hermit",
+        412 => "Night Lord",
+        420 => "Bandit",
+        421 => "Chief Bandit",
+        422 => "Shadower",
+        500 => "Pirate",
+        510 => "Brawler",
+        511 => "Marauder",
+        512 => "Buccaneer",
+        520 => "Gunslinger",
+        521 => "Outlaw",
+        522 => "Corsair",
+        900 => "GM",
+        910 => "SuperGM",
+        1000 => "Noblesse",
+        1100 => "Dawn Warrior",
+        1110 => "Dawn Warrior II",
+        1111 => "Dawn Warrior III",
+        1112 => "Dawn Warrior IV",
+        1200 => "Blaze Wizard",
+        1210 => "Blaze Wizard II",
+        1211 => "Blaze Wizard III",
+        1212 => "Blaze Wizard IV",
+        1300 => "Wind Archer",
+        1310 => "Wind Archer II",
+        1311 => "Wind Archer III",
+        1312 => "Wind Archer IV",
+        1400 => "Night Walker",
+        1410 => "Night Walker II",
+        1411 => "Night Walker III",
+        1412 => "Night Walker IV",
+        1500 => "Thunder Breaker",
+        1510 => "Thunder Breaker II",
+        1511 => "Thunder Breaker III",
+        1512 => "Thunder Breaker IV",
+        2000 => "Legend",
+        2100 => "Aran",
+        2110 => "Aran II",
+        2111 => "Aran III",
+        2112 => "Aran IV",
         _ => "Unknown",
     }
+}
+
+fn experience_label(
+    experience: u64,
+    required: u64,
+) -> String {
+    let percentage = if required == 0 {
+        0.0
+    } else {
+        experience.min(required) as f64 * 100.0 / required as f64
+    };
+    format!("{} ({percentage:.2}%)", format_number(experience))
+}
+
+fn format_number(value: u64) -> String {
+    let digits = value.to_string();
+    let mut formatted = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            formatted.push(',');
+        }
+        formatted.push(digit);
+    }
+    formatted
 }
 
 fn draw_fallback_hud(game: &Game) {
@@ -727,4 +877,17 @@ fn draw_fallback_hud(game: &Game) {
         .surface
         .context
         .fill_text(&game.world.map.name, 28.0, 66.0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::experience_label;
+    use super::format_number;
+
+    #[test]
+    fn stat_and_inventory_numbers_use_classic_compact_labels() {
+        assert_eq!(format_number(1_234_567), "1,234,567");
+        assert_eq!(experience_label(14, 135), "14 (10.37%)");
+        assert_eq!(experience_label(10, 0), "10 (0.00%)");
+    }
 }

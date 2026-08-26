@@ -25,8 +25,8 @@ use super::wz::wrap_archive_root;
 mod layout;
 
 use layout::compose_cash_shop_window;
+use layout::compose_equipment_window;
 use layout::compose_inventory_window;
-use layout::compose_item_window;
 use layout::compose_key_config;
 use layout::compose_npc_dialog_window;
 use layout::compose_shop_window;
@@ -95,11 +95,15 @@ struct StatWindowSources {
     background: SourceSprite,
     close: SourceSprite,
     job: SourceSprite,
+    ability_up: SourceSprite,
+    auto_assign: SourceSprite,
+    detail: SourceSprite,
 }
 
-struct ItemWindowSources {
+struct EquipmentWindowSources {
     background: SourceSprite,
     close: SourceSprite,
+    detail: SourceSprite,
 }
 
 struct InventoryTabSources {
@@ -113,6 +117,15 @@ struct InventoryWindowSources {
     background: SourceSprite,
     close: SourceSprite,
     tabs: Vec<InventoryTabSources>,
+    gather: SourceSprite,
+    sort: SourceSprite,
+    expand: SourceSprite,
+    locked_slot: SourceSprite,
+}
+
+struct SkillTabSources {
+    enabled: SourceSprite,
+    disabled: SourceSprite,
 }
 
 struct SkillWindowSources {
@@ -124,6 +137,7 @@ struct SkillWindowSources {
     point_up_hover: SourceSprite,
     point_up_pressed: SourceSprite,
     point_up_disabled: SourceSprite,
+    tabs: Vec<SkillTabSources>,
 }
 
 struct KeyConfigSources {
@@ -158,8 +172,10 @@ struct ShopWindowSources {
 struct CashShopWindowSources {
     background: SourceSprite,
     preview: SourceSprite,
+    category_tab: SourceSprite,
     item_card: SourceSprite,
     buy: SourceSprite,
+    gift_disabled: SourceSprite,
     exit: SourceSprite,
 }
 
@@ -251,10 +267,9 @@ fn build_game_gui(
     let (stat_sources, stat_assets) = load_stat_window_sources(content, ui_window)?;
     let stat_window = compose_stat_window(&stat_sources)?;
     assets.extend(stat_assets);
-    let (equipment_sources, equipment_assets) =
-        load_item_window_sources(content, ui_window, "equipment", "Equip")?;
+    let (equipment_sources, equipment_assets) = load_equipment_window_sources(content, ui_window)?;
     let equipment_window =
-        compose_item_window(&equipment_sources, EQUIPMENT_WINDOW_X, EQUIPMENT_WINDOW_Y)?;
+        compose_equipment_window(&equipment_sources, EQUIPMENT_WINDOW_X, EQUIPMENT_WINDOW_Y)?;
     assets.extend(equipment_assets);
     let (inventory_sources, inventory_assets) = load_inventory_window_sources(content, ui_window)?;
     let inventory_window =
@@ -358,6 +373,11 @@ fn load_cash_shop_window_sources(
         load_source(content, cash_shop, CASH_SHOP_IMAGE, name, path, &mut assets)
     };
     let sources = CashShopWindowSources {
+        category_tab: load("cash-shop-category-tab", &["CSTab", "Tab", "1"])?,
+        gift_disabled: load(
+            "cash-shop-gift-disabled",
+            &["CSList", "BtGift", "disabled", "0"],
+        )?,
         background: load("cash-shop-background", &["Base", "backgrnd"])?,
         preview: load("cash-shop-preview", &["Base", "Preview", "0"])?,
         item_card: load("cash-shop-item-card", &["CSList", "Base"])?,
@@ -535,37 +555,69 @@ fn load_key_config_sources(
     ))
 }
 
-fn load_item_window_sources(
+fn load_equipment_window_sources(
     content: &GuiContent,
     ui_window: &WzNodeArc,
-    name: &str,
-    wz_name: &str,
-) -> Result<(ItemWindowSources, Vec<AssetDescriptor>), GuiContentError> {
+) -> Result<(EquipmentWindowSources, Vec<AssetDescriptor>), GuiContentError> {
     let mut assets = Vec::new();
     let background = load_source(
         content,
         ui_window,
         UI_WINDOW_IMAGE,
-        &format!("{name}-background"),
-        &[wz_name, "backgrnd"],
+        "equipment-background",
+        &["Equip", "backgrnd"],
         &mut assets,
     )?;
     let close = load_source(
         content,
         ui_window,
         UI_WINDOW_IMAGE,
-        &format!("{name}-close"),
+        "equipment-close",
         &["BtUIClose", "normal", "0"],
         &mut assets,
     )?;
-    Ok((ItemWindowSources { background, close }, assets))
+    let detail = load_source(
+        content,
+        ui_window,
+        UI_WINDOW_IMAGE,
+        "equipment-detail-disabled",
+        &["Equip", "BtDetail", "disabled", "0"],
+        &mut assets,
+    )?;
+    Ok((
+        EquipmentWindowSources {
+            background,
+            close,
+            detail,
+        },
+        assets,
+    ))
 }
 
 fn load_inventory_window_sources(
     content: &GuiContent,
     ui_window: &WzNodeArc,
 ) -> Result<(InventoryWindowSources, Vec<AssetDescriptor>), GuiContentError> {
-    let (window, mut assets) = load_item_window_sources(content, ui_window, "inventory", "Item")?;
+    let mut assets = Vec::new();
+    let mut load = |name: &str, path: &[&str]| {
+        load_source(content, ui_window, UI_WINDOW_IMAGE, name, path, &mut assets)
+    };
+    let background = load("inventory-background", &["Item", "backgrnd"])?;
+    let close = load("inventory-close", &["BtUIClose", "normal", "0"])?;
+    let gather = load(
+        "inventory-gather-disabled",
+        &["Item", "BtGather", "disabled", "0"],
+    )?;
+    let sort = load(
+        "inventory-sort-disabled",
+        &["Item", "BtSort", "disabled", "0"],
+    )?;
+    let expand = load(
+        "inventory-expand-disabled",
+        &["Item", "BtFull", "disabled", "0"],
+    )?;
+    let locked_slot = load("inventory-locked-slot", &["Item", "disabled"])?;
+    drop(load);
     let mut tabs = Vec::with_capacity(5);
     for (index, name) in ["equipment", "consume", "install", "etc", "cash"]
         .into_iter()
@@ -591,9 +643,13 @@ fn load_inventory_window_sources(
     }
     Ok((
         InventoryWindowSources {
-            background: window.background,
-            close: window.close,
+            background,
+            close,
             tabs,
+            gather,
+            sort,
+            expand,
+            locked_slot,
         },
         assets,
     ))
@@ -668,6 +724,27 @@ fn load_skill_window_sources(
         &["Skill", "BtSpUp", "disabled", "0"],
         &mut assets,
     )?;
+    let mut tabs = Vec::with_capacity(5);
+    for index in 0..5 {
+        let index = index.to_string();
+        let enabled = load_source(
+            content,
+            ui_window,
+            UI_WINDOW_IMAGE,
+            &format!("skill-job-tab-{index}-enabled"),
+            &["Skill", "Tab", "enabled", &index],
+            &mut assets,
+        )?;
+        let disabled = load_source(
+            content,
+            ui_window,
+            UI_WINDOW_IMAGE,
+            &format!("skill-job-tab-{index}-disabled"),
+            &["Skill", "Tab", "disabled", &index],
+            &mut assets,
+        )?;
+        tabs.push(SkillTabSources { enabled, disabled });
+    }
     Ok((
         SkillWindowSources {
             background,
@@ -678,6 +755,7 @@ fn load_skill_window_sources(
             point_up_hover,
             point_up_pressed,
             point_up_disabled,
+            tabs,
         },
         assets,
     ))
@@ -712,12 +790,39 @@ fn load_stat_window_sources(
         &["Stat", "Job", "main", "0"],
         &mut assets,
     )?;
+    let ability_up = load_source(
+        content,
+        ui_window,
+        UI_WINDOW_IMAGE,
+        "stat-ability-up-disabled",
+        &["Stat", "BtApUp", "disabled", "0"],
+        &mut assets,
+    )?;
+    let auto_assign = load_source(
+        content,
+        ui_window,
+        UI_WINDOW_IMAGE,
+        "stat-auto-assign-disabled",
+        &["Stat", "BtAuto", "disabled", "0"],
+        &mut assets,
+    )?;
+    let detail = load_source(
+        content,
+        ui_window,
+        UI_WINDOW_IMAGE,
+        "stat-detail-disabled",
+        &["Stat", "BtDetail", "disabled", "0"],
+        &mut assets,
+    )?;
 
     Ok((
         StatWindowSources {
             background,
             close,
             job,
+            ability_up,
+            auto_assign,
+            detail,
         },
         assets,
     ))
@@ -849,18 +954,19 @@ fn invalid<T>(message: impl Into<String>) -> Result<T, GuiContentError> {
 #[cfg(test)]
 mod tests {
     use super::CashShopWindowSources;
+    use super::EquipmentWindowSources;
     use super::InventoryTabSources;
     use super::InventoryWindowSources;
-    use super::ItemWindowSources;
     use super::KeyConfigSources;
     use super::NpcDialogSources;
+    use super::SkillTabSources;
     use super::SkillWindowSources;
     use super::SourceSprite;
     use super::StatWindowSources;
     use super::StatusBarSources;
     use super::compose_cash_shop_window;
+    use super::compose_equipment_window;
     use super::compose_inventory_window;
-    use super::compose_item_window;
     use super::compose_key_config;
     use super::compose_npc_dialog_window;
     use super::compose_skill_window;
@@ -946,8 +1052,10 @@ mod tests {
         let window = compose_cash_shop_window(&CashShopWindowSources {
             background: source("cash-shop-background", 800.0, 600.0),
             preview: source("cash-shop-preview", 212.0, 165.0),
+            category_tab: source("cash-shop-category-tab", 508.0, 78.0),
             item_card: source("cash-shop-item-card", 200.0, 80.0),
             buy: source("cash-shop-buy", 37.0, 19.0),
+            gift_disabled: source("cash-shop-gift-disabled", 37.0, 19.0),
             exit: source("cash-shop-exit", 168.0, 49.0),
         })
         .expect("valid cash-shop screen");
@@ -959,12 +1067,20 @@ mod tests {
             Some((24.0, 40.0))
         );
         assert_eq!(
+            sprite_position(&layout, "cash-shop-category-tab"),
+            Some((273.0, 16.0))
+        );
+        assert_eq!(
             sprite_position(&layout, "cash-shop-item-card-0"),
             Some((278.0, 98.0))
         );
         assert_eq!(
             sprite_position(&layout, "cash-shop-item-card-9"),
             Some((484.0, 422.0))
+        );
+        assert_eq!(
+            region_geometry(&layout, "cash-shop-gift-0"),
+            Some((396.0, 155.0, 37.0, 19.0))
         );
         assert_eq!(
             region_geometry(&layout, "cash-shop-buy-0"),
@@ -1010,6 +1126,9 @@ mod tests {
             background: source("stat-background", 175.0, 347.0),
             close: source("stat-close", 10.0, 10.0),
             job: source("stat-job", 50.0, 7.0),
+            ability_up: source("stat-ability-up-disabled", 12.0, 12.0),
+            auto_assign: source("stat-auto-assign-disabled", 73.0, 35.0),
+            detail: source("stat-detail-disabled", 47.0, 18.0),
         };
 
         let window = compose_stat_window(&sources).expect("valid stat window");
@@ -1019,11 +1138,31 @@ mod tests {
         assert_eq!((layout.width, layout.height), (175.0, 347.0));
         assert_eq!(sprite_position(&layout, "stat-close"), Some((160.0, 5.0)));
         assert_eq!(sprite_position(&layout, "stat-job"), Some((60.0, 57.0)));
+        assert_eq!(
+            sprite_position(&layout, "stat-auto-assign-disabled"),
+            Some((95.0, 197.0))
+        );
+        assert_eq!(
+            sprite_position(&layout, "stat-ability-up-disabled"),
+            Some((153.0, 117.0))
+        );
+        assert_eq!(
+            sprite_position(&layout, "stat-detail-disabled"),
+            Some((113.0, 324.0))
+        );
+        assert_eq!(
+            layout
+                .sprites
+                .iter()
+                .filter(|sprite| sprite.name == "stat-ability-up-disabled")
+                .count(),
+            6
+        );
     }
 
     #[test]
     fn skill_sources_form_a_component_driven_layout() {
-        let sources = SkillWindowSources {
+        let mut sources = SkillWindowSources {
             background: source("skill-background", 175.0, 289.0),
             close: source("skill-close", 10.0, 10.0),
             row: source("skill-row", 141.0, 35.0),
@@ -1032,6 +1171,12 @@ mod tests {
             point_up_hover: source("skill-point-up-hover", 12.0, 12.0),
             point_up_pressed: source("skill-point-up-pressed", 12.0, 12.0),
             point_up_disabled: source("skill-point-up-disabled", 12.0, 12.0),
+            tabs: (0..5)
+                .map(|index| SkillTabSources {
+                    enabled: source(&format!("skill-job-tab-{index}-enabled"), 10.0, 12.0),
+                    disabled: source(&format!("skill-job-tab-{index}-disabled"), 10.0, 12.0),
+                })
+                .collect(),
         };
 
         let window = compose_skill_window(&sources).expect("valid skill window");
@@ -1042,17 +1187,27 @@ mod tests {
         assert_eq!(sprite_position(&layout, "skill-close"), Some((160.0, 5.0)));
         assert_eq!(template_size(&layout, "skill-row"), Some((141.0, 35.0)));
         assert_eq!(
+            template_size(&layout, "skill-row-selected"),
+            Some((141.0, 35.0))
+        );
+        assert_eq!(
             region_geometry(&layout, "skill-list"),
             Some((17.0, 94.0, 141.0, 140.0))
         );
         assert_eq!(
             region_geometry(&layout, "skill-title"),
-            Some((17.0, 27.0, 141.0, 14.0))
+            Some((47.0, 61.0, 116.0, 15.0))
+        );
+        assert_eq!(
+            region_geometry(&layout, "skill-job-tab-4"),
+            Some((135.0, 26.0, 20.0, 14.0))
         );
         assert_eq!(
             region_geometry(&layout, "skill-points"),
             Some((82.0, 265.0, 30.0, 14.0))
         );
+        sources.tabs.pop();
+        assert!(compose_skill_window(&sources).is_err());
     }
 
     #[test]
@@ -1064,7 +1219,7 @@ mod tests {
         let layout = window.layout.expect("inventory window layout");
 
         assert_eq!((layout.width, layout.height), (175.0, 289.0));
-        assert_eq!(layout.sprite_templates.len(), 20);
+        assert_eq!(layout.sprite_templates.len(), 21);
         assert_eq!(
             template_size(&layout, "inventory-tab-equipment-active-background"),
             Some((34.0, 19.0))
@@ -1077,21 +1232,42 @@ mod tests {
             region_geometry(&layout, "inventory-tab-cash"),
             Some((139.0, 22.0, 34.0, 19.0))
         );
+        assert_eq!(
+            sprite_position(&layout, "inventory-gather-disabled"),
+            Some((96.0, 6.0))
+        );
+        assert_eq!(
+            sprite_position(&layout, "inventory-sort-disabled"),
+            Some((110.0, 6.0))
+        );
+        assert_eq!(
+            sprite_position(&layout, "inventory-expand-disabled"),
+            Some((124.0, 6.0))
+        );
     }
 
     #[test]
     fn item_and_key_config_sources_form_native_windows() {
-        let item = ItemWindowSources {
+        let item = EquipmentWindowSources {
             background: source("equipment-background", 175.0, 304.0),
             close: source("equipment-close", 10.0, 10.0),
+            detail: source("equipment-detail-disabled", 54.0, 18.0),
         };
-        let equipment = compose_item_window(&item, 20.0, 80.0).expect("valid equipment window");
+        let equipment =
+            compose_equipment_window(&item, 20.0, 80.0).expect("valid equipment window");
         assert_eq!(
             equipment
                 .layout
                 .as_ref()
                 .map(|layout| (layout.width, layout.height)),
             Some((175.0, 304.0))
+        );
+        assert_eq!(
+            equipment
+                .layout
+                .as_ref()
+                .and_then(|layout| sprite_position(layout, "equipment-detail-disabled")),
+            Some((100.0, 281.0))
         );
 
         let key_config = KeyConfigSources {
@@ -1150,6 +1326,10 @@ mod tests {
             background: source("inventory-background", 175.0, 289.0),
             close: source("inventory-close", 10.0, 10.0),
             tabs,
+            gather: source("inventory-gather-disabled", 12.0, 12.0),
+            sort: source("inventory-sort-disabled", 12.0, 12.0),
+            expand: source("inventory-expand-disabled", 12.0, 12.0),
+            locked_slot: source("inventory-locked-slot", 32.0, 32.0),
         }
     }
 

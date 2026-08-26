@@ -19,9 +19,17 @@ struct SkillUi<'a> {
     page_label: &'a GuiRegion,
     page_next: &'a GuiRegion,
     row: &'a GuiSpriteTemplate,
+    selected_row: Option<&'a GuiSpriteTemplate>,
     point_up: Option<&'a GuiSpriteTemplate>,
     point_up_disabled: Option<&'a GuiSpriteTemplate>,
+    tabs: Vec<SkillTabUi<'a>>,
     page_size: usize,
+}
+
+struct SkillTabUi<'a> {
+    region: &'a GuiRegion,
+    enabled: &'a GuiSpriteTemplate,
+    disabled: &'a GuiSpriteTemplate,
 }
 
 pub(super) fn draw(game: &Game) {
@@ -35,6 +43,7 @@ pub(super) fn draw(game: &Game) {
         return;
     };
 
+    draw_job_tabs(game, window.x, window.y, &ui);
     draw_header(game, window.x, window.y, &ui);
     if game.player.skill_book.skills.is_empty() {
         draw_empty_message(game, window.x, window.y, &ui);
@@ -57,7 +66,17 @@ pub(super) fn draw(game: &Game) {
         };
         let row_x = window.x + ui.list.x;
         let row_y = window.y + ui.list.y + index as f32 * ui.row.height;
-        draw_sprite_template(game, ui.row, row_x, row_y);
+        let row = if game.ui.pointer.is_some_and(|point| {
+            point.x >= row_x
+                && point.x < row_x + ui.row.width
+                && point.y >= row_y
+                && point.y < row_y + ui.row.height
+        }) {
+            ui.selected_row.unwrap_or(ui.row)
+        } else {
+            ui.row
+        };
+        draw_sprite_template(game, row, row_x, row_y);
         draw_skill_icon(game, definition, row_x, row_y, ui.row.height);
         draw_skill_text(
             game,
@@ -81,8 +100,24 @@ fn resolve_skill_ui(layout: &GuiLayout) -> Option<SkillUi<'_>> {
     let page_label = game_gui::named_region(layout, "skill-page-label")?;
     let page_next = game_gui::named_region(layout, "skill-page-next")?;
     let row = game_gui::named_sprite_template(layout, "skill-row")?;
+    let selected_row = game_gui::named_sprite_template(layout, "skill-row-selected");
     let point_up = game_gui::named_sprite_template(layout, "skill-point-up");
     let point_up_disabled = game_gui::named_sprite_template(layout, "skill-point-up-disabled");
+    let tabs = (0..5)
+        .filter_map(|index| {
+            Some(SkillTabUi {
+                region: game_gui::named_region(layout, &format!("skill-job-tab-{index}"))?,
+                enabled: game_gui::named_sprite_template(
+                    layout,
+                    &format!("skill-job-tab-{index}-enabled"),
+                )?,
+                disabled: game_gui::named_sprite_template(
+                    layout,
+                    &format!("skill-job-tab-{index}-disabled"),
+                )?,
+            })
+        })
+        .collect();
     if row.width > list.width || row.height > list.height {
         return None;
     }
@@ -95,10 +130,51 @@ fn resolve_skill_ui(layout: &GuiLayout) -> Option<SkillUi<'_>> {
         page_label,
         page_next,
         row,
+        selected_row,
         point_up,
         point_up_disabled,
+        tabs,
         page_size,
     })
+}
+
+fn draw_job_tabs(
+    game: &Game,
+    window_x: f32,
+    window_y: f32,
+    ui: &SkillUi<'_>,
+) {
+    let selected = game
+        .player
+        .stats
+        .as_ref()
+        .map_or(0, |stats| job_tab_index(stats.job_id));
+    for (index, tab) in ui.tabs.iter().enumerate() {
+        let template = if index == selected {
+            tab.enabled
+        } else {
+            tab.disabled
+        };
+        draw_sprite_template(
+            game,
+            template,
+            window_x + (tab.region.x + (tab.region.width - template.width) / 2.0).floor(),
+            window_y + (tab.region.y + (tab.region.height - template.height) / 2.0).floor(),
+        );
+    }
+}
+
+fn job_tab_index(job_id: u32) -> usize {
+    if job_id.is_multiple_of(1_000) {
+        return 0;
+    }
+    let advancement = job_id % 100;
+    match advancement {
+        0 => 1,
+        value if value.is_multiple_of(10) => 2,
+        value if value % 10 == 1 => 3,
+        _ => 4,
+    }
 }
 
 fn draw_skill_point_button(
@@ -129,15 +205,23 @@ fn draw_header(
     window_y: f32,
     ui: &SkillUi<'_>,
 ) {
-    game.surface.context.set_fill_style_str("#30383b");
+    game.surface.context.set_fill_style_str("#1c252a");
     game.surface.context.set_font("bold 10px Arial");
     game.surface.context.set_text_align("left");
+    let _ = game.surface.context.fill_text_with_max_width(
+        &game.player.skill_book.name,
+        f64::from(window_x + ui.title.x + 1.0),
+        f64::from(window_y + text_baseline(ui.title) + 1.0),
+        f64::from(ui.title.width),
+    );
+    game.surface.context.set_fill_style_str("#ffffff");
     let _ = game.surface.context.fill_text_with_max_width(
         &game.player.skill_book.name,
         f64::from(window_x + ui.title.x),
         f64::from(window_y + text_baseline(ui.title)),
         f64::from(ui.title.width),
     );
+    game.surface.context.set_fill_style_str("#30383b");
     game.surface.context.set_text_align("center");
     let _ = game.surface.context.fill_text_with_max_width(
         &game.player.skill_book.available_points.to_string(),
@@ -278,6 +362,7 @@ mod tests {
     use oozems_proto::v1::GuiRegion;
     use oozems_proto::v1::GuiSpriteTemplate;
 
+    use super::job_tab_index;
     use super::resolve_skill_ui;
 
     #[test]
@@ -288,6 +373,7 @@ mod tests {
 
         assert_eq!(ui.page_size, 4);
         assert_eq!((ui.row.width, ui.row.height), (141.0, 35.0));
+        assert!(ui.selected_row.is_some());
     }
 
     #[test]
@@ -297,19 +383,39 @@ mod tests {
         assert!(resolve_skill_ui(&layout).is_none());
     }
 
+    #[test]
+    fn job_advancement_selects_the_matching_tab() {
+        assert_eq!(job_tab_index(0), 0);
+        assert_eq!(job_tab_index(400), 1);
+        assert_eq!(job_tab_index(410), 2);
+        assert_eq!(job_tab_index(411), 3);
+        assert_eq!(job_tab_index(412), 4);
+        assert_eq!(job_tab_index(2112), 4);
+    }
+
     fn skill_layout(
         row_height: f32,
         list_height: f32,
     ) -> GuiLayout {
-        GuiLayout {
-            sprite_templates: vec![GuiSpriteTemplate {
-                name: "skill-row".to_owned(),
-                asset_id: "skill-row-asset".to_owned(),
-                width: 141.0,
-                height: row_height,
-                origin_x: 0.0,
-                origin_y: 0.0,
-            }],
+        let mut layout = GuiLayout {
+            sprite_templates: vec![
+                GuiSpriteTemplate {
+                    name: "skill-row".to_owned(),
+                    asset_id: "skill-row-asset".to_owned(),
+                    width: 141.0,
+                    height: row_height,
+                    origin_x: 0.0,
+                    origin_y: 0.0,
+                },
+                GuiSpriteTemplate {
+                    name: "skill-row-selected".to_owned(),
+                    asset_id: "skill-row-selected-asset".to_owned(),
+                    width: 141.0,
+                    height: row_height,
+                    origin_x: 0.0,
+                    origin_y: 0.0,
+                },
+            ],
             regions: vec![
                 region("skill-title", 17.0, 27.0, 141.0, 14.0),
                 region("skill-list", 17.0, 94.0, 141.0, list_height),
@@ -319,7 +425,30 @@ mod tests {
                 region("skill-page-next", 139.0, 64.0, 18.0, 19.0),
             ],
             ..GuiLayout::default()
+        };
+        for index in 0..5 {
+            layout
+                .sprite_templates
+                .extend([true, false].map(|enabled| GuiSpriteTemplate {
+                    name: format!(
+                        "skill-job-tab-{index}-{}",
+                        if enabled { "enabled" } else { "disabled" }
+                    ),
+                    asset_id: format!("skill-job-tab-{index}-{enabled}-asset"),
+                    width: 10.0,
+                    height: 12.0,
+                    origin_x: 0.0,
+                    origin_y: 0.0,
+                }));
+            layout.regions.push(region(
+                &format!("skill-job-tab-{index}"),
+                47.0 + index as f32 * 22.0,
+                26.0,
+                20.0,
+                14.0,
+            ));
         }
+        layout
     }
 
     fn region(

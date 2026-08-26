@@ -6,9 +6,9 @@ use oozems_proto::v1::GuiWindow;
 use oozems_proto::v1::KeyActionDefinition;
 
 use super::CashShopWindowSources;
+use super::EquipmentWindowSources;
 use super::GuiContentError;
 use super::InventoryWindowSources;
-use super::ItemWindowSources;
 use super::KeyConfigSources;
 use super::NpcDialogSources;
 use super::ShopWindowSources;
@@ -31,6 +31,8 @@ const STAT_WINDOW_X: f32 = 20.0;
 const STAT_WINDOW_Y: f32 = 80.0;
 const WINDOW_CLOSE_RIGHT: f32 = 5.0;
 const WINDOW_CLOSE_TOP: f32 = 5.0;
+const INVENTORY_CONTROL_LEFT: f32 = 96.0;
+const INVENTORY_CONTROL_GAP: f32 = 2.0;
 const INVENTORY_TAB_LEFT: f32 = 3.0;
 const INVENTORY_TAB_TOP: f32 = 22.0;
 const INVENTORY_TAB_WIDTH: f32 = 34.0;
@@ -42,14 +44,21 @@ const SKILL_WINDOW_Y: f32 = 80.0;
 const SKILL_CONTENT_LEFT: f32 = 17.0;
 const SKILL_LIST_TOP: f32 = 94.0;
 const SKILL_VISIBLE_ROWS: usize = 4;
-const SKILL_TITLE_TOP: f32 = 27.0;
-const SKILL_TITLE_HEIGHT: f32 = 14.0;
+const SKILL_TITLE_LEFT: f32 = 47.0;
+const SKILL_TITLE_TOP: f32 = 61.0;
+const SKILL_TITLE_WIDTH: f32 = 116.0;
+const SKILL_TITLE_HEIGHT: f32 = 15.0;
 const SKILL_POINTS_LEFT: f32 = 82.0;
 const SKILL_POINTS_TOP: f32 = 265.0;
 const SKILL_POINTS_WIDTH: f32 = 30.0;
 const SKILL_POINTS_HEIGHT: f32 = 14.0;
-const SKILL_PAGE_TOP: f32 = 64.0;
-const SKILL_PAGE_HEIGHT: f32 = 19.0;
+const SKILL_PAGE_TOP: f32 = 237.0;
+const SKILL_PAGE_HEIGHT: f32 = 18.0;
+const SKILL_JOB_TAB_LEFT: f32 = 47.0;
+const SKILL_JOB_TAB_TOP: f32 = 26.0;
+const SKILL_JOB_TAB_WIDTH: f32 = 20.0;
+const SKILL_JOB_TAB_HEIGHT: f32 = 14.0;
+const SKILL_JOB_TAB_STEP: f32 = 22.0;
 const KEY_CONFIG_WINDOW_X: f32 = 165.0;
 const KEY_CONFIG_WINDOW_Y: f32 = 60.0;
 const KEY_CONFIG_CLOSE_RIGHT: f32 = 5.0;
@@ -65,8 +74,11 @@ const SHOP_WINDOW_X: f32 = 168.0;
 const SHOP_WINDOW_Y: f32 = 80.0;
 const CASH_SHOP_CARD_COLUMNS: [f32; 2] = [278.0, 484.0];
 const CASH_SHOP_CARD_ROWS: [f32; 5] = [98.0, 179.0, 260.0, 341.0, 422.0];
+const CASH_SHOP_CATEGORY_LEFT: f32 = 273.0;
+const CASH_SHOP_CATEGORY_TOP: f32 = 16.0;
 const CASH_SHOP_BUY_LEFT: f32 = 77.0;
 const CASH_SHOP_BUY_TOP: f32 = 57.0;
+const CASH_SHOP_GIFT_LEFT: f32 = 118.0;
 
 pub(super) fn compose_npc_dialog_window(
     sources: &NpcDialogSources
@@ -169,8 +181,16 @@ pub(super) fn compose_shop_window(
 pub(super) fn compose_cash_shop_window(
     sources: &CashShopWindowSources
 ) -> Result<GuiWindow, GuiContentError> {
-    let mut sprites = vec![place_sprite(&sources.preview, 24.0, 40.0, false)];
-    let mut regions = Vec::with_capacity(11);
+    let mut sprites = vec![
+        place_sprite(
+            &sources.category_tab,
+            CASH_SHOP_CATEGORY_LEFT,
+            CASH_SHOP_CATEGORY_TOP,
+            false,
+        ),
+        place_sprite(&sources.preview, 24.0, 40.0, false),
+    ];
+    let mut regions = Vec::with_capacity(21);
     for (index, (x, y)) in CASH_SHOP_CARD_ROWS
         .iter()
         .flat_map(|y| CASH_SHOP_CARD_COLUMNS.iter().map(move |x| (*x, *y)))
@@ -186,6 +206,13 @@ pub(super) fn compose_cash_shop_window(
             sources.buy.width,
             sources.buy.height,
         ));
+        regions.push(region(
+            &format!("cash-shop-gift-{index}"),
+            x + CASH_SHOP_GIFT_LEFT,
+            y + CASH_SHOP_BUY_TOP,
+            sources.gift_disabled.width,
+            sources.gift_disabled.height,
+        ));
     }
     sprites.push(place_sprite(&sources.exit, 632.0, 535.0, false));
     regions.push(region(
@@ -200,7 +227,10 @@ pub(super) fn compose_cash_shop_window(
         height: sources.background.height,
         background: Some(place_sprite(&sources.background, 0.0, 0.0, false)),
         sprites,
-        sprite_templates: vec![sprite_template(&sources.buy)],
+        sprite_templates: vec![
+            sprite_template(&sources.buy),
+            sprite_template(&sources.gift_disabled),
+        ],
         regions,
     };
     validate_layout(&layout)?;
@@ -324,8 +354,8 @@ pub(super) fn compose_key_config(
     ))
 }
 
-pub(super) fn compose_item_window(
-    sources: &ItemWindowSources,
+pub(super) fn compose_equipment_window(
+    sources: &EquipmentWindowSources,
     x: f32,
     y: f32,
 ) -> Result<GuiWindow, GuiContentError> {
@@ -335,12 +365,15 @@ pub(super) fn compose_item_window(
         width,
         height,
         background: Some(place_sprite(&sources.background, 0.0, 0.0, false)),
-        sprites: vec![place_sprite(
-            &sources.close,
-            width - sources.close.width - WINDOW_CLOSE_RIGHT,
-            WINDOW_CLOSE_TOP,
-            false,
-        )],
+        sprites: vec![
+            place_sprite(
+                &sources.close,
+                width - sources.close.width - WINDOW_CLOSE_RIGHT,
+                WINDOW_CLOSE_TOP,
+                false,
+            ),
+            place_sprite(&sources.detail, 100.0, 281.0, false),
+        ],
         sprite_templates: Vec::new(),
         regions: Vec::new(),
     };
@@ -373,6 +406,7 @@ pub(super) fn compose_inventory_window(
                 sprite_template(&tab.inactive_label),
             ]
         })
+        .chain(std::iter::once(sprite_template(&sources.locked_slot)))
         .collect();
     let regions = ["equipment", "consume", "install", "etc", "cash"]
         .into_iter()
@@ -387,16 +421,26 @@ pub(super) fn compose_inventory_window(
             )
         })
         .collect();
+    let mut control_x = INVENTORY_CONTROL_LEFT;
+    let mut sprites = [&sources.gather, &sources.sort, &sources.expand]
+        .into_iter()
+        .map(|source| {
+            let sprite = place_sprite(source, control_x, WINDOW_CLOSE_TOP + 1.0, false);
+            control_x += source.width + INVENTORY_CONTROL_GAP;
+            sprite
+        })
+        .collect::<Vec<_>>();
+    sprites.push(place_sprite(
+        &sources.close,
+        width - sources.close.width - WINDOW_CLOSE_RIGHT,
+        WINDOW_CLOSE_TOP,
+        false,
+    ));
     let layout = GuiLayout {
         width,
         height,
         background: Some(place_sprite(&sources.background, 0.0, 0.0, false)),
-        sprites: vec![place_sprite(
-            &sources.close,
-            width - sources.close.width - WINDOW_CLOSE_RIGHT,
-            WINDOW_CLOSE_TOP,
-            false,
-        )],
+        sprites,
         sprite_templates,
         regions,
     };
@@ -413,6 +457,79 @@ pub(super) fn compose_skill_window(
 ) -> Result<GuiWindow, GuiContentError> {
     let width = sources.background.width;
     let height = sources.background.height;
+    if sources.tabs.len() != 5 {
+        return invalid("the skill window requires five job tabs");
+    }
+    let mut sprite_templates = [
+        &sources.row,
+        &sources.selected_row,
+        &sources.point_up,
+        &sources.point_up_hover,
+        &sources.point_up_pressed,
+        &sources.point_up_disabled,
+    ]
+    .map(sprite_template)
+    .into_iter()
+    .collect::<Vec<_>>();
+    sprite_templates.extend(sources.tabs.iter().flat_map(|tab| {
+        [
+            sprite_template(&tab.enabled),
+            sprite_template(&tab.disabled),
+        ]
+    }));
+    let mut regions = vec![
+        region(
+            "skill-title",
+            SKILL_TITLE_LEFT,
+            SKILL_TITLE_TOP,
+            SKILL_TITLE_WIDTH,
+            SKILL_TITLE_HEIGHT,
+        ),
+        region(
+            "skill-list",
+            SKILL_CONTENT_LEFT,
+            SKILL_LIST_TOP,
+            sources.row.width,
+            sources.row.height * SKILL_VISIBLE_ROWS as f32,
+        ),
+        region(
+            "skill-points",
+            SKILL_POINTS_LEFT,
+            SKILL_POINTS_TOP,
+            SKILL_POINTS_WIDTH,
+            SKILL_POINTS_HEIGHT,
+        ),
+        region(
+            "skill-page-previous",
+            66.0,
+            SKILL_PAGE_TOP,
+            18.0,
+            SKILL_PAGE_HEIGHT,
+        ),
+        region(
+            "skill-page-label",
+            84.0,
+            SKILL_PAGE_TOP,
+            49.0,
+            SKILL_PAGE_HEIGHT,
+        ),
+        region(
+            "skill-page-next",
+            133.0,
+            SKILL_PAGE_TOP,
+            18.0,
+            SKILL_PAGE_HEIGHT,
+        ),
+    ];
+    regions.extend((0..5).map(|index| {
+        region(
+            &format!("skill-job-tab-{index}"),
+            SKILL_JOB_TAB_LEFT + index as f32 * SKILL_JOB_TAB_STEP,
+            SKILL_JOB_TAB_TOP,
+            SKILL_JOB_TAB_WIDTH,
+            SKILL_JOB_TAB_HEIGHT,
+        )
+    }));
     let layout = GuiLayout {
         width,
         height,
@@ -423,62 +540,10 @@ pub(super) fn compose_skill_window(
             WINDOW_CLOSE_TOP,
             false,
         )],
-        sprite_templates: [
-            &sources.row,
-            &sources.selected_row,
-            &sources.point_up,
-            &sources.point_up_hover,
-            &sources.point_up_pressed,
-            &sources.point_up_disabled,
-        ]
-        .map(sprite_template)
-        .into(),
+        sprite_templates,
         // UIWindow.img supplies these components and their geometry, but the
         // original client supplied their destinations against the background.
-        regions: vec![
-            region(
-                "skill-title",
-                SKILL_CONTENT_LEFT,
-                SKILL_TITLE_TOP,
-                sources.row.width,
-                SKILL_TITLE_HEIGHT,
-            ),
-            region(
-                "skill-list",
-                SKILL_CONTENT_LEFT,
-                SKILL_LIST_TOP,
-                sources.row.width,
-                sources.row.height * SKILL_VISIBLE_ROWS as f32,
-            ),
-            region(
-                "skill-points",
-                SKILL_POINTS_LEFT,
-                SKILL_POINTS_TOP,
-                SKILL_POINTS_WIDTH,
-                SKILL_POINTS_HEIGHT,
-            ),
-            region(
-                "skill-page-previous",
-                80.0,
-                SKILL_PAGE_TOP,
-                18.0,
-                SKILL_PAGE_HEIGHT,
-            ),
-            region(
-                "skill-page-label",
-                98.0,
-                SKILL_PAGE_TOP,
-                41.0,
-                SKILL_PAGE_HEIGHT,
-            ),
-            region(
-                "skill-page-next",
-                139.0,
-                SKILL_PAGE_TOP,
-                18.0,
-                SKILL_PAGE_HEIGHT,
-            ),
-        ],
+        regions,
     };
     validate_layout(&layout)?;
     Ok(GuiWindow {
@@ -494,7 +559,7 @@ pub(super) fn compose_stat_window(
     let width = sources.background.width;
     let height = sources.background.height;
     let background = place_sprite(&sources.background, 0.0, 0.0, false);
-    let sprites = vec![
+    let mut sprites = vec![
         place_sprite(
             &sources.close,
             width - sources.close.width - WINDOW_CLOSE_RIGHT,
@@ -502,7 +567,13 @@ pub(super) fn compose_stat_window(
             false,
         ),
         place_sprite(&sources.job, STAT_JOB_LEFT, STAT_JOB_TOP, false),
+        place_sprite(&sources.auto_assign, 95.0, 197.0, false),
+        place_sprite(&sources.detail, 113.0, 324.0, false),
     ];
+    sprites.extend(
+        [117.0, 135.0, 246.0, 264.0, 282.0, 300.0]
+            .map(|y| place_sprite(&sources.ability_up, 153.0, y, false)),
+    );
     let layout = GuiLayout {
         width,
         height,

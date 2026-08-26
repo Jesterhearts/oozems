@@ -103,10 +103,21 @@ pub(super) fn draw_hovered_skill(game: &Game) {
                 build_skill_info(definition, skill.level, skill.master_level, None)
             })
         });
-        book.or_else(|| {
-            hovered_buff(game, pointer).and_then(|buff| buff_info(game, buff, game.clock.now_ms))
-        })
-        .map(|info| (pointer, info))
+        let inventory = game.player.inventory.as_ref().and_then(|inventory| {
+            game_gui::hovered_inventory_item(
+                *game.ui.gui_state.borrow(),
+                &game.ui.gui,
+                inventory,
+                pointer,
+            )
+            .map(|slot| build_item_info(slot.definition, slot.stack.quantity))
+        });
+        book.or(inventory)
+            .or_else(|| {
+                hovered_buff(game, pointer)
+                    .and_then(|buff| buff_info(game, buff, game.clock.now_ms))
+            })
+            .map(|info| (pointer, info))
     });
     let selected = game.ui.selected_buff.and_then(|key| {
         let placements = active_buff_placements(game);
@@ -421,6 +432,21 @@ fn build_skill_info(
         next: next.map(|description| format!("Next: {description}")),
         remaining: remaining_ms
             .map(|duration| format!("Remaining: {}", format_long_duration(duration))),
+    }
+}
+
+fn build_item_info(
+    definition: &ItemDefinition,
+    quantity: u32,
+) -> SkillInfo {
+    SkillInfo {
+        title: definition.name.clone(),
+        level: format!("Quantity: {quantity}"),
+        description: nonempty(definition.description.clone()),
+        current: (definition.sale_price > 0)
+            .then(|| format!("Sale price: {} mesos", definition.sale_price)),
+        next: None,
+        remaining: None,
     }
 }
 
@@ -781,6 +807,7 @@ fn format_long_duration(duration_ms: u64) -> String {
 
 #[cfg(test)]
 mod tests {
+    use oozems_proto::v1::ItemDefinition;
     use oozems_proto::v1::SkillLevelDefinition;
 
     use super::*;
@@ -851,6 +878,23 @@ mod tests {
 
         assert_eq!(info.level, "Level 10/10");
         assert_eq!(info.next, None);
+    }
+
+    #[test]
+    fn item_info_includes_quantity_description_and_sale_price() {
+        let definition = ItemDefinition {
+            name: "Red Potion".to_owned(),
+            description: "Restores HP.".to_owned(),
+            sale_price: 25,
+            ..ItemDefinition::default()
+        };
+
+        let info = build_item_info(&definition, 7);
+
+        assert_eq!(info.title, "Red Potion");
+        assert_eq!(info.level, "Quantity: 7");
+        assert_eq!(info.description.as_deref(), Some("Restores HP."));
+        assert_eq!(info.current.as_deref(), Some("Sale price: 25 mesos"));
     }
 
     #[test]

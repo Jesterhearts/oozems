@@ -81,9 +81,9 @@ fn draw_account_details(game: &Game) {
         .fill_text(&game.player.name, 49.0, 225.0);
     let _ = game.surface.context.fill_text_with_max_width(
         &currency_amount_label(game.player.cash_points, &game.ui.cash_shop.currency_name),
-        592.0,
-        92.0,
-        180.0,
+        49.0,
+        245.0,
+        164.0,
     );
 }
 
@@ -94,7 +94,7 @@ fn draw_offers(
     let Some(offers) = game.ui.cash_shop.offers.as_ref() else {
         return;
     };
-    for (index, offer) in offers.iter().enumerate() {
+    for (index, offer) in offers.iter().take(10).enumerate() {
         let card_name = format!("cash-shop-item-card-{index}");
         let Some(card) = layout
             .sprites
@@ -107,6 +107,7 @@ fn draw_offers(
         else {
             continue;
         };
+        let gift_region = game_gui::named_region(layout, &format!("cash-shop-gift-{index}"));
         let card_x = card.x;
         let card_y = card.y;
         if let Some(definition) = super::item_definition(game, offer.item_id) {
@@ -129,7 +130,16 @@ fn draw_offers(
             );
         }
         draw_offer_details(game, offer, card_x, card_y);
-        draw_buy_button(game, layout, buy_region.x, buy_region.y);
+        draw_offer_button(game, layout, "cash-shop-buy", buy_region.x, buy_region.y);
+        if let Some(gift_region) = gift_region {
+            draw_offer_button(
+                game,
+                layout,
+                "cash-shop-gift-disabled",
+                gift_region.x,
+                gift_region.y,
+            );
+        }
     }
 }
 
@@ -156,13 +166,14 @@ fn draw_offer_details(
     );
 }
 
-fn draw_buy_button(
+fn draw_offer_button(
     game: &Game,
     layout: &GuiLayout,
+    name: &str,
     x: f32,
     y: f32,
 ) {
-    let Some(template) = game_gui::named_sprite_template(layout, "cash-shop-buy") else {
+    let Some(template) = game_gui::named_sprite_template(layout, name) else {
         return;
     };
     let Some(image) = ready_image(&game.surface.images, &template.asset_id) else {
