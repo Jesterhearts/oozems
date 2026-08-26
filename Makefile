@@ -1,4 +1,4 @@
-.PHONY: build-client check run
+.PHONY: build-client check run ui-editor
 
 build-client:
 	cd crates/oozems-client && NO_COLOR=false trunk build --release --dist ../oozems-server/public
@@ -11,3 +11,6 @@ check:
 
 run: build-client
 	cargo run --release --package oozems-server --bin oozems-server
+
+ui-editor:
+	cargo run --release --package oozems-ui-editor

@@ -115,7 +115,7 @@ pub(super) fn compose_npc_dialog_window(
         .map(sprite_template)
         .into(),
         regions: vec![
-            region("npc-portrait", 15.0, 20.0, 90.0, 155.0),
+            region("npc-portrait", 15.0, 20.0, 90.0, 145.0),
             region("npc-title", 154.0, 17.0, 345.0, 20.0),
             region("npc-text", 154.0, 42.0, 345.0, 170.0),
             region("npc-choices", 154.0, 108.0, 345.0, 100.0),
@@ -571,11 +571,7 @@ pub(super) fn compose_stat_window(
         place_sprite(&sources.detail, 113.0, 324.0, false),
     ];
     sprites.extend(
-        [117.0, 135.0, 246.0, 264.0, 282.0, 300.0]
-            .map(|y| place_sprite(&sources.ability_up_disabled, 153.0, y, false)),
-    );
-    sprites.extend(
-        [246.0, 264.0, 282.0, 300.0].map(|y| place_sprite(&sources.ability_up, 153.0, y, false)),
+        [117.0, 135.0].map(|y| place_sprite(&sources.ability_up_disabled, 153.0, y, false)),
     );
     let regions = [
         ("stat-strength-up", 246.0),
@@ -598,7 +594,10 @@ pub(super) fn compose_stat_window(
         height,
         background: Some(background),
         sprites,
-        sprite_templates: Vec::new(),
+        sprite_templates: vec![
+            sprite_template(&sources.ability_up),
+            sprite_template(&sources.ability_up_disabled),
+        ],
         regions,
     };
     validate_layout(&layout)?;
@@ -621,7 +620,7 @@ fn place_key_reference(
     place_sprite(source, x.floor(), y.floor(), true)
 }
 
-fn place_sprite(
+pub(super) fn place_sprite(
     source: &SourceSprite,
     x: f32,
     y: f32,
@@ -640,7 +639,7 @@ fn place_sprite(
     }
 }
 
-fn sprite_template(source: &SourceSprite) -> GuiSpriteTemplate {
+pub(super) fn sprite_template(source: &SourceSprite) -> GuiSpriteTemplate {
     GuiSpriteTemplate {
         name: source.name.clone(),
         asset_id: source.asset_id.clone(),
@@ -648,6 +647,8 @@ fn sprite_template(source: &SourceSprite) -> GuiSpriteTemplate {
         height: source.height,
         origin_x: source.origin_x,
         origin_y: source.origin_y,
+        offset_x: 0.0,
+        offset_y: 0.0,
     }
 }
 
@@ -667,7 +668,7 @@ fn region(
     }
 }
 
-fn validate_layout(layout: &GuiLayout) -> Result<(), GuiContentError> {
+pub(super) fn validate_layout(layout: &GuiLayout) -> Result<(), GuiContentError> {
     if !layout.width.is_finite()
         || !layout.height.is_finite()
         || layout.width <= 0.0
@@ -709,6 +710,8 @@ fn validate_layout(layout: &GuiLayout) -> Result<(), GuiContentError> {
             template.height,
             template.origin_x,
             template.origin_y,
+            template.offset_x,
+            template.offset_y,
         ];
         if template.name.is_empty()
             || template.asset_id.is_empty()

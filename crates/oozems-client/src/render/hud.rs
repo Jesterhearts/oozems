@@ -160,8 +160,8 @@ fn draw_inventory_locked_slots(
             .context
             .draw_image_with_html_image_element_and_dw_and_dh(
                 image,
-                f64::from(origin.x + x),
-                f64::from(origin.y + y),
+                f64::from(origin.x + x + template.offset_x),
+                f64::from(origin.y + y + template.offset_y),
                 f64::from(template.width),
                 f64::from(template.height),
             );
@@ -325,8 +325,8 @@ pub(super) fn draw_window_at(
         .context
         .draw_image_with_html_image_element_and_dw_and_dh(
             background_image,
-            origin_x,
-            origin_y,
+            origin_x + f64::from(background.x),
+            origin_y + f64::from(background.y),
             f64::from(background.width),
             f64::from(background.height),
         );
@@ -737,24 +737,58 @@ fn draw_stat_window(game: &Game) {
         .context
         .draw_image_with_html_image_element_and_dw_and_dh(
             background_image,
-            origin_x,
-            origin_y,
+            origin_x + f64::from(background.x),
+            origin_y + f64::from(background.y),
             f64::from(background.width),
             f64::from(background.height),
         );
     let can_allocate_ability = game_gui::can_allocate_ability(game.player.stats.as_ref());
     for sprite in &layout.sprites {
-        let enabled_ability_button = sprite.name == "stat-ability-up";
-        let allocated_stat_button = sprite.name == "stat-ability-up-disabled" && sprite.y >= 246.0;
-        if (enabled_ability_button && !can_allocate_ability)
-            || (allocated_stat_button && can_allocate_ability)
-        {
-            continue;
-        }
         draw_window_sprite(game, sprite, origin_x, origin_y);
     }
+    draw_stat_ability_buttons(game, layout, origin_x, origin_y, can_allocate_ability);
     if let Some(stats) = game.player.stats.as_ref() {
         draw_stat_values(game, stats, origin_x, origin_y);
+    }
+}
+
+fn draw_stat_ability_buttons(
+    game: &Game,
+    layout: &oozems_proto::v1::GuiLayout,
+    origin_x: f64,
+    origin_y: f64,
+    enabled: bool,
+) {
+    let template_name = if enabled {
+        "stat-ability-up"
+    } else {
+        "stat-ability-up-disabled"
+    };
+    let Some(template) = game_gui::named_sprite_template(layout, template_name) else {
+        return;
+    };
+    let Some(image) = ready_image(&game.surface.images, &template.asset_id) else {
+        return;
+    };
+    for name in [
+        "stat-strength-up",
+        "stat-dexterity-up",
+        "stat-intelligence-up",
+        "stat-luck-up",
+    ] {
+        let Some(region) = game_gui::named_region(layout, name) else {
+            continue;
+        };
+        let _ = game
+            .surface
+            .context
+            .draw_image_with_html_image_element_and_dw_and_dh(
+                image,
+                origin_x + f64::from(region.x + template.offset_x),
+                origin_y + f64::from(region.y + template.offset_y),
+                f64::from(template.width),
+                f64::from(template.height),
+            );
     }
 }
 

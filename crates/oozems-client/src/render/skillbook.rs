@@ -299,8 +299,8 @@ fn draw_sprite_template(
         .context
         .draw_image_with_html_image_element_and_dw_and_dh(
             image,
-            f64::from(x),
-            f64::from(y),
+            f64::from(x + template.offset_x),
+            f64::from(y + template.offset_y),
             f64::from(template.width),
             f64::from(template.height),
         );
@@ -414,6 +414,8 @@ mod tests {
                     height: row_height,
                     origin_x: 0.0,
                     origin_y: 0.0,
+                    offset_x: 0.0,
+                    offset_y: 0.0,
                 },
                 GuiSpriteTemplate {
                     name: "skill-row-selected".to_owned(),
@@ -422,6 +424,8 @@ mod tests {
                     height: row_height,
                     origin_x: 0.0,
                     origin_y: 0.0,
+                    offset_x: 0.0,
+                    offset_y: 0.0,
                 },
             ],
             regions: vec![
@@ -447,6 +451,8 @@ mod tests {
                     height: 12.0,
                     origin_x: 0.0,
                     origin_y: 0.0,
+                    offset_x: 0.0,
+                    offset_y: 0.0,
                 }));
             layout.regions.push(region(
                 &format!("skill-job-tab-{index}"),

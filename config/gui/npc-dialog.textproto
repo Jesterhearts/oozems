@@ -1,0 +1,146 @@
+name: "npc-dialog"
+x: 135.0
+y: 100.0
+background {
+  name: "npc-dialog-top"
+  wz_path: "UIWindow.img/UtilDlgEx/t"
+}
+sprites: [{
+  name: "npc-dialog-center-0"
+  wz_path: "UIWindow.img/UtilDlgEx/c"
+  y: 28.0
+}, {
+  name: "npc-dialog-center-1"
+  wz_path: "UIWindow.img/UtilDlgEx/c"
+  y: 48.0
+}, {
+  name: "npc-dialog-center-2"
+  wz_path: "UIWindow.img/UtilDlgEx/c"
+  y: 68.0
+}, {
+  name: "npc-dialog-center-3"
+  wz_path: "UIWindow.img/UtilDlgEx/c"
+  y: 88.0
+}, {
+  name: "npc-dialog-center-4"
+  wz_path: "UIWindow.img/UtilDlgEx/c"
+  y: 108.0
+}, {
+  name: "npc-dialog-center-5"
+  wz_path: "UIWindow.img/UtilDlgEx/c"
+  y: 128.0
+}, {
+  name: "npc-dialog-center-6"
+  wz_path: "UIWindow.img/UtilDlgEx/c"
+  y: 148.0
+}, {
+  name: "npc-dialog-center-7"
+  wz_path: "UIWindow.img/UtilDlgEx/c"
+  y: 168.0
+}, {
+  name: "npc-dialog-center-8"
+  wz_path: "UIWindow.img/UtilDlgEx/c"
+  y: 188.0
+}, {
+  name: "npc-dialog-center-9"
+  wz_path: "UIWindow.img/UtilDlgEx/c"
+  y: 208.0
+}, {
+  name: "npc-dialog-bottom"
+  wz_path: "UIWindow.img/UtilDlgEx/s"
+  y: 228.0
+}]
+sprite_templates: [{
+  name: "npc-dialog-close"
+  wz_path: "UIWindow.img/UtilDlgEx/BtClose/normal/0"
+}, {
+  name: "npc-dialog-ok"
+  wz_path: "UIWindow.img/UtilDlgEx/BtOK/normal/0"
+}, {
+  name: "npc-dialog-next"
+  wz_path: "UIWindow.img/UtilDlgEx/BtNext/normal/0"
+}, {
+  name: "npc-dialog-previous"
+  wz_path: "UIWindow.img/UtilDlgEx/BtPrev/normal/0"
+}, {
+  name: "npc-dialog-accept"
+  wz_path: "UIWindow.img/UtilDlgEx/BtQYes/normal/0"
+}, {
+  name: "npc-dialog-decline"
+  wz_path: "UIWindow.img/UtilDlgEx/BtQNo/normal/0"
+}, {
+  name: "npc-dialog-choice"
+  wz_path: "UIWindow.img/UtilDlgEx/dot0"
+}, {
+  name: "npc-dialog-choice-selected"
+  wz_path: "UIWindow.img/UtilDlgEx/dot1"
+}]
+regions: [{
+  name: "npc-portrait"
+  x: 30.0
+  y: 31.0
+  width: 90.0
+  height: 155.0
+}, {
+  name: "npc-title"
+  x: 154.0
+  y: 22.0
+  width: 345.0
+  height: 20.0
+}, {
+  name: "npc-text"
+  x: 154.0
+  y: 42.0
+  width: 345.0
+  height: 170.0
+}, {
+  name: "npc-choices"
+  x: 155.0
+  y: 133.0
+  width: 345.0
+  height: 100.0
+}, {
+  name: "npc-previous"
+  x: 337.0
+  y: 258.0
+  width: 46.0
+  height: 20.0
+}, {
+  name: "npc-decision-previous"
+  x: 337.0
+  y: 258.0
+  width: 46.0
+  height: 20.0
+}, {
+  name: "npc-next"
+  x: 450.0
+  y: 258.0
+  width: 46.0
+  height: 20.0
+}, {
+  name: "npc-ok"
+  x: 459.0
+  y: 258.0
+  width: 46.0
+  height: 20.0
+}, {
+  name: "npc-close"
+  x: 425.0
+  y: 258.0
+  width: 85.0
+  height: 20.0
+}, {
+  name: "npc-accept"
+  x: 390.0
+  y: 258.0
+  width: 60.0
+  height: 20.0
+}, {
+  name: "npc-decline"
+  x: 450.0
+  y: 259.0
+  width: 60.0
+  height: 20.0
+}]
+width: 529.0
+height: 286.0

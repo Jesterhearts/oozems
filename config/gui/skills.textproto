@@ -1,0 +1,138 @@
+name: "skills"
+x: 20.0
+y: 80.0
+background {
+  name: "skill-background"
+  wz_path: "UIWindow.img/Skill/backgrnd"
+}
+sprites: [{
+  name: "skill-close"
+  wz_path: "UIWindow.img/BtUIClose/normal/0"
+  y: 5.0
+  pin_right: true
+  right: 5.0
+}]
+sprite_templates: [{
+  name: "skill-row"
+  wz_path: "UIWindow.img/Skill/skill0"
+}, {
+  name: "skill-row-selected"
+  wz_path: "UIWindow.img/Skill/skill1"
+}, {
+  name: "skill-point-up"
+  wz_path: "UIWindow.img/Skill/BtSpUp/normal/0"
+  offset_x: -1.0
+  offset_y: 9.0
+}, {
+  name: "skill-point-up-hover"
+  wz_path: "UIWindow.img/Skill/BtSpUp/mouseOver/0"
+  offset_x: -1.0
+  offset_y: 9.0
+}, {
+  name: "skill-point-up-pressed"
+  wz_path: "UIWindow.img/Skill/BtSpUp/pressed/0"
+  offset_x: -1.0
+  offset_y: 9.0
+}, {
+  name: "skill-point-up-disabled"
+  wz_path: "UIWindow.img/Skill/BtSpUp/disabled/0"
+  offset_x: -1.0
+  offset_y: 9.0
+}, {
+  name: "skill-job-tab-0-enabled"
+  wz_path: "UIWindow.img/Skill/Tab/enabled/0"
+}, {
+  name: "skill-job-tab-0-disabled"
+  wz_path: "UIWindow.img/Skill/Tab/disabled/0"
+}, {
+  name: "skill-job-tab-1-enabled"
+  wz_path: "UIWindow.img/Skill/Tab/enabled/1"
+}, {
+  name: "skill-job-tab-1-disabled"
+  wz_path: "UIWindow.img/Skill/Tab/disabled/1"
+}, {
+  name: "skill-job-tab-2-enabled"
+  wz_path: "UIWindow.img/Skill/Tab/enabled/2"
+}, {
+  name: "skill-job-tab-2-disabled"
+  wz_path: "UIWindow.img/Skill/Tab/disabled/2"
+}, {
+  name: "skill-job-tab-3-enabled"
+  wz_path: "UIWindow.img/Skill/Tab/enabled/3"
+}, {
+  name: "skill-job-tab-3-disabled"
+  wz_path: "UIWindow.img/Skill/Tab/disabled/3"
+}, {
+  name: "skill-job-tab-4-enabled"
+  wz_path: "UIWindow.img/Skill/Tab/enabled/4"
+}, {
+  name: "skill-job-tab-4-disabled"
+  wz_path: "UIWindow.img/Skill/Tab/disabled/4"
+}]
+regions: [{
+  name: "skill-title"
+  x: 46.0
+  y: 64.0
+  width: 116.0
+  height: 15.0
+}, {
+  name: "skill-list"
+  x: 17.0
+  y: 95.0
+  width: 141.0
+  height: 140.0
+}, {
+  name: "skill-points"
+  x: 82.0
+  y: 265.0
+  width: 30.0
+  height: 17.0
+}, {
+  name: "skill-page-previous"
+  x: 66.0
+  y: 237.0
+  width: 18.0
+  height: 18.0
+}, {
+  name: "skill-page-label"
+  x: 83.0
+  y: 237.0
+  width: 49.0
+  height: 18.0
+}, {
+  name: "skill-page-next"
+  x: 132.0
+  y: 237.0
+  width: 18.0
+  height: 18.0
+}, {
+  name: "skill-job-tab-0"
+  x: 47.0
+  y: 26.0
+  width: 20.0
+  height: 14.0
+}, {
+  name: "skill-job-tab-1"
+  x: 69.0
+  y: 26.0
+  width: 20.0
+  height: 14.0
+}, {
+  name: "skill-job-tab-2"
+  x: 91.0
+  y: 26.0
+  width: 20.0
+  height: 14.0
+}, {
+  name: "skill-job-tab-3"
+  x: 113.0
+  y: 26.0
+  width: 20.0
+  height: 14.0
+}, {
+  name: "skill-job-tab-4"
+  x: 135.0
+  y: 26.0
+  width: 20.0
+  height: 14.0
+}]

@@ -1,0 +1,165 @@
+name: "status-bar"
+background {
+  name: "background"
+  wz_path: "StatusBar.img/base/backgrnd"
+  y: 76.0
+}
+sprites: [{
+  name: "status-overlay"
+  wz_path: "StatusBar.img/base/backgrnd2"
+  y: 9.0
+  pin_bottom: true
+}, {
+  name: "gauge"
+  wz_path: "StatusBar.img/gauge/bar"
+  x: 209.0
+  pin_bottom: true
+  bottom: 1.0
+}, {
+  name: "gauge-graduation"
+  wz_path: "StatusBar.img/gauge/graduation"
+  x: 209.0
+  pin_bottom: true
+  bottom: 1.0
+}, {
+  name: "quick-slots"
+  wz_path: "StatusBar.img/base/quickSlot"
+  anchor_right: true
+  pin_right: true
+}, {
+  name: "cash-shop"
+  wz_path: "StatusBar.img/BtShop/normal/0"
+  anchor_right: true
+  pin_right: true
+  right: 1.0
+  pin_bottom: true
+  bottom: 1.0
+}, {
+  name: "key-0"
+  wz_path: "StatusBar.img/key/0"
+  x: 657.0
+  y: 16.0
+  anchor_right: true
+}, {
+  name: "key-1"
+  wz_path: "StatusBar.img/key/1"
+  x: 697.0
+  y: 16.0
+  anchor_right: true
+}, {
+  name: "key-2"
+  wz_path: "StatusBar.img/key/2"
+  x: 731.0
+  y: 16.0
+  anchor_right: true
+}, {
+  name: "key-3"
+  wz_path: "StatusBar.img/key/3"
+  x: 765.0
+  y: 15.0
+  anchor_right: true
+}, {
+  name: "key-4"
+  wz_path: "StatusBar.img/key/4"
+  x: 659.0
+  y: 51.0
+  anchor_right: true
+}, {
+  name: "key-5"
+  wz_path: "StatusBar.img/key/5"
+  x: 696.0
+  y: 51.0
+  anchor_right: true
+}, {
+  name: "key-6"
+  wz_path: "StatusBar.img/key/6"
+  x: 730.0
+  y: 51.0
+  anchor_right: true
+}, {
+  name: "key-7"
+  wz_path: "StatusBar.img/key/7"
+  x: 765.0
+  y: 51.0
+  anchor_right: true
+}, {
+  name: "equip"
+  wz_path: "StatusBar.img/EquipKey/normal/0"
+  pin_right: true
+  right: 155.0
+  pin_bottom: true
+  bottom: 43.0
+}, {
+  name: "equip-pressed"
+  wz_path: "StatusBar.img/EquipKey/pressed/0"
+  pin_right: true
+  right: 155.0
+  pin_bottom: true
+  bottom: 43.0
+}, {
+  name: "inventory"
+  wz_path: "StatusBar.img/InvenKey/normal/0"
+  pin_right: true
+  right: 124.0
+  pin_bottom: true
+  bottom: 43.0
+}, {
+  name: "inventory-pressed"
+  wz_path: "StatusBar.img/InvenKey/pressed/0"
+  pin_right: true
+  right: 124.0
+  pin_bottom: true
+  bottom: 43.0
+}, {
+  name: "stats"
+  wz_path: "StatusBar.img/StatKey/normal/0"
+  y: 84.0
+  pin_right: true
+  right: 93.0
+  pin_bottom: true
+  bottom: 43.0
+}, {
+  name: "stats-pressed"
+  wz_path: "StatusBar.img/StatKey/pressed/0"
+  pin_right: true
+  right: 93.0
+  pin_bottom: true
+  bottom: 43.0
+}, {
+  name: "skills"
+  wz_path: "StatusBar.img/SkillKey/normal/0"
+  pin_right: true
+  right: 62.0
+  pin_bottom: true
+  bottom: 43.0
+}, {
+  name: "skills-pressed"
+  wz_path: "StatusBar.img/SkillKey/pressed/0"
+  pin_right: true
+  right: 62.0
+  pin_bottom: true
+  bottom: 43.0
+}, {
+  name: "key-settings"
+  wz_path: "StatusBar.img/KeySet/normal/0"
+  pin_right: true
+  right: 31.0
+  pin_bottom: true
+  bottom: 43.0
+}, {
+  name: "key-settings-pressed"
+  wz_path: "StatusBar.img/KeySet/pressed/0"
+  pin_right: true
+  right: 31.0
+  pin_bottom: true
+  bottom: 43.0
+}, {
+  name: "quick-slot-toggle"
+  wz_path: "StatusBar.img/QuickSlotD/normal/0"
+  pin_right: true
+  right: 1.0
+  pin_bottom: true
+  bottom: 43.0
+}]
+width: 800.0
+height: 147.0

@@ -1,0 +1,16 @@
+[package]
+name    = "oozems-ui-layout"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+oozems-proto  = { path = "../oozems-proto", version = "0.1.0" }
+prost         = "0.14.4"
+prost-reflect = { version = "0.16.5", features = ["text-format"] }
+thiserror     = "2.0.20"
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[lints]
+workspace = true

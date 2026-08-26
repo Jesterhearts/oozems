@@ -624,6 +624,8 @@ message GuiSpriteTemplate {
   float height = 4;
   float origin_x = 5;
   float origin_y = 6;
+  float offset_x = 7;
+  float offset_y = 8;
 }
 
 message GuiRegion {
@@ -638,6 +640,39 @@ message GuiWindow {
   float x = 1;
   float y = 2;
   GuiLayout layout = 3;
+}
+
+// Authored GUI files use stable WZ paths. The server resolves these paths to
+// versioned runtime assets when it loads UI.wz.
+message GuiWindowDefinition {
+  string name = 1;
+  float x = 2;
+  float y = 3;
+  GuiSpriteSource background = 4;
+  repeated GuiSpriteSource sprites = 5;
+  repeated GuiSpriteTemplateSource sprite_templates = 6;
+  repeated GuiRegion regions = 7;
+  float width = 8;
+  float height = 9;
+}
+
+message GuiSpriteSource {
+  string name = 1;
+  string wz_path = 2;
+  float x = 3;
+  float y = 4;
+  bool anchor_right = 5;
+  bool pin_right = 6;
+  float right = 7;
+  bool pin_bottom = 8;
+  float bottom = 9;
+}
+
+message GuiSpriteTemplateSource {
+  string name = 1;
+  string wz_path = 2;
+  float offset_x = 3;
+  float offset_y = 4;
 }
 
 message CharacterSpriteSet {

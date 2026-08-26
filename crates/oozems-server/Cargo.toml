@@ -17,6 +17,7 @@ jiff               = { version = "0.2.35", default-features = false, features = 
   "tzdb-bundle-always"
 ] }
 oozems-proto       = { path = "../oozems-proto", version = "0.1.0" }
+oozems-ui-layout   = { path = "../oozems-ui-layout", version = "0.1.0" }
 prost              = "0.14.4"
 serde              = { version = "1.0.229", features = ["derive"] }
 sha2               = "0.11.0"

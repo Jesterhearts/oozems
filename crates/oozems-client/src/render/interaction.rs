@@ -18,6 +18,9 @@ use crate::interaction_ui::visual_dialog_pages;
 const DIALOG_LINE_HEIGHT: f64 = 17.0;
 const CHOICE_ROW_HEIGHT: f64 = 24.0;
 const SHOP_ROW_HEIGHT: f32 = 37.0;
+const SHOP_ROW_TOP: f32 = 2.0;
+const SHOP_ICON_LEFT: f32 = 1.0;
+const SHOP_TEXT_LEFT: f32 = 37.0;
 
 pub(super) fn draw(game: &Game) {
     let Some(interaction) = game.ui.interaction.interaction.as_ref() else {
@@ -136,6 +139,15 @@ fn draw_shop(
     let Some(layout) = window.layout.as_ref() else {
         return;
     };
+    let Some(stock_region) = region(layout, "shop-stock") else {
+        return;
+    };
+    let Some(inventory_region) = region(layout, "shop-inventory") else {
+        return;
+    };
+    let Some(balance_region) = region(layout, "shop-mesos") else {
+        return;
+    };
     let cash_point_shop = crate::interaction_ui::is_cash_point_shop(shop);
     let now_unix_ms = js_sys::Date::now().max(0.0) as u64;
     draw_shop_portrait(game, interaction, window);
@@ -145,13 +157,7 @@ fn draw_shop(
         .selected_offer
         .filter(|index| *index < SHOP_PAGE_SIZE)
     {
-        draw_template(
-            game,
-            window,
-            template(layout, "shop-selection"),
-            42.0,
-            123.0 + index as f32 * SHOP_ROW_HEIGHT,
-        );
+        draw_shop_selection(game, window, layout, stock_region, index);
     }
     if !cash_point_shop
         && let Some(index) = game
@@ -163,21 +169,20 @@ fn draw_shop(
             })
             .filter(|index| *index < SHOP_PAGE_SIZE)
     {
-        draw_template(
-            game,
-            window,
-            template(layout, "shop-selection"),
-            273.0,
-            123.0 + index as f32 * SHOP_ROW_HEIGHT,
-        );
+        draw_shop_selection(game, window, layout, inventory_region, index);
     }
     for (index, offer) in shop.offers.iter().take(SHOP_PAGE_SIZE).enumerate() {
         if let Some(definition) = super::item_definition(game, offer.item_id) {
-            let y = window.y + 123.0 + index as f32 * SHOP_ROW_HEIGHT;
-            super::draw_item_icon(game, definition, window.x + 8.0, y);
+            let y = window.y + shop_row_y(stock_region, index);
+            super::draw_item_icon(
+                game,
+                definition,
+                window.x + stock_region.x + SHOP_ICON_LEFT,
+                y,
+            );
             draw_shop_item_text(
                 game,
-                window.x + 44.0,
+                window.x + stock_region.x + SHOP_TEXT_LEFT,
                 y,
                 &definition.name,
                 &shop_price_label(offer.buy_price, &shop.currency_name),
@@ -194,9 +199,10 @@ fn draw_shop(
             .enumerate()
         {
             if let Some(definition) = super::item_definition(game, stack.item_id) {
-                let y = window.y + 123.0 + index as f32 * SHOP_ROW_HEIGHT;
-                super::draw_item_icon(game, definition, window.x + 238.0, y);
-                super::draw_item_quantity(game, stack.quantity, window.x + 238.0, y);
+                let y = window.y + shop_row_y(inventory_region, index);
+                let icon_x = window.x + inventory_region.x + SHOP_ICON_LEFT;
+                super::draw_item_icon(game, definition, icon_x, y);
+                super::draw_item_quantity(game, stack.quantity, icon_x, y);
                 let price = if definition.sale_price == 0 {
                     "Cannot sell".to_owned()
                 } else {
@@ -208,7 +214,13 @@ fn draw_shop(
                 )
                 .map(|expiration| format!("{price}, {expiration}"))
                 .unwrap_or(price);
-                draw_shop_item_text(game, window.x + 274.0, y, &definition.name, &detail);
+                draw_shop_item_text(
+                    game,
+                    window.x + inventory_region.x + SHOP_TEXT_LEFT,
+                    y,
+                    &definition.name,
+                    &detail,
+                );
             }
         }
         draw_inventory_page_controls(game, window, layout, inventory.stacks.len());
@@ -223,18 +235,51 @@ fn draw_shop(
     if cash_point_shop {
         let _ = game.surface.context.fill_text_with_max_width(
             &format!("{}: {}", shop.currency_name, game.player.cash_points),
-            f64::from(window.x + 277.0),
-            f64::from(window.y + 107.0),
-            150.0,
+            f64::from(window.x + balance_region.x + 5.0),
+            f64::from(window.y + balance_region.y + 11.0),
+            f64::from((balance_region.width - 10.0).max(0.0)),
         );
     } else {
         draw_template_in_region(game, window, layout, "shop-meso", "shop-mesos");
         let _ = game.surface.context.fill_text(
             &game.player.mesos.to_string(),
-            f64::from(window.x + 291.0),
-            f64::from(window.y + 107.0),
+            f64::from(window.x + balance_region.x + 19.0),
+            f64::from(window.y + balance_region.y + 11.0),
         );
     }
+}
+
+fn draw_shop_selection(
+    game: &Game,
+    window: &GuiWindow,
+    layout: &GuiLayout,
+    list_region: &GuiRegion,
+    index: usize,
+) {
+    let Some(selection) = template(layout, "shop-selection") else {
+        return;
+    };
+    draw_template(
+        game,
+        window,
+        Some(selection),
+        shop_selection_x(list_region, selection),
+        shop_row_y(list_region, index),
+    );
+}
+
+fn shop_selection_x(
+    region: &GuiRegion,
+    selection: &GuiSpriteTemplate,
+) -> f32 {
+    region.x + (region.width - selection.width).max(0.0)
+}
+
+fn shop_row_y(
+    region: &GuiRegion,
+    index: usize,
+) -> f32 {
+    region.y + SHOP_ROW_TOP + index as f32 * SHOP_ROW_HEIGHT
 }
 
 fn shop_price_label(
@@ -451,8 +496,15 @@ fn draw_portrait_frame(
     let Some(image) = ready_image(&game.surface.images, &frame.asset_id) else {
         return;
     };
-    let scale = (90.0_f64 / f64::from(frame.width))
-        .min(145.0 / f64::from(frame.height))
+    let Some(portrait) = window
+        .layout
+        .as_ref()
+        .and_then(|layout| region(layout, "npc-portrait"))
+    else {
+        return;
+    };
+    let scale = (f64::from(portrait.width) / f64::from(frame.width))
+        .min(f64::from(portrait.height) / f64::from(frame.height))
         .min(1.0);
     let width = f64::from(frame.width) * scale;
     let height = f64::from(frame.height) * scale;
@@ -461,8 +513,8 @@ fn draw_portrait_frame(
         .context
         .draw_image_with_html_image_element_and_dw_and_dh(
             image,
-            f64::from(window.x + 15.0) + (90.0 - width) / 2.0,
-            f64::from(window.y + 20.0) + 145.0 - height,
+            f64::from(window.x + portrait.x) + (f64::from(portrait.width) - width) / 2.0,
+            f64::from(window.y + portrait.y + portrait.height) - height,
             width,
             height,
         );
@@ -505,8 +557,8 @@ fn draw_template(
         .context
         .draw_image_with_html_image_element_and_dw_and_dh(
             image,
-            f64::from(window.x + x),
-            f64::from(window.y + y),
+            f64::from(window.x + x + template.offset_x),
+            f64::from(window.y + y + template.offset_y),
             f64::from(template.width),
             f64::from(template.height),
         );
@@ -570,8 +622,13 @@ fn wrap_text(
 
 #[cfg(test)]
 mod tests {
+    use oozems_proto::v1::GuiRegion;
+    use oozems_proto::v1::GuiSpriteTemplate;
+
     use super::clean_wz_text;
     use super::shop_price_label;
+    use super::shop_row_y;
+    use super::shop_selection_x;
 
     #[test]
     fn dialogue_text_removes_wz_color_markers() {
@@ -585,5 +642,23 @@ mod tests {
     fn shop_prices_use_the_authoritative_currency() {
         assert_eq!(shop_price_label(250, "mesos"), "250 mesos");
         assert_eq!(shop_price_label(250, "Ooze"), "250 Ooze");
+    }
+
+    #[test]
+    fn shop_row_art_follows_the_authored_list_region() {
+        let region = GuiRegion {
+            x: 107.0,
+            y: 221.0,
+            width: 198.0,
+            height: 185.0,
+            ..GuiRegion::default()
+        };
+        let selection = GuiSpriteTemplate {
+            width: 163.0,
+            ..GuiSpriteTemplate::default()
+        };
+
+        assert_eq!(shop_selection_x(&region, &selection), 142.0);
+        assert_eq!(shop_row_y(&region, 2), 297.0);
     }
 }

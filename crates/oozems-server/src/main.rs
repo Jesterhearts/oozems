@@ -89,7 +89,8 @@ async fn main() -> anyhow::Result<()> {
         source = formulas.source_url(),
         "formula profile configuration ready"
     );
-    let mut catalog = ContentCatalog::load(&config.wz_dir, &content_config)?;
+    let mut catalog =
+        ContentCatalog::load(&config.wz_dir, &config.gui_layout_dir, &content_config)?;
     if catalog.get_map(gameplay.initial_map_id)?.is_none() {
         anyhow::bail!(
             "configured initial character map {} does not exist",

@@ -12,6 +12,7 @@ pub struct Config {
     pub bind: SocketAddr,
     pub config_dir: PathBuf,
     pub data_dir: PathBuf,
+    pub gui_layout_dir: PathBuf,
     pub public_dir: PathBuf,
     pub wz_dir: PathBuf,
 }
@@ -31,6 +32,7 @@ struct EnvironmentInput {
     bind: Option<String>,
     config_dir: Option<PathBuf>,
     data_dir: Option<PathBuf>,
+    gui_layout_dir: Option<PathBuf>,
     public_dir: Option<PathBuf>,
     wz_dir: Option<PathBuf>,
 }
@@ -47,6 +49,7 @@ fn read_environment() -> EnvironmentInput {
         bind: env::var("OOZEMS_BIND").ok(),
         config_dir: env::var_os("OOZEMS_CONFIG_DIR").map(PathBuf::from),
         data_dir: env::var_os("OOZEMS_DATA_DIR").map(PathBuf::from),
+        gui_layout_dir: env::var_os("OOZEMS_GUI_LAYOUT_DIR").map(PathBuf::from),
         public_dir: env::var_os("OOZEMS_PUBLIC_DIR").map(PathBuf::from),
         wz_dir: env::var_os("OOZEMS_WZ_DIR").map(PathBuf::from),
     }
@@ -64,10 +67,15 @@ fn parse_environment(
             source,
         })?;
 
+    let config_dir = input.config_dir.unwrap_or_else(|| PathBuf::from("config"));
+    let gui_layout_dir = input
+        .gui_layout_dir
+        .unwrap_or_else(|| config_dir.join("gui"));
     Ok(Config {
         bind,
-        config_dir: input.config_dir.unwrap_or_else(|| PathBuf::from("config")),
+        config_dir,
         data_dir: input.data_dir.unwrap_or_else(|| PathBuf::from("data")),
+        gui_layout_dir,
         public_dir: input
             .public_dir
             .unwrap_or_else(|| manifest_dir.join("public")),
@@ -93,6 +101,7 @@ mod tests {
         assert_eq!(config.bind, SocketAddr::from(([127, 0, 0, 1], 3_000)));
         assert_eq!(config.config_dir, Path::new("config"));
         assert_eq!(config.data_dir, Path::new("data"));
+        assert_eq!(config.gui_layout_dir, Path::new("config/gui"));
         assert_eq!(config.public_dir, Path::new("/server/public"));
         assert_eq!(config.wz_dir, Path::new("data"));
     }
@@ -104,6 +113,7 @@ mod tests {
                 bind: Some("[::1]:8080".to_owned()),
                 config_dir: Some(PathBuf::from("custom-config")),
                 data_dir: Some(PathBuf::from("custom-data")),
+                gui_layout_dir: Some(PathBuf::from("custom-gui")),
                 public_dir: Some(PathBuf::from("custom-public")),
                 wz_dir: Some(PathBuf::from("custom-wz")),
             },
@@ -114,6 +124,7 @@ mod tests {
         assert_eq!(config.bind, "[::1]:8080".parse().expect("socket address"));
         assert_eq!(config.config_dir, Path::new("custom-config"));
         assert_eq!(config.data_dir, Path::new("custom-data"));
+        assert_eq!(config.gui_layout_dir, Path::new("custom-gui"));
         assert_eq!(config.public_dir, Path::new("custom-public"));
         assert_eq!(config.wz_dir, Path::new("custom-wz"));
     }

@@ -1,0 +1,74 @@
+name: "shop"
+x: 168.0
+y: 80.0
+background {
+  name: "shop-background"
+  wz_path: "UIWindow.img/Shop/backgrnd"
+}
+sprite_templates: [{
+  name: "shop-selection"
+  wz_path: "UIWindow.img/Shop/select"
+}, {
+  name: "shop-meso"
+  wz_path: "UIWindow.img/Shop/meso"
+}, {
+  name: "shop-buy"
+  wz_path: "UIWindow.img/Shop/BtBuy/normal/0"
+}, {
+  name: "shop-sell"
+  wz_path: "UIWindow.img/Shop/BtSell/normal/0"
+}, {
+  name: "shop-exit"
+  wz_path: "UIWindow.img/Shop/BtExit/normal/0"
+}]
+regions: [{
+  name: "shop-stock"
+  x: 6.0
+  y: 126.0
+  width: 200.0
+  height: 197.0
+}, {
+  name: "shop-inventory"
+  x: 236.0
+  y: 126.0
+  width: 199.0
+  height: 196.0
+}, {
+  name: "shop-inventory-previous"
+  x: 417.0
+  y: 97.0
+  width: 18.0
+  height: 18.0
+}, {
+  name: "shop-inventory-next"
+  x: 436.0
+  y: 97.0
+  width: 18.0
+  height: 17.0
+}, {
+  name: "shop-buy"
+  x: 124.0
+  y: 95.0
+  width: 80.0
+  height: 18.0
+}, {
+  name: "shop-sell"
+  x: 238.0
+  y: 95.0
+  width: 80.0
+  height: 18.0
+}, {
+  name: "shop-close"
+  x: 9.0
+  y: 95.0
+  width: 80.0
+  height: 18.0
+}, {
+  name: "shop-mesos"
+  x: 360.0
+  y: 63.0
+  width: 91.0
+  height: 17.0
+}]
+width: 463.0
+height: 339.0

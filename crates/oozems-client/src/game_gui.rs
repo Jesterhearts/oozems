@@ -359,7 +359,7 @@ pub(crate) fn inventory_tab_template_position(
         region.y + (region.height - template.height) / 2.0
     }
     .floor();
-    (x, y)
+    (x + template.offset_x, y + template.offset_y)
 }
 
 pub(crate) fn missing_item_definition_ids(
@@ -534,8 +534,8 @@ fn skill_action_at(
     let layout = placement.layout;
     let button = named_sprite_template(layout, "skill-point-up")?;
     let button_rect = CanvasRect {
-        x: row.x + row.width - button.width - 2.0,
-        y: row.y + (row.height - button.height) / 2.0,
+        x: row.x + row.width - button.width - 2.0 + button.offset_x,
+        y: row.y + (row.height - button.height) / 2.0 + button.offset_y,
         width: button.width,
         height: button.height,
     };
@@ -909,6 +909,8 @@ fn valid_sprite_template(template: &GuiSpriteTemplate) -> bool {
         template.height,
         template.origin_x,
         template.origin_y,
+        template.offset_x,
+        template.offset_y,
     ];
     !template.name.is_empty()
         && !template.asset_id.is_empty()
@@ -1626,6 +1628,56 @@ mod tests {
     }
 
     #[test]
+    fn skill_point_template_offset_moves_its_click_target() {
+        let mut gui = gui_fixture();
+        let button = gui
+            .skill_window
+            .as_mut()
+            .and_then(|window| window.layout.as_mut())
+            .and_then(|layout| {
+                layout
+                    .sprite_templates
+                    .iter_mut()
+                    .find(|template| template.name == "skill-point-up")
+            })
+            .expect("skill point template");
+        button.offset_x = -20.0;
+        button.offset_y = 10.0;
+        let book = skill_book_fixture(0, 1);
+        let state = GuiState {
+            skills_open: true,
+            ..GuiState::default()
+        };
+
+        assert_eq!(
+            click_action(
+                state,
+                &gui,
+                None,
+                Some(&book),
+                960.0,
+                600.0,
+                CanvasPoint { x: 145.0, y: 196.0 },
+                PointerButton::Left,
+            ),
+            Some(GuiAction::AllocateSkill { skill_id: 1_000 })
+        );
+        assert_ne!(
+            click_action(
+                state,
+                &gui,
+                None,
+                Some(&book),
+                960.0,
+                600.0,
+                CanvasPoint { x: 165.0, y: 186.0 },
+                PointerButton::Left,
+            ),
+            Some(GuiAction::AllocateSkill { skill_id: 1_000 })
+        );
+    }
+
+    #[test]
     fn zero_mastery_uses_the_definition_cap() {
         let mut mastered = skill_book_fixture(2, 1);
         mastered.skills[0].master_level = 2;
@@ -1790,6 +1842,8 @@ mod tests {
             height,
             origin_x: 0.0,
             origin_y: 0.0,
+            offset_x: 0.0,
+            offset_y: 0.0,
         }
     }
 

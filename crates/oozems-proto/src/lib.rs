@@ -4,6 +4,8 @@ pub mod v1 {
     include!(concat!(env!("OUT_DIR"), "/oozems.v1.rs"));
 }
 
+pub const FILE_DESCRIPTOR_SET: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/oozems_descriptor.bin"));
 pub const PROTOBUF_CONTENT_TYPE: &str = "application/x-protobuf";
 
 #[cfg(test)]

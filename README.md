@@ -122,6 +122,7 @@ Set these environment variables to override the default runtime locations:
 | `OOZEMS_BIND` | `127.0.0.1:3000` |
 | `OOZEMS_DATA_DIR` | `./data` |
 | `OOZEMS_CONFIG_DIR` | `./config` |
+| `OOZEMS_GUI_LAYOUT_DIR` | `${OOZEMS_CONFIG_DIR}/gui` |
 | `OOZEMS_PUBLIC_DIR` | `crates/oozems-server/public` |
 | `OOZEMS_WZ_DIR` | `./data` |
 
@@ -246,6 +247,40 @@ are sent as named sprite templates. Named regions record destinations that the
 original client supplied instead of storing in the archive. The Skill window
 uses its native 141 by 35 row component to size and render visible skill rows.
 The browser does not duplicate that geometry.
+
+The server loads authored window definitions from `config/gui/*.textproto` when
+`UI.wz` is present. These files contain stable paths inside `UI.wz`, named
+regions, fixed sprite positions, and window positions. The server resolves each
+WZ path to its current dimensions and content-addressed asset ID at startup. A
+malformed definition or a region outside its background stops startup instead
+of silently changing hit testing.
+
+Edit these files with the local desktop application from the workspace root:
+
+```sh
+make ui-editor
+```
+
+The editor reads `data/UI.wz` and `config/gui` by default. It opens all supported
+windows and renders their real WZ artwork. Existing textproto files are loaded
+as authored. Missing files appear as `(new)` layouts synthesized from the active
+archive and are not written until you save them. You can drag sprites, move or
+resize named regions, and edit exact coordinates and canvas dimensions. In the
+representative Skill window, drag any skill-point arrow or edit its signed
+offsets to move every arrow state and its click target. Use `Ctrl+S` to save.
+The editor does not expose routes or write access through the game server.
+
+Use explicit paths for another archive or layout set:
+
+```sh
+cargo run --package oozems-ui-editor -- \
+  --wz /srv/maplestory/UI.wz \
+  --layouts /srv/oozems/gui
+```
+
+The bundled `config/gui/skills.textproto` is the initial authored window. Saving
+one of the generated layouts creates the corresponding textproto file. Until a
+window has a saved definition, the server retains its built-in composition.
 
 The HP, MP, and EXP gauges use persisted character values for their fill levels.
 They display bracketed current and maximum values over the WZ artwork.

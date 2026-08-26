@@ -6,6 +6,10 @@ use std::sync::RwLock;
 
 use oozems_proto::v1::AssetDescriptor;
 use oozems_proto::v1::GameGui;
+use oozems_proto::v1::GuiLayout;
+use oozems_proto::v1::GuiSpriteSource;
+use oozems_proto::v1::GuiWindow;
+use oozems_proto::v1::GuiWindowDefinition;
 use oozems_proto::v1::KeySlot;
 use oozems_proto::v1::NpcFrame;
 use sha2::Digest;
@@ -37,6 +41,9 @@ use layout::compose_shop_window;
 use layout::compose_skill_window;
 use layout::compose_stat_window;
 use layout::compose_status_bar;
+use layout::place_sprite;
+use layout::sprite_template;
+use layout::validate_layout;
 
 const GUI_ARCHIVE: &str = "UI.wz";
 const STATUS_BAR_IMAGE: &str = "StatusBar.img";
@@ -61,6 +68,8 @@ pub struct GuiContent {
 pub enum GuiContentError {
     #[error(transparent)]
     Wz(#[from] WzContentError),
+    #[error(transparent)]
+    Layout(#[from] oozems_ui_layout::LayoutError),
     #[error("UI.wz is invalid: {message}")]
     Invalid { message: String },
     #[error("internal GUI content lock was poisoned while accessing {context}")]
@@ -188,7 +197,10 @@ struct CashShopWindowSources {
 }
 
 impl GuiContent {
-    pub fn open_optional(directory: &Path) -> Result<Option<Self>, GuiContentError> {
+    pub fn open_optional(
+        directory: &Path,
+        layout_directory: &Path,
+    ) -> Result<Option<Self>, GuiContentError> {
         let path = directory.join(GUI_ARCHIVE);
         if !path
             .try_exists()
@@ -214,17 +226,26 @@ impl GuiContent {
         let cash_shop = required_child(&root, CASH_SHOP_IMAGE)?;
         parse(&cash_shop, format!("{} {CASH_SHOP_IMAGE}", path.display()))?;
 
+        let definitions = oozems_ui_layout::load_directory(layout_directory)?;
         let mut content = Self {
             _base: base,
             gui: GameGui::default(),
             fingerprint: archive_fingerprint(&path)?,
             assets: RwLock::new(HashMap::new()),
         };
-        content.gui = build_game_gui(&content, &status_bar, &ui_window, &cash_shop)?;
+        content.gui = build_game_gui(
+            &content,
+            &root,
+            &status_bar,
+            &ui_window,
+            &cash_shop,
+            &definitions,
+        )?;
 
         tracing::info!(
             path = %path.display(),
             assets = content.gui.assets.len(),
+            authored_layouts = definitions.len(),
             "WZ GUI source ready"
         );
         Ok(Some(content))
@@ -266,9 +287,11 @@ impl GuiContent {
 
 fn build_game_gui(
     content: &GuiContent,
+    root: &WzNodeArc,
     status_bar: &WzNodeArc,
     ui_window: &WzNodeArc,
     cash_shop: &WzNodeArc,
+    definitions: &[GuiWindowDefinition],
 ) -> Result<GameGui, GuiContentError> {
     let (status_sources, mut assets) = load_status_bar_sources(content, status_bar)?;
     let status_bar = compose_status_bar(&status_sources)?;
@@ -304,11 +327,9 @@ fn build_game_gui(
     let (quest_ready_frames, quest_ready_assets) =
         load_quest_icon_frames(content, ui_window, QUEST_READY_ICON_ID)?;
     assets.extend(quest_ready_assets);
-    let mut asset_ids = HashSet::new();
-    assets.retain(|asset| asset_ids.insert(asset.id.clone()));
-    Ok(GameGui {
+    let mut gui = GameGui {
         status_bar: Some(status_bar),
-        assets,
+        assets: Vec::new(),
         stat_window: Some(stat_window),
         equipment_window: Some(equipment_window),
         inventory_window: Some(inventory_window),
@@ -331,7 +352,161 @@ fn build_game_gui(
         cash_shop_window: Some(cash_shop_window),
         quest_available_frames,
         quest_ready_frames,
-    })
+    };
+    for definition in definitions {
+        let (window, definition_assets) = compose_window_definition(content, root, definition)?;
+        assets.extend(definition_assets);
+        install_window_definition(&mut gui, definition, window);
+    }
+    let mut asset_ids = HashSet::new();
+    assets.retain(|asset| asset_ids.insert(asset.id.clone()));
+    gui.assets = assets;
+    Ok(gui)
+}
+
+fn compose_window_definition(
+    content: &GuiContent,
+    root: &WzNodeArc,
+    definition: &GuiWindowDefinition,
+) -> Result<(GuiWindow, Vec<AssetDescriptor>), GuiContentError> {
+    let mut assets = Vec::new();
+    let background_definition =
+        definition
+            .background
+            .as_ref()
+            .ok_or_else(|| GuiContentError::Invalid {
+                message: format!(
+                    "authored GUI window {:?} has no background",
+                    definition.name
+                ),
+            })?;
+    let background_source =
+        load_authored_source(content, root, background_definition, &mut assets)?;
+    let background = place_sprite(
+        &background_source,
+        background_definition.x,
+        background_definition.y,
+        background_definition.anchor_right,
+    );
+    let width = if definition.width > 0.0 {
+        definition.width
+    } else {
+        background.width
+    };
+    let height = if definition.height > 0.0 {
+        definition.height
+    } else {
+        background.height
+    };
+    let sprites = definition
+        .sprites
+        .iter()
+        .map(|sprite| {
+            let source = load_authored_source(content, root, sprite, &mut assets)?;
+            let x = if sprite.pin_right {
+                width - source.width - sprite.right
+            } else {
+                sprite.x
+            };
+            let y = if sprite.pin_bottom {
+                height - source.height - sprite.bottom
+            } else {
+                sprite.y
+            };
+            Ok(place_sprite(&source, x, y, sprite.anchor_right))
+        })
+        .collect::<Result<Vec<_>, GuiContentError>>()?;
+    let templates = definition
+        .sprite_templates
+        .iter()
+        .map(|template| {
+            let source_definition = GuiSpriteSource {
+                name: template.name.clone(),
+                wz_path: template.wz_path.clone(),
+                ..GuiSpriteSource::default()
+            };
+            load_authored_source(content, root, &source_definition, &mut assets).map(|source| {
+                let mut runtime_template = sprite_template(&source);
+                runtime_template.offset_x = template.offset_x;
+                runtime_template.offset_y = template.offset_y;
+                runtime_template
+            })
+        })
+        .collect::<Result<Vec<_>, GuiContentError>>()?;
+    let layout = GuiLayout {
+        width,
+        height,
+        background: Some(background),
+        sprites,
+        sprite_templates: templates,
+        regions: definition.regions.clone(),
+    };
+    validate_layout(&layout)?;
+    Ok((
+        GuiWindow {
+            x: definition.x,
+            y: definition.y,
+            layout: Some(layout),
+        },
+        assets,
+    ))
+}
+
+fn load_authored_source(
+    content: &GuiContent,
+    root: &WzNodeArc,
+    definition: &GuiSpriteSource,
+    assets: &mut Vec<AssetDescriptor>,
+) -> Result<SourceSprite, GuiContentError> {
+    let (image_name, path) =
+        definition
+            .wz_path
+            .split_once('/')
+            .ok_or_else(|| GuiContentError::Invalid {
+                message: format!(
+                    "authored GUI element {:?} has invalid WZ path {:?}",
+                    definition.name, definition.wz_path
+                ),
+            })?;
+    let image = required_child(root, image_name)?;
+    parse(&image, format!("UI.wz {image_name}"))?;
+    let path = path.split('/').collect::<Vec<_>>();
+    load_source(content, &image, image_name, &definition.name, &path, assets)
+}
+
+fn install_window_definition(
+    gui: &mut GameGui,
+    definition: &GuiWindowDefinition,
+    window: GuiWindow,
+) {
+    match definition.name.as_str() {
+        "status-bar" => gui.status_bar = window.layout,
+        "stats" => gui.stat_window = Some(window),
+        "equipment" => gui.equipment_window = Some(window),
+        "inventory" => gui.inventory_window = Some(window),
+        "skills" => gui.skill_window = Some(window),
+        "key-config" => {
+            if let Some(layout) = window.layout.as_ref() {
+                for action in &mut gui.key_actions {
+                    let Some(icon) = action.icon.as_mut() else {
+                        continue;
+                    };
+                    if let Some(sprite) = layout
+                        .sprites
+                        .iter()
+                        .find(|sprite| sprite.name == icon.name)
+                    {
+                        *icon = sprite.clone();
+                    }
+                }
+            }
+            gui.key_config_window = Some(window);
+        }
+        "npc-dialog" => gui.npc_dialog_window = Some(window),
+        "shop" => gui.shop_window = Some(window),
+        "cash-shop" => gui.cash_shop_window = Some(window),
+        _ => unreachable!("validated GUI window name"),
+    }
 }
 
 fn load_quest_icon_frames(
@@ -1024,6 +1199,13 @@ fn invalid<T>(message: impl Into<String>) -> Result<T, GuiContentError> {
 
 #[cfg(test)]
 mod tests {
+    use oozems_proto::v1::GameGui;
+    use oozems_proto::v1::GuiLayout;
+    use oozems_proto::v1::GuiSprite;
+    use oozems_proto::v1::GuiWindow;
+    use oozems_proto::v1::GuiWindowDefinition;
+    use oozems_proto::v1::KeyActionDefinition;
+
     use super::CashShopWindowSources;
     use super::EquipmentWindowSources;
     use super::InventoryTabSources;
@@ -1043,6 +1225,7 @@ mod tests {
     use super::compose_skill_window;
     use super::compose_stat_window;
     use super::compose_status_bar;
+    use super::install_window_definition;
 
     #[test]
     fn status_bar_sources_form_the_native_layout() {
@@ -1228,16 +1411,16 @@ mod tests {
                 .iter()
                 .filter(|sprite| sprite.name == "stat-ability-up-disabled")
                 .count(),
-            6
+            2
         );
-        assert_eq!(
-            layout
-                .sprites
-                .iter()
-                .filter(|sprite| sprite.name == "stat-ability-up")
-                .count(),
-            4
-        );
+        for name in ["stat-ability-up", "stat-ability-up-disabled"] {
+            assert!(
+                layout
+                    .sprite_templates
+                    .iter()
+                    .any(|template| template.name == name)
+            );
+        }
         for name in [
             "stat-strength-up",
             "stat-dexterity-up",
@@ -1375,6 +1558,80 @@ mod tests {
             Some((629.0, 373.0))
         );
         assert_eq!(actions.len(), crate::keymap::ACTIONS.len());
+    }
+
+    #[test]
+    fn authored_windows_install_in_their_runtime_fields() {
+        for name in oozems_ui_layout::SUPPORTED_WINDOWS {
+            let definition = GuiWindowDefinition {
+                name: (*name).to_owned(),
+                ..GuiWindowDefinition::default()
+            };
+            let window = GuiWindow {
+                x: 13.0,
+                y: 17.0,
+                layout: Some(GuiLayout {
+                    width: 211.0,
+                    height: 223.0,
+                    ..GuiLayout::default()
+                }),
+            };
+            let expected = window.clone();
+            let mut gui = GameGui::default();
+
+            install_window_definition(&mut gui, &definition, window);
+
+            match name {
+                "status-bar" => assert_eq!(gui.status_bar, expected.layout),
+                "stats" => assert_eq!(gui.stat_window, Some(expected)),
+                "equipment" => assert_eq!(gui.equipment_window, Some(expected)),
+                "inventory" => assert_eq!(gui.inventory_window, Some(expected)),
+                "skills" => assert_eq!(gui.skill_window, Some(expected)),
+                "key-config" => assert_eq!(gui.key_config_window, Some(expected)),
+                "npc-dialog" => assert_eq!(gui.npc_dialog_window, Some(expected)),
+                "shop" => assert_eq!(gui.shop_window, Some(expected)),
+                "cash-shop" => assert_eq!(gui.cash_shop_window, Some(expected)),
+                _ => unreachable!("supported GUI window"),
+            }
+        }
+    }
+
+    #[test]
+    fn authored_key_config_replaces_key_action_icons() {
+        let mut gui = GameGui {
+            key_actions: vec![KeyActionDefinition {
+                icon: Some(GuiSprite {
+                    name: "key-action-53".to_owned(),
+                    asset_id: "old-asset".to_owned(),
+                    ..GuiSprite::default()
+                }),
+                ..KeyActionDefinition::default()
+            }],
+            ..GameGui::default()
+        };
+        let window = GuiWindow {
+            layout: Some(GuiLayout {
+                sprites: vec![GuiSprite {
+                    name: "key-action-53".to_owned(),
+                    asset_id: "authored-asset".to_owned(),
+                    x: 47.0,
+                    y: 53.0,
+                    ..GuiSprite::default()
+                }],
+                ..GuiLayout::default()
+            }),
+            ..GuiWindow::default()
+        };
+        let definition = GuiWindowDefinition {
+            name: "key-config".to_owned(),
+            ..GuiWindowDefinition::default()
+        };
+
+        install_window_definition(&mut gui, &definition, window);
+
+        let icon = gui.key_actions[0].icon.as_ref().expect("key action icon");
+        assert_eq!(icon.asset_id, "authored-asset");
+        assert_eq!((icon.x, icon.y), (47.0, 53.0));
     }
 
     fn source(

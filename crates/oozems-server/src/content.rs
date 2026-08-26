@@ -75,6 +75,7 @@ pub enum ContentError {
 impl ContentCatalog {
     pub fn load(
         wz_dir: &Path,
+        gui_layout_dir: &Path,
         config: &ContentConfig,
     ) -> Result<Self, ContentError> {
         let wz = WzContent::open(wz_dir, config.npcs.clone())?;
@@ -141,7 +142,7 @@ impl ContentCatalog {
         }
         Ok(Self {
             characters,
-            gui: GuiContent::open_optional(wz_dir)?,
+            gui: GuiContent::open_optional(wz_dir, gui_layout_dir)?,
             items,
             morphs,
             quests,
@@ -419,9 +420,13 @@ mod tests {
     #[test]
     fn map_archive_is_required() {
         let directory = tempfile::tempdir().expect("temporary directory");
-        let error = ContentCatalog::load(directory.path(), &ContentConfig::default())
-            .err()
-            .expect("missing Map.wz must fail");
+        let error = ContentCatalog::load(
+            directory.path(),
+            &directory.path().join("gui"),
+            &ContentConfig::default(),
+        )
+        .err()
+        .expect("missing Map.wz must fail");
 
         assert!(error.to_string().contains("Map.wz is required"));
     }

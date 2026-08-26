@@ -184,8 +184,8 @@ fn draw_offer_button(
         .context
         .draw_image_with_html_image_element_and_dw_and_dh(
             image,
-            f64::from(x),
-            f64::from(y),
+            f64::from(x + template.offset_x),
+            f64::from(y + template.offset_y),
             f64::from(template.width),
             f64::from(template.height),
         );

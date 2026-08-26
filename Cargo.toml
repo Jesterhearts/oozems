@@ -5,6 +5,8 @@ members  = [
   "crates/oozems-proto",
   "crates/oozems-quest-harness",
   "crates/oozems-server",
+  "crates/oozems-ui-editor",
+  "crates/oozems-ui-layout",
   "crates/oozems-wz",
 ]
 
