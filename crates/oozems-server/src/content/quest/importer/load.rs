@@ -96,6 +96,13 @@ pub(crate) fn load_definition(
         &audited_corrections,
     )?;
     validate_audited_4960_parsed_actions(quest_id, &start_actions, &completion_actions)?;
+    retained_action_fields.extend(retained_check_fields);
+    retained_action_fields.extend(completion_action_fields);
+    info.retained_metadata_fields.extend(retained_action_fields);
+    info.retained_metadata_fields.sort();
+    info.retained_metadata_fields.dedup();
+    let mut dialogue = dialogue::read_dialogue(quest_id, say.as_ref(), &action)?;
+    let completion = resolve_completion_npc(completion, &start, &info, &dialogue);
     validate_npc_animation_transitions(
         quest_id,
         &start,
@@ -104,12 +111,6 @@ pub(crate) fn load_definition(
         &completion_actions,
         &info,
     )?;
-    retained_action_fields.extend(retained_check_fields);
-    retained_action_fields.extend(completion_action_fields);
-    info.retained_metadata_fields.extend(retained_action_fields);
-    info.retained_metadata_fields.sort();
-    info.retained_metadata_fields.dedup();
-    let mut dialogue = dialogue::read_dialogue(quest_id, say.as_ref(), &action)?;
     validate_start_question_reachability(quest_id, &start, &dialogue)?;
     validate_selectable_reward_flow(quest_id, &start_actions, &completion_actions, &dialogue)?;
     let restorable_items = validate_lost_item_restoration_flow(
@@ -135,6 +136,22 @@ pub(crate) fn load_definition(
         info,
     })
 }
+
+fn resolve_completion_npc(
+    mut completion: QuestCompletionRequirements,
+    start: &QuestStartRequirements,
+    info: &QuestInfo,
+    dialogue: &QuestDialogue,
+) -> QuestCompletionRequirements {
+    // Some ordinary WZ quests omit the completion NPC when it is the start NPC.
+    let completes_automatically =
+        dialogue.question.is_none() && (info.auto_complete || info.auto_pre_complete);
+    if completion.npc_id.is_none() && !completes_automatically {
+        completion.npc_id = start.npc_id;
+    }
+    completion
+}
+
 pub(crate) fn script_reference_names(
     checks: &WzNodeArc
 ) -> Result<BTreeSet<String>, QuestContentError> {
