@@ -1,3 +1,11 @@
+pub fn map_spawn_seed(
+    map_id: u32,
+    spawn_id: u32,
+) -> u64 {
+    let seed = (u64::from(map_id) << 32) | u64::from(spawn_id);
+    seed ^ 0x9e37_79b9_7f4a_7c15
+}
+
 pub fn next_u64(state: &mut u64) -> u64 {
     let mut value = *state;
     value ^= value << 13;
@@ -9,7 +17,15 @@ pub fn next_u64(state: &mut u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use super::map_spawn_seed;
     use super::next_u64;
+
+    #[test]
+    fn map_spawn_seeds_are_stable_and_distinct() {
+        assert_eq!(map_spawn_seed(1, 2), map_spawn_seed(1, 2));
+        assert_ne!(map_spawn_seed(1, 2), map_spawn_seed(1, 3));
+        assert_ne!(map_spawn_seed(1, 2), map_spawn_seed(2, 2));
+    }
 
     #[test]
     fn xorshift_sequence_is_deterministic_and_updates_state() {

@@ -33,6 +33,7 @@ use crate::keymap::KeyboardState;
 use crate::mob_render::MobRenderState;
 use crate::movement;
 use crate::movement::MotionState;
+use crate::reactor_render::ReactorRenderState;
 use crate::render;
 use crate::show_status;
 use crate::skill_effects::SkillEffectState;
@@ -127,6 +128,7 @@ impl std::ops::DerefMut for PlayerRuntime {
 pub struct WorldRuntime {
     pub map: Map,
     pub mob_render: MobRenderState,
+    pub(crate) reactor_render: ReactorRenderState,
     pub movement_rules: MovementRules,
     pub motion: MotionState,
     pub facing_left: bool,
@@ -401,6 +403,7 @@ fn build_game(
         world: WorldRuntime {
             map,
             mob_render: crate::mob_render::new_map_state(simulation_sequence),
+            reactor_render: ReactorRenderState::default(),
             movement_rules,
             motion,
             facing_left: false,

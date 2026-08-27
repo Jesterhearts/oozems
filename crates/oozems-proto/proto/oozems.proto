@@ -247,6 +247,7 @@ message MovementUpdateResponse {
   uint64 simulation_sequence = 8;
   ActiveBuffState active_buffs = 9;
   repeated DroppedItem dropped_items = 10;
+  repeated Reactor reactors = 11;
 }
 
 message CreateCharacterRequest {
@@ -338,6 +339,7 @@ message UseSkillResponse {
   uint64 simulation_sequence = 7;
   ActiveBuffState active_buffs = 8;
   repeated DroppedItem dropped_items = 9;
+  repeated Reactor reactors = 10;
 }
 
 message BasicAttackRequest {
@@ -353,6 +355,7 @@ message BasicAttackResponse {
   uint64 simulation_sequence = 5;
   repeated DroppedItem dropped_items = 6;
   ActiveBuffState active_buffs = 7;
+  repeated Reactor reactors = 8;
 }
 
 message ActiveBuffState {
@@ -966,6 +969,9 @@ message Map {
   repeated Npc npcs = 17;
   optional uint32 return_map_id = 18;
   bool town = 19;
+  repeated ReactorSpawnPoint reactor_spawn_points = 20;
+  repeated ReactorDefinition reactor_definitions = 21;
+  repeated Reactor reactors = 22;
 }
 
 message MapMovementBounds {
@@ -1072,6 +1078,44 @@ message MobProjectile {
   int32 layer = 5;
 }
 
+message ReactorSpawnPoint {
+  uint32 spawn_id = 1;
+  uint32 reactor_id = 2;
+  Vec2 position = 3;
+  bool flip_x = 4;
+  int32 layer = 5;
+  uint32 respawn_seconds = 6;
+}
+
+message ReactorDefinition {
+  uint32 id = 1;
+  repeated ReactorStateDefinition states = 2;
+}
+
+message ReactorStateDefinition {
+  uint32 state = 1;
+  repeated ReactorFrame frames = 2;
+  repeated ReactorFrame hit_frames = 3;
+  optional uint32 next_state = 4;
+}
+
+message ReactorFrame {
+  string asset_id = 1;
+  float width = 2;
+  float height = 3;
+  float origin_x = 4;
+  float origin_y = 5;
+  uint32 delay_ms = 6;
+}
+
+message Reactor {
+  string id = 1;
+  uint32 definition_id = 2;
+  uint32 spawn_id = 3;
+  uint32 state = 4;
+  bool active = 5;
+}
+
 message CombatEvent {
   string id = 1;
   CombatEventKind kind = 2;
@@ -1090,6 +1134,9 @@ enum CombatEventKind {
   COMBAT_EVENT_KIND_MOB_RESPAWNED = 5;
   COMBAT_EVENT_KIND_PLAYER_MISSED_MOB = 6;
   COMBAT_EVENT_KIND_MOB_MISSED_PLAYER = 7;
+  COMBAT_EVENT_KIND_PLAYER_HIT_REACTOR = 8;
+  COMBAT_EVENT_KIND_REACTOR_DESTROYED = 9;
+  COMBAT_EVENT_KIND_REACTOR_RESPAWNED = 10;
 }
 
 enum MobMovementMode {

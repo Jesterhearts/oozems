@@ -7,6 +7,7 @@ mod hud;
 mod interaction;
 mod mob;
 pub(crate) mod npc;
+mod reactor;
 mod skill_info;
 mod skillbook;
 mod world;
@@ -65,6 +66,7 @@ mod tests {
     use oozems_proto::v1::Platform;
     use oozems_proto::v1::Portal;
     use oozems_proto::v1::PortalFrame;
+    use oozems_proto::v1::ReactorSpawnPoint;
 
     use super::LayerPass;
     use super::decoration_frame_index;
@@ -103,10 +105,14 @@ mod tests {
                 layer: 6,
                 ..Npc::default()
             }],
+            reactor_spawn_points: vec![ReactorSpawnPoint {
+                layer: 7,
+                ..ReactorSpawnPoint::default()
+            }],
             ..Map::default()
         };
 
-        assert_eq!(world_layers(&map), vec![0, 1, 2, 3, 4, 5, 6]);
+        assert_eq!(world_layers(&map), vec![0, 1, 2, 3, 4, 5, 6, 7]);
     }
 
     #[test]
@@ -117,6 +123,7 @@ mod tests {
                 LayerPass::Decorations,
                 LayerPass::Portals,
                 LayerPass::Npcs,
+                LayerPass::Reactors,
                 LayerPass::Mobs,
             ]
         );
@@ -126,6 +133,7 @@ mod tests {
                 LayerPass::Decorations,
                 LayerPass::Portals,
                 LayerPass::Npcs,
+                LayerPass::Reactors,
                 LayerPass::Mobs,
                 LayerPass::DroppedItems,
                 LayerPass::Player,

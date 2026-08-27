@@ -285,6 +285,7 @@ pub async fn get_map(
     let simulation = crate::mobs::map_snapshot(&state.mobs, &map).await?;
     map.mobs = simulation.mobs;
     map.mob_projectiles = simulation.mob_projectiles;
+    map.reactors = simulation.reactors;
     map.simulation_sequence = simulation.sequence;
 
     Ok(Protobuf(GetMapResponse { map: Some(map) }))
@@ -736,6 +737,7 @@ pub async fn use_skill(
         simulation_sequence: simulation.sequence,
         active_buffs: Some(active_buffs),
         dropped_items,
+        reactors: simulation.reactors,
     }))
 }
 

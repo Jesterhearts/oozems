@@ -151,6 +151,7 @@ pub async fn use_basic_attack(
         simulation_sequence: simulation.sequence,
         dropped_items,
         active_buffs: Some(crate::effects::state(&effects, now_ms)),
+        reactors: simulation.reactors,
     }))
 }
 

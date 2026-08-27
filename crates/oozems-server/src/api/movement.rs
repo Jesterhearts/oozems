@@ -362,6 +362,7 @@ async fn movement_response(
         simulation_sequence: simulation.sequence,
         active_buffs: Some(crate::effects::state(&effects, now_unix_ms)),
         dropped_items,
+        reactors: simulation.reactors,
     })
 }
 

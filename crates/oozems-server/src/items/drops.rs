@@ -189,13 +189,13 @@ pub fn create_mob_drops(
     item_ids: &[u32],
     owner_player_id: &str,
 ) -> Result<Vec<DroppedItem>, DropStoreError> {
-    let staged = stage_mob_drops(store, map_id, position, item_ids, owner_player_id)?;
+    let staged = stage_combat_drops(store, map_id, position, item_ids, owner_player_id)?;
     let items = staged.iter().map(|grant| grant.item.clone()).collect();
     commit_staged_drops(store, &staged)?;
     Ok(items)
 }
 
-pub fn stage_mob_drops(
+pub fn stage_combat_drops(
     store: &DropStore,
     map_id: u32,
     position: Vec2,
@@ -205,7 +205,7 @@ pub fn stage_mob_drops(
     if item_ids.is_empty() {
         return Ok(Vec::new());
     }
-    stage_mob_drops_at(
+    stage_combat_drops_at(
         store,
         map_id,
         position,
@@ -215,7 +215,7 @@ pub fn stage_mob_drops(
     )
 }
 
-fn stage_mob_drops_at(
+fn stage_combat_drops_at(
     store: &DropStore,
     map_id: u32,
     position: Vec2,

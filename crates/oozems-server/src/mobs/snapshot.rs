@@ -81,6 +81,7 @@ pub(super) fn snapshot(
         combat_events,
         mob_deaths,
         staged_drops,
+        reactors: crate::reactors::snapshot(&state.reactors),
         sequence: state.snapshot_sequence,
         player_attack_transaction: None,
         delivery_id: None,

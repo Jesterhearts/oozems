@@ -91,7 +91,7 @@ fn spawn_mob(
             direction: 0,
             velocity_y: 0.0,
             decision_seconds: 0.0,
-            random_state: random_seed(map.id, spawn.spawn_id),
+            random_state: crate::random::map_spawn_seed(map.id, spawn.spawn_id),
             mode: MobMovementMode::Idle,
         },
         MobCombat {
@@ -144,12 +144,4 @@ fn has_animation(
         .animations
         .iter()
         .any(|animation| animation.name == name && !animation.frames.is_empty())
-}
-
-fn random_seed(
-    map_id: u32,
-    spawn_id: u32,
-) -> u64 {
-    let seed = (u64::from(map_id) << 32) | u64::from(spawn_id);
-    seed ^ 0x9e37_79b9_7f4a_7c15
 }

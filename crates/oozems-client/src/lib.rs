@@ -16,6 +16,7 @@ mod keymap;
 mod mob_render;
 mod morph_render;
 mod movement;
+mod reactor_render;
 mod render;
 mod skill_effects;
 

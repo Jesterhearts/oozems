@@ -28,6 +28,7 @@ mod mob;
 mod movement_bounds;
 mod names;
 mod npc;
+mod reactor;
 
 pub(super) use archive::archive_fingerprint;
 pub(super) use archive::open_archive;
@@ -40,6 +41,7 @@ use super::config::NpcFilter;
 
 const MAP_ARCHIVE: &str = "Map.wz";
 const STRING_ARCHIVE: &str = "String.wz";
+const REACTOR_ARCHIVE: &str = "Reactor.wz";
 const DEFAULT_DECORATION_FRAME_DELAY_MS: u32 = 100;
 
 pub struct WzContent {
@@ -52,6 +54,7 @@ pub struct WzContent {
     assets: RwLock<HashMap<String, Arc<WzAsset>>>,
     mobs: Option<mob::MobContent>,
     npcs: Option<npc::NpcContent>,
+    reactors: Option<reactor::ReactorContent>,
     npc_filter: NpcFilter,
 }
 
@@ -189,6 +192,7 @@ impl WzContent {
         let fingerprint = archive_fingerprint(&map_path)?;
         let mobs = mob::MobContent::open_optional(directory)?;
         let npcs = npc::NpcContent::open_optional(directory)?;
+        let reactors = reactor::ReactorContent::open_optional(directory)?;
 
         tracing::info!(
             path = %map_path.display(),
@@ -206,6 +210,7 @@ impl WzContent {
             assets: RwLock::new(HashMap::new()),
             mobs,
             npcs,
+            reactors,
             npc_filter,
         })
     }
@@ -259,6 +264,11 @@ impl WzContent {
             .and_then(|assets| assets.get(asset_id).cloned())
             .or_else(|| self.mobs.as_ref().and_then(|mobs| mobs.get_asset(asset_id)))
             .or_else(|| self.npcs.as_ref().and_then(|npcs| npcs.get_asset(asset_id)))
+            .or_else(|| {
+                self.reactors
+                    .as_ref()
+                    .and_then(|reactors| reactors.get_asset(asset_id))
+            })
     }
 
     fn register_asset(
@@ -352,6 +362,7 @@ fn build_map(
     let raw_mob_spawns = mob::read_spawn_points(node)?;
     let raw_npc_spawns =
         npc::filter_spawn_points(npc::read_spawn_points(node)?, &source.npc_filter);
+    let raw_reactor_spawns = reactor::read_spawn_points(node)?;
     // zM associates an item with a foothold group. It does not control drawing.
     // The order key keeps the separate WZ draw-order fields comparable.
     raw_decorations.sort_by_key(|decoration| decoration.order);
@@ -413,6 +424,13 @@ fn build_map(
         &mut assets,
         &mut asset_ids,
     )?;
+    let reactor_spawn_points = reactor::build_spawn_points(raw_reactor_spawns, &platforms, bounds);
+    let reactor_definitions = reactor::load_definitions(
+        source.reactors.as_ref(),
+        &reactor_spawn_points,
+        &mut assets,
+        &mut asset_ids,
+    )?;
 
     Ok(Map {
         id: map_id,
@@ -438,6 +456,9 @@ fn build_map(
         movement_bounds: Some(movement_bounds),
         return_map_id: metadata.return_map_id,
         town: metadata.town,
+        reactor_spawn_points,
+        reactor_definitions,
+        reactors: Vec::new(),
     })
 }
 
@@ -669,7 +690,7 @@ fn node_at_path(
     }
 }
 
-fn find_png_descendant(
+pub(super) fn find_png_descendant(
     node: &WzNodeArc,
     depth: usize,
 ) -> Result<Option<WzNodeArc>, WzContentError> {
@@ -1075,7 +1096,6 @@ mod tests {
     use super::read_map_metadata;
     use super::sorted_named_children;
     use super::tile_order;
-
     #[test]
     fn derived_bounds_include_geometry_and_padding() {
         let platforms = [RawPlatform {

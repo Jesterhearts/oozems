@@ -51,7 +51,7 @@ pub(super) fn begin(
                 GuiAction::UseSkill { skill_id } => {
                     api::use_skill(&player_id, skill_id, &target_mob_id, facing_left)
                         .await
-                        .map(SkillResponse::Use)
+                        .map(|response| SkillResponse::Use(Box::new(response)))
                         .map_err(|error| format!("Skill use failed: {error}"))
                 }
                 _ => unreachable!("non-skill action reached the skill request pipeline"),
@@ -63,7 +63,9 @@ pub(super) fn begin(
                 Ok(SkillResponse::Allocation(response)) => {
                     install_allocation(game, response, request_started_ms)
                 }
-                Ok(SkillResponse::Use(response)) => install_use(game, response, request_started_ms),
+                Ok(SkillResponse::Use(response)) => {
+                    install_use(game, *response, request_started_ms)
+                }
                 Err(error) => Err(error),
             };
             match result {
@@ -77,7 +79,7 @@ pub(super) fn begin(
 enum SkillResponse {
     Ability(oozems_proto::v1::AllocateAbilityPointResponse),
     Allocation(oozems_proto::v1::AllocateSkillPointResponse),
-    Use(oozems_proto::v1::UseSkillResponse),
+    Use(Box<oozems_proto::v1::UseSkillResponse>),
 }
 
 fn install_ability(
@@ -159,6 +161,7 @@ fn install_use(
         response.simulation_sequence,
         std::mem::take(&mut response.mobs),
         std::mem::take(&mut response.mob_projectiles),
+        std::mem::take(&mut response.reactors),
         std::mem::take(&mut response.combat_events),
         std::mem::take(&mut response.dropped_items),
     )?;
@@ -179,6 +182,7 @@ fn install_basic_attack(
         response.simulation_sequence,
         std::mem::take(&mut response.mobs),
         std::mem::take(&mut response.mob_projectiles),
+        std::mem::take(&mut response.reactors),
         std::mem::take(&mut response.combat_events),
         std::mem::take(&mut response.dropped_items),
     )?;
@@ -188,6 +192,13 @@ fn install_basic_attack(
             format!("Basic attack dealt {damage} damage.")
         }
         PlayerAttackOutcome::Miss { .. } => "Basic attack missed.".to_owned(),
+        PlayerAttackOutcome::Reactor { destroyed, .. } => {
+            if destroyed {
+                "Basic attack broke the reactor.".to_owned()
+            } else {
+                "Basic attack hit the reactor.".to_owned()
+            }
+        }
         PlayerAttackOutcome::NoTarget => "Basic attack found no target.".to_owned(),
     })
 }
@@ -201,13 +212,19 @@ enum PlayerAttackOutcome {
     Miss {
         position: Option<oozems_proto::v1::Vec2>,
     },
+    Reactor {
+        destroyed: bool,
+        position: Option<oozems_proto::v1::Vec2>,
+    },
     NoTarget,
 }
 
 impl PlayerAttackOutcome {
     fn position(&self) -> Option<oozems_proto::v1::Vec2> {
         match self {
-            Self::Hit { position, .. } | Self::Miss { position } => *position,
+            Self::Hit { position, .. }
+            | Self::Miss { position }
+            | Self::Reactor { position, .. } => *position,
             Self::NoTarget => None,
         }
     }
@@ -219,6 +236,7 @@ fn install_combat_update(
     simulation_sequence: u64,
     mobs: Vec<oozems_proto::v1::Mob>,
     mob_projectiles: Vec<oozems_proto::v1::MobProjectile>,
+    reactors: Vec<oozems_proto::v1::Reactor>,
     combat_events: Vec<oozems_proto::v1::CombatEvent>,
     dropped_items: Vec<oozems_proto::v1::DroppedItem>,
 ) -> Result<PlayerAttackOutcome, String> {
@@ -244,6 +262,12 @@ fn install_combat_update(
             game.clock.now_ms,
             game.world.movement_rules.snapshot_interval_ms,
         );
+        crate::reactor_render::install_snapshot(
+            &mut game.world.reactor_render,
+            &mut game.world.map.reactors,
+            reactors,
+            game.clock.now_ms,
+        );
         game.world.map.dropped_items = dropped_items;
     }
     crate::mob_render::install_combat_events(
@@ -261,6 +285,18 @@ fn player_attack_outcome(events: &[oozems_proto::v1::CombatEvent]) -> PlayerAtta
     {
         return PlayerAttackOutcome::Hit {
             damage: hit.damage,
+            position: hit.position,
+        };
+    }
+    if let Some(hit) = events.iter().find(|event| {
+        CombatEventKind::try_from(event.kind) == Ok(CombatEventKind::PlayerHitReactor)
+    }) {
+        let destroyed = events.iter().any(|event| {
+            CombatEventKind::try_from(event.kind) == Ok(CombatEventKind::ReactorDestroyed)
+                && event.target_id == hit.target_id
+        });
+        return PlayerAttackOutcome::Reactor {
+            destroyed,
             position: hit.position,
         };
     }
@@ -332,6 +368,7 @@ fn use_message(
                 return format!("Used {name}. Dealt {damage} damage.");
             }
             PlayerAttackOutcome::Miss { .. } => return format!("Used {name}. Missed."),
+            PlayerAttackOutcome::Reactor { .. } => {}
             PlayerAttackOutcome::NoTarget => {}
         }
         return format!(
@@ -390,6 +427,16 @@ mod tests {
         assert_eq!(
             player_attack_outcome(&[event(CombatEventKind::PlayerMissedMob, 0)]),
             PlayerAttackOutcome::Miss {
+                position: Some(position),
+            }
+        );
+        assert_eq!(
+            player_attack_outcome(&[
+                event(CombatEventKind::PlayerHitReactor, 0),
+                event(CombatEventKind::ReactorDestroyed, 0),
+            ]),
+            PlayerAttackOutcome::Reactor {
+                destroyed: true,
                 position: Some(position),
             }
         );

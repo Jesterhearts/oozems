@@ -1,8 +1,8 @@
 # Generated from the ChronoStory - Mobs Google Sheets HTML export.
 # Source chances are already expressed per million.
-# Mob IDs were checked against the local Mob.wz. Inline names come from
-# the local String.wz Mob.img and are informational. Item IDs were checked
-# against the local Item.wz and Character.wz catalogs.
+# Mob and reactor IDs were checked against the local Mob.wz and Reactor.wz.
+# Inline names are informational. Item IDs were checked against the local
+# Item.wz and Character.wz catalogs.
 #
 # The current server loot model cannot represent meso drops, quest-gated
 # drops, or quantity ranges. Meso and quest rows are omitted. Quantity
@@ -26090,3 +26090,27 @@ chance_per_million = 5000
 [[mobs.drops]]
 item_id = 4006001
 chance_per_million = 5000
+
+# ChronoStory identifies this v83 Amherst crate table as dropper 2000. The
+# local Amherst maps use reactor 2001 for the same crate action.
+[[reactors]]
+reactor_id = 2001 # Amherst Crate
+
+[[reactors.drops]]
+item_id = 2010000
+chance_per_million = 100000
+
+[[reactors.drops]]
+item_id = 2010009
+chance_per_million = 100000
+
+[[reactors]]
+reactor_id = 2002011 # Orbis Crate
+
+[[reactors.drops]]
+item_id = 2000001
+chance_per_million = 400000
+
+[[reactors.drops]]
+item_id = 2000003
+chance_per_million = 400000

@@ -11,6 +11,7 @@ use oozems_proto::v1::Mob;
 use oozems_proto::v1::MobMovementMode;
 use oozems_proto::v1::MobProjectile;
 use oozems_proto::v1::PlayerState;
+use oozems_proto::v1::Reactor;
 use oozems_proto::v1::Vec2;
 use shipyard::IntoIter;
 use shipyard::UniqueViewMut;
@@ -82,6 +83,7 @@ struct Simulation {
 
 struct MobMapState {
     world: World,
+    reactors: Vec<crate::reactors::ReactorRuntime>,
     player_entities: HashMap<String, shipyard::EntityId>,
     updated_at: Instant,
     clock_ms: u64,
@@ -96,6 +98,7 @@ pub struct MobUpdate {
     pub combat_events: Vec<CombatEvent>,
     pub mob_deaths: Vec<MobDeath>,
     pub staged_drops: Vec<crate::items::StagedDropGrant>,
+    pub reactors: Vec<Reactor>,
     pub sequence: u64,
     player_attack_transaction: Option<PlayerAttackTransaction>,
     delivery_id: Option<mailbox::UpdateDelivery>,
@@ -104,13 +107,25 @@ pub struct MobUpdate {
 #[derive(Clone)]
 struct PlayerAttackTransaction {
     map_id: u32,
-    target: shipyard::EntityId,
     id: u64,
-    before: PlayerAttackMobState,
-    after: PlayerAttackMobState,
+    target: PlayerAttackTarget,
     generated_combat_events: usize,
     generated_mob_deaths: usize,
     generated_staged_drops: usize,
+}
+
+#[derive(Clone)]
+enum PlayerAttackTarget {
+    Mob {
+        entity: shipyard::EntityId,
+        before: PlayerAttackMobState,
+        after: PlayerAttackMobState,
+    },
+    Reactor {
+        spawn_id: u32,
+        before: crate::reactors::ReactorAttackState,
+        after: crate::reactors::ReactorAttackState,
+    },
 }
 
 #[derive(Clone)]
@@ -389,23 +404,31 @@ fn apply_commit_player_attack(
     simulation: &mut Simulation,
     transaction: &PlayerAttackTransaction,
 ) -> Result<(), MobStoreError> {
-    let state = simulation.maps.get(&transaction.map_id).ok_or_else(|| {
-        MobStoreError::PlayerAttackTransaction {
+    let state = simulation
+        .maps
+        .get_mut(&transaction.map_id)
+        .ok_or_else(|| MobStoreError::PlayerAttackTransaction {
             message: format!("map {} no longer exists", transaction.map_id),
-        }
-    })?;
-    let mut combat = state
-        .world
-        .get::<&mut MobCombat>(transaction.target)
-        .map_err(|error| MobStoreError::PlayerAttackTransaction {
-            message: error.to_string(),
         })?;
-    if combat.player_attack_transaction != Some(transaction.id) {
-        return Err(MobStoreError::PlayerAttackTransaction {
-            message: format!("transaction {} no longer owns its target", transaction.id),
-        });
+    match &transaction.target {
+        PlayerAttackTarget::Mob { entity, .. } => {
+            let mut combat = state
+                .world
+                .get::<&mut MobCombat>(*entity)
+                .map_err(|error| MobStoreError::PlayerAttackTransaction {
+                    message: error.to_string(),
+                })?;
+            if combat.player_attack_transaction != Some(transaction.id) {
+                return Err(transaction_target_error(transaction.id));
+            }
+            combat.player_attack_transaction = None;
+        }
+        PlayerAttackTarget::Reactor { spawn_id, .. } => {
+            if !crate::reactors::commit_attack(&mut state.reactors, *spawn_id, transaction.id) {
+                return Err(transaction_target_error(transaction.id));
+            }
+        }
     }
-    combat.player_attack_transaction = None;
     Ok(())
 }
 
@@ -419,33 +442,58 @@ fn apply_rollback_player_attack(
         .ok_or_else(|| MobStoreError::PlayerAttackTransaction {
             message: format!("map {} no longer exists", transaction.map_id),
         })?;
-    let (mut motion, mut combat) = state
-        .world
-        .get::<(&mut MobMotion, &mut MobCombat)>(transaction.target)
-        .map_err(|error| MobStoreError::PlayerAttackTransaction {
-            message: error.to_string(),
-        })?;
-    if combat.player_attack_transaction != Some(transaction.id) {
-        return Err(MobStoreError::PlayerAttackTransaction {
-            message: format!("transaction {} no longer owns its target", transaction.id),
-        });
+    match &transaction.target {
+        PlayerAttackTarget::Mob {
+            entity,
+            before,
+            after,
+        } => {
+            let (mut motion, mut combat) = state
+                .world
+                .get::<(&mut MobMotion, &mut MobCombat)>(*entity)
+                .map_err(|error| MobStoreError::PlayerAttackTransaction {
+                    message: error.to_string(),
+                })?;
+            if combat.player_attack_transaction != Some(transaction.id) {
+                return Err(transaction_target_error(transaction.id));
+            }
+            combat.current_hp = before.current_hp;
+            combat.dead_until_ms = before.dead_until_ms;
+            if combat.aggro_target == after.aggro_target {
+                combat.aggro_target = before.aggro_target.clone();
+            }
+            if motion.random_state == after.random_state {
+                motion.random_state = before.random_state;
+            }
+            if motion.mode == after.mode {
+                motion.mode = before.mode;
+            }
+            combat.player_attack_transaction = None;
+        }
+        PlayerAttackTarget::Reactor {
+            spawn_id,
+            before,
+            after,
+        } => {
+            if !crate::reactors::rollback_attack(
+                &mut state.reactors,
+                *spawn_id,
+                transaction.id,
+                *before,
+                *after,
+            ) {
+                return Err(transaction_target_error(transaction.id));
+            }
+        }
     }
-    combat.current_hp = transaction.before.current_hp;
-    combat.dead_until_ms = transaction.before.dead_until_ms;
-    if combat.aggro_target == transaction.after.aggro_target {
-        combat.aggro_target = transaction.before.aggro_target.clone();
-    }
-    if motion.random_state == transaction.after.random_state {
-        motion.random_state = transaction.before.random_state;
-    }
-    if motion.mode == transaction.after.mode {
-        motion.mode = transaction.before.mode;
-    }
-    combat.player_attack_transaction = None;
-    drop(motion);
-    drop(combat);
     state.snapshot_sequence = state.snapshot_sequence.saturating_add(1);
     Ok(true)
+}
+
+fn transaction_target_error(transaction_id: u64) -> MobStoreError {
+    MobStoreError::PlayerAttackTransaction {
+        message: format!("transaction {transaction_id} no longer owns its target"),
+    }
 }
 
 #[cfg(test)]
@@ -590,6 +638,7 @@ fn build_map_state(
     }
     Ok(MobMapState {
         world,
+        reactors: crate::reactors::spawn(map),
         player_entities: HashMap::new(),
         updated_at: now,
         clock_ms: 0,
@@ -647,6 +696,8 @@ fn advance_map_to(
         .map_err(|error| MobStoreError::Workload {
             message: error.to_string(),
         })?;
+    let respawned = crate::reactors::advance(&mut state.reactors, state.clock_ms);
+    queue_reactor_respawns(state, respawned);
     remove_impacted_projectiles(state)?;
     let errors = state
         .world
@@ -656,6 +707,35 @@ fn advance_map_to(
     }
     state.snapshot_sequence = state.snapshot_sequence.saturating_add(1);
     Ok(())
+}
+
+fn queue_reactor_respawns(
+    state: &MobMapState,
+    respawned: Vec<crate::reactors::RespawnedReactor>,
+) {
+    if respawned.is_empty() {
+        return;
+    }
+    let player_ids = state.player_entities.keys().cloned().collect::<Vec<_>>();
+    state.world.run(|mut events: UniqueViewMut<PendingEvents>| {
+        for reactor in &respawned {
+            for player_id in &player_ids {
+                combat::queue_event(
+                    &mut events,
+                    player_id,
+                    CombatEventKind::ReactorRespawned,
+                    &reactor.id,
+                    &reactor.id,
+                    0,
+                    Position {
+                        x: reactor.position.x,
+                        y: reactor.position.y,
+                        layer: reactor.layer,
+                    },
+                );
+            }
+        }
+    });
 }
 
 fn sync_player(
@@ -802,7 +882,7 @@ fn prepare_player_attack(
         .get::<(&Position, &PlayerPresence)>(player_entity)
         .map(|(position, presence)| (**position, presence.clone()))
         .map_err(|error| borrow_error(error.to_string()))?;
-    let target = state.world.run(
+    let mob_target = state.world.run(
         |positions: View<Position>, identities: View<MobIdentity>, combats: View<MobCombat>| {
             let candidates = (&positions, &identities, &combats).iter().with_id().filter(
                 |(_, (position, identity, combat))| {
@@ -821,10 +901,33 @@ fn prepare_player_attack(
             candidates
                 .map(|(entity, (position, _, _))| (entity, (position.x - player_position.x).abs()))
                 .min_by(|left, right| left.1.total_cmp(&right.1))
-                .map(|(entity, _)| entity)
         },
     );
-    let Some(target) = target else {
+    let reactor_target = (attack.source_skill_id.is_none() && attack.target_mob_id.is_empty())
+        .then(|| {
+            crate::reactors::nearest_attack_candidate(
+                &state.reactors,
+                player_position.x,
+                player_position.y,
+                player_position.layer,
+                attack.facing_left,
+                rules,
+            )
+        })
+        .flatten();
+    if reactor_target.is_some_and(|(_, reactor_distance)| {
+        mob_target.is_none_or(|(_, mob_distance)| reactor_distance < mob_distance)
+    }) {
+        return prepare_reactor_attack(
+            state,
+            map_id,
+            player_id,
+            reactor_target.expect("reactor target was checked").0,
+            loot,
+            drops,
+        );
+    }
+    let Some((target, _)) = mob_target else {
         return Ok(None);
     };
     let transaction_id = state.next_player_attack_transaction;
@@ -894,8 +997,14 @@ fn prepare_player_attack(
         let died = damage >= combat.current_hp;
         let staged_drops = if hit && died {
             let item_ids =
-                crate::loot::roll_items(loot, identity.definition_id, &mut motion.random_state);
-            crate::items::stage_mob_drops(drops, map_id, position.vector(), &item_ids, player_id)?
+                crate::loot::roll_mob_items(loot, identity.definition_id, &mut motion.random_state);
+            crate::items::stage_combat_drops(
+                drops,
+                map_id,
+                position.vector(),
+                &item_ids,
+                player_id,
+            )?
         } else {
             Vec::new()
         };
@@ -974,12 +1083,101 @@ fn prepare_player_attack(
     });
     Ok(Some(PlayerAttackTransaction {
         map_id,
-        target,
         id: transaction_id,
-        before,
-        after,
+        target: PlayerAttackTarget::Mob {
+            entity: target,
+            before,
+            after,
+        },
         generated_combat_events,
         generated_mob_deaths,
+        generated_staged_drops,
+    }))
+}
+
+fn prepare_reactor_attack(
+    state: &mut MobMapState,
+    map_id: u32,
+    player_id: &str,
+    target_index: usize,
+    loot: &LootCatalog,
+    drops: &DropStore,
+) -> Result<Option<PlayerAttackTransaction>, MobStoreError> {
+    let transaction_id = state.next_player_attack_transaction;
+    state.next_player_attack_transaction = state.next_player_attack_transaction.saturating_add(1);
+    let Some(result) = crate::reactors::prepare_attack(
+        &mut state.reactors,
+        target_index,
+        state.clock_ms,
+        transaction_id,
+        loot,
+    ) else {
+        return Ok(None);
+    };
+    let staged_drops = match crate::items::stage_combat_drops(
+        drops,
+        map_id,
+        result.position,
+        &result.item_ids,
+        player_id,
+    ) {
+        Ok(staged_drops) => staged_drops,
+        Err(error) => {
+            let rolled_back = crate::reactors::rollback_attack(
+                &mut state.reactors,
+                result.spawn_id,
+                transaction_id,
+                result.before,
+                result.after,
+            );
+            debug_assert!(rolled_back, "prepared reactor attack must be rollbackable");
+            return Err(error.into());
+        }
+    };
+    let generated_combat_events = 1 + usize::from(result.destroyed);
+    let generated_staged_drops = staged_drops.len();
+    state.world.run(|mut events: UniqueViewMut<PendingEvents>| {
+        let position = Position {
+            x: result.position.x,
+            y: result.position.y,
+            layer: result.layer,
+        };
+        combat::queue_event(
+            &mut events,
+            player_id,
+            CombatEventKind::PlayerHitReactor,
+            player_id,
+            &result.id,
+            0,
+            position,
+        );
+        if result.destroyed {
+            events
+                .staged_drops_by_player
+                .entry(player_id.to_owned())
+                .or_default()
+                .extend(staged_drops);
+            combat::queue_event(
+                &mut events,
+                player_id,
+                CombatEventKind::ReactorDestroyed,
+                player_id,
+                &result.id,
+                0,
+                position,
+            );
+        }
+    });
+    Ok(Some(PlayerAttackTransaction {
+        map_id,
+        id: transaction_id,
+        target: PlayerAttackTarget::Reactor {
+            spawn_id: result.spawn_id,
+            before: result.before,
+            after: result.after,
+        },
+        generated_combat_events,
+        generated_mob_deaths: 0,
         generated_staged_drops,
     }))
 }
@@ -1060,6 +1258,10 @@ mod tests {
     use oozems_proto::v1::MobSpawnPoint;
     use oozems_proto::v1::Platform;
     use oozems_proto::v1::PlayerState;
+    use oozems_proto::v1::ReactorDefinition;
+    use oozems_proto::v1::ReactorFrame;
+    use oozems_proto::v1::ReactorSpawnPoint;
+    use oozems_proto::v1::ReactorStateDefinition;
     use oozems_proto::v1::Vec2;
     use shipyard::IntoIter;
     use shipyard::View;
@@ -1091,6 +1293,7 @@ mod tests {
     use super::use_player_attack_with_effects;
     use crate::gameplay::CombatConfig;
     use crate::items::DropStore;
+    use crate::items::SPARE_BOTTOM_ID;
     use crate::items::SPARE_TOP_ID;
     use crate::items::map_drops;
     use crate::jobs::SkillAttackType;
@@ -1464,6 +1667,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mailbox_restores_abandoned_reactor_destruction_and_loot() {
+        let store = mailbox_store_with_loot(&format!(
+            "[[reactors]]\nreactor_id = 2001\n[[reactors.drops]]\nitem_id = \
+             {SPARE_TOP_ID}\nchance_per_million = 1000000\n[[reactors.drops]]\nitem_id = \
+             {SPARE_BOTTOM_ID}\nchance_per_million = 500000\n"
+        ));
+        let map = reactor_map();
+        let player = player(90.0, 100.0);
+
+        for _ in 0..3 {
+            let mut update = mailbox_attack(&store, &map, &player, 1).await;
+            assert!(update.staged_drops.is_empty());
+            commit_player_attack(&store, &mut update)
+                .await
+                .expect("commit nonlethal reactor hit");
+        }
+
+        let mut abandoned = mailbox_attack(&store, &map, &player, 1).await;
+        let original_item_ids = abandoned
+            .staged_drops
+            .iter()
+            .map(|grant| grant.item().item_id)
+            .collect::<Vec<_>>();
+        assert_eq!(original_item_ids, vec![SPARE_TOP_ID, SPARE_BOTTOM_ID]);
+        assert!(abandoned.combat_events.iter().any(|event| {
+            CombatEventKind::try_from(event.kind) == Ok(CombatEventKind::ReactorDestroyed)
+        }));
+
+        expire_pending_updates(&store)
+            .await
+            .expect("expire abandoned reactor destruction");
+        assert!(
+            !rollback_player_update(&store, &mut abandoned)
+                .await
+                .expect("expired reactor rollback is idempotent")
+        );
+        assert!(abandoned.combat_events.is_empty());
+        assert!(abandoned.staged_drops.is_empty());
+
+        let mut retried = mailbox_attack(&store, &map, &player, 1).await;
+        let retried_item_ids = retried
+            .staged_drops
+            .iter()
+            .map(|grant| grant.item().item_id)
+            .collect::<Vec<_>>();
+        assert_eq!(retried_item_ids, original_item_ids);
+        assert!(
+            rollback_player_update(&store, &mut retried)
+                .await
+                .expect("roll back retried reactor destruction")
+        );
+        assert!(retried.combat_events.is_empty());
+        assert!(retried.staged_drops.is_empty());
+
+        let restored = mailbox_map_snapshot(&store, &map)
+            .await
+            .expect("restored reactor snapshot");
+        assert!(restored.reactors[0].active);
+        assert_eq!(restored.reactors[0].state, 3);
+    }
+
+    #[tokio::test]
     async fn mailbox_commits_an_attack_delivery_and_releases_its_reservation() {
         let store = mailbox_store();
         let map = map();
@@ -1628,6 +1893,260 @@ mod tests {
 
         assert_eq!(update.mobs[0].current_hp, 90);
         assert!(update.combat_events.iter().any(|event| event.damage == 10));
+    }
+
+    #[test]
+    fn basic_attacks_break_and_respawn_a_map_reactor() {
+        let mut store = store();
+        let map = reactor_map();
+        let player = player(90.0, 100.0);
+        let now = Instant::now();
+
+        for (hit, expected_state) in (1..=4).zip(1..=4) {
+            let update = use_player_attack_at(
+                &mut store,
+                &map,
+                &player,
+                PlayerAttack {
+                    target_mob_id: "",
+                    source_skill_id: None,
+                    facing_left: false,
+                    minimum_damage: 10,
+                    maximum_damage: 10,
+                    fixed_damage: true,
+                    attack_type: SkillAttackType::Physical,
+                },
+                now + Duration::from_millis(hit),
+            )
+            .expect("use basic attack");
+
+            assert_eq!(update.reactors[0].state, expected_state);
+            assert!(update.combat_events.iter().any(|event| {
+                CombatEventKind::try_from(event.kind) == Ok(CombatEventKind::PlayerHitReactor)
+            }));
+        }
+        let destroyed = map_snapshot_at(&mut store, &map, now + Duration::from_secs(89))
+            .expect("destroyed reactor snapshot");
+        assert!(!destroyed.reactors[0].active);
+        let respawned = map_snapshot_at(&mut store, &map, now + Duration::from_secs(91))
+            .expect("respawned reactor snapshot");
+        assert!(respawned.reactors[0].active);
+        assert_eq!(respawned.reactors[0].state, 0);
+    }
+
+    #[test]
+    fn a_rolled_back_reactor_hit_restores_its_state() {
+        let mut store = store();
+        let map = reactor_map();
+        let player = player(90.0, 100.0);
+        let mut update = use_player_attack_at_uncommitted(
+            &mut store,
+            &map,
+            &player,
+            PlayerAttack {
+                target_mob_id: "",
+                source_skill_id: None,
+                facing_left: false,
+                minimum_damage: 10,
+                maximum_damage: 10,
+                fixed_damage: true,
+                attack_type: SkillAttackType::Physical,
+            },
+            Instant::now(),
+        )
+        .expect("uncommitted reactor hit");
+
+        assert_eq!(update.reactors[0].state, 1);
+        assert!(rollback_player_attack(&mut store, &mut update).expect("rollback reactor hit"));
+        let restored =
+            map_snapshot_at(&mut store, &map, Instant::now()).expect("restored reactor snapshot");
+        assert_eq!(restored.reactors[0].state, 0);
+        assert!(restored.reactors[0].active);
+    }
+
+    #[test]
+    fn reactor_destruction_stages_loot_transactionally() {
+        let mut store = store_with_loot(&format!(
+            "[[reactors]]\nreactor_id = 2001\n[[reactors.drops]]\nitem_id = \
+             {SPARE_TOP_ID}\nchance_per_million = 1000000\n[[reactors.drops]]\nitem_id = \
+             {SPARE_BOTTOM_ID}\nchance_per_million = 500000\n"
+        ));
+        let map = reactor_map();
+        let player = player(90.0, 100.0);
+        let now = Instant::now();
+
+        for hit in 1..=3 {
+            let update = use_player_attack_at(
+                &mut store,
+                &map,
+                &player,
+                PlayerAttack {
+                    target_mob_id: "",
+                    source_skill_id: None,
+                    facing_left: false,
+                    minimum_damage: 1,
+                    maximum_damage: 1,
+                    fixed_damage: true,
+                    attack_type: SkillAttackType::Physical,
+                },
+                now + Duration::from_millis(hit),
+            )
+            .expect("nonlethal reactor hit");
+            assert!(update.staged_drops.is_empty());
+        }
+
+        let mut destroyed = use_player_attack_at_uncommitted(
+            &mut store,
+            &map,
+            &player,
+            PlayerAttack {
+                target_mob_id: "",
+                source_skill_id: None,
+                facing_left: false,
+                minimum_damage: 1,
+                maximum_damage: 1,
+                fixed_damage: true,
+                attack_type: SkillAttackType::Physical,
+            },
+            now + Duration::from_millis(4),
+        )
+        .expect("destructive reactor hit");
+        let original_item_ids = destroyed
+            .staged_drops
+            .iter()
+            .map(|grant| grant.item().item_id)
+            .collect::<Vec<_>>();
+        assert_eq!(original_item_ids, vec![SPARE_TOP_ID, SPARE_BOTTOM_ID]);
+        assert!(
+            map_drops(&store.drops, map.id)
+                .expect("uncommitted reactor drops")
+                .is_empty()
+        );
+
+        assert!(rollback_player_attack(&mut store, &mut destroyed).expect("rollback destruction"));
+        assert!(destroyed.staged_drops.is_empty());
+        let restored = map_snapshot_at(&mut store, &map, now + Duration::from_millis(4))
+            .expect("restored reactor");
+        assert!(restored.reactors[0].active);
+        assert_eq!(restored.reactors[0].state, 3);
+
+        let retried = use_player_attack_at(
+            &mut store,
+            &map,
+            &player,
+            PlayerAttack {
+                target_mob_id: "",
+                source_skill_id: None,
+                facing_left: false,
+                minimum_damage: 1,
+                maximum_damage: 1,
+                fixed_damage: true,
+                attack_type: SkillAttackType::Physical,
+            },
+            now + Duration::from_millis(5),
+        )
+        .expect("retried reactor destruction");
+        let retried_item_ids = retried
+            .staged_drops
+            .iter()
+            .map(|grant| grant.item().item_id)
+            .collect::<Vec<_>>();
+        assert_eq!(retried_item_ids, original_item_ids);
+        crate::items::commit_staged_drops(&store.drops, &retried.staged_drops)
+            .expect("commit reactor drop");
+        crate::items::commit_staged_drops(&store.drops, &retried.staged_drops)
+            .expect("idempotent reactor drop commit");
+        let drops = map_drops(&store.drops, map.id).expect("reactor drops");
+        assert_eq!(drops.len(), 2);
+        assert_eq!(drops[0].item_id, SPARE_TOP_ID);
+        assert_eq!(drops[1].item_id, SPARE_BOTTOM_ID);
+    }
+
+    #[test]
+    fn a_basic_attack_selects_a_closer_breakable_reactor_before_a_mob() {
+        let mut store = store();
+        let mut map = map();
+        add_reactor(&mut map, 95.0);
+        let player = player(90.0, 100.0);
+
+        let update = use_player_attack_at(
+            &mut store,
+            &map,
+            &player,
+            PlayerAttack {
+                target_mob_id: "",
+                source_skill_id: None,
+                facing_left: false,
+                minimum_damage: 10,
+                maximum_damage: 10,
+                fixed_damage: true,
+                attack_type: SkillAttackType::Physical,
+            },
+            Instant::now(),
+        )
+        .expect("use basic attack");
+
+        assert_eq!(update.mobs[0].current_hp, 100);
+        assert_eq!(update.reactors[0].state, 1);
+    }
+
+    #[test]
+    fn an_inert_reactor_does_not_intercept_a_basic_attack() {
+        let mut store = store();
+        let mut map = map();
+        add_reactor(&mut map, 95.0);
+        for state in &mut map.reactor_definitions[0].states {
+            state.next_state = None;
+        }
+        let player = player(90.0, 100.0);
+
+        let update = use_player_attack_at(
+            &mut store,
+            &map,
+            &player,
+            PlayerAttack {
+                target_mob_id: "",
+                source_skill_id: None,
+                facing_left: false,
+                minimum_damage: 10,
+                maximum_damage: 10,
+                fixed_damage: true,
+                attack_type: SkillAttackType::Physical,
+            },
+            Instant::now(),
+        )
+        .expect("use basic attack");
+
+        assert_eq!(update.mobs[0].current_hp, 90);
+        assert_eq!(update.reactors[0].state, 0);
+    }
+
+    #[test]
+    fn untargeted_skills_do_not_hit_a_closer_reactor() {
+        let mut store = store();
+        let mut map = map();
+        add_reactor(&mut map, 95.0);
+        let player = player(90.0, 100.0);
+
+        let update = use_player_attack_at(
+            &mut store,
+            &map,
+            &player,
+            PlayerAttack {
+                target_mob_id: "",
+                source_skill_id: Some(1_000),
+                facing_left: false,
+                minimum_damage: 10,
+                maximum_damage: 10,
+                fixed_damage: true,
+                attack_type: SkillAttackType::Physical,
+            },
+            Instant::now(),
+        )
+        .expect("use targeted skill");
+
+        assert_eq!(update.mobs[0].current_hp, 90);
+        assert_eq!(update.reactors[0].state, 0);
     }
 
     #[test]
@@ -2350,6 +2869,18 @@ mod tests {
         )
     }
 
+    fn mailbox_store_with_loot(source: &str) -> MobStore {
+        let formulas = FormulaCatalog::load(Path::new("../../config/skill-formulas.toml"))
+            .expect("formula catalog");
+        MobStore::new_with_worker_count(
+            combat_config(),
+            Arc::new(formulas),
+            test_loot(source),
+            Arc::new(DropStore::new(Duration::from_secs(600))),
+            2,
+        )
+    }
+
     fn map_id_on_different_worker(
         store: &MobStore,
         map_id: u32,
@@ -2377,28 +2908,38 @@ mod tests {
         }
     }
 
-    fn store_with_guaranteed_loot() -> Simulation {
+    fn store_with_loot(source: &str) -> Simulation {
+        let mut store = store();
+        store.loot = test_loot(source);
+        store
+    }
+
+    fn test_loot(source: &str) -> Arc<LootCatalog> {
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("loot.toml");
-        fs::write(
-            &path,
-            format!(
-                "[[mobs]]\nmob_id = 100\n[[mobs.drops]]\nitem_id = \
-                 {SPARE_TOP_ID}\nchance_per_million = 1000000\n"
-            ),
-        )
-        .expect("write loot configuration");
+        fs::write(&path, source).expect("write loot configuration");
         let loot = LootCatalog::load(
             &path,
-            &[ItemDefinition {
-                item_id: SPARE_TOP_ID,
-                ..ItemDefinition::default()
-            }],
+            &[
+                ItemDefinition {
+                    item_id: SPARE_TOP_ID,
+                    ..ItemDefinition::default()
+                },
+                ItemDefinition {
+                    item_id: SPARE_BOTTOM_ID,
+                    ..ItemDefinition::default()
+                },
+            ],
         )
         .expect("loot catalog");
-        let mut store = store();
-        store.loot = Arc::new(loot);
-        store
+        Arc::new(loot)
+    }
+
+    fn store_with_guaranteed_loot() -> Simulation {
+        store_with_loot(&format!(
+            "[[mobs]]\nmob_id = 100\n[[mobs.drops]]\nitem_id = {SPARE_TOP_ID}\nchance_per_million \
+             = 1000000\n"
+        ))
     }
 
     fn player(
@@ -2455,5 +2996,38 @@ mod tests {
             }],
             ..Map::default()
         }
+    }
+
+    fn reactor_map() -> Map {
+        let mut map = map();
+        map.mob_spawn_points.clear();
+        map.mob_definitions.clear();
+        add_reactor(&mut map, 100.0);
+        map
+    }
+
+    fn add_reactor(
+        map: &mut Map,
+        x: f32,
+    ) {
+        map.reactor_spawn_points.push(ReactorSpawnPoint {
+            spawn_id: 0,
+            reactor_id: 2_001,
+            position: Some(Vec2 { x, y: 100.0 }),
+            layer: 0,
+            respawn_seconds: 90,
+            ..ReactorSpawnPoint::default()
+        });
+        map.reactor_definitions.push(ReactorDefinition {
+            id: 2_001,
+            states: (0..=4)
+                .map(|state| ReactorStateDefinition {
+                    state,
+                    frames: vec![ReactorFrame::default()],
+                    next_state: (state < 4).then_some(state + 1),
+                    ..ReactorStateDefinition::default()
+                })
+                .collect(),
+        });
     }
 }

@@ -16,6 +16,7 @@ pub(super) enum LayerPass {
     Decorations,
     Portals,
     Npcs,
+    Reactors,
     Mobs,
     DroppedItems,
     Player,
@@ -26,12 +27,14 @@ const ORDINARY_LAYER_PASSES: &[LayerPass] = &[
     LayerPass::Decorations,
     LayerPass::Portals,
     LayerPass::Npcs,
+    LayerPass::Reactors,
     LayerPass::Mobs,
 ];
 const PLAYER_LAYER_PASSES: &[LayerPass] = &[
     LayerPass::Decorations,
     LayerPass::Portals,
     LayerPass::Npcs,
+    LayerPass::Reactors,
     LayerPass::Mobs,
     LayerPass::DroppedItems,
     LayerPass::Player,
@@ -61,6 +64,7 @@ pub(super) fn draw(game: &Game) {
                 LayerPass::Decorations => draw_decorations(game, camera_x, camera_y, *layer),
                 LayerPass::Portals => draw_portals(game, camera_x, camera_y, *layer),
                 LayerPass::Npcs => super::npc::draw(game, camera_x, camera_y, *layer),
+                LayerPass::Reactors => super::reactor::draw(game, camera_x, camera_y, *layer),
                 LayerPass::Mobs => super::mob::draw(game, camera_x, camera_y, *layer),
                 LayerPass::DroppedItems => draw_dropped_items(game, camera_x, camera_y),
                 LayerPass::Player => draw_player(game, camera_x, camera_y),
@@ -82,6 +86,7 @@ pub(crate) fn world_layers(map: &Map) -> Vec<i32> {
             + map.npcs.len()
             + map.mobs.len()
             + map.mob_projectiles.len()
+            + map.reactor_spawn_points.len()
             + 1,
     );
     layers.push(0);
@@ -90,6 +95,7 @@ pub(crate) fn world_layers(map: &Map) -> Vec<i32> {
     layers.extend(map.ladders.iter().map(|ladder| ladder.layer));
     layers.extend(map.portals.iter().map(|portal| portal.layer));
     layers.extend(map.npcs.iter().map(|npc| npc.layer));
+    layers.extend(map.reactor_spawn_points.iter().map(|reactor| reactor.layer));
     layers.extend(map.mobs.iter().map(|mob| mob.layer));
     layers.extend(
         map.mob_projectiles

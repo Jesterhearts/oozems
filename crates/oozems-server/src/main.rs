@@ -28,6 +28,7 @@ mod quest_records;
 mod quest_scripts;
 mod quests;
 mod random;
+mod reactors;
 mod recovery;
 mod skill_formula;
 mod skills;
@@ -125,7 +126,7 @@ async fn main() -> anyhow::Result<()> {
     );
     let loot = LootCatalog::load(&config.data_dir.join("loot.toml"), &catalog)?;
     catalog.project_item_definitions(&loot.item_reference_ids().collect())?;
-    info!(table_count = loot.len(), "mob loot configuration ready");
+    info!(table_count = loot.len(), "loot configuration ready");
     let database = database::open_surreal_kv(
         &config.data_dir.join("surrealkv"),
         gameplay.initial_cash_points,

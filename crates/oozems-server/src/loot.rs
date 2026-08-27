@@ -13,7 +13,8 @@ const CHANCE_SCALE: u32 = 1_000_000;
 
 #[derive(Clone, Debug, Default)]
 pub struct LootCatalog {
-    tables: HashMap<u32, Vec<LootEntry>>,
+    mob_tables: HashMap<u32, Vec<LootEntry>>,
+    reactor_tables: HashMap<u32, Vec<LootEntry>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,12 +45,20 @@ pub enum LootConfigError {
 #[serde(default, deny_unknown_fields)]
 struct LootFile {
     mobs: Vec<MobLootFile>,
+    reactors: Vec<ReactorLootFile>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct MobLootFile {
     mob_id: u32,
+    drops: Vec<LootEntryFile>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReactorLootFile {
+    reactor_id: u32,
     drops: Vec<LootEntryFile>,
 }
 
@@ -84,22 +93,41 @@ impl LootCatalog {
     }
 
     pub fn len(&self) -> usize {
-        self.tables.len()
+        self.mob_tables.len() + self.reactor_tables.len()
     }
 
     pub fn item_reference_ids(&self) -> impl Iterator<Item = u32> + '_ {
-        self.tables.values().flatten().map(|entry| entry.item_id)
+        self.mob_tables
+            .values()
+            .chain(self.reactor_tables.values())
+            .flatten()
+            .map(|entry| entry.item_id)
     }
 }
 
-pub fn roll_items(
+pub fn roll_mob_items(
     catalog: &LootCatalog,
     mob_id: u32,
     random_state: &mut u64,
 ) -> Vec<u32> {
-    catalog
-        .tables
-        .get(&mob_id)
+    roll_items(&catalog.mob_tables, mob_id, random_state)
+}
+
+pub fn roll_reactor_items(
+    catalog: &LootCatalog,
+    reactor_id: u32,
+    random_state: &mut u64,
+) -> Vec<u32> {
+    roll_items(&catalog.reactor_tables, reactor_id, random_state)
+}
+
+fn roll_items(
+    tables: &HashMap<u32, Vec<LootEntry>>,
+    source_id: u32,
+    random_state: &mut u64,
+) -> Vec<u32> {
+    tables
+        .get(&source_id)
         .into_iter()
         .flatten()
         .filter_map(|entry| {
@@ -114,30 +142,62 @@ fn build_catalog(
     item_definitions: &(impl ItemDefinitionLookup + ?Sized),
     file: LootFile,
 ) -> Result<LootCatalog, LootConfigError> {
+    let mob_tables = build_tables(
+        path,
+        item_definitions,
+        "mob",
+        file.mobs
+            .into_iter()
+            .map(|table| (table.mob_id, table.drops)),
+    )?;
+    let reactor_tables = build_tables(
+        path,
+        item_definitions,
+        "reactor",
+        file.reactors
+            .into_iter()
+            .map(|table| (table.reactor_id, table.drops)),
+    )?;
+    Ok(LootCatalog {
+        mob_tables,
+        reactor_tables,
+    })
+}
+
+fn build_tables(
+    path: &Path,
+    item_definitions: &(impl ItemDefinitionLookup + ?Sized),
+    source_kind: &str,
+    source_tables: impl IntoIterator<Item = (u32, Vec<LootEntryFile>)>,
+) -> Result<HashMap<u32, Vec<LootEntry>>, LootConfigError> {
     let mut tables = HashMap::new();
-    for table in file.mobs {
-        if table.drops.is_empty() {
-            return invalid(path, format!("mob {} has no drops", table.mob_id));
+    for (source_id, drops) in source_tables {
+        if drops.is_empty() {
+            return invalid(path, format!("{source_kind} {source_id} has no drops"));
         }
-        let mut entries = Vec::with_capacity(table.drops.len());
-        for drop in table.drops {
+        let mut entries = Vec::with_capacity(drops.len());
+        for drop in drops {
             if drop.chance_per_million == 0 || drop.chance_per_million > CHANCE_SCALE {
                 return invalid(
                     path,
                     format!(
-                        "mob {} item {} chance_per_million must be between 1 and {CHANCE_SCALE}",
-                        table.mob_id, drop.item_id
+                        "{source_kind} {source_id} item {} chance_per_million must be between 1 \
+                         and {CHANCE_SCALE}",
+                        drop.item_id
                     ),
                 );
             }
-            validate_item(path, table.mob_id, drop.item_id, item_definitions)?;
+            validate_item(path, source_kind, source_id, drop.item_id, item_definitions)?;
             if entries
                 .iter()
                 .any(|entry: &LootEntry| entry.item_id == drop.item_id)
             {
                 return invalid(
                     path,
-                    format!("mob {} item {} is duplicated", table.mob_id, drop.item_id),
+                    format!(
+                        "{source_kind} {source_id} item {} is duplicated",
+                        drop.item_id
+                    ),
                 );
             }
             entries.push(LootEntry {
@@ -145,19 +205,20 @@ fn build_catalog(
                 chance_per_million: drop.chance_per_million,
             });
         }
-        if tables.insert(table.mob_id, entries).is_some() {
+        if tables.insert(source_id, entries).is_some() {
             return invalid(
                 path,
-                format!("mob {} has duplicate loot tables", table.mob_id),
+                format!("{source_kind} {source_id} has duplicate loot tables"),
             );
         }
     }
-    Ok(LootCatalog { tables })
+    Ok(tables)
 }
 
 fn validate_item(
     path: &Path,
-    mob_id: u32,
+    source_kind: &str,
+    source_id: u32,
     item_id: u32,
     item_definitions: &(impl ItemDefinitionLookup + ?Sized),
 ) -> Result<(), LootConfigError> {
@@ -165,11 +226,13 @@ fn validate_item(
         Ok(Some(_)) => Ok(()),
         Ok(None) => invalid(
             path,
-            format!("mob {mob_id} item {item_id} is not in the item catalog"),
+            format!("{source_kind} {source_id} item {item_id} is not in the item catalog"),
         ),
         Err(error) => invalid(
             path,
-            format!("mob {mob_id} item {item_id} metadata could not be loaded: {error}"),
+            format!(
+                "{source_kind} {source_id} item {item_id} metadata could not be loaded: {error}"
+            ),
         ),
     }
 }
@@ -200,7 +263,8 @@ mod tests {
     use oozems_proto::v1::ItemDefinition;
 
     use super::LootCatalog;
-    use super::roll_items;
+    use super::roll_mob_items;
+    use super::roll_reactor_items;
     use crate::items::ItemDefinitionLookup;
     use crate::items::ItemRuleError;
 
@@ -220,20 +284,24 @@ mod tests {
     }
 
     #[test]
-    fn guaranteed_entries_roll_independently() {
+    fn mob_and_reactor_ids_use_separate_tables() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("loot.toml");
         fs::write(
             &path,
             "[[mobs]]\nmob_id = 100\n[[mobs.drops]]\nitem_id = 1\nchance_per_million = \
-             1000000\n[[mobs.drops]]\nitem_id = 2\nchance_per_million = 1000000\n",
+             1000000\n[[reactors]]\nreactor_id = 100\n[[reactors.drops]]\nitem_id = \
+             2\nchance_per_million = 1000000\n",
         )
         .expect("write loot configuration");
         let definitions = vec![definition(1), definition(2)];
         let catalog = LootCatalog::load(&path, &definitions).expect("loot catalog");
 
-        assert_eq!(roll_items(&catalog, 100, &mut 1), vec![1, 2]);
-        assert!(roll_items(&catalog, 101, &mut 1).is_empty());
+        assert_eq!(catalog.len(), 2);
+        assert_eq!(roll_mob_items(&catalog, 100, &mut 1), vec![1]);
+        assert_eq!(roll_reactor_items(&catalog, 100, &mut 1), vec![2]);
+        assert!(roll_mob_items(&catalog, 101, &mut 1).is_empty());
+        assert!(roll_reactor_items(&catalog, 101, &mut 1).is_empty());
     }
 
     #[test]

@@ -203,6 +203,7 @@ fn install_map(
     game.player.map_id = map.id;
     game.player.position = Some(position);
     game.world.mob_render = crate::mob_render::new_map_state(map.simulation_sequence);
+    game.world.reactor_render = crate::reactor_render::ReactorRenderState::default();
     game.world.map = map;
     game.ui.interaction.close();
     game.world.motion = motion;
@@ -353,6 +354,12 @@ pub(super) fn install_response(
             std::mem::take(&mut response.mob_projectiles),
             game.clock.now_ms,
             game.world.movement_rules.snapshot_interval_ms,
+        );
+        crate::reactor_render::install_snapshot(
+            &mut game.world.reactor_render,
+            &mut game.world.map.reactors,
+            std::mem::take(&mut response.reactors),
+            game.clock.now_ms,
         );
         game.world.map.dropped_items = std::mem::take(&mut response.dropped_items);
         crate::mob_render::install_combat_events(
