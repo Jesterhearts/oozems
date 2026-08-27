@@ -4,9 +4,9 @@
 # Inline names are informational. Item IDs were checked against the local
 # Item.wz and Character.wz catalogs.
 #
-# The current server loot model cannot represent meso drops, quest-gated
-# drops, or quantity ranges. Meso and quest rows are omitted. Quantity
-# ranges use the source chance but grant one item on a successful roll.
+# The current server loot model cannot represent meso drops or quantity
+# ranges. Meso rows are omitted. Quest rows retain their source quest IDs.
+# Quantity ranges use the source chance but grant one item on a successful roll.
 # Zero-chance, WZ-incompatible, and exact duplicate rows are omitted.
 
 [[mobs]]
@@ -558,6 +558,11 @@ chance_per_million = 9000
 item_id = 4020003
 chance_per_million = 9000
 
+[[mobs.drops]]
+item_id = 4031146
+chance_per_million = 1000000
+quest_id = 2065
+
 [[mobs]]
 mob_id = 1110101 # Dark Stump
 
@@ -636,6 +641,11 @@ chance_per_million = 9000
 [[mobs.drops]]
 item_id = 4020000
 chance_per_million = 9000
+
+[[mobs.drops]]
+item_id = 4031773
+chance_per_million = 80000
+quest_id = 2145
 
 [[mobs]]
 mob_id = 1120100 # Octopus
@@ -795,6 +805,16 @@ chance_per_million = 9000
 item_id = 4020004
 chance_per_million = 9000
 
+[[mobs.drops]]
+item_id = 4031147
+chance_per_million = 1000000
+quest_id = 2065
+
+[[mobs.drops]]
+item_id = 4031773
+chance_per_million = 80000
+quest_id = 2145
+
 [[mobs]]
 mob_id = 1140100 # Ghost Stump
 
@@ -909,6 +929,11 @@ chance_per_million = 9000
 [[mobs.drops]]
 item_id = 4020007
 chance_per_million = 9000
+
+[[mobs.drops]]
+item_id = 4031773
+chance_per_million = 80000
+quest_id = 2145
 
 [[mobs]]
 mob_id = 1210100 # Pig
@@ -2254,6 +2279,11 @@ chance_per_million = 9000
 item_id = 4020004
 chance_per_million = 9000
 
+[[mobs.drops]]
+item_id = 4031155
+chance_per_million = 200000
+quest_id = 2071
+
 [[mobs]]
 mob_id = 2230103 # Trixter
 
@@ -2507,6 +2537,11 @@ chance_per_million = 10000
 item_id = 4010001
 chance_per_million = 9000
 
+[[mobs.drops]]
+item_id = 4031259
+chance_per_million = 30000
+quest_id = 3080
+
 [[mobs]]
 mob_id = 2230106 # Cico
 
@@ -2605,6 +2640,11 @@ chance_per_million = 9000
 [[mobs.drops]]
 item_id = 4020004
 chance_per_million = 9000
+
+[[mobs.drops]]
+item_id = 4031260
+chance_per_million = 30000
+quest_id = 3080
 
 [[mobs]]
 mob_id = 2230107 # Krappy
@@ -2784,6 +2824,11 @@ chance_per_million = 9000
 item_id = 4020007
 chance_per_million = 9000
 
+[[mobs.drops]]
+item_id = 4031261
+chance_per_million = 30000
+quest_id = 3080
+
 [[mobs]]
 mob_id = 2230109 # Bubble Fish
 
@@ -2894,6 +2939,11 @@ chance_per_million = 9000
 [[mobs.drops]]
 item_id = 4020003
 chance_per_million = 9000
+
+[[mobs.drops]]
+item_id = 4031264
+chance_per_million = 30000
+quest_id = 3081
 
 [[mobs]]
 mob_id = 2230110 # Wooden Mask
@@ -3171,6 +3221,11 @@ chance_per_million = 9000
 [[mobs.drops]]
 item_id = 4020002
 chance_per_million = 9000
+
+[[mobs.drops]]
+item_id = 4031262
+chance_per_million = 30000
+quest_id = 3081
 
 [[mobs]]
 mob_id = 2300100 # Stirge
@@ -3647,6 +3702,11 @@ chance_per_million = 9000
 item_id = 4020002
 chance_per_million = 9000
 
+[[mobs.drops]]
+item_id = 4031164
+chance_per_million = 300000
+quest_id = 2084
+
 [[mobs]]
 mob_id = 3110101 # Pink Teddy
 
@@ -3832,6 +3892,11 @@ chance_per_million = 9000
 [[mobs.drops]]
 item_id = 4020002
 chance_per_million = 9000
+
+[[mobs.drops]]
+item_id = 4031129
+chance_per_million = 1000000
+quest_id = 3207
 
 [[mobs]]
 mob_id = 3210100 # Fire Boar
@@ -5657,6 +5722,11 @@ chance_per_million = 9000
 item_id = 4020000
 chance_per_million = 9000
 
+[[mobs.drops]]
+item_id = 4000136
+chance_per_million = 7000
+quest_id = 2160
+
 [[mobs]]
 mob_id = 3230103 # King Bloctopus
 
@@ -5878,6 +5948,11 @@ chance_per_million = 9000
 [[mobs.drops]]
 item_id = 4020000
 chance_per_million = 9000
+
+[[mobs.drops]]
+item_id = 4031263
+chance_per_million = 30000
+quest_id = 3081
 
 [[mobs]]
 mob_id = 3230200 # Star Pixie
@@ -6924,6 +6999,16 @@ chance_per_million = 9000
 [[mobs.drops]]
 item_id = 4020007
 chance_per_million = 9000
+
+[[mobs.drops]]
+item_id = 4031135
+chance_per_million = 100000
+quest_id = 3438
+
+[[mobs.drops]]
+item_id = 4031140
+chance_per_million = 100000
+quest_id = 3440
 
 [[mobs]]
 mob_id = 3230405 # Jr. Seal
@@ -8178,6 +8263,11 @@ chance_per_million = 9000
 item_id = 4020002
 chance_per_million = 9000
 
+[[mobs.drops]]
+item_id = 4000136
+chance_per_million = 7000
+quest_id = 2160
+
 [[mobs]]
 mob_id = 4230105 # Nependeath
 
@@ -9129,6 +9219,11 @@ chance_per_million = 10000
 item_id = 4010003
 chance_per_million = 9000
 
+[[mobs.drops]]
+item_id = 4031098
+chance_per_million = 7000
+quest_id = 3232
+
 [[mobs]]
 mob_id = 4230114 # Platoon Chronos
 
@@ -9442,6 +9537,16 @@ chance_per_million = 9000
 item_id = 4020007
 chance_per_million = 9000
 
+[[mobs.drops]]
+item_id = 4031103
+chance_per_million = 100000
+quest_id = 3414
+
+[[mobs.drops]]
+item_id = 4031926
+chance_per_million = 10000
+quest_id = 3454
+
 [[mobs]]
 mob_id = 4230117 # Zeta Gray
 
@@ -9520,6 +9625,16 @@ chance_per_million = 9000
 [[mobs.drops]]
 item_id = 4020007
 chance_per_million = 9000
+
+[[mobs.drops]]
+item_id = 4031104
+chance_per_million = 100000
+quest_id = 3414
+
+[[mobs.drops]]
+item_id = 4031926
+chance_per_million = 10000
+quest_id = 3454
 
 [[mobs]]
 mob_id = 4230118 # Ultra Gray
@@ -9612,6 +9727,16 @@ chance_per_million = 9000
 item_id = 4020006
 chance_per_million = 9000
 
+[[mobs.drops]]
+item_id = 4031105
+chance_per_million = 100000
+quest_id = 3414
+
+[[mobs.drops]]
+item_id = 4031926
+chance_per_million = 10000
+quest_id = 3454
+
 [[mobs]]
 mob_id = 4230119 # Mateon
 
@@ -9686,6 +9811,16 @@ chance_per_million = 9000
 [[mobs.drops]]
 item_id = 4020002
 chance_per_million = 9000
+
+[[mobs.drops]]
+item_id = 4031090
+chance_per_million = 100000
+quest_id = 3227
+
+[[mobs.drops]]
+item_id = 4031206
+chance_per_million = 50000
+quest_id = 3441
 
 [[mobs]]
 mob_id = 4230120 # Plateon
@@ -9936,6 +10071,11 @@ chance_per_million = 9000
 item_id = 4020008
 chance_per_million = 9000
 
+[[mobs.drops]]
+item_id = 4031266
+chance_per_million = 30000
+quest_id = 3082
+
 [[mobs]]
 mob_id = 4230124 # Freezer
 
@@ -10046,6 +10186,11 @@ chance_per_million = 7000
 [[mobs.drops]]
 item_id = 4020007
 chance_per_million = 9000
+
+[[mobs.drops]]
+item_id = 4031267
+chance_per_million = 30000
+quest_id = 3082
 
 [[mobs]]
 mob_id = 4230125 # Skeledog
@@ -10372,6 +10517,11 @@ chance_per_million = 9000
 item_id = 4010003
 chance_per_million = 9000
 
+[[mobs.drops]]
+item_id = 4031265
+chance_per_million = 30000
+quest_id = 3082
+
 [[mobs]]
 mob_id = 4230201 # Poison Poopa
 
@@ -10652,6 +10802,21 @@ chance_per_million = 9000
 [[mobs.drops]]
 item_id = 4020008
 chance_per_million = 9000
+
+[[mobs.drops]]
+item_id = 4031102
+chance_per_million = 100000
+quest_id = 3413
+
+[[mobs.drops]]
+item_id = 4031106
+chance_per_million = 100000
+quest_id = 3414
+
+[[mobs.drops]]
+item_id = 4031926
+chance_per_million = 1000000
+quest_id = 3454
 
 [[mobs]]
 mob_id = 5090000 # Shade
@@ -14739,6 +14904,21 @@ chance_per_million = 9000
 item_id = 4020008
 chance_per_million = 9000
 
+[[mobs.drops]]
+item_id = 4031170
+chance_per_million = 500000
+quest_id = 7100
+
+[[mobs.drops]]
+item_id = 4031171
+chance_per_million = 100000
+quest_id = 7101
+
+[[mobs.drops]]
+item_id = 4031175
+chance_per_million = 300000
+quest_id = 7101
+
 [[mobs]]
 mob_id = 6220000 # Dyle
 
@@ -15613,6 +15793,21 @@ chance_per_million = 9000
 item_id = 4020008
 chance_per_million = 9000
 
+[[mobs.drops]]
+item_id = 4031170
+chance_per_million = 500000
+quest_id = 7100
+
+[[mobs.drops]]
+item_id = 4031171
+chance_per_million = 100000
+quest_id = 7101
+
+[[mobs.drops]]
+item_id = 4031175
+chance_per_million = 300000
+quest_id = 7101
+
 [[mobs]]
 mob_id = 6230400 # Soul Teddy
 
@@ -15799,6 +15994,21 @@ chance_per_million = 9000
 [[mobs.drops]]
 item_id = 4020004
 chance_per_million = 7000
+
+[[mobs.drops]]
+item_id = 4031170
+chance_per_million = 500000
+quest_id = 7100
+
+[[mobs.drops]]
+item_id = 4031171
+chance_per_million = 100000
+quest_id = 7101
+
+[[mobs.drops]]
+item_id = 4031175
+chance_per_million = 300000
+quest_id = 7101
 
 [[mobs]]
 mob_id = 6230401 # Jr. Lucida
@@ -16009,6 +16219,21 @@ chance_per_million = 9000
 [[mobs.drops]]
 item_id = 4020006
 chance_per_million = 9000
+
+[[mobs.drops]]
+item_id = 4031170
+chance_per_million = 500000
+quest_id = 7100
+
+[[mobs.drops]]
+item_id = 4031171
+chance_per_million = 100000
+quest_id = 7101
+
+[[mobs.drops]]
+item_id = 4031175
+chance_per_million = 300000
+quest_id = 7101
 
 [[mobs]]
 mob_id = 6230600 # Ice Drake
@@ -17074,6 +17299,21 @@ chance_per_million = 9000
 item_id = 4020003
 chance_per_million = 9000
 
+[[mobs.drops]]
+item_id = 4031170
+chance_per_million = 500000
+quest_id = 7100
+
+[[mobs.drops]]
+item_id = 4031171
+chance_per_million = 100000
+quest_id = 7101
+
+[[mobs.drops]]
+item_id = 4031175
+chance_per_million = 350000
+quest_id = 7101
+
 [[mobs]]
 mob_id = 6400000 # Dark Yeti
 
@@ -17633,6 +17873,21 @@ chance_per_million = 9000
 [[mobs.drops]]
 item_id = 4020003
 chance_per_million = 9000
+
+[[mobs.drops]]
+item_id = 4031170
+chance_per_million = 500000
+quest_id = 7100
+
+[[mobs.drops]]
+item_id = 4031171
+chance_per_million = 100000
+quest_id = 7101
+
+[[mobs.drops]]
+item_id = 4031175
+chance_per_million = 350000
+quest_id = 7101
 
 [[mobs]]
 mob_id = 7130000 # Lucida
@@ -18307,6 +18562,21 @@ chance_per_million = 9000
 [[mobs.drops]]
 item_id = 4020008
 chance_per_million = 9000
+
+[[mobs.drops]]
+item_id = 4031170
+chance_per_million = 500000
+quest_id = 7100
+
+[[mobs.drops]]
+item_id = 4031171
+chance_per_million = 100000
+quest_id = 7101
+
+[[mobs.drops]]
+item_id = 4031175
+chance_per_million = 400000
+quest_id = 7101
 
 [[mobs]]
 mob_id = 7130020 # Goby
@@ -19337,6 +19607,21 @@ chance_per_million = 9000
 item_id = 4020006
 chance_per_million = 9000
 
+[[mobs.drops]]
+item_id = 4031170
+chance_per_million = 500000
+quest_id = 7100
+
+[[mobs.drops]]
+item_id = 4031171
+chance_per_million = 100000
+quest_id = 7101
+
+[[mobs.drops]]
+item_id = 4031175
+chance_per_million = 400000
+quest_id = 7101
+
 [[mobs]]
 mob_id = 7130500 # Rash
 
@@ -19534,6 +19819,11 @@ chance_per_million = 9000
 [[mobs.drops]]
 item_id = 4020002
 chance_per_million = 9000
+
+[[mobs.drops]]
+item_id = 4031412
+chance_per_million = 100000
+quest_id = 3712
 
 [[mobs]]
 mob_id = 7130600 # Hobi
@@ -19824,6 +20114,21 @@ chance_per_million = 9000
 item_id = 4020002
 chance_per_million = 9000
 
+[[mobs.drops]]
+item_id = 4031170
+chance_per_million = 500000
+quest_id = 7100
+
+[[mobs.drops]]
+item_id = 4031171
+chance_per_million = 100000
+quest_id = 7101
+
+[[mobs.drops]]
+item_id = 4031175
+chance_per_million = 400000
+quest_id = 7101
+
 [[mobs]]
 mob_id = 7160000 # Dual Ghost Pirate
 
@@ -19974,6 +20279,21 @@ chance_per_million = 9000
 [[mobs.drops]]
 item_id = 4020008
 chance_per_million = 9000
+
+[[mobs.drops]]
+item_id = 4031170
+chance_per_million = 500000
+quest_id = 7100
+
+[[mobs.drops]]
+item_id = 4031171
+chance_per_million = 100000
+quest_id = 7101
+
+[[mobs.drops]]
+item_id = 4031175
+chance_per_million = 400000
+quest_id = 7101
 
 [[mobs]]
 mob_id = 8130100 # Jr. Balrog
@@ -21221,6 +21541,11 @@ chance_per_million = 9000
 item_id = 4020003
 chance_per_million = 9000
 
+[[mobs.drops]]
+item_id = 4031413
+chance_per_million = 100000
+quest_id = 3712
+
 [[mobs]]
 mob_id = 8140200 # Klock
 
@@ -21368,6 +21693,21 @@ chance_per_million = 9000
 item_id = 4020001
 chance_per_million = 9000
 
+[[mobs.drops]]
+item_id = 4031170
+chance_per_million = 500000
+quest_id = 7100
+
+[[mobs.drops]]
+item_id = 4031171
+chance_per_million = 100000
+quest_id = 7101
+
+[[mobs.drops]]
+item_id = 4031175
+chance_per_million = 350000
+quest_id = 7101
+
 [[mobs]]
 mob_id = 8140300 # Dark Klock
 
@@ -21510,6 +21850,21 @@ chance_per_million = 9000
 [[mobs.drops]]
 item_id = 4020007
 chance_per_million = 9000
+
+[[mobs.drops]]
+item_id = 4031170
+chance_per_million = 500000
+quest_id = 7100
+
+[[mobs.drops]]
+item_id = 4031171
+chance_per_million = 100000
+quest_id = 7101
+
+[[mobs.drops]]
+item_id = 4031175
+chance_per_million = 350000
+quest_id = 7101
 
 [[mobs]]
 mob_id = 8140500 # Bain
@@ -22320,6 +22675,21 @@ chance_per_million = 9000
 item_id = 4020008
 chance_per_million = 9000
 
+[[mobs.drops]]
+item_id = 4031170
+chance_per_million = 500000
+quest_id = 7100
+
+[[mobs.drops]]
+item_id = 4031171
+chance_per_million = 100000
+quest_id = 7101
+
+[[mobs.drops]]
+item_id = 4031175
+chance_per_million = 450000
+quest_id = 7101
+
 [[mobs]]
 mob_id = 8141100 # Gigantic Spirit Viking
 
@@ -22438,6 +22808,21 @@ chance_per_million = 10000
 [[mobs.drops]]
 item_id = 4020008
 chance_per_million = 9000
+
+[[mobs.drops]]
+item_id = 4031170
+chance_per_million = 500000
+quest_id = 7100
+
+[[mobs.drops]]
+item_id = 4031171
+chance_per_million = 100000
+quest_id = 7101
+
+[[mobs.drops]]
+item_id = 4031175
+chance_per_million = 450000
+quest_id = 7101
 
 [[mobs]]
 mob_id = 8141300 # Squid
@@ -22713,6 +23098,21 @@ chance_per_million = 10000
 item_id = 4020003
 chance_per_million = 9000
 
+[[mobs.drops]]
+item_id = 4031170
+chance_per_million = 500000
+quest_id = 7100
+
+[[mobs.drops]]
+item_id = 4031171
+chance_per_million = 100000
+quest_id = 7101
+
+[[mobs.drops]]
+item_id = 4031175
+chance_per_million = 450000
+quest_id = 7101
+
 [[mobs]]
 mob_id = 8142100 # Risell Squid
 
@@ -22974,6 +23374,21 @@ chance_per_million = 9000
 [[mobs.drops]]
 item_id = 4010002
 chance_per_million = 9000
+
+[[mobs.drops]]
+item_id = 4031170
+chance_per_million = 500000
+quest_id = 7100
+
+[[mobs.drops]]
+item_id = 4031171
+chance_per_million = 100000
+quest_id = 7101
+
+[[mobs.drops]]
+item_id = 4031175
+chance_per_million = 450000
+quest_id = 7101
 
 [[mobs]]
 mob_id = 8150000 # Crimson Balrog
@@ -23237,6 +23652,21 @@ chance_per_million = 10000
 item_id = 4010005
 chance_per_million = 9000
 
+[[mobs.drops]]
+item_id = 4031252
+chance_per_million = 10000
+quest_id = 3078
+
+[[mobs.drops]]
+item_id = 4031254
+chance_per_million = 10000
+quest_id = 3078
+
+[[mobs.drops]]
+item_id = 4031255
+chance_per_million = 10000
+quest_id = 3078
+
 [[mobs]]
 mob_id = 8150101 # Cold Shark
 
@@ -23355,6 +23785,21 @@ chance_per_million = 9000
 [[mobs.drops]]
 item_id = 4020007
 chance_per_million = 9000
+
+[[mobs.drops]]
+item_id = 4031252
+chance_per_million = 10000
+quest_id = 3078
+
+[[mobs.drops]]
+item_id = 4031254
+chance_per_million = 10000
+quest_id = 3078
+
+[[mobs.drops]]
+item_id = 4031255
+chance_per_million = 10000
+quest_id = 3078
 
 [[mobs]]
 mob_id = 8150200 # Green Cornian
@@ -23585,6 +24030,11 @@ chance_per_million = 9000
 [[mobs.drops]]
 item_id = 4020002
 chance_per_million = 9000
+
+[[mobs.drops]]
+item_id = 4031414
+chance_per_million = 100000
+quest_id = 3712
 
 [[mobs]]
 mob_id = 8150300 # Red Wyvern
@@ -23907,6 +24357,11 @@ chance_per_million = 9000
 item_id = 4020002
 chance_per_million = 9000
 
+[[mobs.drops]]
+item_id = 4031415
+chance_per_million = 100000
+quest_id = 3712
+
 [[mobs]]
 mob_id = 8160000 # Gatekeeper
 
@@ -24049,6 +24504,26 @@ chance_per_million = 9000
 [[mobs.drops]]
 item_id = 4020002
 chance_per_million = 9000
+
+[[mobs.drops]]
+item_id = 4031170
+chance_per_million = 500000
+quest_id = 7100
+
+[[mobs.drops]]
+item_id = 4031171
+chance_per_million = 100000
+quest_id = 7101
+
+[[mobs.drops]]
+item_id = 4031175
+chance_per_million = 600000
+quest_id = 7101
+
+[[mobs.drops]]
+item_id = 4031178
+chance_per_million = 100000
+quest_id = 7102
 
 [[mobs]]
 mob_id = 8170000 # Thanatos
@@ -24196,6 +24671,26 @@ chance_per_million = 9000
 [[mobs.drops]]
 item_id = 4020008
 chance_per_million = 9000
+
+[[mobs.drops]]
+item_id = 4031170
+chance_per_million = 500000
+quest_id = 7100
+
+[[mobs.drops]]
+item_id = 4031171
+chance_per_million = 100000
+quest_id = 7101
+
+[[mobs.drops]]
+item_id = 4031175
+chance_per_million = 600000
+quest_id = 7101
+
+[[mobs.drops]]
+item_id = 4031178
+chance_per_million = 100000
+quest_id = 7102
 
 [[mobs]]
 mob_id = 8180000 # Manon
@@ -24388,6 +24883,11 @@ chance_per_million = 100000
 item_id = 4004003
 chance_per_million = 100000
 
+[[mobs.drops]]
+item_id = 4031343
+chance_per_million = 1000000
+quest_id = 6904
+
 [[mobs]]
 mob_id = 8180001 # Griffey
 
@@ -24578,6 +25078,11 @@ chance_per_million = 100000
 [[mobs.drops]]
 item_id = 4004003
 chance_per_million = 100000
+
+[[mobs.drops]]
+item_id = 4031344
+chance_per_million = 1000000
+quest_id = 6904
 
 [[mobs]]
 mob_id = 8190000 # Jr. Newtie
@@ -25736,6 +26241,11 @@ chance_per_million = 3000
 item_id = 4000175
 chance_per_million = 1000000
 
+[[mobs.drops]]
+item_id = 4031905
+chance_per_million = 1000000
+quest_id = 3077
+
 [[mobs]]
 mob_id = 8520000 # Pianus
 
@@ -25766,6 +26276,11 @@ chance_per_million = 3000
 [[mobs.drops]]
 item_id = 4000175
 chance_per_million = 1000000
+
+[[mobs.drops]]
+item_id = 4031905
+chance_per_million = 1000000
+quest_id = 3077
 
 [[mobs]]
 mob_id = 9000001 # Curse Eye 2
@@ -25863,7 +26378,8 @@ mob_id = 9300018 # Tutorial Jr. Sentinel
 
 [[mobs.drops]]
 item_id = 4031802
-chance_per_million = 1000000
+chance_per_million = 999999
+quest_id = 1035
 
 [[mobs]]
 mob_id = 9300038 # Ghost Pixie
@@ -26104,6 +26620,24 @@ chance_per_million = 100000
 item_id = 2010009
 chance_per_million = 100000
 
+[[reactors.drops]]
+item_id = 4031161
+chance_per_million = 1000000
+quest_id = 1008
+
+[[reactors.drops]]
+item_id = 4031162
+chance_per_million = 1000000
+quest_id = 1008
+
+[[reactors]]
+reactor_id = 1072000 # Witchgrass
+
+[[reactors.drops]]
+item_id = 4031165
+chance_per_million = 300000
+quest_id = 2086
+
 [[reactors]]
 reactor_id = 2002011 # Orbis Crate
 
@@ -26114,3 +26648,8 @@ chance_per_million = 400000
 [[reactors.drops]]
 item_id = 2000003
 chance_per_million = 400000
+
+[[reactors.drops]]
+item_id = 4031198
+chance_per_million = 1000000
+quest_id = 3043

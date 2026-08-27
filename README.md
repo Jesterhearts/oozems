@@ -382,10 +382,16 @@ default.
 
 ### Configure loot
 
-`data/loot.toml` defines the independent item entries rolled when a mob dies.
-The local WZ archives provide some mob-to-item associations, but they do not
-provide ordinary drop probabilities. The configured rates are therefore
-project-authored. A rate is expressed per million, and `1000000` is guaranteed.
+`data/loot.toml` defines the independent item entries rolled when a mob dies or
+a reactor is destroyed. The local WZ archives provide some source-to-item
+associations, but they do not provide ordinary drop probabilities. The
+configured rates are therefore project-authored. A rate is expressed per
+million, and `1000000` is guaranteed.
+
+A drop can include an optional `quest_id`. Quest drops roll only while that
+quest is started. If the quest has a completion requirement for the item, the
+drop stops rolling once the character owns the required quantity. Referenced
+quest IDs are validated against the loaded quest catalog during startup.
 
 ### Limit NPC content
 

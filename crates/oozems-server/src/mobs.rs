@@ -332,7 +332,7 @@ fn apply_use_player_attack(
                 let transaction = prepare_player_attack(
                     state,
                     map.id,
-                    &player.id,
+                    player,
                     PlayerAttack {
                         target_mob_id: attack.target_mob_id,
                         source_skill_id: attack.source_skill_id,
@@ -867,13 +867,14 @@ fn mark_player_seen(
 fn prepare_player_attack(
     state: &mut MobMapState,
     map_id: u32,
-    player_id: &str,
+    player: &PlayerState,
     attack: PlayerAttack<'_>,
     rules: CombatConfig,
     formulas: &FormulaCatalog,
     loot: &LootCatalog,
     drops: &DropStore,
 ) -> Result<Option<PlayerAttackTransaction>, MobStoreError> {
+    let player_id = player.id.as_str();
     let Some(player_entity) = state.player_entities.get(player_id).copied() else {
         return Ok(None);
     };
@@ -921,7 +922,7 @@ fn prepare_player_attack(
         return prepare_reactor_attack(
             state,
             map_id,
-            player_id,
+            player,
             reactor_target.expect("reactor target was checked").0,
             loot,
             drops,
@@ -996,8 +997,12 @@ fn prepare_player_attack(
         };
         let died = damage >= combat.current_hp;
         let staged_drops = if hit && died {
-            let item_ids =
-                crate::loot::roll_mob_items(loot, identity.definition_id, &mut motion.random_state);
+            let item_ids = crate::loot::roll_mob_items(
+                loot,
+                identity.definition_id,
+                player,
+                &mut motion.random_state,
+            );
             crate::items::stage_combat_drops(
                 drops,
                 map_id,
@@ -1098,11 +1103,12 @@ fn prepare_player_attack(
 fn prepare_reactor_attack(
     state: &mut MobMapState,
     map_id: u32,
-    player_id: &str,
+    player: &PlayerState,
     target_index: usize,
     loot: &LootCatalog,
     drops: &DropStore,
 ) -> Result<Option<PlayerAttackTransaction>, MobStoreError> {
+    let player_id = player.id.as_str();
     let transaction_id = state.next_player_attack_transaction;
     state.next_player_attack_transaction = state.next_player_attack_transaction.saturating_add(1);
     let Some(result) = crate::reactors::prepare_attack(
@@ -1111,6 +1117,7 @@ fn prepare_reactor_attack(
         state.clock_ms,
         transaction_id,
         loot,
+        player,
     ) else {
         return Ok(None);
     };
@@ -1257,7 +1264,9 @@ mod tests {
     use oozems_proto::v1::MobFrame;
     use oozems_proto::v1::MobSpawnPoint;
     use oozems_proto::v1::Platform;
+    use oozems_proto::v1::PlayerQuest;
     use oozems_proto::v1::PlayerState;
+    use oozems_proto::v1::QuestStatus;
     use oozems_proto::v1::ReactorDefinition;
     use oozems_proto::v1::ReactorFrame;
     use oozems_proto::v1::ReactorSpawnPoint;
@@ -1291,6 +1300,7 @@ mod tests {
     use super::use_player_attack_at;
     use super::use_player_attack_at_uncommitted;
     use super::use_player_attack_with_effects;
+    use crate::content::QuestDefinition;
     use crate::gameplay::CombatConfig;
     use crate::items::DropStore;
     use crate::items::SPARE_BOTTOM_ID;
@@ -2060,6 +2070,96 @@ mod tests {
         assert_eq!(drops.len(), 2);
         assert_eq!(drops[0].item_id, SPARE_TOP_ID);
         assert_eq!(drops[1].item_id, SPARE_BOTTOM_ID);
+    }
+
+    #[test]
+    fn quest_loot_uses_the_attacking_player_for_mobs_and_reactors() {
+        let quest = quest_definition(7);
+        let loot = test_loot_with_quests(
+            &format!(
+                "[[mobs]]\nmob_id = 100\n[[mobs.drops]]\nitem_id = \
+                 {SPARE_TOP_ID}\nchance_per_million = 1000000\nquest_id = \
+                 7\n[[reactors]]\nreactor_id = 2001\n[[reactors.drops]]\nitem_id = \
+                 {SPARE_TOP_ID}\nchance_per_million = 1000000\nquest_id = 7\n"
+            ),
+            &[quest],
+        );
+        let now = Instant::now();
+        let inactive_player = player(90.0, 100.0);
+        let mut inactive_store = store();
+        inactive_store.loot = loot.clone();
+
+        let inactive_kill = use_player_attack_at(
+            &mut inactive_store,
+            &map(),
+            &inactive_player,
+            PlayerAttack {
+                target_mob_id: "1:1:0",
+                source_skill_id: None,
+                facing_left: false,
+                minimum_damage: 100,
+                maximum_damage: 100,
+                fixed_damage: true,
+                attack_type: SkillAttackType::Physical,
+            },
+            now,
+        )
+        .expect("inactive quest mob kill");
+        assert!(inactive_kill.staged_drops.is_empty());
+
+        let mut active_player = player(90.0, 100.0);
+        active_player.quests.push(PlayerQuest {
+            quest_id: 7,
+            status: QuestStatus::Started.into(),
+            ..PlayerQuest::default()
+        });
+        let mut active_mob_store = store();
+        active_mob_store.loot = loot.clone();
+        let active_kill = use_player_attack_at(
+            &mut active_mob_store,
+            &map(),
+            &active_player,
+            PlayerAttack {
+                target_mob_id: "1:1:0",
+                source_skill_id: None,
+                facing_left: false,
+                minimum_damage: 100,
+                maximum_damage: 100,
+                fixed_damage: true,
+                attack_type: SkillAttackType::Physical,
+            },
+            now,
+        )
+        .expect("active quest mob kill");
+        assert_eq!(active_kill.staged_drops.len(), 1);
+        assert_eq!(active_kill.staged_drops[0].item().item_id, SPARE_TOP_ID);
+
+        let mut active_reactor_store = store();
+        active_reactor_store.loot = loot;
+        for hit in 1..=4 {
+            let update = use_player_attack_at(
+                &mut active_reactor_store,
+                &reactor_map(),
+                &active_player,
+                PlayerAttack {
+                    target_mob_id: "",
+                    source_skill_id: None,
+                    facing_left: false,
+                    minimum_damage: 1,
+                    maximum_damage: 1,
+                    fixed_damage: true,
+                    attack_type: SkillAttackType::Physical,
+                },
+                now + Duration::from_millis(hit),
+            )
+            .expect("active quest reactor hit");
+            if hit < 4 {
+                assert!(update.staged_drops.is_empty());
+            } else {
+                assert_eq!(update.staged_drops.len(), 1);
+                assert_eq!(update.staged_drops[0].item().item_id, SPARE_TOP_ID);
+            }
+        }
     }
 
     #[test]
@@ -2915,6 +3015,13 @@ mod tests {
     }
 
     fn test_loot(source: &str) -> Arc<LootCatalog> {
+        test_loot_with_quests(source, &[])
+    }
+
+    fn test_loot_with_quests(
+        source: &str,
+        quest_definitions: &[QuestDefinition],
+    ) -> Arc<LootCatalog> {
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("loot.toml");
         fs::write(&path, source).expect("write loot configuration");
@@ -2930,9 +3037,23 @@ mod tests {
                     ..ItemDefinition::default()
                 },
             ],
+            quest_definitions,
         )
         .expect("loot catalog");
         Arc::new(loot)
+    }
+
+    fn quest_definition(id: u32) -> QuestDefinition {
+        QuestDefinition {
+            id,
+            name: format!("Quest {id}"),
+            start: Default::default(),
+            completion: Default::default(),
+            start_actions: Default::default(),
+            completion_actions: Default::default(),
+            dialogue: Default::default(),
+            info: Default::default(),
+        }
     }
 
     fn store_with_guaranteed_loot() -> Simulation {

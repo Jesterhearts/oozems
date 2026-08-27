@@ -143,6 +143,7 @@ pub(super) fn prepare_attack(
     now_ms: u64,
     transaction_id: u64,
     loot: &crate::loot::LootCatalog,
+    player: &oozems_proto::v1::PlayerState,
 ) -> Option<ReactorAttackResult> {
     let reactor = reactors.get_mut(index)?;
     if !reactor.active || reactor.player_attack_transaction.is_some() {
@@ -159,7 +160,12 @@ pub(super) fn prepare_attack(
             .map(|delay| now_ms.saturating_add(delay));
     }
     let item_ids = if destroyed {
-        crate::loot::roll_reactor_items(loot, reactor.definition_id, &mut reactor.random_state)
+        crate::loot::roll_reactor_items(
+            loot,
+            reactor.definition_id,
+            player,
+            &mut reactor.random_state,
+        )
     } else {
         Vec::new()
     };
@@ -274,6 +280,7 @@ fn finite_position(position: &Vec2) -> bool {
 #[cfg(test)]
 mod tests {
     use oozems_proto::v1::Map;
+    use oozems_proto::v1::PlayerState;
     use oozems_proto::v1::ReactorDefinition;
     use oozems_proto::v1::ReactorSpawnPoint;
     use oozems_proto::v1::ReactorStateDefinition;
@@ -290,6 +297,7 @@ mod tests {
     #[test]
     fn hits_advance_until_destruction_then_respawn() {
         let mut reactors = spawn(&map());
+        let player = PlayerState::default();
 
         for (transaction_id, expected_state) in [(1, 1), (2, 2), (3, 3), (4, 4)] {
             let result = prepare_attack(
@@ -298,6 +306,7 @@ mod tests {
                 1_000,
                 transaction_id,
                 &LootCatalog::default(),
+                &player,
             )
             .expect("reactor attack");
             assert_eq!(result.destroyed, expected_state == 4);
@@ -314,8 +323,15 @@ mod tests {
     #[test]
     fn rollback_restores_the_previous_state() {
         let mut reactors = spawn(&map());
-        let result = prepare_attack(&mut reactors, 0, 1_000, 7, &LootCatalog::default())
-            .expect("reactor attack");
+        let result = prepare_attack(
+            &mut reactors,
+            0,
+            1_000,
+            7,
+            &LootCatalog::default(),
+            &PlayerState::default(),
+        )
+        .expect("reactor attack");
 
         assert!(rollback_attack(
             &mut reactors,

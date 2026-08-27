@@ -124,7 +124,11 @@ async fn main() -> anyhow::Result<()> {
         ignored_program_count = quest_scripts.ignored_len(),
         "quest script configuration ready"
     );
-    let loot = LootCatalog::load(&config.data_dir.join("loot.toml"), &catalog)?;
+    let loot = LootCatalog::load(
+        &config.data_dir.join("loot.toml"),
+        &catalog,
+        catalog.quest_definitions(),
+    )?;
     catalog.project_item_definitions(&loot.item_reference_ids().collect())?;
     info!(table_count = loot.len(), "loot configuration ready");
     let database = database::open_surreal_kv(
