@@ -3,6 +3,7 @@ use oozems_proto::v1::EquipmentSlot;
 use oozems_proto::v1::EquippedItem;
 use oozems_proto::v1::InventoryItemStack;
 use oozems_proto::v1::InventoryState;
+use oozems_proto::v1::ItemCategory;
 use oozems_proto::v1::ItemDefinition;
 use oozems_proto::v1::PlayerState;
 use oozems_proto::v1::StartingEquipmentSelection;
@@ -40,6 +41,13 @@ pub struct RemovedItem {
     pub player: PlayerState,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct UsedInventoryItem {
+    pub item_id: u32,
+    pub category: ItemCategory,
+    pub player: PlayerState,
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ItemRuleError {
     #[error("the player does not have inventory data")]
@@ -70,6 +78,8 @@ pub enum ItemRuleError {
     },
     #[error("item {item_id} cannot be equipped")]
     InvalidEquipment { item_id: u32 },
+    #[error("item {item_id} cannot be used")]
+    UnusableItem { item_id: u32 },
     #[error("equipment slot is invalid")]
     InvalidEquipmentSlot,
     #[error("the starter equipment selection must contain one supported item for every slot")]
@@ -505,6 +515,36 @@ pub fn equip_inventory_item(
     Ok(player)
 }
 
+pub fn use_inventory_item(
+    mut player: PlayerState,
+    inventory_index: u32,
+    definitions: &(impl ItemDefinitionLookup + ?Sized),
+) -> Result<UsedInventoryItem, ItemRuleError> {
+    let inventory = player
+        .inventory
+        .as_mut()
+        .ok_or(ItemRuleError::MissingInventory)?;
+    let mut next = inventory.clone();
+    canonicalize_inventory(&mut next, definitions)?;
+    let index = valid_inventory_index(&next, inventory_index)?;
+    let item_id = next.stacks[index].item_id;
+    let definition = find_definition(definitions, item_id)?;
+    let category = ItemCategory::try_from(definition.category)
+        .ok()
+        .filter(|category| matches!(category, ItemCategory::Consume | ItemCategory::Install))
+        .filter(|_| definition.usable)
+        .ok_or(ItemRuleError::UnusableItem { item_id })?;
+    if category == ItemCategory::Consume {
+        remove_stack_quantity(&mut next, definitions, index, 1)?;
+    }
+    *inventory = next;
+    Ok(UsedInventoryItem {
+        item_id,
+        category,
+        player,
+    })
+}
+
 pub fn unequip_item(
     mut player: PlayerState,
     slot_value: i32,
@@ -841,6 +881,7 @@ mod tests {
     use oozems_proto::v1::EquippedItem;
     use oozems_proto::v1::InventoryItemStack;
     use oozems_proto::v1::InventoryState;
+    use oozems_proto::v1::ItemCategory;
     use oozems_proto::v1::ItemDefinition;
     use oozems_proto::v1::PlayerState;
     use oozems_proto::v1::StartingEquipmentSelection;
@@ -871,6 +912,7 @@ mod tests {
     use super::sell_inventory_item;
     use super::starter_inventory;
     use super::unequip_item;
+    use super::use_inventory_item;
     use super::validate_inventory;
     use super::validate_inventory_selection;
     use crate::interactions::ShopCurrency;
@@ -1258,6 +1300,108 @@ mod tests {
         assert_eq!(
             inventory.stacks.last().map(|stack| stack.item_id),
             Some(SPARE_TOP_ID)
+        );
+    }
+
+    #[test]
+    fn using_consumables_removes_one_but_setup_items_remain() {
+        const CONSUME_ID: u32 = 2_022_070;
+        const SETUP_ID: u32 = 3_010_072;
+        let definitions = [
+            ItemDefinition {
+                item_id: CONSUME_ID,
+                category: ItemCategory::Consume as i32,
+                stack_max: 100,
+                usable: true,
+                ..ItemDefinition::default()
+            },
+            ItemDefinition {
+                item_id: SETUP_ID,
+                category: ItemCategory::Install as i32,
+                stack_max: 1,
+                usable: true,
+                ..ItemDefinition::default()
+            },
+        ];
+        let player = PlayerState {
+            inventory: Some(InventoryState {
+                capacity: 24,
+                stacks: vec![
+                    InventoryItemStack {
+                        item_id: CONSUME_ID,
+                        quantity: 2,
+                        expires_at_unix_ms: 0,
+                    },
+                    InventoryItemStack {
+                        item_id: SETUP_ID,
+                        quantity: 1,
+                        expires_at_unix_ms: 0,
+                    },
+                ],
+                ..InventoryState::default()
+            }),
+            ..PlayerState::default()
+        };
+
+        let consumed = use_inventory_item(player, 0, &definitions).expect("use consumable");
+        assert_eq!(consumed.item_id, CONSUME_ID);
+        assert_eq!(consumed.category, ItemCategory::Consume);
+        assert_eq!(
+            consumed
+                .player
+                .inventory
+                .as_ref()
+                .expect("inventory")
+                .stacks[0]
+                .quantity,
+            1
+        );
+
+        let setup = use_inventory_item(consumed.player, 1, &definitions).expect("use setup item");
+        assert_eq!(setup.item_id, SETUP_ID);
+        assert_eq!(setup.category, ItemCategory::Install);
+        assert_eq!(setup.player.inventory.expect("inventory").stacks.len(), 2);
+    }
+
+    #[test]
+    fn item_use_rejects_categories_and_definitions_without_behavior() {
+        let player = PlayerState {
+            inventory: Some(InventoryState {
+                capacity: 1,
+                stacks: vec![InventoryItemStack {
+                    item_id: STACKABLE_ITEM_ID,
+                    quantity: 1,
+                    expires_at_unix_ms: 0,
+                }],
+                ..InventoryState::default()
+            }),
+            ..PlayerState::default()
+        };
+        let unusable_consume = [ItemDefinition {
+            item_id: STACKABLE_ITEM_ID,
+            category: ItemCategory::Consume as i32,
+            stack_max: 10,
+            ..ItemDefinition::default()
+        }];
+        assert_eq!(
+            use_inventory_item(player.clone(), 0, &unusable_consume),
+            Err(ItemRuleError::UnusableItem {
+                item_id: STACKABLE_ITEM_ID
+            })
+        );
+
+        let etc = [ItemDefinition {
+            item_id: STACKABLE_ITEM_ID,
+            category: ItemCategory::Etc as i32,
+            stack_max: 10,
+            usable: true,
+            ..ItemDefinition::default()
+        }];
+        assert_eq!(
+            use_inventory_item(player, 0, &etc),
+            Err(ItemRuleError::UnusableItem {
+                item_id: STACKABLE_ITEM_ID
+            })
         );
     }
 

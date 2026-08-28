@@ -135,6 +135,7 @@ pub struct WorldRuntime {
     pub world_layers: Vec<i32>,
     pub character_animation: CharacterAnimationState,
     pub character_sprites: CharacterSpriteSet,
+    pub active_setup_item_id: Option<u32>,
     pub(crate) npc_animations: render::npc::NpcAnimationPlaybackState,
     pub(crate) morph_definition: Option<MorphDefinition>,
     pub(crate) skill_effect_state: SkillEffectState,
@@ -214,6 +215,16 @@ fn install_full_player_update(
     }
     if installed.domains.key_bindings {
         *game.player.key_bindings.current.borrow_mut() = game.player.state.key_bindings.clone();
+    }
+    if game.world.active_setup_item_id.is_some_and(|item_id| {
+        !game.player.inventory.as_ref().is_some_and(|inventory| {
+            inventory
+                .stacks
+                .iter()
+                .any(|stack| stack.item_id == item_id)
+        })
+    }) {
+        game.world.active_setup_item_id = None;
     }
     queue_appearance_refresh(game, installed);
     installed
@@ -410,6 +421,7 @@ fn build_game(
             world_layers,
             character_animation: new_character_animation_state(CharacterAnimation::Idle, true, 0.0),
             character_sprites,
+            active_setup_item_id: None,
             npc_animations: render::npc::NpcAnimationPlaybackState::default(),
             morph_definition: None,
             skill_effect_state: SkillEffectState::default(),

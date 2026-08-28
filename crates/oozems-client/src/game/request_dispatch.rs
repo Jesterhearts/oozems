@@ -352,6 +352,7 @@ pub(super) fn collect_refresh_requests(
                 .chain(inventory.equipment.iter().map(|equipped| equipped.item_id))
         })
         .chain(game.world.map.dropped_items.iter().map(|drop| drop.item_id))
+        .chain(super::buffs::item_source_ids(&game.player.active_buffs))
         .collect::<Vec<_>>();
     if let Some(request) = take_gui_refresh_request(
         &mut game.requests.gui,

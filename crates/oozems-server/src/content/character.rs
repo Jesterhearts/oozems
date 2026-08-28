@@ -598,6 +598,7 @@ fn build_sprite_set(
     let rope_frames = build_animation(source, parts, "rope", &mut assets, &mut asset_ids)?;
     let attack_frames = build_animation(source, parts, "swingO1", &mut assets, &mut asset_ids)?;
     let death_frames = build_animation(source, parts, "dead", &mut assets, &mut asset_ids)?;
+    let sit_frames = build_animation(source, parts, "sit", &mut assets, &mut asset_ids)?;
 
     Ok(CharacterSpriteSet {
         idle_frames,
@@ -608,6 +609,7 @@ fn build_sprite_set(
         rope_frames,
         attack_frames,
         death_frames,
+        sit_frames,
     })
 }
 

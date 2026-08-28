@@ -609,6 +609,17 @@ message ItemDefinition {
   uint32 weapon_attack = 12;
   uint32 weapon_defense = 13;
   uint32 magic_defense = 14;
+  repeated SetupItemFrame setup_frames = 15;
+  bool usable = 16;
+}
+
+message SetupItemFrame {
+  string asset_id = 1;
+  float width = 2;
+  float height = 3;
+  float origin_x = 4;
+  float origin_y = 5;
+  uint32 delay_ms = 6;
 }
 
 enum ItemCategory {
@@ -709,6 +720,7 @@ message CharacterSpriteSet {
   repeated CharacterFrame rope_frames = 6;
   repeated CharacterFrame attack_frames = 7;
   repeated CharacterFrame death_frames = 8;
+  repeated CharacterFrame sit_frames = 9;
 }
 
 message GetMorphRequest {
@@ -790,6 +802,13 @@ message DropItemRequest {
   uint64 expected_expires_at_unix_ms = 4;
 }
 
+message UseItemRequest {
+  string player_id = 1;
+  uint32 inventory_index = 2;
+  uint32 expected_item_id = 3;
+  uint64 expected_expires_at_unix_ms = 4;
+}
+
 message PickUpItemRequest {
   string player_id = 1;
 }
@@ -799,6 +818,8 @@ message ItemActionResponse {
   DroppedItem dropped_item = 2;
   string picked_up_drop_id = 3;
   ActiveBuffState active_buffs = 4;
+  // Nonzero when an Install item placed the local character in its setup state.
+  uint32 used_setup_item_id = 5;
 }
 
 message GetCashShopRequest {}

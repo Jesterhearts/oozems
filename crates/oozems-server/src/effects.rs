@@ -214,10 +214,12 @@ pub fn apply_consume_effect(
     definition: ConsumeEffectDefinition,
     now_unix_ms: u64,
 ) -> PlayerState {
-    if definition.hp > 0
-        && let Some(stats) = player.stats.as_mut()
-    {
-        stats.hp = stats.hp.saturating_add(definition.hp).min(stats.max_hp);
+    if let Some(stats) = player.stats.as_mut() {
+        stats.hp = restore_resource(stats.hp, stats.max_hp, definition.hp, definition.hp_percent);
+        stats.mp = restore_resource(stats.mp, stats.max_mp, definition.mp, definition.mp_percent);
+    }
+    if definition.duration_ms == 0 {
+        return player;
     }
     apply_effect(
         effects,
@@ -241,6 +243,22 @@ pub fn apply_consume_effect(
         },
     );
     player
+}
+
+fn restore_resource(
+    current: u32,
+    maximum: u32,
+    fixed: u32,
+    percentage: u32,
+) -> u32 {
+    let percentage = u64::from(maximum)
+        .saturating_mul(u64::from(percentage))
+        .checked_div(100)
+        .unwrap_or_default();
+    u64::from(current)
+        .saturating_add(u64::from(fixed))
+        .saturating_add(percentage)
+        .min(u64::from(maximum)) as u32
 }
 
 pub fn state(
@@ -470,6 +488,60 @@ mod tests {
 
         assert_eq!(player.stats.expect("stats").hp, 100);
         assert_eq!(effects.projected().morph_id, Some(4));
+    }
+
+    #[test]
+    fn restoration_consumables_restore_hp_and_mp_without_creating_a_buff() {
+        let player = PlayerState {
+            stats: Some(CharacterStats {
+                hp: 20,
+                max_hp: 200,
+                mp: 10,
+                max_mp: 100,
+                ..CharacterStats::default()
+            }),
+            ..PlayerState::default()
+        };
+        let definition = ConsumeEffectDefinition {
+            item_id: 2_000_004,
+            hp: 10,
+            mp: 5,
+            hp_percent: 50,
+            mp_percent: 25,
+            ..ConsumeEffectDefinition::default()
+        };
+        let mut effects = PlayerEffects::default();
+
+        let player = apply_consume_effect(player, &mut effects, definition, 1_000);
+        let stats = player.stats.expect("stats");
+
+        assert_eq!(stats.hp, 130);
+        assert_eq!(stats.mp, 40);
+        assert_eq!(effects.holders().count(), 0);
+        assert_eq!(effects.revision(), 0);
+    }
+
+    #[test]
+    fn timed_item_modifier_creates_an_expiring_item_buff() {
+        let definition = ConsumeEffectDefinition {
+            item_id: 2_022_253,
+            jump: 3,
+            duration_ms: 180_000,
+            ..ConsumeEffectDefinition::default()
+        };
+        let mut effects = PlayerEffects::default();
+
+        apply_consume_effect(PlayerState::default(), &mut effects, definition, 1_000);
+        let state = state(&effects, 1_000);
+
+        assert_eq!(state.jump, 3);
+        assert_eq!(state.buffs.len(), 1);
+        assert_eq!(state.buffs[0].jump_bonus, 3);
+        assert_eq!(state.buffs[0].expires_at_unix_ms, 181_000);
+        assert!(matches!(
+            state.buffs[0].source,
+            Some(active_buff::Source::ItemId(2_022_253))
+        ));
     }
 
     #[test]

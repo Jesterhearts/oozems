@@ -108,6 +108,7 @@ struct CanvasRect {
 struct InventoryHit {
     inventory_index: u32,
     can_equip: bool,
+    can_use: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -129,6 +130,7 @@ pub enum GuiAction {
     Equip { inventory_index: u32 },
     Unequip { slot: i32 },
     Drop { inventory_index: u32 },
+    UseItem { inventory_index: u32 },
     AllocateAbility { stat: AbilityStat },
     AllocateSkill { skill_id: u32 },
     UseSkill { skill_id: u32 },
@@ -194,6 +196,37 @@ pub fn click_action(
     })
 }
 
+pub fn double_click_action(
+    state: GuiState,
+    gui: &GameGui,
+    inventory: Option<&InventoryState>,
+    viewport_width: f32,
+    viewport_height: f32,
+    point: CanvasPoint,
+) -> Option<GuiAction> {
+    if !state.inventory_open
+        || frontmost_window_at_point(state, gui, viewport_width, viewport_height, point)
+            != Some(WindowKind::Inventory)
+        || !matches!(
+            state.inventory_tab,
+            InventoryTab::Consume | InventoryTab::Install
+        )
+    {
+        return None;
+    }
+    let hit = inventory_item_at(
+        state,
+        gui,
+        inventory?,
+        viewport_width,
+        viewport_height,
+        point,
+    )?;
+    hit.can_use.then_some(GuiAction::UseItem {
+        inventory_index: hit.inventory_index,
+    })
+}
+
 pub fn apply_local_action(
     state: &mut GuiState,
     action: GuiAction,
@@ -244,6 +277,7 @@ pub fn apply_local_action(
         GuiAction::Equip { .. }
         | GuiAction::Unequip { .. }
         | GuiAction::Drop { .. }
+        | GuiAction::UseItem { .. }
         | GuiAction::AllocateAbility { .. }
         | GuiAction::AllocateSkill { .. }
         | GuiAction::UseSkill { .. } => {
@@ -793,6 +827,7 @@ fn inventory_item_at(
                                 | EquipmentSlot::Weapon
                         )
                     }),
+                can_use: slot.definition.usable,
             })
         })
 }
@@ -985,6 +1020,7 @@ mod tests {
     use super::can_allocate_ability;
     use super::canvas_point;
     use super::click_action;
+    use super::double_click_action;
     use super::equipment_slot_position;
     use super::gauge_fills;
     use super::gauge_labels;
@@ -1274,6 +1310,52 @@ mod tests {
         let cash = inventory_slots(&gui, &inventory, InventoryTab::Cash);
         assert_eq!(cash.len(), 1);
         assert_eq!(cash[0].inventory_index, 2);
+    }
+
+    #[test]
+    fn double_click_uses_usable_consume_and_setup_items() {
+        const CONSUME_ID: u32 = 2_022_070;
+        const SETUP_ID: u32 = 3_010_072;
+        let mut gui = gui_fixture();
+        gui.items = vec![
+            ItemDefinition {
+                usable: true,
+                ..item_definition(CONSUME_ID, ItemCategory::Consume)
+            },
+            ItemDefinition {
+                usable: true,
+                ..item_definition(SETUP_ID, ItemCategory::Install)
+            },
+        ];
+        let inventory = InventoryState {
+            capacity: 24,
+            stacks: vec![inventory_stack(CONSUME_ID), inventory_stack(SETUP_ID)],
+            ..InventoryState::default()
+        };
+        let point = CanvasPoint { x: 213.0, y: 131.0 };
+
+        for (tab, inventory_index) in [(InventoryTab::Consume, 0), (InventoryTab::Install, 1)] {
+            let state = GuiState {
+                inventory_open: true,
+                inventory_tab: tab,
+                ..GuiState::default()
+            };
+            assert_eq!(
+                double_click_action(state, &gui, Some(&inventory), 960.0, 600.0, point),
+                Some(GuiAction::UseItem { inventory_index })
+            );
+        }
+
+        gui.items[0].usable = false;
+        let state = GuiState {
+            inventory_open: true,
+            inventory_tab: InventoryTab::Consume,
+            ..GuiState::default()
+        };
+        assert_eq!(
+            double_click_action(state, &gui, Some(&inventory), 960.0, 600.0, point),
+            None
+        );
     }
 
     #[test]

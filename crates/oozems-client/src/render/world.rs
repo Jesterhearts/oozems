@@ -445,6 +445,7 @@ fn draw_player(
         scale: 1.0,
         facing_left: game.world.facing_left,
     };
+    draw_setup_item(game, x, y, elapsed_ms);
     let morph_drawn = game
         .world
         .morph_definition
@@ -469,6 +470,67 @@ fn draw_player(
             placement(),
         );
     }
+}
+
+fn draw_setup_item(
+    game: &Game,
+    player_x: f64,
+    player_y: f64,
+    elapsed_ms: f64,
+) {
+    let Some(definition) = game
+        .world
+        .active_setup_item_id
+        .and_then(|item_id| super::item_definition(game, item_id))
+    else {
+        return;
+    };
+    let frames = &definition.setup_frames;
+    let Some(preferred_index) = crate::animation::frame_index(
+        frames.iter().map(|frame| frame.delay_ms),
+        elapsed_ms,
+        crate::animation::Playback::Loop,
+    ) else {
+        return;
+    };
+    let Some(index) = assets::ready_or_fallback_index(
+        &game.surface.images,
+        frames.iter().map(|frame| frame.asset_id.as_str()),
+        preferred_index,
+    ) else {
+        return;
+    };
+    let frame = &frames[index];
+    let Some(image) = ready_image(&game.surface.images, &frame.asset_id) else {
+        return;
+    };
+    game.surface.context.save();
+    let transformed = game
+        .surface
+        .context
+        .translate(player_x, player_y)
+        .and_then(|()| {
+            game.surface
+                .context
+                .scale(setup_horizontal_scale(game.world.facing_left), 1.0)
+        });
+    if transformed.is_ok() {
+        let _ = game
+            .surface
+            .context
+            .draw_image_with_html_image_element_and_dw_and_dh(
+                image,
+                -f64::from(frame.origin_x),
+                -f64::from(frame.origin_y),
+                f64::from(frame.width),
+                f64::from(frame.height),
+            );
+    }
+    game.surface.context.restore();
+}
+
+fn setup_horizontal_scale(facing_left: bool) -> f64 {
+    if facing_left { 1.0 } else { -1.0 }
 }
 
 fn draw_death_tomb(
@@ -531,8 +593,15 @@ fn tomb_anchor_y(
 }
 
 #[cfg(test)]
-mod death_tests {
+mod tests {
+    use super::setup_horizontal_scale;
     use super::tomb_anchor_y;
+
+    #[test]
+    fn setup_item_uses_the_character_facing_transform() {
+        assert_eq!(setup_horizontal_scale(true), 1.0);
+        assert_eq!(setup_horizontal_scale(false), -1.0);
+    }
 
     #[test]
     fn tomb_accelerates_from_the_screen_top_and_stops_at_the_player() {

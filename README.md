@@ -350,8 +350,11 @@ under Cash.
 
 Left-click an item on the Equip tab to equip it. Left-click an equipped item to
 move it back to inventory. Right-click an item on any inventory tab to drop it
-at the server-owned player position. Oozems persists equipment and inventory
-changes in SurrealKV.
+at the server-owned player position. Double-click a supported item on the Use
+tab to consume one and apply its recovery or temporary effect. Double-click a
+supported chair on the Setup tab to sit on it without consuming it. Movement,
+combat, death, and map changes end the seated state. Oozems persists equipment
+and inventory changes in SurrealKV.
 
 The browser requests an equipment icon from `Character.wz` only when the icon
 first becomes visible. Equipping or removing an item refreshes the composed

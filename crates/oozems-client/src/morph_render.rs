@@ -98,7 +98,7 @@ fn animation_for(
         return None;
     }
     let preferred = match animation {
-        CharacterAnimation::Idle | CharacterAnimation::Attack => "stand",
+        CharacterAnimation::Idle | CharacterAnimation::Attack | CharacterAnimation::Sit => "stand",
         CharacterAnimation::Walk => "walk",
         CharacterAnimation::Jump => "jump",
         CharacterAnimation::Ladder => "ladder",

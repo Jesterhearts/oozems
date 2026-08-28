@@ -56,6 +56,7 @@ use oozems_proto::v1::SkillBook;
 use oozems_proto::v1::StartingEquipmentSelection;
 use oozems_proto::v1::SubmitMovementRequest;
 use oozems_proto::v1::UnequipItemRequest;
+use oozems_proto::v1::UseItemRequest;
 use oozems_proto::v1::UseSkillRequest;
 use oozems_proto::v1::UseSkillResponse;
 use prost::Message;
@@ -184,6 +185,24 @@ pub async fn drop_item(
     post_protobuf(
         "/api/v1/items/drop",
         DropItemRequest {
+            player_id: player_id.to_owned(),
+            inventory_index,
+            expected_item_id,
+            expected_expires_at_unix_ms,
+        },
+    )
+    .await
+}
+
+pub async fn use_item(
+    player_id: &str,
+    inventory_index: u32,
+    expected_item_id: u32,
+    expected_expires_at_unix_ms: u64,
+) -> Result<ItemActionResponse, ClientError> {
+    post_protobuf(
+        "/api/v1/items/use",
+        UseItemRequest {
             player_id: player_id.to_owned(),
             inventory_index,
             expected_item_id,

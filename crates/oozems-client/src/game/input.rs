@@ -449,9 +449,37 @@ pub(super) fn apply_canvas_input(
             CanvasInputAction::Pointer(point, button) => {
                 let _ = handle_canvas_pointer(game, point, button, pending);
             }
-            CanvasInputAction::DoubleClick(point) => queue_npc_interaction(game, point, pending),
+            CanvasInputAction::DoubleClick(point) => {
+                handle_canvas_double_click(game, point, pending)
+            }
         }
     }
+}
+
+fn handle_canvas_double_click(
+    game: &Game,
+    point: CanvasPoint,
+    pending: &mut PendingRequests,
+) {
+    if crate::death_ui::is_open(game.ui.death)
+        || game.ui.cash_shop.open
+        || interaction_is_busy(game)
+    {
+        return;
+    }
+    let action = game_gui::double_click_action(
+        *game.ui.gui_state.borrow(),
+        &game.ui.gui,
+        game.player.state.inventory.as_ref(),
+        game.surface.canvas.width() as f32,
+        game.surface.canvas.height() as f32,
+        point,
+    );
+    if let Some(action) = action {
+        pending.push(PendingRequest::Item(action));
+        return;
+    }
+    queue_npc_interaction(game, point, pending);
 }
 
 pub(super) fn clear_suppressed_click(input: &mut GameInput) {

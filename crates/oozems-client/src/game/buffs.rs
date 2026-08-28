@@ -149,6 +149,13 @@ pub(super) fn apply(
     input.jump_bonus = active.jump;
 }
 
+pub(super) fn item_source_ids(active: &TrackedBuffs) -> impl Iterator<Item = u32> + '_ {
+    active.buffs.iter().filter_map(|buff| match buff.source {
+        Some(active_buff::Source::ItemId(item_id)) => Some(item_id),
+        Some(active_buff::Source::SkillId(_)) | None => None,
+    })
+}
+
 fn source_key(buff: &ActiveBuff) -> Result<BuffKey, String> {
     match buff.source {
         Some(active_buff::Source::SkillId(skill_id)) if skill_id > 0 => {
@@ -242,6 +249,33 @@ mod tests {
         assert_eq!(active.buffs[0].key(), BuffKey::Skill(2));
         assert_eq!(active.buffs[0].remaining_ms(40.0), 300);
         assert_eq!(active.buffs[0].remaining_ms(140.0), 200);
+    }
+
+    #[test]
+    fn item_effects_are_retained_for_buff_icon_rendering() {
+        let active = from_state(
+            ActiveBuffState {
+                buffs: vec![ActiveBuff {
+                    source: Some(active_buff::Source::ItemId(2_022_253)),
+                    jump_bonus: 3,
+                    expires_at_unix_ms: 181_000,
+                    ..ActiveBuff::default()
+                }],
+                revision: 1,
+                observed_at_unix_ms: 1_000,
+                jump: 3,
+                ..ActiveBuffState::default()
+            },
+            40.0,
+            0.0,
+        )
+        .expect("item buff state");
+
+        assert_eq!(active.buffs.len(), 1);
+        assert_eq!(active.buffs[0].key(), BuffKey::Item(2_022_253));
+        assert_eq!(active.buffs[0].jump_bonus, 3);
+        assert_eq!(active.buffs[0].remaining_ms(40.0), 180_000);
+        assert_eq!(item_source_ids(&active).collect::<Vec<_>>(), [2_022_253]);
     }
 
     #[test]

@@ -16,10 +16,12 @@ pub(super) fn begin(
     permit: super::requests::RequestPermit,
 ) {
     super::recovery_actions::reset(&mut game.borrow_mut().requests.recovery);
-    let (player_id, expected_stack) = {
+    let (player_id, expected_stack, request_position) = {
         let game = game.borrow();
         let expected_stack = match action {
-            GuiAction::Equip { inventory_index } | GuiAction::Drop { inventory_index } => game
+            GuiAction::Equip { inventory_index }
+            | GuiAction::Drop { inventory_index }
+            | GuiAction::UseItem { inventory_index } => game
                 .player
                 .inventory
                 .as_ref()
@@ -28,13 +30,15 @@ pub(super) fn begin(
             GuiAction::Unequip { .. } => None,
             _ => unreachable!("non-item GUI action reached the item server"),
         };
-        if matches!(action, GuiAction::Equip { .. } | GuiAction::Drop { .. })
-            && expected_stack.is_none()
+        if matches!(
+            action,
+            GuiAction::Equip { .. } | GuiAction::Drop { .. } | GuiAction::UseItem { .. }
+        ) && expected_stack.is_none()
         {
             show_status("The selected inventory item is no longer available.", true);
             return;
         }
-        (game.player.id.clone(), expected_stack)
+        (game.player.id.clone(), expected_stack, game.player.position)
     };
     super::requests::spawn_request(
         game,
@@ -46,7 +50,13 @@ pub(super) fn begin(
         },
         move |game, result, request_started_ms| match result {
             Ok(response) => {
-                match install_item_action_update(game, response, action, request_started_ms) {
+                match install_item_action_update(
+                    game,
+                    response,
+                    action,
+                    request_position,
+                    request_started_ms,
+                ) {
                     Ok(()) => super::requests::RequestStatus::success(item_action_message(action)),
                     Err(error) => super::requests::RequestStatus::error(format!(
                         "Item action could not finish: {error}"
@@ -135,6 +145,16 @@ async fn request_item_action(
             )
             .await
         }
+        GuiAction::UseItem { inventory_index } => {
+            let stack = expected_stack.expect("item use captures its selected stack");
+            api::use_item(
+                player_id,
+                inventory_index,
+                stack.item_id,
+                stack.expires_at_unix_ms,
+            )
+            .await
+        }
         GuiAction::OpenCashShop
         | GuiAction::ToggleStats
         | GuiAction::ToggleEquipment
@@ -159,13 +179,29 @@ fn install_item_action_update(
     game: &mut Game,
     mut response: ItemActionResponse,
     action: GuiAction,
+    request_position: Option<oozems_proto::v1::Vec2>,
     request_started_ms: f64,
 ) -> Result<(), String> {
     let (player, active_buffs) = super::responses::take_player_and_active_buffs(&mut response)?;
     let dropped_item = take_dropped_item(action, response.dropped_item.take())?;
+    let used_setup_item = take_used_setup_item(action, response.used_setup_item_id)?;
     let player_map_id = player.map_id;
     super::install_full_player_update(game, player);
     super::install_active_buffs(game, active_buffs, request_started_ms);
+    if let Some(item_id) = used_setup_item {
+        if !super::runtime::player_is_dead(&game.player.state)
+            && game.player.position == request_position
+            && game.world.motion.on_ground
+            && game.world.motion.climbing.is_none()
+        {
+            game.world.active_setup_item_id = Some(item_id);
+            game.world.character_animation = super::runtime::new_character_animation_state(
+                crate::character_render::CharacterAnimation::Sit,
+                true,
+                game.clock.now_ms,
+            );
+        }
+    }
     if let Some(drop) = dropped_item
         && player_map_id == game.world.map.id
         && {
@@ -188,11 +224,26 @@ fn take_dropped_item(
         (GuiAction::Drop { .. }, None) => {
             Err("response does not contain the dropped item".to_owned())
         }
-        (GuiAction::Equip { .. } | GuiAction::Unequip { .. }, None) => Ok(None),
-        (GuiAction::Equip { .. } | GuiAction::Unequip { .. }, Some(_)) => {
-            Err("response contains an unexpected dropped item".to_owned())
+        (GuiAction::Equip { .. } | GuiAction::Unequip { .. } | GuiAction::UseItem { .. }, None) => {
+            Ok(None)
         }
+        (
+            GuiAction::Equip { .. } | GuiAction::Unequip { .. } | GuiAction::UseItem { .. },
+            Some(_),
+        ) => Err("response contains an unexpected dropped item".to_owned()),
         _ => unreachable!("non-item GUI action reached the item response installer"),
+    }
+}
+
+fn take_used_setup_item(
+    action: GuiAction,
+    item_id: u32,
+) -> Result<Option<u32>, String> {
+    match (action, item_id) {
+        (GuiAction::UseItem { .. }, 0) => Ok(None),
+        (GuiAction::UseItem { .. }, item_id) => Ok(Some(item_id)),
+        (_, 0) => Ok(None),
+        _ => Err("response contains an unexpected used Setup item".to_owned()),
     }
 }
 
@@ -201,6 +252,7 @@ fn item_action_message(action: GuiAction) -> &'static str {
         GuiAction::Equip { .. } => "Item equipped.",
         GuiAction::Unequip { .. } => "Item moved to inventory.",
         GuiAction::Drop { .. } => "Item dropped.",
+        GuiAction::UseItem { .. } => "Item used.",
         GuiAction::OpenCashShop
         | GuiAction::ToggleStats
         | GuiAction::ToggleEquipment
@@ -224,6 +276,7 @@ fn item_action_message(action: GuiAction) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::take_dropped_item;
+    use super::take_used_setup_item;
     use crate::game_gui::GuiAction;
 
     #[test]
@@ -243,5 +296,21 @@ mod tests {
         .expect_err("equip response must not contain a dropped item");
 
         assert_eq!(error, "response contains an unexpected dropped item");
+    }
+
+    #[test]
+    fn only_item_use_responses_can_activate_a_setup_item() {
+        assert_eq!(
+            take_used_setup_item(GuiAction::UseItem { inventory_index: 0 }, 3_010_072),
+            Ok(Some(3_010_072))
+        );
+        assert_eq!(
+            take_used_setup_item(GuiAction::UseItem { inventory_index: 0 }, 0),
+            Ok(None)
+        );
+        assert_eq!(
+            take_used_setup_item(GuiAction::Equip { inventory_index: 0 }, 3_010_072),
+            Err("response contains an unexpected used Setup item".to_owned())
+        );
     }
 }

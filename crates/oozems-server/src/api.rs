@@ -27,6 +27,7 @@ use oozems_proto::v1::GetMorphResponse;
 use oozems_proto::v1::GetSkillBookRequest;
 use oozems_proto::v1::GetSkillBookResponse;
 use oozems_proto::v1::ItemActionResponse;
+use oozems_proto::v1::ItemCategory;
 use oozems_proto::v1::PickUpItemRequest;
 use oozems_proto::v1::PlayerState;
 use oozems_proto::v1::RecoverPlayerRequest;
@@ -34,6 +35,7 @@ use oozems_proto::v1::RecoverPlayerResponse;
 use oozems_proto::v1::SavePlayerRequest;
 use oozems_proto::v1::SavePlayerResponse;
 use oozems_proto::v1::UnequipItemRequest;
+use oozems_proto::v1::UseItemRequest;
 use oozems_proto::v1::UseSkillRequest;
 use oozems_proto::v1::UseSkillResponse;
 use oozems_proto::v1::Vec2;
@@ -328,6 +330,7 @@ pub async fn equip_item(
             player_id.as_str(),
             activity_time_ms,
         )?),
+        used_setup_item_id: 0,
     }))
 }
 
@@ -361,6 +364,7 @@ pub async fn unequip_item(
             player_id.as_str(),
             activity_time_ms,
         )?),
+        used_setup_item_id: 0,
     }))
 }
 
@@ -406,6 +410,72 @@ pub async fn drop_item(
         dropped_item: Some(dropped_item),
         picked_up_drop_id: String::new(),
         active_buffs: Some(active_buffs),
+        used_setup_item_id: 0,
+    }))
+}
+
+pub async fn use_item(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Protobuf<ItemActionResponse>, ApiError> {
+    let request: UseItemRequest = decode_request(&headers, body)?;
+    let player_id = parse_player_id(&request.player_id)?;
+    let player_guard = lock_player(&state, &player_id).await?;
+    let activity_time_ms = unix_time_ms()?;
+    let mut mutation =
+        begin_player_mutation(&state, &player_guard, &player_id, activity_time_ms).await?;
+    require_living_player(&mutation.player, "use items")?;
+    crate::items::validate_inventory_selection(
+        &mutation.player,
+        request.inventory_index,
+        request.expected_item_id,
+        request.expected_expires_at_unix_ms,
+    )
+    .map_err(item_rule_error)?;
+    let used = crate::items::use_inventory_item(
+        mutation.player.clone(),
+        request.inventory_index,
+        state.catalog.as_ref(),
+    )
+    .map_err(item_rule_error)?;
+    let consumes_inventory = used.category == ItemCategory::Consume;
+    let used_setup_item_id = (used.category == ItemCategory::Install)
+        .then_some(used.item_id)
+        .unwrap_or_default();
+    let updated = if used.category == ItemCategory::Consume {
+        let definition = state
+            .catalog
+            .consume_effect_definition(used.item_id)
+            .ok_or(crate::items::ItemRuleError::UnusableItem {
+                item_id: used.item_id,
+            })
+            .map_err(item_rule_error)?;
+        crate::effects::apply_consume_effect(
+            used.player,
+            &mut mutation.effects,
+            definition,
+            activity_time_ms,
+        )
+    } else {
+        used.player
+    };
+    let (transaction, active_buffs) =
+        prepare_player_mutation(&state, mutation, updated, consumes_inventory, true);
+    let player = crate::player_transaction::commit_player_transaction(
+        &state.database,
+        &player_guard,
+        transaction,
+    )
+    .await?
+    .player;
+
+    Ok(Protobuf(ItemActionResponse {
+        player: Some(player),
+        dropped_item: None,
+        picked_up_drop_id: String::new(),
+        active_buffs: Some(active_buffs),
+        used_setup_item_id,
     }))
 }
 
@@ -450,6 +520,7 @@ pub async fn pick_up_item(
         dropped_item: None,
         picked_up_drop_id,
         active_buffs: Some(active_buffs),
+        used_setup_item_id: 0,
     }))
 }
 

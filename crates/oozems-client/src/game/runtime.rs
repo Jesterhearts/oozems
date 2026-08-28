@@ -83,6 +83,7 @@ pub(super) fn update(
     let death_started = dead && !crate::death_ui::is_open(game.ui.death);
     crate::death_ui::synchronize(&mut game.ui.death, dead, timestamp_ms);
     if death_started {
+        game.world.active_setup_item_id = None;
         let mut gui = game.ui.gui_state.borrow_mut();
         gui.stats_open = false;
         gui.equipment_open = false;
@@ -149,6 +150,9 @@ pub(super) fn update(
         input.skills.clear();
     }
     let basic_attack_requested = input.actions.contains(&KeyAction::BasicAttack);
+    if pick_up || basic_attack_requested || !input.skills.is_empty() {
+        game.world.active_setup_item_id = None;
+    }
 
     let transition_active = game
         .requests
@@ -229,8 +233,10 @@ pub(super) fn update(
             .stats
             .as_ref()
             .is_some_and(|stats| stats.hp < stats.max_hp || stats.mp < stats.max_mp);
-    let can_poll_recovery = game.world.character_animation.animation == CharacterAnimation::Idle
-        && !pick_up
+    let can_poll_recovery = matches!(
+        game.world.character_animation.animation,
+        CharacterAnimation::Idle | CharacterAnimation::Sit
+    ) && !pick_up
         && !basic_attack
         && skill_id.is_none()
         && transition.is_none()
@@ -401,7 +407,16 @@ fn update_player(
             previous_motion,
         );
     }
-    let animation = character_animation(&world.map, output.state, input);
+    let setup_remains_active =
+        setup_item_remains_active(world.active_setup_item_id, output.state, input);
+    if !setup_remains_active {
+        world.active_setup_item_id = None;
+    }
+    let animation = if world.active_setup_item_id.is_some() {
+        CharacterAnimation::Sit
+    } else {
+        character_animation(&world.map, output.state, input)
+    };
     let animation_plays = character_animation_plays(animation, position, output.position);
     update_character_animation(
         &mut world.character_animation,
@@ -412,6 +427,20 @@ fn update_player(
     player.position = Some(output.position);
     world.motion = output.state;
     output.transition
+}
+
+fn setup_item_remains_active(
+    item_id: Option<u32>,
+    motion: MotionState,
+    input: PlayerInput,
+) -> bool {
+    item_id.is_some()
+        && motion.on_ground
+        && motion.climbing.is_none()
+        && input.horizontal == 0.0
+        && input.vertical == 0.0
+        && !input.jump_pressed
+        && !input.portal_pressed
 }
 
 pub(super) fn character_animation(
@@ -497,6 +526,7 @@ pub(super) fn start_character_attack_animation(
     world: &mut WorldRuntime,
     now_ms: f64,
 ) {
+    world.active_setup_item_id = None;
     let duration_ms = crate::character_render::animation_duration_ms(
         &world.character_sprites,
         CharacterAnimation::Attack,
@@ -556,6 +586,7 @@ mod tests {
     use super::restart_character_animation;
     use super::select_combat_requests;
     use super::select_transition_request;
+    use super::setup_item_remains_active;
     use super::update_character_animation;
 
     #[test]
@@ -571,6 +602,37 @@ mod tests {
 
         player.stats.as_mut().expect("stats").hp = 0;
         assert!(player_is_dead(&player));
+    }
+
+    #[test]
+    fn setup_items_remain_active_only_while_stationary_and_grounded() {
+        let grounded = MotionState {
+            on_ground: true,
+            ..MotionState::default()
+        };
+        assert!(setup_item_remains_active(
+            Some(3_010_072),
+            grounded,
+            PlayerInput::default()
+        ));
+        assert!(!setup_item_remains_active(
+            Some(3_010_072),
+            grounded,
+            PlayerInput {
+                horizontal: 1.0,
+                ..PlayerInput::default()
+            }
+        ));
+        assert!(!setup_item_remains_active(
+            Some(3_010_072),
+            MotionState::default(),
+            PlayerInput::default()
+        ));
+        assert!(!setup_item_remains_active(
+            None,
+            grounded,
+            PlayerInput::default()
+        ));
     }
 
     #[test]

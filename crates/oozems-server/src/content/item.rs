@@ -11,11 +11,13 @@ use oozems_proto::v1::AssetDescriptor;
 use oozems_proto::v1::EquipmentSlot;
 use oozems_proto::v1::ItemCategory;
 use oozems_proto::v1::ItemDefinition;
+use oozems_proto::v1::SetupItemFrame;
 use sha2::Digest;
 use sha2::Sha256;
 use thiserror::Error;
 use wz_reader::WzNodeArc;
 use wz_reader::WzNodeCast;
+use wz_reader::property::Vector2D;
 use wz_reader::property::WzValue;
 
 use super::WzAsset;
@@ -144,6 +146,7 @@ struct ItemSource {
     inner_path: Option<String>,
     source_path: String,
     definition: OnceLock<ItemDefinition>,
+    lazy_consume_effect: OnceLock<Option<ConsumeEffectDefinition>>,
 }
 
 #[derive(Clone, Copy)]
@@ -224,6 +227,20 @@ impl ItemContent {
 
     pub fn consume_effect_definitions(&self) -> Vec<ConsumeEffectDefinition> {
         self.consume_effects.values().copied().collect()
+    }
+
+    pub fn consume_effect_definition(
+        &self,
+        item_id: u32,
+    ) -> Option<ConsumeEffectDefinition> {
+        self.consume_effects.get(&item_id).copied().or_else(|| {
+            self.sources
+                .get(&item_id)?
+                .lazy_consume_effect
+                .get()
+                .copied()
+                .flatten()
+        })
     }
 
     pub fn monster_book_card_ids(&self) -> BTreeSet<u32> {
@@ -398,7 +415,14 @@ impl ItemContent {
         definitions.sort_by_key(|definition| definition.item_id);
         let assets = definitions
             .iter()
-            .map(|definition| descriptor_from_asset_id(&definition.icon_asset_id))
+            .flat_map(|definition| {
+                std::iter::once(descriptor_from_asset_id(&definition.icon_asset_id)).chain(
+                    definition
+                        .setup_frames
+                        .iter()
+                        .map(|frame| descriptor_from_asset_id(&frame.asset_id)),
+                )
+            })
             .collect();
         Ok((definitions, assets))
     }
@@ -556,6 +580,7 @@ fn add_source(
             inner_path,
             source_path,
             definition: OnceLock::new(),
+            lazy_consume_effect: OnceLock::new(),
         },
     );
     Ok(())
@@ -631,14 +656,32 @@ fn build_definition_from_source(
         message: format!("item {item_id} source archive has no fingerprint"),
     })?;
     let (descriptor, asset) = item_asset(fingerprint, source_path, &icon);
-    content
-        .assets
-        .write()
-        .map_err(|_| ItemContentError::Lock {
-            context: "item asset registry",
-        })?
-        .entry(descriptor.id.clone())
-        .or_insert(asset);
+    register_item_asset(content, &descriptor, asset)?;
+    let setup_frames = build_setup_frames(content, item_id, indexed.category, source, fingerprint)?;
+    let lazy_consume_effect = if indexed.category == ItemCategory::Consume
+        && !content.consume_effects.contains_key(&item_id)
+    {
+        if let Some(effect) = indexed.lazy_consume_effect.get() {
+            *effect
+        } else {
+            let effect = consume::read_lazy_consume_effect(item_id, source)?;
+            let _ = indexed.lazy_consume_effect.set(effect);
+            effect
+        }
+    } else {
+        None
+    };
+    let usable = match indexed.category {
+        ItemCategory::Consume => {
+            content.consume_effects.contains_key(&item_id) || lazy_consume_effect.is_some()
+        }
+        ItemCategory::Install => !setup_frames.is_empty(),
+        ItemCategory::Unspecified
+        | ItemCategory::Equipment
+        | ItemCategory::Etc
+        | ItemCategory::Cash
+        | ItemCategory::Pet => false,
+    };
 
     Ok(ItemDefinition {
         item_id,
@@ -655,7 +698,93 @@ fn build_definition_from_source(
         weapon_attack,
         weapon_defense,
         magic_defense,
+        setup_frames,
+        usable,
     })
+}
+
+fn build_setup_frames(
+    content: &ItemContent,
+    item_id: u32,
+    category: ItemCategory,
+    source: &WzNodeArc,
+    fingerprint: &str,
+) -> Result<Vec<SetupItemFrame>, ItemContentError> {
+    if category != ItemCategory::Install {
+        return Ok(Vec::new());
+    }
+    let Some(effect) = wz::child(source, "effect")? else {
+        return Ok(Vec::new());
+    };
+    let info = required_child(source, "info", &format!("setup item {item_id}"))?;
+    let body_rel_move = wz::child(&info, "bodyRelMove")?
+        .as_ref()
+        .map(wz::vector_value)
+        .transpose()?
+        .flatten()
+        .unwrap_or(Vector2D(0, 0));
+    let position_y = if numeric_property(&effect, "pos", item_id)? == Some(1) {
+        -50
+    } else {
+        0
+    };
+    let mut sources = wz::sorted_children(&effect)?
+        .into_iter()
+        .filter_map(|frame| {
+            wz::node_name(&frame)
+                .ok()
+                .and_then(|name| name.parse::<u32>().ok().map(|index| (index, name, frame)))
+        })
+        .collect::<Vec<_>>();
+    sources.sort_unstable_by_key(|(index, _, _)| *index);
+
+    let mut frames = Vec::with_capacity(sources.len());
+    for (_, frame_name, frame) in sources {
+        let Some((width, height)) = optional_png_dimensions(&frame)? else {
+            continue;
+        };
+        let origin = required_child(&frame, "origin", &format!("setup item {item_id}"))?;
+        let origin = wz::vector_value(&origin)?.ok_or_else(|| ItemContentError::Invalid {
+            message: format!("setup item {item_id} frame {frame_name} has no vector origin"),
+        })?;
+        let delay = numeric_property(&frame, "delay", item_id)?.unwrap_or(100);
+        let delay_ms = match delay {
+            0 => 100,
+            delay => u32::try_from(delay).map_err(|_| ItemContentError::Invalid {
+                message: format!(
+                    "setup item {item_id} frame {frame_name} has invalid delay {delay}"
+                ),
+            })?,
+        };
+        let source_path = format!("Item.wz/Install/{item_id:08}/effect/{frame_name}");
+        let (descriptor, asset) = item_asset(fingerprint, &source_path, &frame);
+        register_item_asset(content, &descriptor, asset)?;
+        frames.push(SetupItemFrame {
+            asset_id: descriptor.id,
+            width,
+            height,
+            origin_x: (origin.0 - body_rel_move.0) as f32,
+            origin_y: (origin.1 - position_y - body_rel_move.1) as f32,
+            delay_ms,
+        });
+    }
+    Ok(frames)
+}
+
+fn register_item_asset(
+    content: &ItemContent,
+    descriptor: &AssetDescriptor,
+    asset: Arc<WzAsset>,
+) -> Result<(), ItemContentError> {
+    content
+        .assets
+        .write()
+        .map_err(|_| ItemContentError::Lock {
+            context: "item asset registry",
+        })?
+        .entry(descriptor.id.clone())
+        .or_insert(asset);
+    Ok(())
 }
 
 fn item_asset(
@@ -848,16 +977,22 @@ fn png_dimensions(
     node: &WzNodeArc,
     item_id: u32,
 ) -> Result<(f32, f32), ItemContentError> {
-    let read = node.read().map_err(|_| ItemContentError::Lock {
-        context: "item icon dimensions",
-    })?;
-    let png = read.try_as_png().ok_or_else(|| ItemContentError::Invalid {
+    optional_png_dimensions(node)?.ok_or_else(|| ItemContentError::Invalid {
         message: format!("item {item_id} icon is not a PNG sprite"),
+    })
+}
+
+fn optional_png_dimensions(node: &WzNodeArc) -> Result<Option<(f32, f32)>, ItemContentError> {
+    let read = node.read().map_err(|_| ItemContentError::Lock {
+        context: "item sprite dimensions",
     })?;
+    let Some(png) = read.try_as_png() else {
+        return Ok(None);
+    };
     if png.width == 0 || png.height == 0 {
-        return invalid(format!("item {item_id} icon is empty"));
+        return Ok(None);
     }
-    Ok((png.width as f32, png.height as f32))
+    Ok(Some((png.width as f32, png.height as f32)))
 }
 
 fn required_child(
@@ -889,8 +1024,10 @@ mod tests {
     use oozems_proto::v1::ItemCategory;
     use wz_reader::WzNode;
     use wz_reader::WzObjectType;
+    use wz_reader::property::Vector2D;
     use wz_reader::property::WzPng;
     use wz_reader::property::WzSubProperty;
+    use wz_reader::property::WzValue;
 
     use super::ItemContent;
     use super::ItemSource;
@@ -899,6 +1036,7 @@ mod tests {
     use super::SourceFingerprints;
     use super::normalize_sale_price;
     use super::normalize_stack_max;
+    use crate::content::wz;
 
     #[test]
     fn stack_max_uses_category_defaults_and_explicit_limits() {
@@ -980,6 +1118,142 @@ mod tests {
         assert_eq!(definition.magic_defense, 2);
     }
 
+    #[test]
+    fn setup_frames_are_sorted_and_ignore_non_canvas_numeric_nodes() {
+        let item_id = 3_010_072;
+        let content = synthetic_content(item_id, SourceArchive::Item, ItemCategory::Install, &[]);
+        let item = content
+            .sources
+            .get(&item_id)
+            .expect("setup source")
+            .image
+            .clone();
+        let effect = WzNode::from_str(
+            "effect",
+            WzObjectType::Property(WzSubProperty::Property),
+            Some(&item),
+        )
+        .into_lock();
+        item.write()
+            .expect("item lock")
+            .children
+            .insert("effect".into(), effect.clone());
+        let info = wz::child(&item, "info")
+            .expect("info lookup")
+            .expect("info node");
+        let body_rel_move =
+            WzNode::from_str("bodyRelMove", Vector2D(3, 4), Some(&info)).into_lock();
+        info.write()
+            .expect("info lock")
+            .children
+            .insert("bodyRelMove".into(), body_rel_move);
+        let position = WzNode::from_str("pos", 1, Some(&effect)).into_lock();
+        effect
+            .write()
+            .expect("effect lock")
+            .children
+            .insert("pos".into(), position);
+        add_setup_frame(&effect, "10", 10, 12, 150);
+        add_setup_frame(&effect, "2", 2, 4, 0);
+        let nested = WzNode::from_str(
+            "1",
+            WzObjectType::Property(WzSubProperty::Property),
+            Some(&effect),
+        )
+        .into_lock();
+        effect
+            .write()
+            .expect("effect lock")
+            .children
+            .insert("1".into(), nested);
+
+        let definition = content
+            .definition(item_id)
+            .expect("setup definition")
+            .expect("known setup item");
+
+        assert!(definition.usable);
+        assert_eq!(definition.setup_frames.len(), 2);
+        assert_eq!(definition.setup_frames[0].width, 2.0);
+        assert_eq!(definition.setup_frames[0].origin_x, -2.0);
+        assert_eq!(definition.setup_frames[0].origin_y, 48.0);
+        assert_eq!(definition.setup_frames[0].delay_ms, 100);
+        assert_eq!(definition.setup_frames[1].width, 10.0);
+        assert_eq!(definition.setup_frames[1].delay_ms, 150);
+    }
+
+    #[test]
+    fn restoration_consumables_are_materialized_as_usable() {
+        let item_id = 2_000_000;
+        let content = synthetic_content(item_id, SourceArchive::Item, ItemCategory::Consume, &[]);
+        add_consume_spec(&content, item_id, &[("hp", 50)]);
+
+        let definition = content
+            .definition(item_id)
+            .expect("consume definition")
+            .expect("known consume item");
+
+        assert!(definition.usable);
+        assert_eq!(
+            content
+                .consume_effect_definition(item_id)
+                .expect("restoration effect")
+                .hp,
+            50
+        );
+    }
+
+    #[test]
+    fn timed_modifier_consumables_are_materialized_as_usable() {
+        let item_id = 2_022_253;
+        let content = synthetic_content(item_id, SourceArchive::Item, ItemCategory::Consume, &[]);
+        add_consume_spec(&content, item_id, &[("jump", 3), ("time", 180_000)]);
+
+        let definition = content
+            .definition(item_id)
+            .expect("consume definition")
+            .expect("known consume item");
+        let effect = content
+            .consume_effect_definition(item_id)
+            .expect("timed modifier effect");
+
+        assert!(definition.usable);
+        assert_eq!(effect.jump, 3);
+        assert_eq!(effect.duration_ms, 180_000);
+    }
+
+    fn add_consume_spec(
+        content: &ItemContent,
+        item_id: u32,
+        fields: &[(&str, i32)],
+    ) {
+        let item = content
+            .sources
+            .get(&item_id)
+            .expect("consume source")
+            .image
+            .clone();
+        let spec = WzNode::from_str(
+            "spec",
+            WzObjectType::Property(WzSubProperty::Property),
+            Some(&item),
+        )
+        .into_lock();
+        for &(name, value) in fields {
+            let property =
+                WzNode::from_str(name, WzObjectType::Value(WzValue::Int(value)), Some(&spec))
+                    .into_lock();
+            spec.write()
+                .expect("spec lock")
+                .children
+                .insert(name.into(), property);
+        }
+        item.write()
+            .expect("item lock")
+            .children
+            .insert("spec".into(), spec);
+    }
+
     fn synthetic_item_content(item_id: u32) -> ItemContent {
         let mut content = synthetic_content(
             item_id,
@@ -995,6 +1269,31 @@ mod tests {
             },
         );
         content
+    }
+
+    fn add_setup_frame(
+        effect: &wz_reader::WzNodeArc,
+        name: &str,
+        width: u32,
+        height: u32,
+        delay: i32,
+    ) {
+        let mut png = WzPng::default();
+        png.width = width;
+        png.height = height;
+        let frame = WzNode::from_str(name, png, Some(effect)).into_lock();
+        let origin = WzNode::from_str("origin", Vector2D(1, 2), Some(&frame)).into_lock();
+        let delay = WzNode::from_str("delay", delay, Some(&frame)).into_lock();
+        {
+            let mut frame_write = frame.write().expect("frame lock");
+            frame_write.children.insert("origin".into(), origin);
+            frame_write.children.insert("delay".into(), delay);
+        }
+        effect
+            .write()
+            .expect("effect lock")
+            .children
+            .insert(name.into(), frame);
     }
 
     fn synthetic_content(
@@ -1047,6 +1346,7 @@ mod tests {
                     inner_path: None,
                     source_path: format!("synthetic/{item_id}"),
                     definition: OnceLock::new(),
+                    lazy_consume_effect: OnceLock::new(),
                 },
             )]),
             texts: HashMap::new(),

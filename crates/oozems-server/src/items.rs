@@ -45,4 +45,5 @@ pub use inventory::starter_equipment_options;
 #[cfg(test)]
 pub use inventory::starter_inventory;
 pub use inventory::unequip_item;
+pub use inventory::use_inventory_item;
 pub use inventory::validate_inventory_selection;

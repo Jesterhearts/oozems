@@ -213,6 +213,7 @@ fn install_map(
         true,
         game.clock.now_ms,
     );
+    game.world.active_setup_item_id = None;
     Ok(())
 }
 

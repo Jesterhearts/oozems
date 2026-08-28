@@ -25,6 +25,7 @@ pub enum CharacterAnimation {
     Rope,
     Attack,
     Death,
+    Sit,
 }
 
 pub fn draw_character(
@@ -110,6 +111,7 @@ fn all_frames(sprites: &CharacterSpriteSet) -> impl Iterator<Item = &CharacterFr
         .chain(&sprites.rope_frames)
         .chain(&sprites.attack_frames)
         .chain(&sprites.death_frames)
+        .chain(&sprites.sit_frames)
 }
 
 pub fn animation_duration_ms(
@@ -134,6 +136,7 @@ fn animation_frames(
         CharacterAnimation::Rope => &sprites.rope_frames,
         CharacterAnimation::Attack => &sprites.attack_frames,
         CharacterAnimation::Death => &sprites.death_frames,
+        CharacterAnimation::Sit => &sprites.sit_frames,
     };
     if selected.is_empty() {
         &sprites.idle_frames

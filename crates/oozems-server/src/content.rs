@@ -293,6 +293,15 @@ impl ContentCatalog {
             .unwrap_or_default()
     }
 
+    pub(crate) fn consume_effect_definition(
+        &self,
+        item_id: u32,
+    ) -> Option<ConsumeEffectDefinition> {
+        self.items
+            .as_ref()
+            .and_then(|items| items.consume_effect_definition(item_id))
+    }
+
     pub(crate) fn monster_book_card_ids(&self) -> std::collections::BTreeSet<u32> {
         self.items
             .as_ref()

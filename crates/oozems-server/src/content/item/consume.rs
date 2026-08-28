@@ -4,6 +4,7 @@ use std::sync::Arc;
 use oozems_proto::v1::ItemCategory;
 use wz_reader::WzNodeArc;
 use wz_reader::WzNodeCast;
+use wz_reader::property::WzValue;
 
 use super::ItemContentError;
 use super::ItemSourceData;
@@ -30,6 +31,9 @@ pub(crate) struct ConsumeEffectDefinition {
     pub speed: i32,
     pub jump: i32,
     pub hp: u32,
+    pub mp: u32,
+    pub hp_percent: u32,
+    pub mp_percent: u32,
     pub morph_id: Option<u32>,
     pub duration_ms: u64,
 }
@@ -73,11 +77,146 @@ fn effect_node(
         Some(path) => required_child(source.image, path, source.source_path)?,
         None => Arc::clone(source.image),
     };
-    wz::child(&item, "specEx")?
+    effect_node_from_item(item_id, &item)
+}
+
+fn effect_node_from_item(
+    item_id: u32,
+    item: &WzNodeArc,
+) -> Result<WzNodeArc, ItemContentError> {
+    wz::child(item, "specEx")?
         .or(wz::child(&item, "spec")?)
         .ok_or_else(|| ItemContentError::Invalid {
             message: format!("consume effect item {item_id} has neither specEx nor spec"),
         })
+}
+
+pub(super) fn read_lazy_consume_effect(
+    item_id: u32,
+    item: &WzNodeArc,
+) -> Result<Option<ConsumeEffectDefinition>, ItemContentError> {
+    let Some(effect) = wz::child(item, "specEx")?.or(wz::child(item, "spec")?) else {
+        return Ok(None);
+    };
+    let fields = wz::sorted_children(&effect)?;
+    if fields.is_empty()
+        || fields.iter().any(|field| {
+            wz::node_name(field).is_ok_and(|name| {
+                !matches!(
+                    name.as_str(),
+                    "pad"
+                        | "mad"
+                        | "pdd"
+                        | "mdd"
+                        | "acc"
+                        | "eva"
+                        | "speed"
+                        | "jump"
+                        | "hp"
+                        | "mp"
+                        | "hpR"
+                        | "mpR"
+                        | "time"
+                )
+            })
+        })
+    {
+        return Ok(None);
+    }
+
+    let mut values = BTreeMap::new();
+    for field in fields {
+        let name = wz::node_name(&field)?;
+        let Some(value) = lazy_effect_integer(&field)? else {
+            return Ok(None);
+        };
+        values.insert(name, value);
+    }
+    if values.values().any(|value| *value < 0)
+        || ["hpR", "mpR"]
+            .into_iter()
+            .filter_map(|name| values.get(name))
+            .any(|value| *value > 100)
+        || ["hp", "mp"]
+            .into_iter()
+            .filter_map(|name| values.get(name))
+            .any(|value| u32::try_from(*value).is_err())
+        || ["pad", "mad", "pdd", "mdd", "acc", "eva", "speed", "jump"]
+            .into_iter()
+            .filter_map(|name| values.get(name))
+            .any(|value| !(-1_000..=1_000).contains(value))
+    {
+        return Ok(None);
+    }
+    let duration_ms = match values.remove("time") {
+        Some(value) => match u64::try_from(value) {
+            Ok(value) if value > 0 && value <= MAX_DURATION_MS => value,
+            _ => return Ok(None),
+        },
+        None => 0,
+    };
+    let mut definition = ConsumeEffectDefinition {
+        item_id,
+        weapon_attack: take_modifier(&mut values, item_id, "pad")?,
+        magic_attack: take_modifier(&mut values, item_id, "mad")?,
+        weapon_defense: take_modifier(&mut values, item_id, "pdd")?,
+        magic_defense: take_modifier(&mut values, item_id, "mdd")?,
+        accuracy: take_modifier(&mut values, item_id, "acc")?,
+        avoidability: take_modifier(&mut values, item_id, "eva")?,
+        speed: take_modifier(&mut values, item_id, "speed")?,
+        jump: take_modifier(&mut values, item_id, "jump")?,
+        hp: take_nonnegative_u32(&mut values, item_id, "hp")?,
+        mp: take_nonnegative_u32(&mut values, item_id, "mp")?,
+        hp_percent: take_percentage(&mut values, item_id, "hpR")?,
+        mp_percent: take_percentage(&mut values, item_id, "mpR")?,
+        duration_ms,
+        ..ConsumeEffectDefinition::default()
+    };
+    let restores_resource = definition.hp > 0
+        || definition.mp > 0
+        || definition.hp_percent > 0
+        || definition.mp_percent > 0;
+    let has_timed_modifier = definition.weapon_attack != 0
+        || definition.magic_attack != 0
+        || definition.weapon_defense != 0
+        || definition.magic_defense != 0
+        || definition.accuracy != 0
+        || definition.avoidability != 0
+        || definition.speed != 0
+        || definition.jump != 0;
+    if has_timed_modifier && definition.duration_ms == 0 {
+        return Ok(None);
+    }
+    if !restores_resource && !has_timed_modifier {
+        return Ok(None);
+    }
+    if !has_timed_modifier {
+        definition.duration_ms = 0;
+    }
+    Ok(Some(definition))
+}
+
+fn lazy_effect_integer(node: &WzNodeArc) -> Result<Option<i64>, ItemContentError> {
+    let read = node.read().map_err(|_| ItemContentError::Lock {
+        context: "lazy consume effect property",
+    })?;
+    if let Some(value) = read.try_as_int() {
+        return Ok(Some(i64::from(*value)));
+    }
+    if let Some(value) = read.try_as_short() {
+        return Ok(Some(i64::from(*value)));
+    }
+    if let Some(value) = read.try_as_long() {
+        return Ok(Some(*value));
+    }
+    let text = read
+        .try_as_string()
+        .and_then(|value| value.get_string().ok())
+        .or_else(|| match read.try_as_value() {
+            Some(WzValue::ParsedString(value)) => Some(value.clone()),
+            _ => None,
+        });
+    Ok(text.and_then(|value| value.trim().parse().ok()))
 }
 
 fn read_consume_effect(
@@ -130,6 +269,7 @@ fn read_consume_effect(
         hp,
         morph_id,
         duration_ms,
+        ..ConsumeEffectDefinition::default()
     };
     if !values.is_empty() {
         return invalid(format!(
@@ -256,6 +396,20 @@ fn take_optional_positive_u32(
         .transpose()
 }
 
+fn take_percentage(
+    values: &mut BTreeMap<String, i64>,
+    item_id: u32,
+    name: &str,
+) -> Result<u32, ItemContentError> {
+    let value = take_nonnegative_u32(values, item_id, name)?;
+    if value > 100 {
+        return invalid(format!(
+            "consume effect item {item_id} property {name:?} exceeds 100 percent"
+        ));
+    }
+    Ok(value)
+}
+
 #[cfg(test)]
 mod tests {
     use oozems_proto::v1::ItemCategory;
@@ -267,6 +421,7 @@ mod tests {
     use super::ConsumeEffectDefinition;
     use super::ItemSourceData;
     use super::read_consume_effect;
+    use super::read_lazy_consume_effect;
     use super::validate_map_protection_effect;
 
     #[test]
@@ -298,6 +453,80 @@ mod tests {
         ]);
         let source = synthetic_source(&image);
         validate_map_protection_effect(&source).expect("synthetic map protection effect");
+    }
+
+    #[test]
+    fn restoration_effects_accept_fixed_and_percentage_recovery() {
+        let fixed = consume_effect_image([("hp", WzValue::Int(50)), ("mp", WzValue::Short(25))]);
+        assert_eq!(
+            read_lazy_consume_effect(2_000_000, &fixed).expect("fixed restoration"),
+            Some(ConsumeEffectDefinition {
+                item_id: 2_000_000,
+                hp: 50,
+                mp: 25,
+                ..ConsumeEffectDefinition::default()
+            })
+        );
+
+        let percentage =
+            consume_effect_image([("hpR", WzValue::Int(50)), ("mpR", WzValue::Int(25))]);
+        assert_eq!(
+            read_lazy_consume_effect(2_000_004, &percentage).expect("percentage restoration"),
+            Some(ConsumeEffectDefinition {
+                item_id: 2_000_004,
+                hp_percent: 50,
+                mp_percent: 25,
+                ..ConsumeEffectDefinition::default()
+            })
+        );
+
+        let string_percentage = consume_effect_image([
+            ("hpR", WzValue::ParsedString("50".to_owned())),
+            ("mpR", WzValue::ParsedString("50".to_owned())),
+        ]);
+        assert_eq!(
+            read_lazy_consume_effect(2_010_006, &string_percentage)
+                .expect("string percentage restoration"),
+            Some(ConsumeEffectDefinition {
+                item_id: 2_010_006,
+                hp_percent: 50,
+                mp_percent: 50,
+                ..ConsumeEffectDefinition::default()
+            })
+        );
+    }
+
+    #[test]
+    fn timed_modifier_effects_are_supported_lazily() {
+        let effect =
+            consume_effect_image([("jump", WzValue::Int(3)), ("time", WzValue::Int(180_000))]);
+
+        assert_eq!(
+            read_lazy_consume_effect(2_022_253, &effect).expect("timed modifier"),
+            Some(ConsumeEffectDefinition {
+                item_id: 2_022_253,
+                jump: 3,
+                duration_ms: 180_000,
+                ..ConsumeEffectDefinition::default()
+            })
+        );
+    }
+
+    #[test]
+    fn restoration_effects_reject_partially_supported_items() {
+        let effect = consume_effect_image([("hp", WzValue::Int(50)), ("poison", WzValue::Int(1))]);
+
+        assert_eq!(
+            read_lazy_consume_effect(2_000_006, &effect).expect("unsupported restoration"),
+            None
+        );
+
+        let harmful =
+            consume_effect_image([("hpR", WzValue::Int(-40)), ("mpR", WzValue::Int(-40))]);
+        assert_eq!(
+            read_lazy_consume_effect(2_022_228, &harmful).expect("harmful potion"),
+            None
+        );
     }
 
     fn consume_effect_image<const N: usize>(fields: [(&str, WzValue); N]) -> wz_reader::WzNodeArc {
