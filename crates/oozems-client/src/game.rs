@@ -11,6 +11,7 @@ use oozems_proto::v1::Map;
 use oozems_proto::v1::MorphDefinition;
 use oozems_proto::v1::MovementRules;
 use oozems_proto::v1::PlayerState;
+use oozems_proto::v1::QuestStatus;
 use oozems_proto::v1::SkillBook;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
@@ -20,6 +21,9 @@ use web_sys::HtmlCanvasElement;
 use crate::api;
 use crate::assets;
 use crate::assets::BrowserAsset;
+use crate::audio;
+use crate::audio::AudioState;
+use crate::audio::MapSound;
 use crate::cash_shop_ui::CashShopState;
 use crate::character_render::CharacterAnimation;
 use crate::game_gui::CanvasPoint;
@@ -88,6 +92,7 @@ pub struct Game {
     pub world: WorldRuntime,
     pub ui: UiRuntime,
     input: GameInput,
+    pub(crate) audio: Rc<RefCell<AudioState>>,
     persistence: PersistenceState,
     requests: RequestState,
 }
@@ -175,6 +180,8 @@ fn install_full_player_update(
     game: &mut Game,
     update: PlayerState,
 ) -> PlayerInstallation {
+    let previous_level = game.player.level;
+    let previous_completed_quests = completed_quest_count(&game.player.state);
     let mut domains = PlayerDomains::FULL;
     domains.key_bindings = !game.player.key_bindings.pending;
     let installed = install_player_update(
@@ -227,7 +234,35 @@ fn install_full_player_update(
         game.world.active_setup_item_id = None;
     }
     queue_appearance_refresh(game, installed);
+    if installed.domains.progression && game.player.level > previous_level {
+        play_map_sound(game, MapSound::LevelUp);
+    }
+    if installed.domains.quests
+        && completed_quest_count(&game.player.state) > previous_completed_quests
+    {
+        play_map_sound(game, MapSound::QuestClear);
+    }
     installed
+}
+
+fn completed_quest_count(player: &PlayerState) -> usize {
+    player
+        .quests
+        .iter()
+        .filter(|quest| quest.status == QuestStatus::Completed as i32)
+        .count()
+}
+
+pub(super) fn play_map_sound(
+    game: &Game,
+    sound: MapSound,
+) {
+    audio::play_map_sound(
+        &mut game.audio.borrow_mut(),
+        game.world.map.audio.as_ref(),
+        sound,
+        game.clock.now_ms,
+    );
 }
 
 fn install_active_buffs(
@@ -355,7 +390,12 @@ fn build_game(
 
     let input = Rc::new(RefCell::new(KeyboardState::default()));
     let key_bindings = Rc::new(RefCell::new(player.key_bindings.clone()));
-    let game_input = input::install(&window, &canvas, input, key_bindings.clone())?;
+    let audio = Rc::new(RefCell::new(AudioState::default()));
+    audio::set_bgm(
+        &mut audio.borrow_mut(),
+        map.audio.as_ref().and_then(|audio| audio.bgm.as_ref()),
+    );
+    let game_input = input::install(&window, &canvas, input, key_bindings.clone(), audio.clone())?;
     let gui_state = Rc::new(RefCell::new(GuiState::default()));
     let images = prepare_game_assets(&map, &character_sprites, &gui, &skill_book)?;
     let motion = player
@@ -438,6 +478,7 @@ fn build_game(
             selected_buff: None,
         },
         input: game_input,
+        audio,
         persistence: PersistenceState {
             dirty: false,
             next_save_ms: SAVE_INTERVAL_MS,
@@ -488,4 +529,39 @@ fn schedule_frame(game: Rc<RefCell<Game>>) -> Result<(), String> {
         .request_animation_frame(callback.unchecked_ref())
         .map_err(js_error)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use oozems_proto::v1::PlayerQuest;
+    use oozems_proto::v1::PlayerState;
+    use oozems_proto::v1::QuestStatus;
+
+    use super::completed_quest_count;
+
+    #[test]
+    fn completed_quest_count_ignores_other_statuses() {
+        let player = PlayerState {
+            quests: vec![
+                PlayerQuest {
+                    quest_id: 1,
+                    status: QuestStatus::Started as i32,
+                    ..PlayerQuest::default()
+                },
+                PlayerQuest {
+                    quest_id: 2,
+                    status: QuestStatus::Completed as i32,
+                    ..PlayerQuest::default()
+                },
+                PlayerQuest {
+                    quest_id: 3,
+                    status: QuestStatus::Unspecified as i32,
+                    ..PlayerQuest::default()
+                },
+            ],
+            ..PlayerState::default()
+        };
+
+        assert_eq!(completed_quest_count(&player), 1);
+    }
 }

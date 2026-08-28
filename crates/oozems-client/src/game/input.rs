@@ -13,6 +13,8 @@ use super::Game;
 use super::request_dispatch::PendingRequest;
 use super::request_dispatch::PendingRequests;
 use super::requests;
+use crate::audio;
+use crate::audio::AudioState;
 use crate::cash_shop_ui;
 use crate::cash_shop_ui::CashShopAction;
 use crate::game_gui;
@@ -38,11 +40,13 @@ pub(super) fn install(
     canvas: &HtmlCanvasElement,
     keyboard: Rc<RefCell<KeyboardState>>,
     bindings: Rc<RefCell<Vec<KeyBinding>>>,
+    audio_state: Rc<RefCell<AudioState>>,
 ) -> Result<GameInput, String> {
     let canvas_actions = Rc::new(RefCell::new(VecDeque::new()));
     let handlers = EventHandlers {
         _keyboard: install_keyboard_input(window, keyboard.clone(), bindings)?,
         _canvas: install_canvas_input(canvas, canvas_actions.clone())?,
+        _audio: audio::install_input(window, audio_state)?,
     };
     Ok(GameInput {
         keyboard,
@@ -65,6 +69,7 @@ enum CanvasInputAction {
 struct EventHandlers {
     _keyboard: KeyboardEventHandlers,
     _canvas: CanvasEventHandlers,
+    _audio: audio::AudioEventHandlers,
 }
 
 struct KeyboardEventHandlers {

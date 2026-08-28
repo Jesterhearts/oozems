@@ -6,23 +6,20 @@ use oozems_proto::v1::SkillAnimationPlacement;
 use oozems_proto::v1::SkillEffect;
 use oozems_proto::v1::Vec2;
 use wasm_bindgen::JsValue;
-use wasm_bindgen_futures::JsFuture;
-use wasm_bindgen_futures::spawn_local;
-use web_sys::HtmlAudioElement;
 
 use crate::assets;
 use crate::assets::BrowserAsset;
+use crate::audio;
+use crate::audio::AudioState;
 use crate::game::Game;
 
 const ASSET_READY_TIMEOUT_MS: f64 = 5_000.0;
-const AUDIO_LIFETIME_MS: f64 = 15_000.0;
 const PROJECTILE_DISTANCE: f32 = 160.0;
 const PROJECTILE_HEIGHT: f32 = 35.0;
 
 #[derive(Default)]
 pub(crate) struct SkillEffectState {
     visuals: Vec<ActiveVisual>,
-    sounds: Vec<ActiveSound>,
 }
 
 struct ActiveVisual {
@@ -38,11 +35,6 @@ struct ActiveVisual {
     sound_url: Option<String>,
 }
 
-struct ActiveSound {
-    element: HtmlAudioElement,
-    expires_at_ms: f64,
-}
-
 pub(crate) fn install(
     game: &mut Game,
     effect: SkillEffect,
@@ -56,14 +48,14 @@ pub(crate) fn install(
     let sound_url = effect.sound.map(|sound| sound.url);
     let Some(position) = game.player.position else {
         if let Some(url) = sound_url {
-            play_sound(&mut game.world.skill_effect_state, &url, game.clock.now_ms);
+            audio::play_sound_url(&mut game.audio.borrow_mut(), &url, game.clock.now_ms);
         }
         return;
     };
     let duration_ms = effect_duration_ms(&effect.animations);
     if duration_ms == 0 {
         if let Some(url) = sound_url {
-            play_sound(&mut game.world.skill_effect_state, &url, game.clock.now_ms);
+            audio::play_sound_url(&mut game.audio.borrow_mut(), &url, game.clock.now_ms);
         }
         return;
     }
@@ -84,11 +76,9 @@ pub(crate) fn install(
 pub(crate) fn update(
     state: &mut SkillEffectState,
     images: &HashMap<String, BrowserAsset>,
+    audio_state: &mut AudioState,
     timestamp_ms: f64,
 ) {
-    state
-        .sounds
-        .retain(|sound| timestamp_ms < sound.expires_at_ms && !sound.element.ended());
     let mut sounds_to_play = Vec::new();
     for visual in &mut state.visuals {
         if visual.started_at_ms.is_some() {
@@ -116,7 +106,7 @@ pub(crate) fn update(
         }
     }
     for url in sounds_to_play {
-        play_sound(state, &url, timestamp_ms);
+        audio::play_sound_url(audio_state, &url, timestamp_ms);
     }
     state.visuals.retain(|visual| {
         !visual.discarded
@@ -148,9 +138,6 @@ fn asset_load_decision(
 
 pub(crate) fn clear(state: &mut SkillEffectState) {
     state.visuals.clear();
-    for sound in state.sounds.drain(..) {
-        let _ = sound.element.pause();
-    }
 }
 
 pub(crate) fn draw(
@@ -167,44 +154,6 @@ pub(crate) fn draw(
             draw_animation(game, visual, animation, elapsed_ms, camera_x, camera_y);
         }
     }
-}
-
-fn play_sound(
-    state: &mut SkillEffectState,
-    url: &str,
-    timestamp_ms: f64,
-) {
-    let audio = match HtmlAudioElement::new_with_src(url) {
-        Ok(audio) => audio,
-        Err(error) => {
-            warn(&format!(
-                "Could not create a skill sound player: {}",
-                crate::js_error(error)
-            ));
-            return;
-        }
-    };
-    audio.set_preload("auto");
-    match audio.play() {
-        Ok(promise) => {
-            spawn_local(async move {
-                if let Err(error) = JsFuture::from(promise).await {
-                    warn(&format!(
-                        "The browser did not play a skill sound: {}",
-                        crate::js_error(error)
-                    ));
-                }
-            });
-        }
-        Err(error) => warn(&format!(
-            "Could not start a skill sound: {}",
-            crate::js_error(error)
-        )),
-    }
-    state.sounds.push(ActiveSound {
-        element: audio,
-        expires_at_ms: timestamp_ms + AUDIO_LIFETIME_MS,
-    });
 }
 
 fn draw_animation(

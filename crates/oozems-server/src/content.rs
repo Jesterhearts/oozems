@@ -20,6 +20,7 @@ mod item;
 mod morph;
 mod quest;
 mod skill;
+mod sound;
 mod wz;
 
 use character::CharacterContent;
@@ -42,6 +43,7 @@ pub(crate) use skill::AuthoritativeSkillDefinition;
 pub(crate) use skill::SkillBookContext;
 use skill::SkillContent;
 use skill::SkillContentError;
+use sound::SoundContent;
 pub(crate) use wz::WzAsset;
 use wz::WzContent;
 use wz::WzContentError;
@@ -56,6 +58,7 @@ pub struct ContentCatalog {
     morphs: Option<MorphContent>,
     quests: Option<QuestContent>,
     skills: Option<SkillContent>,
+    sounds: Option<std::sync::Arc<SoundContent>>,
     wz: WzContent,
 }
 
@@ -85,7 +88,8 @@ impl ContentCatalog {
         gui_layout_dir: &Path,
         config: &ContentConfig,
     ) -> Result<Self, ContentError> {
-        let wz = WzContent::open(wz_dir, config.npcs.clone())?;
+        let sounds = SoundContent::open_optional(wz_dir)?;
+        let wz = WzContent::open(wz_dir, config.npcs.clone(), sounds.clone())?;
         let characters = CharacterContent::open_optional(wz_dir)?;
         let mut items = ItemContent::load(wz_dir, characters.as_ref())?;
         let item_source_ids = items
@@ -96,7 +100,7 @@ impl ContentCatalog {
             .as_ref()
             .map(ItemContent::equipment_source_ids)
             .unwrap_or_default();
-        let skills = SkillContent::open_optional(wz_dir)?;
+        let skills = SkillContent::open_optional(wz_dir, sounds.clone())?;
         let skill_source_ids = skills
             .as_ref()
             .map(SkillContent::authoritative_skill_ids)
@@ -155,6 +159,7 @@ impl ContentCatalog {
             morphs,
             quests,
             skills,
+            sounds,
             wz,
         })
     }
@@ -202,6 +207,11 @@ impl ContentCatalog {
             })
             .or_else(|| {
                 self.skills
+                    .as_ref()
+                    .and_then(|source| source.get_asset(asset_id))
+            })
+            .or_else(|| {
+                self.sounds
                     .as_ref()
                     .and_then(|source| source.get_asset(asset_id))
             })

@@ -26,11 +26,11 @@ use wz_reader::WzNodeArc;
 use wz_reader::WzNodeCast;
 
 use super::WzAsset;
+use super::sound::SoundContent;
 use super::wz;
 use super::wz::WzContentError;
 
 const SKILL_ARCHIVE: &str = "Skill.wz";
-const SOUND_ARCHIVE: &str = "Sound.wz";
 const STRING_ARCHIVE: &str = "String.wz";
 const SKILL_IMAGE: &str = "Skill.img";
 
@@ -42,8 +42,7 @@ pub struct SkillContent {
     skills: HashMap<u32, IndexedSkill>,
     strings: WzNodeArc,
     fingerprint: String,
-    sounds: Option<WzNodeArc>,
-    sound_fingerprint: Option<String>,
+    sounds: Option<Arc<SoundContent>>,
     books: RwLock<HashMap<u32, SkillBook>>,
     definitions: RwLock<HashMap<u32, CachedSkillDefinition>>,
     effects: RwLock<HashMap<(u32, u32, u32), SkillEffect>>,
@@ -74,12 +73,6 @@ pub(crate) struct SkillBookContext {
     pub authoritative_skills: Vec<AuthoritativeSkillDefinition>,
 }
 
-struct SoundArchive {
-    base: WzNodeArc,
-    skills: WzNodeArc,
-    fingerprint: String,
-}
-
 #[derive(Debug, Error)]
 pub enum SkillContentError {
     #[error(transparent)]
@@ -91,7 +84,10 @@ pub enum SkillContentError {
 }
 
 impl SkillContent {
-    pub fn open_optional(directory: &Path) -> Result<Option<Self>, SkillContentError> {
+    pub fn open_optional(
+        directory: &Path,
+        sounds: Option<Arc<SoundContent>>,
+    ) -> Result<Option<Self>, SkillContentError> {
         let skill_path = directory.join(SKILL_ARCHIVE);
         if !skill_path
             .try_exists()
@@ -132,15 +128,7 @@ impl SkillContent {
         wz::parse(&strings, format!("{} {SKILL_IMAGE}", string_path.display()))?;
 
         let fingerprint = wz::archive_fingerprint(&skill_path)?;
-        let sound_archive = open_sound_archive(directory)?;
-        let mut bases = vec![skill_base, string_base];
-        let (sounds, sound_fingerprint) = match sound_archive {
-            Some(sound) => {
-                bases.push(sound.base);
-                (Some(sound.skills), Some(sound.fingerprint))
-            }
-            None => (None, None),
-        };
+        let bases = vec![skill_base, string_base];
         tracing::info!(
             path = %skill_path.display(),
             jobs = jobs.len(),
@@ -153,7 +141,6 @@ impl SkillContent {
             strings,
             fingerprint,
             sounds,
-            sound_fingerprint,
             books: RwLock::new(HashMap::new()),
             definitions: RwLock::new(HashMap::new()),
             effects: RwLock::new(HashMap::new()),
@@ -338,35 +325,6 @@ impl SkillContent {
         })
     }
 
-    fn register_sound(
-        &self,
-        source_path: &str,
-        node: &WzNodeArc,
-    ) -> Result<AssetDescriptor, SkillContentError> {
-        let fingerprint =
-            self.sound_fingerprint
-                .as_deref()
-                .ok_or_else(|| SkillContentError::Invalid {
-                    message: "cannot register a sound without Sound.wz".to_owned(),
-                })?;
-        let version = hex::encode(Sha256::digest(
-            format!("skill-sound\0{fingerprint}\0{source_path}").as_bytes(),
-        ));
-        let id = format!("wz-{version}");
-        let asset = Arc::new(WzAsset::new_sound(id.clone(), Arc::clone(node))?);
-        let extension = asset.extension();
-        self.assets
-            .write()
-            .map_err(|_| lock_error("skill asset registry"))?
-            .entry(id.clone())
-            .or_insert(asset);
-
-        Ok(AssetDescriptor {
-            id,
-            url: format!("/wz-assets/{version}.{extension}"),
-        })
-    }
-
     fn cached_definition(
         &self,
         skill_id: u32,
@@ -395,32 +353,6 @@ impl SkillContent {
             .insert(skill_id, cached.clone());
         Ok(cached)
     }
-}
-
-fn open_sound_archive(directory: &Path) -> Result<Option<SoundArchive>, SkillContentError> {
-    let path = directory.join(SOUND_ARCHIVE);
-    if !path
-        .try_exists()
-        .map_err(|source| WzContentError::Metadata {
-            path: path.clone(),
-            source,
-        })?
-    {
-        tracing::warn!(path = %path.display(), "Sound.wz is absent; skills will be silent");
-        return Ok(None);
-    }
-
-    let root = wz::open_archive(&path)?;
-    let base = wz::wrap_archive_root(&root)?;
-    wz::parse(&root, format!("{} root", path.display()))?;
-    let sounds = required_child(&root, SKILL_IMAGE)?;
-    wz::parse(&sounds, format!("{} {SKILL_IMAGE}", path.display()))?;
-    let fingerprint = wz::archive_fingerprint(&path)?;
-    Ok(Some(SoundArchive {
-        base,
-        skills: sounds,
-        fingerprint,
-    }))
 }
 
 fn index_jobs(root: &WzNodeArc) -> Result<HashMap<u32, WzNodeArc>, SkillContentError> {
@@ -972,7 +904,6 @@ mod tests {
             strings: property_node("strings"),
             fingerprint: "synthetic".to_owned(),
             sounds: None,
-            sound_fingerprint: None,
             books: RwLock::new(HashMap::new()),
             definitions: RwLock::new(definitions),
             effects: RwLock::new(HashMap::new()),

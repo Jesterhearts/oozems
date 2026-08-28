@@ -38,6 +38,7 @@ use features::RawLadder;
 use features::RawPortal;
 
 use super::config::NpcFilter;
+use super::sound::SoundContent;
 
 const MAP_ARCHIVE: &str = "Map.wz";
 const STRING_ARCHIVE: &str = "String.wz";
@@ -55,6 +56,7 @@ pub struct WzContent {
     mobs: Option<mob::MobContent>,
     npcs: Option<npc::NpcContent>,
     reactors: Option<reactor::ReactorContent>,
+    sounds: Option<Arc<SoundContent>>,
     npc_filter: NpcFilter,
 }
 
@@ -110,10 +112,11 @@ struct Bounds {
     bottom: i32,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct MapMetadata {
     return_map_id: Option<u32>,
     town: bool,
+    bgm: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -172,6 +175,7 @@ impl WzContent {
     pub fn open(
         directory: &Path,
         npc_filter: NpcFilter,
+        sounds: Option<Arc<SoundContent>>,
     ) -> Result<Self, WzContentError> {
         let map_path = directory.join(MAP_ARCHIVE);
         let exists = map_path
@@ -211,6 +215,7 @@ impl WzContent {
             mobs,
             npcs,
             reactors,
+            sounds,
             npc_filter,
         })
     }
@@ -431,6 +436,10 @@ fn build_map(
         &mut assets,
         &mut asset_ids,
     )?;
+    let audio = source
+        .sounds
+        .as_ref()
+        .map(|sounds| sounds.map_audio(metadata.bgm.as_deref()));
 
     Ok(Map {
         id: map_id,
@@ -459,6 +468,7 @@ fn build_map(
         reactor_spawn_points,
         reactor_definitions,
         reactors: Vec::new(),
+        audio,
     })
 }
 
@@ -487,9 +497,11 @@ fn read_map_metadata(
             });
         }
     };
+    let bgm = string_value(&info, "bgm")?.filter(|value| !value.trim().is_empty());
     Ok(MapMetadata {
         return_map_id,
         town,
+        bgm,
     })
 }
 
@@ -1085,6 +1097,8 @@ fn lock_error(context: &'static str) -> WzContentError {
 
 #[cfg(test)]
 mod tests {
+    use wz_reader::property::WzString;
+
     use super::Bounds;
     use super::RawDecoration;
     use super::RawPlatform;
@@ -1218,19 +1232,27 @@ mod tests {
     }
 
     #[test]
-    fn map_metadata_preserves_the_death_return_town() {
+    fn map_metadata_preserves_the_death_return_town_and_bgm() {
         let map = wz_reader::WzNode::from_str("map", 0, None).into_lock();
         let info = wz_reader::WzNode::from_str("info", 0, Some(&map)).into_lock();
         for (name, value) in [("returnMap", 100_000_000), ("town", 1)] {
             let child = wz_reader::WzNode::from_str(name, value, Some(&info)).into_lock();
             info.write().expect("info lock").add(&child);
         }
+        let bgm = wz_reader::WzNode::from_str(
+            "bgm",
+            WzString::from_str("Bgm00/FloralLife", [0; 4]),
+            Some(&info),
+        )
+        .into_lock();
+        info.write().expect("info lock").add(&bgm);
         map.write().expect("map lock").add(&info);
 
         let metadata = read_map_metadata(&map, 100_000_100).expect("map metadata");
 
         assert_eq!(metadata.return_map_id, Some(100_000_000));
         assert!(metadata.town);
+        assert_eq!(metadata.bgm.as_deref(), Some("Bgm00/FloralLife"));
     }
 
     #[test]

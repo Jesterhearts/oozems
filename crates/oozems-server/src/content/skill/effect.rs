@@ -9,7 +9,6 @@ use oozems_proto::v1::SkillEffect;
 use wz_reader::WzNodeArc;
 use wz_reader::WzNodeCast;
 use wz_reader::property::Vector2D;
-use wz_reader::property::WzSoundType;
 
 use super::SKILL_ARCHIVE;
 use super::SkillContent;
@@ -254,28 +253,12 @@ fn build_sound(
     content: &SkillContent,
     skill_id: u32,
 ) -> Result<Option<AssetDescriptor>, SkillContentError> {
-    let Some(sounds) = &content.sounds else {
-        return Ok(None);
-    };
-    let Some(skill_sounds) = wz::child(sounds, &format!("{skill_id:07}"))? else {
-        return Ok(None);
-    };
-    let Some(use_sound) = find_named_child(&skill_sounds, "use")? else {
-        return Ok(None);
-    };
-    let supported = {
-        let read = use_sound
-            .read()
-            .map_err(|_| super::lock_error("skill use sound"))?;
-        read.try_as_sound()
-            .is_some_and(|sound| matches!(sound.sound_type, WzSoundType::Mp3 | WzSoundType::Wav))
-    };
-    if !supported {
-        tracing::warn!(skill_id, "skipping skill sound with an unsupported format");
-        return Ok(None);
-    }
-    let source_path = wz::node_path(&use_sound)?;
-    content.register_sound(&source_path, &use_sound).map(Some)
+    Ok(content
+        .sounds
+        .as_ref()
+        .map(|sounds| sounds.skill_use(skill_id))
+        .transpose()?
+        .flatten())
 }
 
 fn animation_duration_ms(animation: &SkillAnimation) -> u32 {

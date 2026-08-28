@@ -9,6 +9,8 @@ use oozems_proto::v1::Vec2;
 
 use super::Game;
 use crate::api;
+use crate::audio;
+use crate::audio::MapSound;
 use crate::character_render::CharacterAnimation;
 use crate::movement;
 use crate::movement::MapTransition;
@@ -176,6 +178,7 @@ async fn request_map_transition(
         return Err("portal response was superseded while its map was loading".to_owned());
     }
     install_map(&mut game, map, position)?;
+    super::play_map_sound(&game, MapSound::Portal);
     let timestamp_ms = game.clock.now_ms;
     crate::mob_render::install_combat_events(
         &mut game.world.mob_render,
@@ -195,6 +198,11 @@ fn install_map(
     let motion = movement::initial_motion_state(&map, &position);
     let world_layers = render::world_layers(&map);
     skill_effects::clear(&mut game.world.skill_effect_state);
+    audio::clear_sound_effects(&mut game.audio.borrow_mut());
+    audio::set_bgm(
+        &mut game.audio.borrow_mut(),
+        map.audio.as_ref().and_then(|audio| audio.bgm.as_ref()),
+    );
     crate::render::npc::clear(&mut game.world.npc_animations);
     super::recovery_actions::reset(&mut game.requests.recovery);
     let now_ms = game.clock.now_ms;

@@ -3,6 +3,7 @@
 mod animation;
 mod api;
 mod assets;
+mod audio;
 mod cash_shop_ui;
 mod character_create;
 mod character_render;

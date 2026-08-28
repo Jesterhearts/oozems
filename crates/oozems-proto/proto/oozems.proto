@@ -993,6 +993,19 @@ message Map {
   repeated ReactorSpawnPoint reactor_spawn_points = 20;
   repeated ReactorDefinition reactor_definitions = 21;
   repeated Reactor reactors = 22;
+  MapAudio audio = 23;
+}
+
+message MapAudio {
+  AssetDescriptor bgm = 1;
+  AssetDescriptor jump = 2;
+  AssetDescriptor portal = 3;
+  AssetDescriptor pick_up_item = 4;
+  AssetDescriptor drop_item = 5;
+  AssetDescriptor use_item = 6;
+  AssetDescriptor tombstone = 7;
+  AssetDescriptor level_up = 8;
+  AssetDescriptor quest_clear = 9;
 }
 
 message MapMovementBounds {

@@ -20,6 +20,8 @@ use super::request_dispatch::collect_refresh_requests;
 use super::request_dispatch::save_if_due;
 use super::request_dispatch::synchronize_morph;
 use super::requests;
+use crate::audio;
+use crate::audio::MapSound;
 use crate::character_render::CharacterAnimation;
 use crate::game_gui;
 use crate::game_gui::GuiAction;
@@ -68,11 +70,16 @@ pub(super) fn update(
     };
     game.clock.last_frame_ms = timestamp_ms;
     game.clock.now_ms = timestamp_ms;
-    skill_effects::update(
-        &mut game.world.skill_effect_state,
-        &game.surface.images,
-        timestamp_ms,
-    );
+    {
+        let mut audio_state = game.audio.borrow_mut();
+        audio::update(&mut audio_state, timestamp_ms);
+        skill_effects::update(
+            &mut game.world.skill_effect_state,
+            &game.surface.images,
+            &mut audio_state,
+            timestamp_ms,
+        );
+    }
     let now_ms = js_sys::Date::now().max(0.0) as u64;
     game.world.map.dropped_items.retain(|drop| {
         drop.despawn_at_unix_ms > now_ms
@@ -83,6 +90,7 @@ pub(super) fn update(
     let death_started = dead && !crate::death_ui::is_open(game.ui.death);
     crate::death_ui::synchronize(&mut game.ui.death, dead, timestamp_ms);
     if death_started {
+        super::play_map_sound(game, MapSound::Tombstone);
         game.world.active_setup_item_id = None;
         let mut gui = game.ui.gui_state.borrow_mut();
         gui.stats_open = false;
@@ -158,8 +166,8 @@ pub(super) fn update(
         .requests
         .admission
         .is_active(requests::RequestKind::Transition);
-    let selected_transition = if transition_active || dead {
-        None
+    let movement = if transition_active || dead {
+        PlayerMovement::default()
     } else {
         update_player(
             &mut game.player.state,
@@ -170,6 +178,10 @@ pub(super) fn update(
             input.player,
         )
     };
+    if movement.jumped {
+        super::play_map_sound(game, MapSound::Jump);
+    }
+    let selected_transition = movement.transition;
     if dead {
         update_character_animation(
             &mut game.world.character_animation,
@@ -380,6 +392,12 @@ fn apply_key_actions(
     pick_up
 }
 
+#[derive(Default)]
+struct PlayerMovement {
+    transition: Option<MapTransition>,
+    jumped: bool,
+}
+
 fn update_player(
     player: &mut PlayerState,
     world: &mut WorldRuntime,
@@ -387,8 +405,10 @@ fn update_player(
     now_ms: f64,
     elapsed_seconds: f32,
     input: PlayerInput,
-) -> Option<MapTransition> {
-    let position = player.position?;
+) -> PlayerMovement {
+    let Some(position) = player.position else {
+        return PlayerMovement::default();
+    };
     let previous_motion = world.motion;
     if input.horizontal != 0.0 {
         world.facing_left = input.horizontal < 0.0;
@@ -428,7 +448,22 @@ fn update_player(
     );
     player.position = Some(output.position);
     world.motion = output.state;
-    output.transition
+    PlayerMovement {
+        jumped: jump_started(previous_motion, input, &output),
+        transition: output.transition,
+    }
+}
+
+fn jump_started(
+    previous: MotionState,
+    input: PlayerInput,
+    output: &movement::MotionOutput,
+) -> bool {
+    input.jump_pressed
+        && (previous.on_ground || previous.climbing.is_some())
+        && output.state.velocity_y < 0.0
+        && !output.dropped_through
+        && output.transition.is_none()
 }
 
 fn setup_item_remains_active(
@@ -593,6 +628,7 @@ mod tests {
     use super::character_animation_elapsed_ms;
     use super::character_animation_plays;
     use super::character_attack_is_active;
+    use super::jump_started;
     use super::movement_observation_mode;
     use super::new_character_animation_state;
     use super::player_is_dead;
@@ -649,6 +685,54 @@ mod tests {
     }
 
     #[test]
+    fn jump_sound_requires_a_supported_jump_transition() {
+        let jump = PlayerInput {
+            jump_pressed: true,
+            ..PlayerInput::default()
+        };
+        let ascending = MotionOutput {
+            position: Vec2::default(),
+            state: MotionState {
+                velocity_y: -100.0,
+                ..MotionState::default()
+            },
+            transition: None,
+            dropped_through: false,
+        };
+
+        assert!(jump_started(
+            MotionState {
+                on_ground: true,
+                ..MotionState::default()
+            },
+            jump,
+            &ascending,
+        ));
+        assert!(jump_started(
+            MotionState {
+                climbing: Some(0),
+                ..MotionState::default()
+            },
+            jump,
+            &ascending,
+        ));
+        assert!(!jump_started(MotionState::default(), jump, &ascending));
+
+        let dropped = MotionOutput {
+            dropped_through: true,
+            ..ascending
+        };
+        assert!(!jump_started(
+            MotionState {
+                on_ground: true,
+                ..MotionState::default()
+            },
+            jump,
+            &dropped,
+        ));
+    }
+
+    #[test]
     fn dead_players_keep_stationary_observations_until_a_transition_starts() {
         assert_eq!(
             movement_observation_mode(true, false, false),
@@ -669,6 +753,7 @@ mod tests {
     use crate::game_gui::GuiState;
     use crate::keymap;
     use crate::movement::MapTransition;
+    use crate::movement::MotionOutput;
     use crate::movement::MotionState;
     use crate::movement::PlayerInput;
 

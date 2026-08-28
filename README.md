@@ -141,7 +141,7 @@ content:
 | `Character.wz` | Character creation choices, composed sprites, and equipment icons |
 | `UI.wz` | Classic HUD, windows, controls, and Cash Shop screen |
 | `Skill.wz` | Skill books, properties, icons, and effects |
-| `Sound.wz` | Skill sounds |
+| `Sound.wz` | Map BGM, gameplay sound effects, and skill sounds |
 
 ### Maps and assets
 
@@ -295,6 +295,13 @@ which their persisted player records require.
 
 ### Skills and audio
 
+When `Sound.wz` is present, each map's `info/bgm` reference selects its looping
+background music. Moving between maps changes the track only when the reference
+changes. The browser also uses the archive's `Game.img` cues for jumping,
+portals, item pickup, item drop and use, death, level-up, and quest completion.
+Browser autoplay rules can defer the initial BGM until the first keyboard or
+pointer input.
+
 Place `Skill.wz` and its matching `String.wz` beside the other archives to use
 the original skill books. New characters receive the configured initial skill
 points. Open the Skills window and click the WZ plus button beside a skill to
@@ -333,10 +340,11 @@ modifier uses the highest nonzero value among the active holders. Oozems does
 not add these values together. A new morph replaces any active morph from
 another source.
 
-When `Sound.wz` is present, a successful skill use also returns the matching
-`Skill.img/<skill ID>/Use` sound. The server reads caster `effect`, projectile
-`ball`, and target `hit` animation frames from the active skill level in
-`Skill.wz`. The use response includes only their versioned descriptors.
+Successful skill use also returns the matching `Sound.wz`
+`Skill.img/<skill ID>/Use` sound when it is available. The server reads caster
+`effect`, projectile `ball`, and target `hit` animation frames from the active
+skill level in `Skill.wz`. The use response includes only their versioned
+descriptors.
 
 The browser requests the PNG and MP3 or WAV data on first use. It then relies on
 its normal cache. Projectile effects travel in the character's facing direction

@@ -7,6 +7,7 @@ use oozems_proto::v1::ItemActionResponse;
 
 use super::Game;
 use crate::api;
+use crate::audio::MapSound;
 use crate::game_gui::GuiAction;
 use crate::show_status;
 
@@ -106,6 +107,7 @@ pub(super) fn begin_pick_up(
                             .map
                             .dropped_items
                             .retain(|drop| drop.id != drop_id);
+                        super::play_map_sound(game, MapSound::PickUpItem);
                         super::requests::RequestStatus::success("Item picked up.")
                     }
                     Err(error) => super::requests::RequestStatus::error(format!(
@@ -211,6 +213,11 @@ fn install_item_action_update(
         }
     {
         game.world.map.dropped_items.push(drop);
+    }
+    match action {
+        GuiAction::Drop { .. } => super::play_map_sound(game, MapSound::DropItem),
+        GuiAction::UseItem { .. } => super::play_map_sound(game, MapSound::UseItem),
+        _ => {}
     }
     Ok(())
 }
