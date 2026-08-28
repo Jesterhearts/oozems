@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::RwLock;
+use std::time::Duration;
 
 use oozems_proto::v1::AssetDescriptor;
 use oozems_proto::v1::CharacterAppearance;
@@ -248,6 +249,22 @@ impl CharacterContent {
                 .and_then(|weapon| self.weapon_attacks.equipped.get(&weapon.item_id))
                 .map_or(self.weapon_attacks.bare_hands, |attack| attack.reach),
         )
+    }
+
+    pub fn basic_attack_duration(
+        &self,
+        appearance: &CharacterAppearance,
+    ) -> Result<Option<Duration>, CharacterContentError> {
+        let Some(appearance) =
+            AppearanceKey::parse(appearance).filter(|key| self.supports_key(*key))
+        else {
+            return Ok(None);
+        };
+        let body = required_style(&self.bodies, appearance.skin_id, "body")?;
+        parse(&body, format!("Character.wz body {}", appearance.skin_id))?;
+        Ok(Some(Duration::from_millis(animation_duration_ms(
+            &body, "swingO1",
+        )?)))
     }
 
     pub(super) fn item_source(&self) -> (&WzNodeArc, &str) {
@@ -677,6 +694,37 @@ fn build_animation(
     Ok(frames)
 }
 
+fn animation_duration_ms(
+    body: &WzNodeArc,
+    animation_name: &str,
+) -> Result<u64, CharacterContentError> {
+    let animation = child(body, animation_name)?.ok_or_else(|| CharacterContentError::Invalid {
+        message: format!("the selected body does not contain {animation_name}"),
+    })?;
+    let mut duration_ms = 0_u64;
+    let mut frame_count = 0_u32;
+    for frame in sorted_children(&animation)? {
+        if node_name(&frame)?.parse::<u32>().is_err() {
+            continue;
+        }
+        duration_ms = duration_ms.saturating_add(u64::from(frame_delay_ms(&frame)?));
+        frame_count += 1;
+    }
+    if frame_count == 0 {
+        return Err(CharacterContentError::Invalid {
+            message: format!("the selected body has no {animation_name} frames"),
+        });
+    }
+    Ok(duration_ms)
+}
+
+fn frame_delay_ms(frame: &WzNodeArc) -> Result<u32, CharacterContentError> {
+    Ok(int_value(frame, "delay")?
+        .and_then(|value| u32::try_from(value).ok())
+        .unwrap_or(500)
+        .max(1))
+}
+
 fn build_frame(
     source: &CharacterContent,
     body_frame: &WzNodeArc,
@@ -748,10 +796,7 @@ fn build_frame(
 
     Ok(CharacterFrame {
         layers,
-        delay_ms: int_value(body_frame, "delay")?
-            .and_then(|value| u32::try_from(value).ok())
-            .unwrap_or(500)
-            .max(1),
+        delay_ms: frame_delay_ms(body_frame)?,
     })
 }
 
@@ -991,6 +1036,7 @@ mod tests {
     use super::WeaponAttackSource;
     use super::WeaponAttacks;
     use super::add_weapon_afterimage_layers;
+    use super::animation_duration_ms;
     use super::attachment_translation;
     use super::character_equipment_sources;
     use super::hair_frame;
@@ -1058,6 +1104,24 @@ mod tests {
         assert_eq!((layers[0].width, layers[0].height), (79, 68));
         assert_eq!(layers[0].z, "0");
         assert_eq!(z_rank(&layers[0].z), 75);
+    }
+
+    #[test]
+    fn attack_duration_sums_authored_body_frame_delays() {
+        let body = WzNode::from_str("body", 0, None).into_lock();
+        let animation = add_branch(&body, "swingO1");
+        for (name, delay_ms) in [("0", 100), ("1", 200)] {
+            let frame = add_branch(&animation, name);
+            add(
+                &frame,
+                WzNode::from_str("delay", delay_ms, Some(&frame)).into_lock(),
+            );
+        }
+
+        assert_eq!(
+            animation_duration_ms(&body, "swingO1").expect("attack duration"),
+            300
+        );
     }
 
     #[test]

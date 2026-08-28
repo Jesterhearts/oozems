@@ -112,6 +112,13 @@ pub fn calculate_basic_attack(
     Ok(DamageRange { minimum, maximum })
 }
 
+pub fn basic_attack_interval(
+    configured: Duration,
+    animation: Option<Duration>,
+) -> Duration {
+    animation.map_or(configured, |animation| configured.max(animation))
+}
+
 pub fn reserve_basic_attack(
     cooldowns: &BasicAttackCooldowns,
     player_id: &str,
@@ -183,6 +190,7 @@ mod tests {
     use super::BasicAttackCooldowns;
     use super::DamageRange;
     use super::VerticalBounds;
+    use super::basic_attack_interval;
     use super::calculate_basic_attack;
     use super::release_basic_attack;
     use super::reserve_basic_attack;
@@ -274,6 +282,21 @@ mod tests {
             reserve_basic_attack(&cooldowns, "player", 1_602, interval),
             Err(AttackRuleError::Cooldown { remaining_ms: 599 })
         );
+    }
+
+    #[test]
+    fn animation_duration_sets_the_minimum_attack_interval() {
+        let configured = std::time::Duration::from_millis(600);
+
+        assert_eq!(
+            basic_attack_interval(configured, Some(std::time::Duration::from_millis(800))),
+            std::time::Duration::from_millis(800)
+        );
+        assert_eq!(
+            basic_attack_interval(configured, Some(std::time::Duration::from_millis(400))),
+            configured
+        );
+        assert_eq!(basic_attack_interval(configured, None), configured);
     }
 
     fn formulas() -> crate::skill_formula::FormulaCatalog {

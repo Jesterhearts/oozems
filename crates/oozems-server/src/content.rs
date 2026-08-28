@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::time::Duration;
 
 use oozems_proto::v1::CharacterAppearance;
 use oozems_proto::v1::CharacterCreationOptions;
@@ -421,6 +422,18 @@ impl ContentCatalog {
         equipment: &[EquippedItem],
     ) -> Option<crate::attacks::AttackReach> {
         self.characters.as_ref()?.basic_attack_reach(equipment)
+    }
+
+    pub fn basic_attack_duration(
+        &self,
+        appearance: &CharacterAppearance,
+    ) -> Result<Option<Duration>, ContentError> {
+        self.characters
+            .as_ref()
+            .map(|source| source.basic_attack_duration(appearance))
+            .transpose()
+            .map(|duration| duration.flatten())
+            .map_err(Into::into)
     }
 }
 

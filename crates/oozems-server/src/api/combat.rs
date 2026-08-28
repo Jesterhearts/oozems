@@ -42,6 +42,16 @@ pub async fn use_basic_attack(
         .inventory
         .as_ref()
         .and_then(|inventory| state.catalog.basic_attack_reach(&inventory.equipment));
+    let attack_animation_duration = player
+        .appearance
+        .as_ref()
+        .map(|appearance| state.catalog.basic_attack_duration(appearance))
+        .transpose()?
+        .flatten();
+    let attack_interval = crate::attacks::basic_attack_interval(
+        state.gameplay.combat.player_attack_interval,
+        attack_animation_duration,
+    );
     let damage = crate::attacks::calculate_basic_attack(
         &player,
         &state.formulas,
@@ -63,7 +73,7 @@ pub async fn use_basic_attack(
         &state.basic_attack_cooldowns,
         player_id.as_str(),
         now_ms,
-        state.gameplay.combat.player_attack_interval,
+        attack_interval,
     )
     .map_err(attack_rule_error)?;
     let mut transaction = crate::player_transaction::new_player_transaction(

@@ -832,8 +832,10 @@ interested in that target. Basic attacks use the authored WZ swing bounds for
 the equipped weapon or bare hands. `player_attack_range` and
 `attack_vertical_reach` define the skill target envelope and the fallback when
 character WZ geometry is unavailable.
-`player_attack_interval` limits how often each player can use Basic Attack. The
-two touch reach values form the mob contact box.
+`player_attack_interval` is the minimum delay between Basic Attacks. When WZ
+character animation data is available, a longer attack animation extends this
+delay so another attack cannot start before it finishes. The two touch reach
+values form the mob contact box.
 
 `projectile_range` controls when a magic-attacking mob can launch a projectile.
 `projectile_speed` is measured in map pixels per second, and

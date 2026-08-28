@@ -208,6 +208,7 @@ pub(super) fn update(
         game.player.active_buffs.attacks_disabled || dead,
         transition_pending,
         transition_active,
+        character_attack_is_active(game.world.character_animation, timestamp_ms),
         basic_attack_requested,
         input.skills.into_iter().next(),
     );
@@ -312,12 +313,13 @@ fn select_combat_requests(
     attacks_disabled: bool,
     transition_selected: bool,
     transition_active: bool,
+    character_attack_active: bool,
     basic_attack_requested: bool,
     skill_id: Option<u32>,
 ) -> (bool, Option<u32>) {
     let combat_allowed = !attacks_disabled && !transition_selected && !transition_active;
     (
-        combat_allowed && basic_attack_requested,
+        combat_allowed && !character_attack_active && basic_attack_requested,
         combat_allowed.then_some(skill_id).flatten(),
     )
 }
@@ -536,6 +538,16 @@ pub(super) fn start_character_attack_animation(
     world.character_animation.one_shot_until_ms = Some(now_ms + duration_ms.max(1) as f64);
 }
 
+fn character_attack_is_active(
+    state: CharacterAnimationState,
+    timestamp_ms: f64,
+) -> bool {
+    state.animation == CharacterAnimation::Attack
+        && state
+            .one_shot_until_ms
+            .is_some_and(|deadline_ms| timestamp_ms < deadline_ms)
+}
+
 pub(super) fn restart_character_animation(
     state: &mut CharacterAnimationState,
     timestamp_ms: f64,
@@ -580,6 +592,7 @@ mod tests {
     use super::character_animation;
     use super::character_animation_elapsed_ms;
     use super::character_animation_plays;
+    use super::character_attack_is_active;
     use super::movement_observation_mode;
     use super::new_character_animation_state;
     use super::player_is_dead;
@@ -850,6 +863,23 @@ mod tests {
     }
 
     #[test]
+    fn active_attack_animation_blocks_another_basic_attack() {
+        let mut animation = new_character_animation_state(CharacterAnimation::Attack, true, 100.0);
+        animation.one_shot_until_ms = Some(400.0);
+
+        assert!(character_attack_is_active(animation, 399.0));
+        assert!(!character_attack_is_active(animation, 400.0));
+        assert_eq!(
+            select_combat_requests(false, false, false, true, true, None),
+            (false, None)
+        );
+        assert_eq!(
+            select_combat_requests(false, false, false, false, true, None),
+            (true, None)
+        );
+    }
+
+    #[test]
     fn death_interrupts_an_active_attack_animation() {
         let mut animation = new_character_animation_state(CharacterAnimation::Attack, true, 100.0);
         animation.one_shot_until_ms = Some(400.0);
@@ -914,19 +944,19 @@ mod tests {
     #[test]
     fn authoritative_disable_and_transitions_suppress_combat_requests() {
         assert_eq!(
-            select_combat_requests(true, false, false, true, Some(1)),
+            select_combat_requests(true, false, false, false, true, Some(1)),
             (false, None)
         );
         assert_eq!(
-            select_combat_requests(false, true, false, true, Some(1)),
+            select_combat_requests(false, true, false, false, true, Some(1)),
             (false, None)
         );
         assert_eq!(
-            select_combat_requests(false, false, true, true, Some(1)),
+            select_combat_requests(false, false, true, false, true, Some(1)),
             (false, None)
         );
         assert_eq!(
-            select_combat_requests(false, false, false, true, Some(1)),
+            select_combat_requests(false, false, false, false, true, Some(1)),
             (true, Some(1))
         );
     }
