@@ -417,6 +417,7 @@ fn build_map(
     let mob_spawn_points = mob::build_spawn_points(raw_mob_spawns, &platforms, bounds);
     let mob_definitions = mob::load_definitions(
         source.mobs.as_ref(),
+        source.sounds.as_deref(),
         &mob_spawn_points,
         &mut assets,
         &mut asset_ids,

@@ -77,6 +77,20 @@ impl SoundContent {
         self.descriptor(&skill_sound_reference(skill_id))
     }
 
+    pub(super) fn mob_damage(
+        &self,
+        mob_id: u32,
+    ) -> Option<AssetDescriptor> {
+        self.optional_descriptor(&mob_sound_reference(mob_id, "Damage"))
+    }
+
+    pub(super) fn mob_death(
+        &self,
+        mob_id: u32,
+    ) -> Option<AssetDescriptor> {
+        self.optional_descriptor(&mob_sound_reference(mob_id, "Die"))
+    }
+
     pub(super) fn get_asset(
         &self,
         asset_id: &str,
@@ -179,6 +193,13 @@ fn skill_sound_reference(skill_id: u32) -> String {
     format!("Skill/{skill_id:07}/Use")
 }
 
+fn mob_sound_reference(
+    mob_id: u32,
+    cue: &str,
+) -> String {
+    format!("Mob/{mob_id:07}/{cue}")
+}
+
 fn resolve_sound_node(
     root: &WzNodeArc,
     path: &str,
@@ -235,6 +256,7 @@ fn lock_error(context: &'static str) -> WzContentError {
 
 #[cfg(test)]
 mod tests {
+    use super::mob_sound_reference;
     use super::normalize_sound_reference;
     use super::skill_sound_reference;
 
@@ -260,5 +282,11 @@ mod tests {
     fn skill_sound_references_preserve_seven_digit_ids() {
         assert_eq!(skill_sound_reference(1_003), "Skill/0001003/Use");
         assert_eq!(skill_sound_reference(2_321_003), "Skill/2321003/Use");
+    }
+
+    #[test]
+    fn mob_sound_references_preserve_seven_digit_ids() {
+        assert_eq!(mob_sound_reference(100_100, "Damage"), "Mob/0100100/Damage");
+        assert_eq!(mob_sound_reference(100_100, "Die"), "Mob/0100100/Die");
     }
 }

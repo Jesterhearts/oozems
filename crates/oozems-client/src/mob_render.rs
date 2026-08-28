@@ -12,6 +12,7 @@ const COMBAT_TEXT_LIFETIME_MS: f64 = 900.0;
 pub struct MobRenderState {
     transitions: HashMap<String, MobTransition>,
     projectile_transitions: HashMap<String, MobTransition>,
+    reactions: HashMap<String, TimedMobReaction>,
     combat_texts: Vec<CombatText>,
     last_simulation_sequence: u64,
 }
@@ -22,6 +23,24 @@ struct MobTransition {
     to: Vec2,
     started_at_ms: f64,
     duration_ms: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MobReactionKind {
+    Hit,
+    Death,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct MobReactionEvent {
+    pub target_id: String,
+    pub kind: MobReactionKind,
+}
+
+#[derive(Clone, Copy)]
+struct TimedMobReaction {
+    kind: MobReactionKind,
+    started_at_ms: f64,
 }
 
 #[derive(Clone, Copy)]
@@ -56,6 +75,18 @@ pub fn install_snapshot(
     timestamp_ms: f64,
     duration_ms: u64,
 ) {
+    state
+        .reactions
+        .retain(|mob_id, _| next_mobs.iter().any(|mob| mob.id == *mob_id));
+    for next in &next_mobs {
+        if next.current_hp > 0
+            && mobs
+                .iter()
+                .any(|current| current.id == next.id && current.current_hp == 0)
+        {
+            state.reactions.remove(&next.id);
+        }
+    }
     let transitions = next_mobs
         .iter()
         .filter_map(|next| {
@@ -132,7 +163,17 @@ pub fn install_combat_events(
     state: &mut MobRenderState,
     events: Vec<CombatEvent>,
     timestamp_ms: f64,
-) {
+) -> Vec<MobReactionEvent> {
+    let reactions = mob_reactions(&events);
+    for reaction in &reactions {
+        state.reactions.insert(
+            reaction.target_id.clone(),
+            TimedMobReaction {
+                kind: reaction.kind,
+                started_at_ms: timestamp_ms,
+            },
+        );
+    }
     state
         .combat_texts
         .retain(|text| timestamp_ms - text.started_at_ms < COMBAT_TEXT_LIFETIME_MS);
@@ -159,6 +200,19 @@ pub fn install_combat_events(
                 started_at_ms: timestamp_ms,
             })
         }));
+    reactions
+}
+
+pub(crate) fn reaction(
+    state: &MobRenderState,
+    mob_id: &str,
+    timestamp_ms: f64,
+) -> Option<(MobReactionKind, f64)> {
+    let reaction = state.reactions.get(mob_id)?;
+    Some((
+        reaction.kind,
+        (timestamp_ms - reaction.started_at_ms).max(0.0),
+    ))
 }
 
 pub fn projectile_position(
@@ -227,6 +281,34 @@ fn finite_position(mob: &Mob) -> Option<Vec2> {
     mob.position.filter(finite_vector)
 }
 
+fn mob_reactions(events: &[CombatEvent]) -> Vec<MobReactionEvent> {
+    let mut reactions = Vec::<MobReactionEvent>::new();
+    for event in events {
+        let kind = match CombatEventKind::try_from(event.kind) {
+            Ok(CombatEventKind::PlayerHitMob) => MobReactionKind::Hit,
+            Ok(CombatEventKind::MobDied) => MobReactionKind::Death,
+            _ => continue,
+        };
+        if event.target_id.is_empty() {
+            continue;
+        }
+        if let Some(existing) = reactions
+            .iter_mut()
+            .find(|reaction| reaction.target_id == event.target_id)
+        {
+            if kind == MobReactionKind::Death {
+                existing.kind = kind;
+            }
+        } else {
+            reactions.push(MobReactionEvent {
+                target_id: event.target_id.clone(),
+                kind,
+            });
+        }
+    }
+    reactions
+}
+
 #[cfg(test)]
 mod tests {
     use oozems_proto::v1::CombatEvent;
@@ -235,6 +317,7 @@ mod tests {
     use oozems_proto::v1::MobProjectile;
     use oozems_proto::v1::Vec2;
 
+    use super::MobReactionKind;
     use super::MobRenderState;
     use super::accept_simulation_snapshot;
     use super::combat_texts;
@@ -243,6 +326,7 @@ mod tests {
     use super::install_snapshot;
     use super::position;
     use super::projectile_position;
+    use super::reaction;
 
     #[test]
     fn authoritative_snapshots_are_interpolated_over_the_poll_interval() {
@@ -364,6 +448,80 @@ mod tests {
         assert_eq!(visible[0].damage, 42);
         assert_eq!(visible[0].progress, 0.5);
         assert!(combat_texts(&state, 1_900.0).is_empty());
+    }
+
+    #[test]
+    fn a_confirmed_hit_starts_the_target_mob_reaction() {
+        let mut state = MobRenderState::default();
+        let reactions = install_combat_events(
+            &mut state,
+            vec![CombatEvent {
+                kind: CombatEventKind::PlayerHitMob as i32,
+                target_id: "slime".to_owned(),
+                ..CombatEvent::default()
+            }],
+            1_000.0,
+        );
+
+        assert_eq!(reactions.len(), 1);
+        assert_eq!(reactions[0].kind, MobReactionKind::Hit);
+        assert_eq!(
+            reaction(&state, "slime", 1_150.0),
+            Some((MobReactionKind::Hit, 150.0))
+        );
+    }
+
+    #[test]
+    fn a_killing_hit_uses_one_death_reaction() {
+        let mut state = MobRenderState::default();
+        let reactions = install_combat_events(
+            &mut state,
+            vec![
+                CombatEvent {
+                    kind: CombatEventKind::PlayerHitMob as i32,
+                    target_id: "slime".to_owned(),
+                    ..CombatEvent::default()
+                },
+                CombatEvent {
+                    kind: CombatEventKind::MobDied as i32,
+                    target_id: "slime".to_owned(),
+                    ..CombatEvent::default()
+                },
+            ],
+            1_000.0,
+        );
+
+        assert_eq!(reactions.len(), 1);
+        assert_eq!(reactions[0].kind, MobReactionKind::Death);
+        assert_eq!(
+            reaction(&state, "slime", 1_000.0),
+            Some((MobReactionKind::Death, 0.0))
+        );
+    }
+
+    #[test]
+    fn respawning_clears_the_previous_death_reaction() {
+        let mut state = MobRenderState::default();
+        let mut mobs = vec![mob_with_hp("slime", 300.0, 300.0, 0)];
+        install_combat_events(
+            &mut state,
+            vec![CombatEvent {
+                kind: CombatEventKind::MobDied as i32,
+                target_id: "slime".to_owned(),
+                ..CombatEvent::default()
+            }],
+            900.0,
+        );
+
+        install_snapshot(
+            &mut state,
+            &mut mobs,
+            vec![mob_with_hp("slime", 100.0, 300.0, 50)],
+            1_000.0,
+            200,
+        );
+
+        assert_eq!(reaction(&state, "slime", 1_000.0), None);
     }
 
     #[test]

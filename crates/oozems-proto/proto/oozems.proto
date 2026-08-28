@@ -1077,6 +1077,8 @@ message MobDefinition {
   bool undead = 15;
   repeated MobAnimation animations = 16;
   bool can_jump = 17;
+  AssetDescriptor damage_sound = 18;
+  AssetDescriptor death_sound = 19;
 }
 
 message MobAnimation {

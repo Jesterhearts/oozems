@@ -179,12 +179,7 @@ async fn request_map_transition(
     }
     install_map(&mut game, map, position)?;
     super::play_map_sound(&game, MapSound::Portal);
-    let timestamp_ms = game.clock.now_ms;
-    crate::mob_render::install_combat_events(
-        &mut game.world.mob_render,
-        std::mem::take(&mut response.combat_events),
-        timestamp_ms,
-    );
+    super::install_mob_combat_events(&mut game, std::mem::take(&mut response.combat_events));
     Ok(name)
 }
 
@@ -371,11 +366,7 @@ pub(super) fn install_response(
             game.clock.now_ms,
         );
         game.world.map.dropped_items = std::mem::take(&mut response.dropped_items);
-        crate::mob_render::install_combat_events(
-            &mut game.world.mob_render,
-            std::mem::take(&mut response.combat_events),
-            game.clock.now_ms,
-        );
+        super::install_mob_combat_events(game, std::mem::take(&mut response.combat_events));
     }
     super::install_full_player_update(game, player);
     if authoritative.sequence < game.requests.movement.last_response_sequence {

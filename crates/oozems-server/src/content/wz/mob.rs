@@ -34,6 +34,7 @@ use super::sorted_children;
 use super::string_value;
 use super::vector_value;
 use super::wrap_archive_root;
+use crate::content::sound::SoundContent;
 
 const MOB_ARCHIVE: &str = "Mob.wz";
 const DEFAULT_FRAME_DELAY_MS: u32 = 100;
@@ -209,6 +210,7 @@ pub(super) fn build_spawn_points(
 
 pub(super) fn load_definitions(
     content: Option<&MobContent>,
+    sounds: Option<&SoundContent>,
     spawn_points: &[MobSpawnPoint],
     assets: &mut Vec<AssetDescriptor>,
     asset_ids: &mut HashSet<String>,
@@ -233,7 +235,10 @@ pub(super) fn load_definitions(
                 assets.push(asset);
             }
         }
-        definitions.push(loaded.definition);
+        let mut definition = loaded.definition;
+        definition.damage_sound = sounds.and_then(|sounds| sounds.mob_damage(mob_id));
+        definition.death_sound = sounds.and_then(|sounds| sounds.mob_death(mob_id));
+        definitions.push(definition);
     }
     Ok(definitions)
 }
@@ -289,6 +294,8 @@ fn build_definition(
             undead: flag_value(&info, "undead")?,
             animations,
             can_jump,
+            damage_sound: None,
+            death_sound: None,
         },
         None => MobDefinition {
             id: mob_id,

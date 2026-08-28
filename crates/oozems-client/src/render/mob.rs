@@ -16,7 +16,7 @@ pub(super) fn draw(
     layer: i32,
 ) {
     for mob in &game.world.map.mobs {
-        if mob.layer != layer || mob.current_hp == 0 {
+        if mob.layer != layer {
             continue;
         }
         let Some(position) =
@@ -27,11 +27,9 @@ pub(super) fn draw(
         let Some(definition) = definition(game, mob.definition_id) else {
             continue;
         };
-        let mode = MobMovementMode::try_from(mob.movement_mode).unwrap_or(MobMovementMode::Idle);
-        let Some(animation) = movement_animation(definition, mode) else {
-            continue;
-        };
-        let Some(preferred) = animation_frame(animation, game.clock.now_ms) else {
+        let Some(preferred) =
+            frame_selection(&game.world.mob_render, mob, definition, game.clock.now_ms)
+        else {
             continue;
         };
         if !super::sprite_is_visible(
@@ -60,16 +58,18 @@ pub(super) fn draw(
             camera_x,
             camera_y,
         );
-        draw_health_bar(
-            game,
-            position.x,
-            position.y,
-            frame.origin_y,
-            mob.current_hp,
-            definition.max_hp,
-            camera_x,
-            camera_y,
-        );
+        if mob.current_hp > 0 {
+            draw_health_bar(
+                game,
+                position.x,
+                position.y,
+                frame.origin_y,
+                mob.current_hp,
+                definition.max_hp,
+                camera_x,
+                camera_y,
+            );
+        }
     }
     for projectile in &game.world.map.mob_projectiles {
         if projectile.layer != layer {
@@ -205,6 +205,48 @@ fn movement_animation(
         })
 }
 
+fn frame_selection<'a>(
+    state: &crate::mob_render::MobRenderState,
+    mob: &oozems_proto::v1::Mob,
+    definition: &'a MobDefinition,
+    timestamp_ms: f64,
+) -> Option<&'a MobFrame> {
+    if let Some((kind, elapsed_ms)) = crate::mob_render::reaction(state, &mob.id, timestamp_ms)
+        && (kind != crate::mob_render::MobReactionKind::Death || mob.current_hp == 0)
+    {
+        let name = match kind {
+            crate::mob_render::MobReactionKind::Hit => "hit1",
+            crate::mob_render::MobReactionKind::Death => "die1",
+        };
+        if let Some(animation) = named_animation(definition, name) {
+            if let Some(frame) = animation_frame_once(animation, elapsed_ms) {
+                return Some(frame);
+            }
+            if kind == crate::mob_render::MobReactionKind::Death {
+                return None;
+            }
+        } else if kind == crate::mob_render::MobReactionKind::Death {
+            return None;
+        }
+    }
+    if mob.current_hp == 0 {
+        return None;
+    }
+    let mode = MobMovementMode::try_from(mob.movement_mode).unwrap_or(MobMovementMode::Idle);
+    movement_animation(definition, mode)
+        .and_then(|animation| animation_frame(animation, timestamp_ms))
+}
+
+fn named_animation<'a>(
+    definition: &'a MobDefinition,
+    name: &str,
+) -> Option<&'a MobAnimation> {
+    definition
+        .animations
+        .iter()
+        .find(|animation| animation.name == name && !animation.frames.is_empty())
+}
+
 fn animation_frame(
     animation: &MobAnimation,
     timestamp_ms: f64,
@@ -213,6 +255,18 @@ fn animation_frame(
         animation.frames.iter().map(|frame| frame.delay_ms),
         timestamp_ms,
         crate::animation::Playback::Loop,
+    )?;
+    animation.frames.get(index)
+}
+
+fn animation_frame_once(
+    animation: &MobAnimation,
+    elapsed_ms: f64,
+) -> Option<&MobFrame> {
+    let index = crate::animation::frame_index(
+        animation.frames.iter().map(|frame| frame.delay_ms),
+        elapsed_ms,
+        crate::animation::Playback::Once,
     )?;
     animation.frames.get(index)
 }
@@ -257,12 +311,16 @@ fn frame_x(
 
 #[cfg(test)]
 mod tests {
+    use oozems_proto::v1::CombatEvent;
+    use oozems_proto::v1::CombatEventKind;
+    use oozems_proto::v1::Mob;
     use oozems_proto::v1::MobAnimation;
     use oozems_proto::v1::MobDefinition;
     use oozems_proto::v1::MobFrame;
     use oozems_proto::v1::MobMovementMode;
 
     use super::animation_frame;
+    use super::frame_selection;
     use super::frame_x;
     use super::health_bar_top;
     use super::movement_animation;
@@ -340,6 +398,104 @@ mod tests {
     }
 
     #[test]
+    fn a_hit_animation_plays_once_before_movement_resumes() {
+        let definition = MobDefinition {
+            animations: vec![animation("stand", 100), animation("hit1", 200)],
+            ..MobDefinition::default()
+        };
+        let mob = Mob {
+            id: "slime".to_owned(),
+            current_hp: 50,
+            movement_mode: MobMovementMode::Idle as i32,
+            ..Mob::default()
+        };
+        let mut state = crate::mob_render::MobRenderState::default();
+        crate::mob_render::install_combat_events(
+            &mut state,
+            vec![CombatEvent {
+                kind: CombatEventKind::PlayerHitMob as i32,
+                target_id: mob.id.clone(),
+                ..CombatEvent::default()
+            }],
+            1_000.0,
+        );
+
+        assert_eq!(
+            frame_selection(&state, &mob, &definition, 1_199.0)
+                .expect("hit frame")
+                .asset_id,
+            "hit1"
+        );
+        assert_eq!(
+            frame_selection(&state, &mob, &definition, 1_200.0)
+                .expect("stand frame")
+                .asset_id,
+            "stand"
+        );
+    }
+
+    #[test]
+    fn a_dead_mob_is_hidden_after_its_death_animation() {
+        let definition = MobDefinition {
+            animations: vec![animation("stand", 100), animation("die1", 200)],
+            ..MobDefinition::default()
+        };
+        let mob = Mob {
+            id: "slime".to_owned(),
+            current_hp: 0,
+            ..Mob::default()
+        };
+        let mut state = crate::mob_render::MobRenderState::default();
+        crate::mob_render::install_combat_events(
+            &mut state,
+            vec![CombatEvent {
+                kind: CombatEventKind::MobDied as i32,
+                target_id: mob.id.clone(),
+                ..CombatEvent::default()
+            }],
+            1_000.0,
+        );
+
+        assert_eq!(
+            frame_selection(&state, &mob, &definition, 1_199.0)
+                .expect("death frame")
+                .asset_id,
+            "die1"
+        );
+        assert!(frame_selection(&state, &mob, &definition, 1_200.0).is_none());
+    }
+
+    #[test]
+    fn a_stale_death_reaction_does_not_hide_a_living_mob() {
+        let definition = MobDefinition {
+            animations: vec![animation("stand", 100), animation("die1", 200)],
+            ..MobDefinition::default()
+        };
+        let mob = Mob {
+            id: "slime".to_owned(),
+            current_hp: 50,
+            ..Mob::default()
+        };
+        let mut state = crate::mob_render::MobRenderState::default();
+        crate::mob_render::install_combat_events(
+            &mut state,
+            vec![CombatEvent {
+                kind: CombatEventKind::MobDied as i32,
+                target_id: mob.id.clone(),
+                ..CombatEvent::default()
+            }],
+            1_000.0,
+        );
+
+        assert_eq!(
+            frame_selection(&state, &mob, &definition, 1_100.0)
+                .expect("stand frame")
+                .asset_id,
+            "stand"
+        );
+    }
+
+    #[test]
     fn flipping_keeps_the_frame_origin_on_the_mob_anchor() {
         let frame = MobFrame {
             width: 40.0,
@@ -363,6 +519,7 @@ mod tests {
         MobAnimation {
             name: name.to_owned(),
             frames: vec![MobFrame {
+                asset_id: name.to_owned(),
                 delay_ms,
                 ..MobFrame::default()
             }],

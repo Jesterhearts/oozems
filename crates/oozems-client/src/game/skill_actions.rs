@@ -270,11 +270,7 @@ fn install_combat_update(
         );
         game.world.map.dropped_items = dropped_items;
     }
-    crate::mob_render::install_combat_events(
-        &mut game.world.mob_render,
-        combat_events,
-        game.clock.now_ms,
-    );
+    super::install_mob_combat_events(game, combat_events);
     Ok(outcome)
 }
 

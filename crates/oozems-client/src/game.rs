@@ -265,6 +265,43 @@ pub(super) fn play_map_sound(
     );
 }
 
+pub(super) fn install_mob_combat_events(
+    game: &mut Game,
+    events: Vec<oozems_proto::v1::CombatEvent>,
+) {
+    let reactions = crate::mob_render::install_combat_events(
+        &mut game.world.mob_render,
+        events,
+        game.clock.now_ms,
+    );
+    let sound_urls = reactions
+        .iter()
+        .filter_map(|reaction| mob_reaction_sound(&game.world.map, reaction))
+        .map(|sound| sound.url.clone())
+        .collect::<Vec<_>>();
+    for url in sound_urls {
+        audio::play_sound_url(&mut game.audio.borrow_mut(), &url, game.clock.now_ms);
+    }
+}
+
+fn mob_reaction_sound<'a>(
+    map: &'a Map,
+    reaction: &crate::mob_render::MobReactionEvent,
+) -> Option<&'a oozems_proto::v1::AssetDescriptor> {
+    let mob = map.mobs.iter().find(|mob| mob.id == reaction.target_id)?;
+    if reaction.kind == crate::mob_render::MobReactionKind::Death && mob.current_hp > 0 {
+        return None;
+    }
+    let definition = map
+        .mob_definitions
+        .iter()
+        .find(|definition| definition.id == mob.definition_id)?;
+    match reaction.kind {
+        crate::mob_render::MobReactionKind::Hit => definition.damage_sound.as_ref(),
+        crate::mob_render::MobReactionKind::Death => definition.death_sound.as_ref(),
+    }
+}
+
 fn install_active_buffs(
     game: &mut Game,
     state: buffs::ValidatedState,
@@ -533,11 +570,18 @@ fn schedule_frame(game: Rc<RefCell<Game>>) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    use oozems_proto::v1::AssetDescriptor;
+    use oozems_proto::v1::Map;
+    use oozems_proto::v1::Mob;
+    use oozems_proto::v1::MobDefinition;
     use oozems_proto::v1::PlayerQuest;
     use oozems_proto::v1::PlayerState;
     use oozems_proto::v1::QuestStatus;
 
     use super::completed_quest_count;
+    use super::mob_reaction_sound;
+    use crate::mob_render::MobReactionEvent;
+    use crate::mob_render::MobReactionKind;
 
     #[test]
     fn completed_quest_count_ignores_other_statuses() {
@@ -563,5 +607,84 @@ mod tests {
         };
 
         assert_eq!(completed_quest_count(&player), 1);
+    }
+
+    #[test]
+    fn mob_reactions_select_damage_and_death_sounds() {
+        let damage = AssetDescriptor {
+            id: "damage".to_owned(),
+            url: "/damage.mp3".to_owned(),
+        };
+        let death = AssetDescriptor {
+            id: "death".to_owned(),
+            url: "/death.mp3".to_owned(),
+        };
+        let map = Map {
+            mobs: vec![Mob {
+                id: "slime".to_owned(),
+                definition_id: 100_100,
+                ..Mob::default()
+            }],
+            mob_definitions: vec![MobDefinition {
+                id: 100_100,
+                damage_sound: Some(damage.clone()),
+                death_sound: Some(death.clone()),
+                ..MobDefinition::default()
+            }],
+            ..Map::default()
+        };
+
+        assert_eq!(
+            mob_reaction_sound(
+                &map,
+                &MobReactionEvent {
+                    target_id: "slime".to_owned(),
+                    kind: MobReactionKind::Hit,
+                },
+            ),
+            Some(&damage)
+        );
+        assert_eq!(
+            mob_reaction_sound(
+                &map,
+                &MobReactionEvent {
+                    target_id: "slime".to_owned(),
+                    kind: MobReactionKind::Death,
+                },
+            ),
+            Some(&death)
+        );
+    }
+
+    #[test]
+    fn stale_death_reactions_do_not_play_for_living_mobs() {
+        let map = Map {
+            mobs: vec![Mob {
+                id: "slime".to_owned(),
+                definition_id: 100_100,
+                current_hp: 50,
+                ..Mob::default()
+            }],
+            mob_definitions: vec![MobDefinition {
+                id: 100_100,
+                death_sound: Some(AssetDescriptor {
+                    id: "death".to_owned(),
+                    url: "/death.mp3".to_owned(),
+                }),
+                ..MobDefinition::default()
+            }],
+            ..Map::default()
+        };
+
+        assert_eq!(
+            mob_reaction_sound(
+                &map,
+                &MobReactionEvent {
+                    target_id: "slime".to_owned(),
+                    kind: MobReactionKind::Death,
+                },
+            ),
+            None
+        );
     }
 }
