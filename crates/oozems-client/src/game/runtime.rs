@@ -22,11 +22,15 @@ use super::request_dispatch::synchronize_morph;
 use super::requests;
 use crate::audio;
 use crate::audio::MapSound;
+use crate::cash_shop_ui::CashShopState;
 use crate::character_render::CharacterAnimation;
 use crate::game_gui;
 use crate::game_gui::GuiAction;
 use crate::game_gui::GuiState;
+use crate::interaction_ui::InteractionState;
 use crate::keymap;
+use crate::keymap::BindingTarget;
+use crate::keymap::FrameInput;
 use crate::level_up_effect;
 use crate::movement;
 use crate::movement::MapTransition;
@@ -120,10 +124,24 @@ pub(super) fn update(
         pending.push(PendingRequest::Respawn);
     }
 
-    let mut input = {
+    let (mut input, escape_target) = {
         let bindings = game.player.key_bindings.current.borrow();
-        keymap::drain_frame_input(&mut game.input.keyboard.borrow_mut(), &bindings)
+        (
+            keymap::drain_frame_input(&mut game.input.keyboard.borrow_mut(), &bindings),
+            keymap::target_for_code(&bindings, "Escape"),
+        )
     };
+    if apply_escape(
+        &mut input,
+        escape_target,
+        &mut game.ui.cash_shop,
+        &mut game.ui.interaction,
+        &mut game.ui.gui_state.borrow_mut(),
+    ) {
+        game.ui.key_drag = None;
+        game.ui.window_drag = None;
+        super::input::clear_suppressed_click(&mut game.input);
+    }
     let key_config_open = game.ui.gui_state.borrow().key_config_open;
     if key_config_open {
         input.player = PlayerInput::default();
@@ -312,6 +330,47 @@ pub(super) fn update(
         requests.push(PendingRequest::Transition(transition));
     }
     requests
+}
+
+fn apply_escape(
+    input: &mut FrameInput,
+    escape_target: Option<BindingTarget>,
+    cash_shop: &mut CashShopState,
+    interaction: &mut InteractionState,
+    gui: &mut GuiState,
+) -> bool {
+    if !input.escape_pressed || !close_topmost_ui(cash_shop, interaction, gui) {
+        return false;
+    }
+    match escape_target {
+        Some(BindingTarget::Action(action)) => {
+            input.actions.retain(|candidate| *candidate != action);
+            if action == KeyAction::Jump {
+                input.player.jump_pressed = false;
+            }
+        }
+        Some(BindingTarget::Skill(skill_id)) => {
+            input.skills.retain(|candidate| *candidate != skill_id);
+        }
+        None => {}
+    }
+    true
+}
+
+fn close_topmost_ui(
+    cash_shop: &mut CashShopState,
+    interaction: &mut InteractionState,
+    gui: &mut GuiState,
+) -> bool {
+    if cash_shop.open {
+        cash_shop.close();
+        return true;
+    }
+    if interaction.is_open() {
+        interaction.close();
+        return true;
+    }
+    game_gui::close_topmost_window(gui)
 }
 
 fn movement_observation_mode(
@@ -626,15 +685,18 @@ mod tests {
     use oozems_proto::v1::MovementContact;
     use oozems_proto::v1::MovementMode;
     use oozems_proto::v1::MovementSnapshot;
+    use oozems_proto::v1::NpcInteraction;
     use oozems_proto::v1::PlayerState;
     use oozems_proto::v1::Vec2;
 
     use super::MovementObservationMode;
+    use super::apply_escape;
     use super::apply_key_actions;
     use super::character_animation;
     use super::character_animation_elapsed_ms;
     use super::character_animation_plays;
     use super::character_attack_is_active;
+    use super::close_topmost_ui;
     use super::jump_started;
     use super::movement_observation_mode;
     use super::new_character_animation_state;
@@ -755,10 +817,14 @@ mod tests {
             MovementObservationMode::Paused
         );
     }
+    use crate::cash_shop_ui::CashShopState;
     use crate::character_render::CharacterAnimation;
     use crate::game::request_dispatch::PendingTransition;
     use crate::game_gui::GuiState;
+    use crate::interaction_ui::InteractionState;
     use crate::keymap;
+    use crate::keymap::BindingTarget;
+    use crate::keymap::FrameInput;
     use crate::movement::MapTransition;
     use crate::movement::MotionOutput;
     use crate::movement::MotionState;
@@ -869,6 +935,150 @@ mod tests {
         let input = keymap::drain_frame_input(&mut keyboard, &bindings);
         assert!(!apply_key_actions(&mut state, &gui, &input.actions));
         assert!(!state.key_config_open);
+    }
+
+    #[test]
+    fn modal_ui_closes_before_standard_windows() {
+        let mut cash_shop = CashShopState::default();
+        cash_shop.begin_open();
+        let mut interaction = InteractionState::default();
+        interaction.install(Some(NpcInteraction::default()));
+        let mut gui = GuiState {
+            stats_open: true,
+            inventory_open: true,
+            skills_open: true,
+            ..GuiState::default()
+        };
+
+        assert!(close_topmost_ui(&mut cash_shop, &mut interaction, &mut gui));
+        assert!(!cash_shop.open);
+        assert!(interaction.is_open());
+        assert!(gui.skills_open);
+
+        assert!(close_topmost_ui(&mut cash_shop, &mut interaction, &mut gui));
+        assert!(!interaction.is_open());
+        assert!(gui.skills_open);
+
+        assert!(close_topmost_ui(&mut cash_shop, &mut interaction, &mut gui));
+        assert!(!gui.skills_open);
+        assert!(gui.inventory_open);
+    }
+
+    #[test]
+    fn closing_ui_suppresses_only_the_escape_binding() {
+        let mut input = FrameInput {
+            player: PlayerInput {
+                jump_pressed: true,
+                portal_pressed: true,
+                ..PlayerInput::default()
+            },
+            actions: vec![KeyAction::Jump, KeyAction::PickUp],
+            skills: vec![1_000],
+            escape_pressed: true,
+        };
+        let mut cash_shop = CashShopState::default();
+        let mut interaction = InteractionState::default();
+        let mut gui = GuiState {
+            stats_open: true,
+            ..GuiState::default()
+        };
+
+        assert!(apply_escape(
+            &mut input,
+            Some(BindingTarget::Action(KeyAction::Jump)),
+            &mut cash_shop,
+            &mut interaction,
+            &mut gui,
+        ));
+        assert!(!gui.stats_open);
+        assert!(!input.player.jump_pressed);
+        assert!(input.player.portal_pressed);
+        assert_eq!(input.actions, vec![KeyAction::PickUp]);
+        assert_eq!(input.skills, vec![1_000]);
+    }
+
+    #[test]
+    fn escape_binding_is_preserved_when_no_ui_closes() {
+        let mut input = FrameInput {
+            player: PlayerInput {
+                jump_pressed: true,
+                ..PlayerInput::default()
+            },
+            actions: vec![KeyAction::Jump],
+            skills: Vec::new(),
+            escape_pressed: true,
+        };
+        let mut cash_shop = CashShopState::default();
+        let mut interaction = InteractionState::default();
+        let mut gui = GuiState::default();
+
+        assert!(!apply_escape(
+            &mut input,
+            Some(BindingTarget::Action(KeyAction::Jump)),
+            &mut cash_shop,
+            &mut interaction,
+            &mut gui,
+        ));
+        assert!(input.player.jump_pressed);
+        assert_eq!(input.actions, vec![KeyAction::Jump]);
+    }
+
+    #[test]
+    fn closing_ui_suppresses_an_escape_bound_skill() {
+        let mut input = FrameInput {
+            player: PlayerInput::default(),
+            actions: vec![KeyAction::PickUp],
+            skills: vec![1_000, 2_000],
+            escape_pressed: true,
+        };
+        let mut cash_shop = CashShopState::default();
+        let mut interaction = InteractionState::default();
+        let mut gui = GuiState {
+            inventory_open: true,
+            ..GuiState::default()
+        };
+
+        assert!(apply_escape(
+            &mut input,
+            Some(BindingTarget::Skill(1_000)),
+            &mut cash_shop,
+            &mut interaction,
+            &mut gui,
+        ));
+        assert!(!gui.inventory_open);
+        assert_eq!(input.actions, vec![KeyAction::PickUp]);
+        assert_eq!(input.skills, vec![2_000]);
+    }
+
+    #[test]
+    fn unbound_escape_closes_ui_without_suppressing_other_input() {
+        let mut input = FrameInput {
+            player: PlayerInput {
+                jump_pressed: true,
+                ..PlayerInput::default()
+            },
+            actions: vec![KeyAction::Jump],
+            skills: vec![1_000],
+            escape_pressed: true,
+        };
+        let mut cash_shop = CashShopState::default();
+        let mut interaction = InteractionState::default();
+        let mut gui = GuiState {
+            stats_open: true,
+            ..GuiState::default()
+        };
+
+        assert!(apply_escape(
+            &mut input,
+            None,
+            &mut cash_shop,
+            &mut interaction,
+            &mut gui,
+        ));
+        assert!(!gui.stats_open);
+        assert!(input.player.jump_pressed);
+        assert_eq!(input.actions, vec![KeyAction::Jump]);
+        assert_eq!(input.skills, vec![1_000]);
     }
 
     #[test]

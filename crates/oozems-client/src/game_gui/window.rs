@@ -114,6 +114,20 @@ pub fn begin_window_drag(
     })
 }
 
+pub fn close_topmost_window(state: &mut GuiState) -> bool {
+    let Some(kind) = visible_windows_front_to_back(*state).next() else {
+        return false;
+    };
+    match kind {
+        WindowKind::Stats => state.stats_open = false,
+        WindowKind::Equipment => state.equipment_open = false,
+        WindowKind::Inventory => state.inventory_open = false,
+        WindowKind::Skills => state.skills_open = false,
+        WindowKind::KeyConfig => state.key_config_open = false,
+    }
+    true
+}
+
 pub(super) fn frontmost_window_at_point(
     state: GuiState,
     gui: &GameGui,
@@ -287,6 +301,7 @@ mod tests {
 
     use super::WindowKind;
     use super::begin_window_drag;
+    use super::close_topmost_window;
     use super::finish_window_drag;
     use super::frontmost_window_at_point;
     use super::move_window_drag;
@@ -407,6 +422,43 @@ mod tests {
             Some(WindowKind::Inventory)
         );
         assert!(begin_window_drag(state, &gui, 960.0, 600.0, point).is_none());
+    }
+
+    #[test]
+    fn windows_close_one_at_a_time_from_front_to_back() {
+        let mut state = GuiState {
+            stats_open: true,
+            equipment_open: true,
+            inventory_open: true,
+            key_config_open: true,
+            skills_open: true,
+            ..GuiState::default()
+        };
+
+        for kind in [
+            WindowKind::KeyConfig,
+            WindowKind::Skills,
+            WindowKind::Inventory,
+            WindowKind::Equipment,
+            WindowKind::Stats,
+        ] {
+            assert!(close_topmost_window(&mut state));
+            assert!(!window_is_open(state, kind));
+        }
+        assert!(!close_topmost_window(&mut state));
+    }
+
+    fn window_is_open(
+        state: GuiState,
+        kind: WindowKind,
+    ) -> bool {
+        match kind {
+            WindowKind::Stats => state.stats_open,
+            WindowKind::Equipment => state.equipment_open,
+            WindowKind::Inventory => state.inventory_open,
+            WindowKind::Skills => state.skills_open,
+            WindowKind::KeyConfig => state.key_config_open,
+        }
     }
 
     fn origin(

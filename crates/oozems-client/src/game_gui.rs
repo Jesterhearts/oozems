@@ -29,6 +29,7 @@ pub use window::WindowDrag;
 pub use window::WindowKind;
 pub use window::WindowPlacements;
 pub use window::begin_window_drag;
+pub use window::close_topmost_window;
 pub use window::finish_window_drag;
 use window::frontmost_window_at_point;
 pub use window::move_window_drag;

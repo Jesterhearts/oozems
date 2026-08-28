@@ -17,6 +17,7 @@ pub struct FrameInput {
     pub player: PlayerInput,
     pub actions: Vec<KeyAction>,
     pub skills: Vec<u32>,
+    pub escape_pressed: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,7 +32,9 @@ pub fn set_key(
     code: &str,
     pressed: bool,
 ) -> bool {
-    let handled = is_direction_code(code) || bindings.iter().any(|binding| binding.code == code);
+    let handled = code == "Escape"
+        || is_direction_code(code)
+        || bindings.iter().any(|binding| binding.code == code);
     if !handled {
         if !pressed {
             state.pressed.remove(code);
@@ -70,11 +73,13 @@ pub fn drain_frame_input(
         portal_pressed: state.just_pressed.contains("ArrowUp"),
         ..PlayerInput::default()
     };
+    let escape_pressed = state.just_pressed.contains("Escape");
     state.just_pressed.clear();
     FrameInput {
         player,
         actions,
         skills,
+        escape_pressed,
     }
 }
 
@@ -186,6 +191,19 @@ mod tests {
         assert!(!held.player.jump_pressed);
         assert!(held.actions.is_empty());
         assert!(held.skills.is_empty());
+    }
+
+    #[test]
+    fn unbound_escape_is_edge_triggered() {
+        let mut state = KeyboardState::default();
+
+        assert!(set_key(&mut state, &[], "Escape", true));
+        assert!(drain_frame_input(&mut state, &[]).escape_pressed);
+        assert!(!drain_frame_input(&mut state, &[]).escape_pressed);
+
+        assert!(set_key(&mut state, &[], "Escape", false));
+        assert!(set_key(&mut state, &[], "Escape", true));
+        assert!(drain_frame_input(&mut state, &[]).escape_pressed);
     }
 
     #[test]
