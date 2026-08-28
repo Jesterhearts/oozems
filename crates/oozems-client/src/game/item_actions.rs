@@ -190,19 +190,18 @@ fn install_item_action_update(
     let player_map_id = player.map_id;
     super::install_full_player_update(game, player);
     super::install_active_buffs(game, active_buffs, request_started_ms);
-    if let Some(item_id) = used_setup_item {
-        if !super::runtime::player_is_dead(&game.player.state)
-            && game.player.position == request_position
-            && game.world.motion.on_ground
-            && game.world.motion.climbing.is_none()
-        {
-            game.world.active_setup_item_id = Some(item_id);
-            game.world.character_animation = super::runtime::new_character_animation_state(
-                crate::character_render::CharacterAnimation::Sit,
-                true,
-                game.clock.now_ms,
-            );
-        }
+    if let Some(item_id) = used_setup_item
+        && !super::runtime::player_is_dead(&game.player.state)
+        && game.player.position == request_position
+        && game.world.motion.on_ground
+        && game.world.motion.climbing.is_none()
+    {
+        game.world.active_setup_item_id = Some(item_id);
+        game.world.character_animation = super::runtime::new_character_animation_state(
+            crate::character_render::CharacterAnimation::Sit,
+            true,
+            game.clock.now_ms,
+        );
     }
     if let Some(drop) = dropped_item
         && player_map_id == game.world.map.id

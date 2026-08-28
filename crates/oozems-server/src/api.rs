@@ -440,9 +440,11 @@ pub async fn use_item(
     )
     .map_err(item_rule_error)?;
     let consumes_inventory = used.category == ItemCategory::Consume;
-    let used_setup_item_id = (used.category == ItemCategory::Install)
-        .then_some(used.item_id)
-        .unwrap_or_default();
+    let used_setup_item_id = if used.category == ItemCategory::Install {
+        used.item_id
+    } else {
+        0
+    };
     let updated = if used.category == ItemCategory::Consume {
         let definition = state
             .catalog

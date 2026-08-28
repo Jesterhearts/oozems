@@ -85,7 +85,7 @@ fn effect_node_from_item(
     item: &WzNodeArc,
 ) -> Result<WzNodeArc, ItemContentError> {
     wz::child(item, "specEx")?
-        .or(wz::child(&item, "spec")?)
+        .or(wz::child(item, "spec")?)
         .ok_or_else(|| ItemContentError::Invalid {
             message: format!("consume effect item {item_id} has neither specEx nor spec"),
         })
