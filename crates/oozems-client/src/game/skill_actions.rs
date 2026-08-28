@@ -155,6 +155,7 @@ fn install_use(
         .map_err(|error| error.to_string())?;
     let effect = api::require_data(response.effect.take(), "skill effect")
         .map_err(|error| error.to_string())?;
+    let quest_indicators = std::mem::take(&mut response.quest_indicators);
     let outcome = install_combat_update(
         game,
         player,
@@ -166,6 +167,7 @@ fn install_use(
         std::mem::take(&mut response.dropped_items),
     )?;
     super::install_active_buffs(game, active_buffs, request_started_ms);
+    super::install_quest_indicators(game, &quest_indicators);
     skill_effects::install(game, effect, outcome.position());
     Ok(use_message(game, &result, &outcome))
 }
@@ -176,6 +178,7 @@ fn install_basic_attack(
     request_started_ms: f64,
 ) -> Result<String, String> {
     let (player, active_buffs) = super::responses::take_player_and_active_buffs(&mut response)?;
+    let quest_indicators = std::mem::take(&mut response.quest_indicators);
     let outcome = install_combat_update(
         game,
         player,
@@ -187,6 +190,7 @@ fn install_basic_attack(
         std::mem::take(&mut response.dropped_items),
     )?;
     super::install_active_buffs(game, active_buffs, request_started_ms);
+    super::install_quest_indicators(game, &quest_indicators);
     Ok(match outcome {
         PlayerAttackOutcome::Hit { damage, .. } => {
             format!("Basic attack dealt {damage} damage.")

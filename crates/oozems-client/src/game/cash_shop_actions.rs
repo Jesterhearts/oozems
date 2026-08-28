@@ -106,7 +106,11 @@ fn install_purchase(
     let offer_matches =
         response.offer_id == expected_offer_id && response.item_id == expected_item_id;
     let (player, active_buffs) = super::responses::take_player_and_active_buffs(&mut response)?;
+    let player_map_id = player.map_id;
     super::install_full_player_update(game, player);
     super::install_active_buffs(game, active_buffs, request_started_ms);
+    if player_map_id == game.world.map.id {
+        super::install_quest_indicators(game, &response.quest_indicators);
+    }
     Ok(offer_matches)
 }

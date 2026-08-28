@@ -10,6 +10,7 @@ use oozems_proto::v1::PurchaseCashShopItemResponse;
 use super::ApiError;
 use super::Protobuf;
 use super::begin_player_mutation;
+use super::current_map_quest_indicators;
 use super::decode_request;
 use super::lock_player;
 use super::parse_player_id;
@@ -52,21 +53,26 @@ pub async fn purchase(
         now_unix_ms,
     )
     .map_err(|error| purchase_error(error, state.cash_shop.currency_name()))?;
-    let (transaction, active_buffs) =
-        prepare_player_mutation(&state, mutation, result.player, true, true);
-    let player = crate::player_transaction::commit_player_transaction(
+    let (transaction, _) = prepare_player_mutation(&state, mutation, result.player, true, true);
+    let committed = crate::player_transaction::commit_player_transaction(
         &state.database,
         &player_guard,
         transaction,
     )
-    .await?
-    .player;
+    .await?;
+    let player = committed.player;
+    let effects = committed
+        .effects
+        .expect("cash shop transaction stages active effects");
+    let quest_indicators =
+        current_map_quest_indicators(&state, &player, &effects, now_unix_ms).await;
     Ok(Protobuf(PurchaseCashShopItemResponse {
-        active_buffs: Some(active_buffs),
+        active_buffs: Some(crate::effects::state(&effects, now_unix_ms)),
         player: Some(player),
         offer_id: result.offer_id,
         item_id: result.item_id,
         expires_at_unix_ms: result.expires_at_unix_ms,
+        quest_indicators,
     }))
 }
 

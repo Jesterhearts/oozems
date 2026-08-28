@@ -251,6 +251,17 @@ fn install_full_player_update(
     installed
 }
 
+fn install_quest_indicators(
+    game: &mut Game,
+    updates: &[oozems_proto::v1::NpcQuestIndicatorUpdate],
+) {
+    if let Err(error) = crate::render::npc::install_quest_indicators(&mut game.world.map, updates) {
+        web_sys::console::warn_1(
+            &format!("Could not refresh NPC quest indicators: {error}").into(),
+        );
+    }
+}
+
 fn completed_quest_count(player: &PlayerState) -> usize {
     player
         .quests

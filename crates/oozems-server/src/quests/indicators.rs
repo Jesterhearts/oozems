@@ -59,8 +59,32 @@ pub fn project_npc_quest_indicators(
     scripts: &QuestScriptCatalog,
     environment: QuestEnvironment,
 ) -> Vec<NpcQuestIndicatorUpdate> {
+    let updates = npc_quest_indicator_updates(
+        map,
+        player,
+        effects,
+        quest_definitions,
+        item_definitions,
+        scripts,
+        environment,
+    );
+    for (npc, update) in map.npcs.iter_mut().zip(&updates) {
+        npc.quest_indicator = update.indicator;
+    }
+    updates
+}
+
+pub fn npc_quest_indicator_updates(
+    map: &Map,
+    player: &PlayerState,
+    effects: &PlayerEffects,
+    quest_definitions: &[&QuestDefinition],
+    item_definitions: &[ItemDefinition],
+    scripts: &QuestScriptCatalog,
+    environment: QuestEnvironment,
+) -> Vec<NpcQuestIndicatorUpdate> {
     map.npcs
-        .iter_mut()
+        .iter()
         .map(|npc| {
             let indicator = npc_quest_indicator(
                 player,
@@ -71,7 +95,6 @@ pub fn project_npc_quest_indicators(
                 scripts,
                 environment,
             );
-            npc.quest_indicator = indicator as i32;
             NpcQuestIndicatorUpdate {
                 npc_spawn_id: npc.spawn_id,
                 indicator: indicator as i32,

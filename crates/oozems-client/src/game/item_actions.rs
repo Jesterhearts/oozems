@@ -95,14 +95,19 @@ pub(super) fn begin_pick_up(
                                     player,
                                     active_buffs,
                                     std::mem::take(&mut response.picked_up_drop_id),
+                                    std::mem::take(&mut response.quest_indicators),
                                 )
                             })
                             .ok_or_else(|| "response did not contain picked-up drop ID".to_owned())
                     });
                 match update {
-                    Ok((player, active_buffs, drop_id)) => {
+                    Ok((player, active_buffs, drop_id, quest_indicators)) => {
+                        let player_map_id = player.map_id;
                         super::install_full_player_update(game, player);
                         super::install_active_buffs(game, active_buffs, request_started_ms);
+                        if player_map_id == game.world.map.id {
+                            super::install_quest_indicators(game, &quest_indicators);
+                        }
                         game.world
                             .map
                             .dropped_items
@@ -187,9 +192,13 @@ fn install_item_action_update(
     let (player, active_buffs) = super::responses::take_player_and_active_buffs(&mut response)?;
     let dropped_item = take_dropped_item(action, response.dropped_item.take())?;
     let used_setup_item = take_used_setup_item(action, response.used_setup_item_id)?;
+    let quest_indicators = std::mem::take(&mut response.quest_indicators);
     let player_map_id = player.map_id;
     super::install_full_player_update(game, player);
     super::install_active_buffs(game, active_buffs, request_started_ms);
+    if player_map_id == game.world.map.id {
+        super::install_quest_indicators(game, &quest_indicators);
+    }
     if let Some(item_id) = used_setup_item
         && !super::runtime::player_is_dead(&game.player.state)
         && game.player.position == request_position

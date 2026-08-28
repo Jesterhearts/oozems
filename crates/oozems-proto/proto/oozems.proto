@@ -340,6 +340,7 @@ message UseSkillResponse {
   ActiveBuffState active_buffs = 8;
   repeated DroppedItem dropped_items = 9;
   repeated Reactor reactors = 10;
+  repeated NpcQuestIndicatorUpdate quest_indicators = 11;
 }
 
 message BasicAttackRequest {
@@ -356,6 +357,7 @@ message BasicAttackResponse {
   repeated DroppedItem dropped_items = 6;
   ActiveBuffState active_buffs = 7;
   repeated Reactor reactors = 8;
+  repeated NpcQuestIndicatorUpdate quest_indicators = 9;
 }
 
 message ActiveBuffState {
@@ -821,6 +823,7 @@ message ItemActionResponse {
   ActiveBuffState active_buffs = 4;
   // Nonzero when an Install item placed the local character in its setup state.
   uint32 used_setup_item_id = 5;
+  repeated NpcQuestIndicatorUpdate quest_indicators = 6;
 }
 
 message GetCashShopRequest {}
@@ -850,6 +853,7 @@ message PurchaseCashShopItemResponse {
   // Zero means that the purchased item is permanent.
   uint64 expires_at_unix_ms = 4;
   ActiveBuffState active_buffs = 5;
+  repeated NpcQuestIndicatorUpdate quest_indicators = 6;
 }
 
 message NpcInteractionRequest {

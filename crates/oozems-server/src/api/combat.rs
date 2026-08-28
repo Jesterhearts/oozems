@@ -14,6 +14,7 @@ use super::merge_dropped_items;
 use super::parse_player_id;
 use super::prepare_simulation_player_effects;
 use super::project_combat_effects;
+use super::quest_indicator_updates;
 use super::unix_time_ms;
 use crate::app::AppState;
 
@@ -173,6 +174,7 @@ pub async fn use_basic_attack(
     let simulation = committed
         .mob_update
         .expect("basic attack stages a mob update");
+    let quest_indicators = quest_indicator_updates(&state, &map, &player, &effects, now_ms);
 
     Ok(Protobuf(BasicAttackResponse {
         player: Some(player),
@@ -183,6 +185,7 @@ pub async fn use_basic_attack(
         dropped_items,
         active_buffs: Some(crate::effects::state(&effects, now_ms)),
         reactors: simulation.reactors,
+        quest_indicators,
     }))
 }
 

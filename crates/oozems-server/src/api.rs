@@ -320,17 +320,19 @@ pub async fn equip_item(
     let committed =
         persist_player_mutation(&state, &player_guard, mutation, updated, true, true).await?;
     let player = committed.player;
+    let effects = committed
+        .effects
+        .expect("equip item transaction stages active effects");
+    let quest_indicators =
+        current_map_quest_indicators(&state, &player, &effects, activity_time_ms).await;
 
     Ok(Protobuf(ItemActionResponse {
         player: Some(player),
         dropped_item: None,
         picked_up_drop_id: String::new(),
-        active_buffs: Some(active_buff_state(
-            &state,
-            player_id.as_str(),
-            activity_time_ms,
-        )?),
+        active_buffs: Some(crate::effects::state(&effects, activity_time_ms)),
         used_setup_item_id: 0,
+        quest_indicators,
     }))
 }
 
@@ -354,17 +356,19 @@ pub async fn unequip_item(
     let committed =
         persist_player_mutation(&state, &player_guard, mutation, updated, true, true).await?;
     let player = committed.player;
+    let effects = committed
+        .effects
+        .expect("unequip item transaction stages active effects");
+    let quest_indicators =
+        current_map_quest_indicators(&state, &player, &effects, activity_time_ms).await;
 
     Ok(Protobuf(ItemActionResponse {
         player: Some(player),
         dropped_item: None,
         picked_up_drop_id: String::new(),
-        active_buffs: Some(active_buff_state(
-            &state,
-            player_id.as_str(),
-            activity_time_ms,
-        )?),
+        active_buffs: Some(crate::effects::state(&effects, activity_time_ms)),
         used_setup_item_id: 0,
+        quest_indicators,
     }))
 }
 
@@ -394,23 +398,29 @@ pub async fn drop_item(
     .map_err(item_rule_error)?;
     let staged_drop = crate::items::stage_inventory_drop(&state.drops, &removed)?;
     let dropped_item = staged_drop.item().clone();
-    let (mut transaction, active_buffs) =
+    let (mut transaction, _) =
         prepare_player_mutation(&state, mutation, removed.player, true, true);
     crate::player_transaction::stage_drops(&mut transaction, state.drops.clone(), [staged_drop])?;
-    let player = crate::player_transaction::commit_player_transaction(
+    let committed = crate::player_transaction::commit_player_transaction(
         &state.database,
         &player_guard,
         transaction,
     )
-    .await?
-    .player;
+    .await?;
+    let player = committed.player;
+    let effects = committed
+        .effects
+        .expect("drop item transaction stages active effects");
+    let quest_indicators =
+        current_map_quest_indicators(&state, &player, &effects, activity_time_ms).await;
 
     Ok(Protobuf(ItemActionResponse {
         player: Some(player),
         dropped_item: Some(dropped_item),
         picked_up_drop_id: String::new(),
-        active_buffs: Some(active_buffs),
+        active_buffs: Some(crate::effects::state(&effects, activity_time_ms)),
         used_setup_item_id: 0,
+        quest_indicators,
     }))
 }
 
@@ -462,22 +472,28 @@ pub async fn use_item(
     } else {
         used.player
     };
-    let (transaction, active_buffs) =
+    let (transaction, _) =
         prepare_player_mutation(&state, mutation, updated, consumes_inventory, true);
-    let player = crate::player_transaction::commit_player_transaction(
+    let committed = crate::player_transaction::commit_player_transaction(
         &state.database,
         &player_guard,
         transaction,
     )
-    .await?
-    .player;
+    .await?;
+    let player = committed.player;
+    let effects = committed
+        .effects
+        .expect("use item transaction stages active effects");
+    let quest_indicators =
+        current_map_quest_indicators(&state, &player, &effects, activity_time_ms).await;
 
     Ok(Protobuf(ItemActionResponse {
         player: Some(player),
         dropped_item: None,
         picked_up_drop_id: String::new(),
-        active_buffs: Some(active_buffs),
+        active_buffs: Some(crate::effects::state(&effects, activity_time_ms)),
         used_setup_item_id,
+        quest_indicators,
     }))
 }
 
@@ -506,23 +522,29 @@ pub async fn pick_up_item(
     .map_err(pick_up_error)?;
     let map_id = picked.player.map_id;
     let picked_up_drop_id = picked.drop.id.clone();
-    let (mut transaction, active_buffs) =
+    let (mut transaction, _) =
         prepare_player_mutation(&state, mutation, picked.player.clone(), true, true);
     crate::player_transaction::stage_pickup(&mut transaction, state.drops.clone(), map_id, &picked);
-    let player = crate::player_transaction::commit_player_transaction(
+    let committed = crate::player_transaction::commit_player_transaction(
         &state.database,
         &player_guard,
         transaction,
     )
-    .await?
-    .player;
+    .await?;
+    let player = committed.player;
+    let effects = committed
+        .effects
+        .expect("pick up item transaction stages active effects");
+    let quest_indicators =
+        current_map_quest_indicators(&state, &player, &effects, activity_time_ms).await;
 
     Ok(Protobuf(ItemActionResponse {
         player: Some(player),
         dropped_item: None,
         picked_up_drop_id,
-        active_buffs: Some(active_buffs),
+        active_buffs: Some(crate::effects::state(&effects, activity_time_ms)),
         used_setup_item_id: 0,
+        quest_indicators,
     }))
 }
 
@@ -799,6 +821,7 @@ pub async fn use_skill(
         .mob_update
         .expect("skill transaction stages a mob update");
     let active_buffs = crate::effects::state(&effects, now_ms);
+    let quest_indicators = quest_indicator_updates(&state, &map, &player, &effects, now_ms);
 
     Ok(Protobuf(UseSkillResponse {
         player: Some(player),
@@ -811,6 +834,7 @@ pub async fn use_skill(
         active_buffs: Some(active_buffs),
         dropped_items,
         reactors: simulation.reactors,
+        quest_indicators,
     }))
 }
 
@@ -990,6 +1014,56 @@ async fn load_map(
 ) -> Result<Option<oozems_proto::v1::Map>, ApiError> {
     let catalog = state.catalog.clone();
     Ok(tokio::task::spawn_blocking(move || catalog.get_map(map_id)).await??)
+}
+
+async fn current_map_quest_indicators(
+    state: &AppState,
+    player: &PlayerState,
+    effects: &crate::effects::PlayerEffects,
+    now_unix_ms: u64,
+) -> Vec<oozems_proto::v1::NpcQuestIndicatorUpdate> {
+    match load_map(state, player.map_id).await {
+        Ok(Some(map)) => quest_indicator_updates(state, &map, player, effects, now_unix_ms),
+        Ok(None) => {
+            tracing::warn!(
+                player_id = %player.id,
+                map_id = player.map_id,
+                "could not refresh NPC quest indicators because the current map is unavailable"
+            );
+            Vec::new()
+        }
+        Err(error) => {
+            tracing::warn!(
+                player_id = %player.id,
+                map_id = player.map_id,
+                %error,
+                "could not refresh NPC quest indicators"
+            );
+            Vec::new()
+        }
+    }
+}
+
+fn quest_indicator_updates(
+    state: &AppState,
+    map: &oozems_proto::v1::Map,
+    player: &PlayerState,
+    effects: &crate::effects::PlayerEffects,
+    now_unix_ms: u64,
+) -> Vec<oozems_proto::v1::NpcQuestIndicatorUpdate> {
+    let quest_definitions = state.catalog.quest_definitions().collect::<Vec<_>>();
+    crate::quests::npc_quest_indicator_updates(
+        map,
+        player,
+        effects,
+        &quest_definitions,
+        state.catalog.item_definition_slice(),
+        &state.quest_scripts,
+        crate::quests::QuestEnvironment {
+            now_unix_ms,
+            world_id: state.gameplay.world_id,
+        },
+    )
 }
 
 async fn load_skill_book(
