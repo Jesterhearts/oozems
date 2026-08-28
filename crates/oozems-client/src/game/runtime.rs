@@ -27,6 +27,7 @@ use crate::game_gui;
 use crate::game_gui::GuiAction;
 use crate::game_gui::GuiState;
 use crate::keymap;
+use crate::level_up_effect;
 use crate::movement;
 use crate::movement::MapTransition;
 use crate::movement::MotionState;
@@ -70,6 +71,12 @@ pub(super) fn update(
     };
     game.clock.last_frame_ms = timestamp_ms;
     game.clock.now_ms = timestamp_ms;
+    level_up_effect::update(
+        &mut game.ui.level_up,
+        &game.ui.gui.level_up_frames,
+        &game.surface.images,
+        timestamp_ms,
+    );
     {
         let mut audio_state = game.audio.borrow_mut();
         audio::update(&mut audio_state, timestamp_ms);

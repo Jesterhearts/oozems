@@ -149,6 +149,7 @@ pub struct WorldRuntime {
 pub struct UiRuntime {
     pub cash_shop: CashShopState,
     pub(crate) death: crate::death_ui::DeathUiState,
+    pub(crate) level_up: crate::level_up_effect::LevelUpEffectState,
     pub gui: GameGui,
     pub gui_state: Rc<RefCell<GuiState>>,
     pub interaction: InteractionState,
@@ -234,7 +235,12 @@ fn install_full_player_update(
         game.world.active_setup_item_id = None;
     }
     queue_appearance_refresh(game, installed);
-    if installed.domains.progression && game.player.level > previous_level {
+    if level_increased(
+        installed.domains.progression,
+        previous_level,
+        game.player.level,
+    ) {
+        crate::level_up_effect::start(&mut game.ui.level_up, game.clock.now_ms);
         play_map_sound(game, MapSound::LevelUp);
     }
     if installed.domains.quests
@@ -251,6 +257,14 @@ fn completed_quest_count(player: &PlayerState) -> usize {
         .iter()
         .filter(|quest| quest.status == QuestStatus::Completed as i32)
         .count()
+}
+
+fn level_increased(
+    progression_installed: bool,
+    previous_level: u32,
+    current_level: u32,
+) -> bool {
+    progression_installed && current_level > previous_level
 }
 
 pub(super) fn play_map_sound(
@@ -506,6 +520,7 @@ fn build_game(
         ui: UiRuntime {
             cash_shop: CashShopState::default(),
             death: crate::death_ui::DeathUiState::default(),
+            level_up: crate::level_up_effect::LevelUpEffectState::default(),
             gui,
             gui_state,
             interaction: InteractionState::default(),
@@ -579,6 +594,7 @@ mod tests {
     use oozems_proto::v1::QuestStatus;
 
     use super::completed_quest_count;
+    use super::level_increased;
     use super::mob_reaction_sound;
     use crate::mob_render::MobReactionEvent;
     use crate::mob_render::MobReactionKind;
@@ -607,6 +623,14 @@ mod tests {
         };
 
         assert_eq!(completed_quest_count(&player), 1);
+    }
+
+    #[test]
+    fn level_up_requires_a_newer_installed_progression_level() {
+        assert!(level_increased(true, 10, 11));
+        assert!(!level_increased(true, 10, 10));
+        assert!(!level_increased(true, 10, 9));
+        assert!(!level_increased(false, 10, 11));
     }
 
     #[test]

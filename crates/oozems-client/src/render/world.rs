@@ -129,6 +129,26 @@ pub(crate) fn npc_at_point(
     super::npc::at_point(game, point, camera_x, camera_y)
 }
 
+pub(crate) fn player_canvas_position(game: &Game) -> Option<(f64, f64)> {
+    let position = game.player.position.as_ref()?;
+    let viewport_width = f64::from(game.surface.canvas.width());
+    let viewport_height = f64::from(game.surface.canvas.height());
+    let camera_x = camera_x(
+        f64::from(position.x),
+        viewport_width,
+        f64::from(game.world.map.width),
+    );
+    let camera_y = camera_y(
+        f64::from(position.y),
+        viewport_height,
+        f64::from(game.world.map.height),
+    );
+    Some((
+        f64::from(position.x) - camera_x,
+        f64::from(position.y) - camera_y,
+    ))
+}
+
 pub(super) fn layer_passes(has_player: bool) -> &'static [LayerPass] {
     if has_player {
         PLAYER_LAYER_PASSES

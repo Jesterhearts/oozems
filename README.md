@@ -302,6 +302,10 @@ portals, item pickup, item drop and use, death, level-up, and quest completion.
 Browser autoplay rules can defer the initial BGM until the first keyboard or
 pointer input.
 
+When `Effect.wz` is present, leveling up also plays the native
+`BasicEff.img/LevelUp` animation as a full-canvas overlay anchored to the
+character.
+
 Place `Skill.wz` and its matching `String.wz` beside the other archives to use
 the original skill books. New characters receive the configured initial skill
 points. Open the Skills window and click the WZ plus button beside a skill to

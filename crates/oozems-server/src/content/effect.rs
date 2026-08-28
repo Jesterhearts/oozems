@@ -16,11 +16,15 @@ use super::wz;
 use super::wz::WzContentError;
 
 const EFFECT_ARCHIVE: &str = "Effect.wz";
+const BASIC_EFFECT_IMAGE: &str = "BasicEff.img";
+const LEVEL_UP_ANIMATION: &str = "LevelUp";
 const TOMB_IMAGE: &str = "Tomb.img";
 const DEFAULT_FRAME_DELAY_MS: u32 = 100;
 
 pub(super) struct EffectContent {
     _base: WzNodeArc,
+    level_up_frames: Vec<AnimationFrame>,
+    level_up_assets: Vec<AssetDescriptor>,
     tomb_frames: Vec<AnimationFrame>,
     tomb_assets: Vec<AssetDescriptor>,
     assets: HashMap<String, Arc<WzAsset>>,
@@ -46,7 +50,7 @@ impl EffectContent {
                 source,
             })?
         {
-            tracing::warn!(path = %path.display(), "Effect.wz is absent; death tomb effects are disabled");
+            tracing::warn!(path = %path.display(), "Effect.wz is absent; death and level-up effects are disabled");
             return Ok(None);
         }
 
@@ -58,22 +62,24 @@ impl EffectContent {
         let fall = required_child(&tomb, "fall")?;
         let fingerprint = wz::archive_fingerprint(&path)?;
         let mut assets = HashMap::new();
-        let tomb_frames = read_tomb_frames(&fall, &fingerprint, &mut assets)?;
+        let level_up_frames = read_level_up_frames(&root, &path, &fingerprint, &mut assets)?;
+        let level_up_assets = frame_descriptors(&level_up_frames);
+        let tomb_frames = read_animation_frames(&fall, "Tomb.img/fall", &fingerprint, &mut assets)?;
         if tomb_frames.is_empty() {
             return invalid("Tomb.img/fall has no frames");
         }
-        let tomb_assets = tomb_frames
-            .iter()
-            .map(|frame| descriptor(&frame.asset_id))
-            .collect();
+        let tomb_assets = frame_descriptors(&tomb_frames);
 
         tracing::info!(
             path = %path.display(),
-            frames = tomb_frames.len(),
-            "WZ death effect source ready"
+            level_up_frames = level_up_frames.len(),
+            tomb_frames = tomb_frames.len(),
+            "WZ effect source ready"
         );
         Ok(Some(Self {
             _base: base,
+            level_up_frames,
+            level_up_assets,
             tomb_frames,
             tomb_assets,
             assets,
@@ -84,6 +90,10 @@ impl EffectContent {
         (self.tomb_frames.clone(), self.tomb_assets.clone())
     }
 
+    pub(super) fn level_up_projection(&self) -> (Vec<AnimationFrame>, Vec<AssetDescriptor>) {
+        (self.level_up_frames.clone(), self.level_up_assets.clone())
+    }
+
     pub(super) fn get_asset(
         &self,
         asset_id: &str,
@@ -92,20 +102,62 @@ impl EffectContent {
     }
 }
 
-fn read_tomb_frames(
-    fall: &WzNodeArc,
+fn read_level_up_frames(
+    root: &WzNodeArc,
+    archive_path: &Path,
+    fingerprint: &str,
+    assets: &mut HashMap<String, Arc<WzAsset>>,
+) -> Result<Vec<AnimationFrame>, EffectContentError> {
+    let Some(basic) = wz::child(root, BASIC_EFFECT_IMAGE)? else {
+        tracing::warn!("Effect.wz has no {BASIC_EFFECT_IMAGE}; level-up effects are disabled");
+        return Ok(Vec::new());
+    };
+    wz::parse(
+        &basic,
+        format!("{} {BASIC_EFFECT_IMAGE}", archive_path.display()),
+    )?;
+    let Some(level_up) = wz::child(&basic, LEVEL_UP_ANIMATION)? else {
+        tracing::warn!("Effect.wz has no BasicEff.img/LevelUp; level-up effects are disabled");
+        return Ok(Vec::new());
+    };
+    let mut animation_assets = HashMap::new();
+    let frames = match read_animation_frames(
+        &level_up,
+        "BasicEff.img/LevelUp",
+        fingerprint,
+        &mut animation_assets,
+    ) {
+        Ok(frames) => frames,
+        Err(error) => {
+            tracing::warn!(%error, "could not project Effect.wz level-up animation; level-up effects are disabled");
+            return Ok(Vec::new());
+        }
+    };
+    if frames.is_empty() {
+        tracing::warn!(
+            "Effect.wz BasicEff.img/LevelUp has no frames; level-up effects are disabled"
+        );
+    } else {
+        assets.extend(animation_assets);
+    }
+    Ok(frames)
+}
+
+fn read_animation_frames(
+    animation: &WzNodeArc,
+    animation_path: &str,
     fingerprint: &str,
     assets: &mut HashMap<String, Arc<WzAsset>>,
 ) -> Result<Vec<AnimationFrame>, EffectContentError> {
     let mut indexed = Vec::new();
-    for frame in wz::sorted_children(fall)? {
+    for frame in wz::sorted_children(animation)? {
         let name = wz::node_name(&frame)?;
         let Ok(index) = name.parse::<u32>() else {
             continue;
         };
         let source =
             find_png_descendant(&frame, 0)?.ok_or_else(|| EffectContentError::Invalid {
-                message: format!("Tomb.img/fall frame {name} has no PNG"),
+                message: format!("{animation_path} frame {name} has no PNG"),
             })?;
         let (width, height) = png_dimensions(&source)?;
         let Vector2D(origin_x, origin_y) = wz::child(&source, "origin")?
@@ -147,7 +199,7 @@ fn find_png_descendant(
     if node
         .read()
         .map_err(|_| EffectContentError::Lock {
-            context: "death tomb frame",
+            context: "effect animation frame",
         })?
         .try_as_png()
         .is_some()
@@ -167,7 +219,7 @@ fn find_png_descendant(
 
 fn png_dimensions(node: &WzNodeArc) -> Result<(u32, u32), EffectContentError> {
     let read = node.read().map_err(|_| EffectContentError::Lock {
-        context: "death tomb PNG geometry",
+        context: "effect animation PNG geometry",
     })?;
     let png = read
         .try_as_png()
@@ -209,6 +261,13 @@ fn descriptor(asset_id: &str) -> AssetDescriptor {
     }
 }
 
+fn frame_descriptors(frames: &[AnimationFrame]) -> Vec<AssetDescriptor> {
+    frames
+        .iter()
+        .map(|frame| descriptor(&frame.asset_id))
+        .collect()
+}
+
 fn invalid<T>(message: impl Into<String>) -> Result<T, EffectContentError> {
     Err(EffectContentError::Invalid {
         message: message.into(),
@@ -225,7 +284,48 @@ mod tests {
     use wz_reader::property::Vector2D;
     use wz_reader::property::WzPng;
 
-    use super::read_tomb_frames;
+    use super::read_animation_frames;
+    use super::read_level_up_frames;
+
+    #[test]
+    fn missing_level_up_animation_is_an_optional_empty_projection() {
+        let root = WzNode::from_str("Effect.wz", 0, None).into_lock();
+        let mut assets = HashMap::new();
+
+        let frames = read_level_up_frames(
+            &root,
+            std::path::Path::new("Effect.wz"),
+            "fingerprint",
+            &mut assets,
+        )
+        .expect("optional level-up frames");
+
+        assert!(frames.is_empty());
+        assert!(assets.is_empty());
+    }
+
+    #[test]
+    fn malformed_level_up_animation_is_an_optional_empty_projection() {
+        let root = WzNode::from_str("Effect.wz", 0, None).into_lock();
+        let basic = WzNode::from_str("BasicEff.img", 0, Some(&root)).into_lock();
+        add(&root, Arc::clone(&basic));
+        let level_up = WzNode::from_str("LevelUp", 0, Some(&basic)).into_lock();
+        add(&basic, Arc::clone(&level_up));
+        let frame = WzNode::from_str("0", 0, Some(&level_up)).into_lock();
+        add(&level_up, frame);
+        let mut assets = HashMap::new();
+
+        let frames = read_level_up_frames(
+            &root,
+            std::path::Path::new("Effect.wz"),
+            "fingerprint",
+            &mut assets,
+        )
+        .expect("optional level-up frames");
+
+        assert!(frames.is_empty());
+        assert!(assets.is_empty());
+    }
 
     #[test]
     fn tomb_frames_preserve_numeric_order_and_native_metadata() {
@@ -238,7 +338,8 @@ mod tests {
         );
         let mut assets = HashMap::new();
 
-        let frames = read_tomb_frames(&fall, "fingerprint", &mut assets).expect("tomb frames");
+        let frames = read_animation_frames(&fall, "Tomb.img/fall", "fingerprint", &mut assets)
+            .expect("tomb frames");
 
         assert_eq!(frames.len(), 2);
         assert_eq!(
@@ -267,7 +368,8 @@ mod tests {
         add_frame(&frame, "canvas", 38, 43, 19, 43, 80);
         let mut assets = HashMap::new();
 
-        let frames = read_tomb_frames(&fall, "fingerprint", &mut assets).expect("tomb frames");
+        let frames = read_animation_frames(&fall, "Tomb.img/fall", "fingerprint", &mut assets)
+            .expect("tomb frames");
 
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].origin_x, 19.0);

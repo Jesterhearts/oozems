@@ -14,6 +14,7 @@ mod gui_dump;
 mod hit_test;
 mod interaction_ui;
 mod keymap;
+mod level_up_effect;
 mod mob_render;
 mod morph_render;
 mod movement;

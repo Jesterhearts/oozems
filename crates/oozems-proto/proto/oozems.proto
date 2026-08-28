@@ -493,6 +493,7 @@ message GameGui {
   repeated NpcFrame quest_ready_frames = 15;
   GuiWindow death_notice_window = 16;
   repeated AnimationFrame death_tomb_frames = 17;
+  repeated AnimationFrame level_up_frames = 18;
 }
 
 message SkillBook {

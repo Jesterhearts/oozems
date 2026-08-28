@@ -22,17 +22,18 @@ use hud::item_expiration_detail;
 use hud::permanent_stack_needs_label;
 pub(crate) use world::draw_sprite;
 pub(crate) use world::npc_at_point;
+pub(crate) use world::player_canvas_position;
 pub(crate) use world::sprite_is_visible;
 pub(crate) use world::world_layers;
 
 pub fn draw(game: &Game) {
     if game.ui.cash_shop.open {
         hud::draw_cash_shop(game);
-        death::draw(game);
-        return;
+    } else {
+        world::draw(game);
+        hud::draw(game);
     }
-    world::draw(game);
-    hud::draw(game);
+    crate::level_up_effect::draw(game);
     death::draw(game);
 }
 

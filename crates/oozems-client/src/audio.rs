@@ -238,9 +238,14 @@ mod tests {
             id: "portal".to_owned(),
             url: "/portal.mp3".to_owned(),
         };
+        let level_up = AssetDescriptor {
+            id: "level-up".to_owned(),
+            url: "/level-up.mp3".to_owned(),
+        };
         let audio = MapAudio {
             jump: Some(jump.clone()),
             portal: Some(portal.clone()),
+            level_up: Some(level_up.clone()),
             ..MapAudio::default()
         };
 
@@ -249,7 +254,10 @@ mod tests {
             map_sound_descriptor(&audio, MapSound::Portal),
             Some(&portal)
         );
-        assert_eq!(map_sound_descriptor(&audio, MapSound::LevelUp), None);
+        assert_eq!(
+            map_sound_descriptor(&audio, MapSound::LevelUp),
+            Some(&level_up)
+        );
     }
 
     #[test]

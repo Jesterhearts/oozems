@@ -368,6 +368,7 @@ fn build_game_gui(
         quest_ready_frames,
         death_notice_window: Some(death_notice_window),
         death_tomb_frames: Vec::new(),
+        level_up_frames: Vec::new(),
     };
     for definition in definitions {
         let (window, definition_assets) = compose_window_definition(content, root, definition)?;

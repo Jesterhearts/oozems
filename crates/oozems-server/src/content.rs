@@ -240,6 +240,9 @@ impl ContentCatalog {
             let (frames, assets) = effects.tomb_projection();
             gui.death_tomb_frames = frames;
             gui.assets.extend(assets);
+            let (frames, assets) = effects.level_up_projection();
+            gui.level_up_frames = frames;
+            gui.assets.extend(assets);
         }
         Ok(gui)
     }
