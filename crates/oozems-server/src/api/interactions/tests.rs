@@ -9,13 +9,17 @@ use oozems_proto::v1::InventoryState;
 use oozems_proto::v1::ItemDefinition;
 use oozems_proto::v1::Npc;
 use oozems_proto::v1::NpcAnimation;
+use oozems_proto::v1::NpcDialogChoice;
 use oozems_proto::v1::NpcDialogChoiceKind;
+use oozems_proto::v1::NpcDialogView;
 use oozems_proto::v1::NpcShopCurrency;
 use oozems_proto::v1::PlayerQuest;
 use oozems_proto::v1::PlayerState;
 use oozems_proto::v1::QuestStatus;
 use oozems_proto::v1::Vec2;
+use oozems_proto::v1::npc_interaction;
 
+use super::interaction;
 use super::quest::QuestSelectionPlan;
 use super::quest::QuestTransitionPlan;
 use super::quest::active_quest_dialog;
@@ -98,6 +102,40 @@ fn npc_interaction_uses_the_authoritative_player_position() {
 
     assert!(validate_reach(&nearby, &npc).is_ok());
     assert!(validate_reach(&far_away, &npc).is_err());
+}
+
+#[test]
+fn npc_interaction_normalizes_dialog_line_endings() {
+    let npc = Npc {
+        name: "Maple Administrator\\r".to_owned(),
+        ..Npc::default()
+    };
+    let view = NpcDialogView {
+        title: "Quest\\r\nGuide".to_owned(),
+        pages: vec![
+            "First\\r\\nSecond".to_owned(),
+            "Third\r\nFourth\rFifth".to_owned(),
+            "Trailing\\r".to_owned(),
+        ],
+        choices: vec![NpcDialogChoice {
+            label: "Choose\r\\nthis".to_owned(),
+            ..NpcDialogChoice::default()
+        }],
+        ..NpcDialogView::default()
+    };
+
+    let result = interaction(1, &npc, npc_interaction::View::Dialog(view));
+    let npc_interaction::View::Dialog(dialog) = result.view.expect("dialog view") else {
+        panic!("expected dialog view");
+    };
+
+    assert_eq!(result.npc_name, "Maple Administrator\n");
+    assert_eq!(dialog.title, "Quest\nGuide");
+    assert_eq!(
+        dialog.pages,
+        vec!["First\nSecond", "Third\nFourth\nFifth", "Trailing\n"]
+    );
+    assert_eq!(dialog.choices[0].label, "Choose\nthis");
 }
 
 #[test]

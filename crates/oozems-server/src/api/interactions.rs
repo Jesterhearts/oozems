@@ -139,15 +139,32 @@ pub async fn interact(
 pub(super) fn interaction(
     map_id: u32,
     npc: &Npc,
-    view: npc_interaction::View,
+    mut view: npc_interaction::View,
 ) -> NpcInteraction {
+    if let npc_interaction::View::Dialog(dialog) = &mut view {
+        dialog.title = normalize_dialog_text(&dialog.title);
+        for page in &mut dialog.pages {
+            *page = normalize_dialog_text(page);
+        }
+        for choice in &mut dialog.choices {
+            choice.label = normalize_dialog_text(&choice.label);
+        }
+    }
     NpcInteraction {
         map_id,
         npc_spawn_id: npc.spawn_id,
         npc_id: npc.npc_id,
-        npc_name: npc.name.clone(),
+        npc_name: normalize_dialog_text(&npc.name),
         view: Some(view),
     }
+}
+
+fn normalize_dialog_text(source: &str) -> String {
+    source
+        .replace("\\r", "\r")
+        .replace("\\n", "\n")
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
 }
 
 fn validate_reach(
