@@ -36,6 +36,12 @@ use super::wz::sorted_children;
 use super::wz::string_value;
 use super::wz::vector_value;
 use super::wz::wrap_archive_root;
+use crate::attacks::AttackReach;
+
+mod weapon;
+
+use weapon::WeaponAttackSource;
+use weapon::WeaponAttacks;
 
 const CHARACTER_ARCHIVE: &str = "Character.wz";
 const MAXIMUM_STYLE_CHOICES: usize = 12;
@@ -52,6 +58,7 @@ pub struct CharacterContent {
     faces: HashMap<u32, WzNodeArc>,
     hairs: HashMap<u32, WzNodeArc>,
     equipment: HashMap<u32, WzNodeArc>,
+    weapon_attacks: WeaponAttacks,
     pajamas: PajamaSources,
     options: CharacterCreationOptions,
     fingerprint: String,
@@ -108,6 +115,7 @@ struct CharacterParts<'a> {
     face: &'a WzNodeArc,
     hair: &'a WzNodeArc,
     equipment: &'a [WzNodeArc],
+    weapon_attack: Option<&'a WeaponAttackSource>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -144,6 +152,7 @@ impl CharacterContent {
         let shoes = index_directory(&root, "Shoes")?;
         let weapons = index_directory(&root, "Weapon")?;
         let equipment = index_supported_equipment(&coats, &pants, &shoes, &weapons)?;
+        let weapon_attacks = weapon::load(&root, &equipment)?;
         let pajamas = load_pajama_sources(&coats, &pants)?;
         let options = build_creation_options(&bodies, &heads, &faces, &hairs);
         validate_options(&options)?;
@@ -164,6 +173,7 @@ impl CharacterContent {
             faces,
             hairs,
             equipment,
+            weapon_attacks,
             pajamas,
             options,
             fingerprint: archive_fingerprint(&path)?,
@@ -224,6 +234,20 @@ impl CharacterContent {
         asset_id: &str,
     ) -> Option<Arc<WzAsset>> {
         self.assets.read().ok()?.get(asset_id).cloned()
+    }
+
+    pub fn basic_attack_reach(
+        &self,
+        equipment: &[EquippedItem],
+    ) -> Option<AttackReach> {
+        let weapon = equipment
+            .iter()
+            .find(|item| item.slot == EquipmentSlot::Weapon as i32);
+        Some(
+            weapon
+                .and_then(|weapon| self.weapon_attacks.equipped.get(&weapon.item_id))
+                .map_or(self.weapon_attacks.bare_hands, |attack| attack.reach),
+        )
     }
 
     pub(super) fn item_source(&self) -> (&WzNodeArc, &str) {
@@ -590,6 +614,11 @@ fn build_sprite_set(
         face: &face,
         hair: &hair,
         equipment: &equipment,
+        weapon_attack: key
+            .equipment
+            .iter()
+            .find(|(slot, _)| *slot == EquipmentSlot::Weapon as i32)
+            .and_then(|(_, item_id)| source.weapon_attacks.equipped.get(item_id)),
     };
     let idle_frames = build_animation(source, parts, "stand1", &mut assets, &mut asset_ids)?;
     let walk_frames = build_animation(source, parts, "walk1", &mut assets, &mut asset_ids)?;
@@ -699,6 +728,13 @@ fn build_frame(
             add_direct_layers(&frame, &["navel", "hand"], None, &mut bones, &mut layers)?;
         }
     }
+    add_weapon_afterimage_layers(
+        parts.weapon_attack,
+        animation_name,
+        frame_name,
+        &mut bones,
+        &mut layers,
+    )?;
 
     layers.sort_by(|left, right| {
         z_rank(&left.z)
@@ -717,6 +753,26 @@ fn build_frame(
             .unwrap_or(500)
             .max(1),
     })
+}
+
+fn add_weapon_afterimage_layers(
+    weapon_attack: Option<&WeaponAttackSource>,
+    animation_name: &str,
+    frame_name: &str,
+    bones: &mut HashMap<String, Vector2D>,
+    layers: &mut Vec<PlacedLayer>,
+) -> Result<(), CharacterContentError> {
+    if animation_name != "swingO1" {
+        return Ok(());
+    }
+    let Some(afterimage_frame) = weapon_attack
+        .map(|attack| child(&attack.action, frame_name))
+        .transpose()?
+        .flatten()
+    else {
+        return Ok(());
+    };
+    add_direct_layers(&afterimage_frame, &[], None, bones, layers)
 }
 
 fn head_view(body_frame: &WzNodeArc) -> Result<HeadView, CharacterContentError> {
@@ -921,15 +977,20 @@ mod tests {
     use oozems_proto::v1::CharacterCreationOptions;
     use oozems_proto::v1::CharacterGender;
     use oozems_proto::v1::EquipmentSlot;
+    use oozems_proto::v1::EquippedItem;
     use wz_reader::WzNode;
     use wz_reader::WzNodeArc;
     use wz_reader::property::Vector2D;
+    use wz_reader::property::WzPng;
 
     use super::AppearanceKey;
     use super::CharacterContent;
     use super::CharacterKey;
     use super::HeadView;
     use super::PajamaSources;
+    use super::WeaponAttackSource;
+    use super::WeaponAttacks;
+    use super::add_weapon_afterimage_layers;
     use super::attachment_translation;
     use super::character_equipment_sources;
     use super::hair_frame;
@@ -958,6 +1019,45 @@ mod tests {
     fn weapon_is_drawn_behind_the_arm_and_hand() {
         assert!(z_rank("weapon") < z_rank("arm"));
         assert!(z_rank("weapon") < z_rank("hand"));
+    }
+
+    #[test]
+    fn fake_afterimage_canvas_uses_its_authored_origin() {
+        let action = add_branch(&WzNode::from_str("profile", 0, None).into_lock(), "swingO1");
+        let frame = add_branch(&action, "2");
+        let mut png = WzPng::default();
+        png.width = 79;
+        png.height = 68;
+        let canvas = WzNode::from_str("0", png, Some(&frame)).into_lock();
+        add(&frame, Arc::clone(&canvas));
+        add(
+            &canvas,
+            WzNode::from_str("origin", Vector2D(97, 69), Some(&canvas)).into_lock(),
+        );
+        let attack = WeaponAttackSource {
+            action,
+            reach: crate::attacks::AttackReach {
+                horizontal: 88.0,
+                top: -62.0,
+                bottom: -6.0,
+            },
+        };
+        let mut layers = Vec::new();
+
+        add_weapon_afterimage_layers(
+            Some(&attack),
+            "swingO1",
+            "2",
+            &mut HashMap::new(),
+            &mut layers,
+        )
+        .expect("fake afterimage layer");
+
+        assert_eq!(layers.len(), 1);
+        assert_eq!((layers[0].x, layers[0].y), (-97, -69));
+        assert_eq!((layers[0].width, layers[0].height), (79, 68));
+        assert_eq!(layers[0].z, "0");
+        assert_eq!(z_rank(&layers[0].z), 75);
     }
 
     #[test]
@@ -1029,6 +1129,24 @@ mod tests {
                 (crate::items::STARTER_TOP_ID, Arc::clone(&equipped_top)),
                 (1_302_000, Arc::clone(&equipped_weapon)),
             ]),
+            weapon_attacks: WeaponAttacks {
+                bare_hands: crate::attacks::AttackReach {
+                    horizontal: 64.0,
+                    top: -33.0,
+                    bottom: -18.0,
+                },
+                equipped: HashMap::from([(
+                    1_302_000,
+                    WeaponAttackSource {
+                        action: Arc::clone(&equipped_weapon),
+                        reach: crate::attacks::AttackReach {
+                            horizontal: 88.0,
+                            top: -62.0,
+                            bottom: -6.0,
+                        },
+                    },
+                )]),
+            },
             pajamas: PajamaSources {
                 male_top: Arc::clone(&male_top),
                 male_bottom: Arc::clone(&male_bottom),
@@ -1094,6 +1212,26 @@ mod tests {
             armed
                 .iter()
                 .any(|source| Arc::ptr_eq(source, &equipped_weapon))
+        );
+        assert_eq!(
+            content.basic_attack_reach(&[EquippedItem {
+                slot: EquipmentSlot::Weapon as i32,
+                item_id: 1_302_000,
+                ..EquippedItem::default()
+            }]),
+            Some(crate::attacks::AttackReach {
+                horizontal: 88.0,
+                top: -62.0,
+                bottom: -6.0,
+            })
+        );
+        assert_eq!(
+            content.basic_attack_reach(&[]),
+            Some(crate::attacks::AttackReach {
+                horizontal: 64.0,
+                top: -33.0,
+                bottom: -18.0,
+            })
         );
 
         let female = character_equipment_sources(

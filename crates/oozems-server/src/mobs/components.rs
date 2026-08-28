@@ -9,6 +9,7 @@ use shipyard::Component;
 use shipyard::Unique;
 
 use super::MobDeath;
+use crate::attacks::VerticalBounds;
 use crate::gameplay::CombatConfig;
 use crate::skill_formula::FormulaCatalog;
 
@@ -18,6 +19,9 @@ pub(super) struct MobIdentity {
     pub definition_id: u32,
     pub spawn_id: u32,
 }
+
+#[derive(Component, Clone, Copy, Debug)]
+pub(super) struct MobHitbox(pub VerticalBounds);
 
 #[derive(Component, Clone, Copy, Debug)]
 #[track(Modification)]

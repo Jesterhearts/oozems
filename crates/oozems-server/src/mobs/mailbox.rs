@@ -15,6 +15,7 @@ use super::PlayerAttack;
 use super::PlayerAttackTransaction;
 use super::PlayerRoutes;
 use super::Simulation;
+use crate::attacks::AttackReach;
 use crate::effects::ProjectedEffects;
 use crate::gameplay::CombatConfig;
 use crate::items::DropStore;
@@ -168,6 +169,28 @@ pub async fn use_player_attack_with_effects(
     attack: PlayerAttack<'_>,
     effects: ProjectedEffects,
 ) -> Result<MobUpdate, MobStoreError> {
+    send_player_attack(store, map, player, attack, None, effects).await
+}
+
+pub async fn use_player_attack_with_reach(
+    store: &MobStore,
+    map: &Map,
+    player: &PlayerState,
+    attack: PlayerAttack<'_>,
+    reach: AttackReach,
+    effects: ProjectedEffects,
+) -> Result<MobUpdate, MobStoreError> {
+    send_player_attack(store, map, player, attack, Some(reach), effects).await
+}
+
+async fn send_player_attack(
+    store: &MobStore,
+    map: &Map,
+    player: &PlayerState,
+    attack: PlayerAttack<'_>,
+    reach: Option<AttackReach>,
+    effects: ProjectedEffects,
+) -> Result<MobUpdate, MobStoreError> {
     let (response, receiver) = oneshot::channel();
     send_player_command(
         store,
@@ -176,7 +199,7 @@ pub async fn use_player_attack_with_effects(
         Command::UsePlayerAttack {
             map: map.clone(),
             player: player.clone(),
-            attack: OwnedPlayerAttack::from(attack),
+            attack: OwnedPlayerAttack::new(attack, reach),
             effects,
             response,
         },
@@ -470,11 +493,13 @@ fn apply_command(
             effects,
             response,
         } => {
+            let reach = attack.reach;
             let result = super::apply_use_player_attack(
                 simulation,
                 &map,
                 &player,
                 attack.borrowed(),
+                reach,
                 effects,
                 now,
             );
@@ -791,9 +816,26 @@ struct OwnedPlayerAttack {
     maximum_damage: u32,
     fixed_damage: bool,
     attack_type: SkillAttackType,
+    reach: Option<AttackReach>,
 }
 
 impl OwnedPlayerAttack {
+    fn new(
+        attack: PlayerAttack<'_>,
+        reach: Option<AttackReach>,
+    ) -> Self {
+        Self {
+            target_mob_id: attack.target_mob_id.to_owned(),
+            source_skill_id: attack.source_skill_id,
+            facing_left: attack.facing_left,
+            minimum_damage: attack.minimum_damage,
+            maximum_damage: attack.maximum_damage,
+            fixed_damage: attack.fixed_damage,
+            attack_type: attack.attack_type,
+            reach,
+        }
+    }
+
     fn borrowed(&self) -> PlayerAttack<'_> {
         PlayerAttack {
             target_mob_id: &self.target_mob_id,
@@ -803,20 +845,6 @@ impl OwnedPlayerAttack {
             maximum_damage: self.maximum_damage,
             fixed_damage: self.fixed_damage,
             attack_type: self.attack_type,
-        }
-    }
-}
-
-impl From<PlayerAttack<'_>> for OwnedPlayerAttack {
-    fn from(attack: PlayerAttack<'_>) -> Self {
-        Self {
-            target_mob_id: attack.target_mob_id.to_owned(),
-            source_skill_id: attack.source_skill_id,
-            facing_left: attack.facing_left,
-            minimum_damage: attack.minimum_damage,
-            maximum_damage: attack.maximum_damage,
-            fixed_damage: attack.fixed_damage,
-            attack_type: attack.attack_type,
         }
     }
 }

@@ -828,8 +828,10 @@ checks use this value with inclusive bounds.
 
 Combat distances are measured in map pixels. Mobs acquire an aggro target when
 that player damages them. `disengage_range` controls how far a mob can remain
-interested in that target. `player_attack_range` and `attack_vertical_reach` are
-the server-authoritative basic attack and skill target envelope.
+interested in that target. Basic attacks use the authored WZ swing bounds for
+the equipped weapon or bare hands. `player_attack_range` and
+`attack_vertical_reach` define the skill target envelope and the fallback when
+character WZ geometry is unavailable.
 `player_attack_interval` limits how often each player can use Basic Attack. The
 two touch reach values form the mob contact box.
 

@@ -28,6 +28,38 @@ pub struct DamageRange {
     pub maximum: u32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AttackReach {
+    pub horizontal: f32,
+    pub top: f32,
+    pub bottom: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VerticalBounds {
+    pub top: f32,
+    pub bottom: f32,
+}
+
+pub const DEFAULT_TARGET_VERTICAL_BOUNDS: VerticalBounds = VerticalBounds {
+    top: -48.0,
+    bottom: 0.0,
+};
+pub const POINT_VERTICAL_BOUNDS: VerticalBounds = VerticalBounds {
+    top: 0.0,
+    bottom: 0.0,
+};
+
+pub fn vertical_attack_intersects(
+    attacker_y: f32,
+    attack: AttackReach,
+    target_y: f32,
+    target: VerticalBounds,
+) -> bool {
+    attacker_y + attack.top <= target_y + target.bottom
+        && attacker_y + attack.bottom >= target_y + target.top
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum AttackRuleError {
     #[error("the player does not have character stats")]
@@ -146,12 +178,15 @@ mod tests {
     use oozems_proto::v1::CharacterStats;
     use oozems_proto::v1::PlayerState;
 
+    use super::AttackReach;
     use super::AttackRuleError;
     use super::BasicAttackCooldowns;
     use super::DamageRange;
+    use super::VerticalBounds;
     use super::calculate_basic_attack;
     use super::release_basic_attack;
     use super::reserve_basic_attack;
+    use super::vertical_attack_intersects;
 
     #[test]
     fn starter_basic_attack_uses_the_bare_hands_profile() {
@@ -198,6 +233,24 @@ mod tests {
 
         assert!(weapon.minimum > bare_hands.minimum);
         assert!(weapon.maximum > bare_hands.maximum);
+    }
+
+    #[test]
+    fn authored_attack_intersects_fake_target_body_at_inclusive_edges() {
+        let attack = AttackReach {
+            horizontal: 88.0,
+            top: -62.0,
+            bottom: -6.0,
+        };
+        let target = VerticalBounds {
+            top: -48.0,
+            bottom: 0.0,
+        };
+
+        assert!(vertical_attack_intersects(100.0, attack, 38.0, target));
+        assert!(!vertical_attack_intersects(100.0, attack, 37.0, target));
+        assert!(vertical_attack_intersects(100.0, attack, 142.0, target));
+        assert!(!vertical_attack_intersects(100.0, attack, 143.0, target));
     }
 
     #[test]

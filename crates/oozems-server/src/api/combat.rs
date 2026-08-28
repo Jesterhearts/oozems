@@ -38,6 +38,10 @@ pub async fn use_basic_attack(
     }
     let equipment = crate::items::equipment_stats(&player, state.catalog.as_ref())
         .map_err(super::item_rule_error)?;
+    let attack_reach = player
+        .inventory
+        .as_ref()
+        .and_then(|inventory| state.catalog.basic_attack_reach(&inventory.equipment));
     let damage = crate::attacks::calculate_basic_attack(
         &player,
         &state.formulas,
@@ -72,23 +76,40 @@ pub async fn use_basic_attack(
         state.basic_attack_cooldowns.clone(),
         attack_reservation,
     );
-    let simulation = match crate::mobs::use_player_attack_with_effects(
-        &state.mobs,
-        &map,
-        &player,
-        crate::mobs::PlayerAttack {
-            target_mob_id: "",
-            source_skill_id: None,
-            facing_left: request.facing_left,
-            minimum_damage: damage.minimum,
-            maximum_damage: damage.maximum,
-            fixed_damage: false,
-            attack_type: crate::jobs::SkillAttackType::Physical,
-        },
-        project_combat_effects(effects.projected(), equipment),
-    )
-    .await
-    {
+    let attack = crate::mobs::PlayerAttack {
+        target_mob_id: "",
+        source_skill_id: None,
+        facing_left: request.facing_left,
+        minimum_damage: damage.minimum,
+        maximum_damage: damage.maximum,
+        fixed_damage: false,
+        attack_type: crate::jobs::SkillAttackType::Physical,
+    };
+    let combat_effects = project_combat_effects(effects.projected(), equipment);
+    let simulation_result = match attack_reach {
+        Some(reach) => {
+            crate::mobs::use_player_attack_with_reach(
+                &state.mobs,
+                &map,
+                &player,
+                attack,
+                reach,
+                combat_effects,
+            )
+            .await
+        }
+        None => {
+            crate::mobs::use_player_attack_with_effects(
+                &state.mobs,
+                &map,
+                &player,
+                attack,
+                combat_effects,
+            )
+            .await
+        }
+    };
+    let simulation = match simulation_result {
         Ok(simulation) => simulation,
         Err(error) => {
             crate::player_transaction::abort_player_transaction(

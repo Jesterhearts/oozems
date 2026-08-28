@@ -5,7 +5,11 @@ use oozems_proto::v1::Reactor;
 use oozems_proto::v1::ReactorDefinition;
 use oozems_proto::v1::Vec2;
 
-use crate::gameplay::CombatConfig;
+use crate::attacks::AttackReach;
+use crate::attacks::DEFAULT_TARGET_VERTICAL_BOUNDS;
+use crate::attacks::POINT_VERTICAL_BOUNDS;
+use crate::attacks::VerticalBounds;
+use crate::attacks::vertical_attack_intersects;
 
 #[derive(Clone, Debug)]
 pub(super) struct ReactorRuntime {
@@ -14,6 +18,7 @@ pub(super) struct ReactorRuntime {
     pub(super) spawn_id: u32,
     pub(super) position: Vec2,
     pub(super) layer: i32,
+    vertical_bounds: VerticalBounds,
     initial_state: u32,
     state: u32,
     active: bool,
@@ -85,6 +90,7 @@ fn build_runtime(
         spawn_id: spawn.spawn_id,
         position,
         layer: spawn.layer,
+        vertical_bounds: reactor_vertical_bounds(definition),
         initial_state,
         state: initial_state,
         active: true,
@@ -116,7 +122,8 @@ pub(super) fn nearest_attack_candidate(
     player_y: f32,
     player_layer: i32,
     facing_left: bool,
-    rules: CombatConfig,
+    reach: AttackReach,
+    intersects_target_body: bool,
 ) -> Option<(usize, f32)> {
     reactors
         .iter()
@@ -126,15 +133,38 @@ pub(super) fn nearest_attack_candidate(
                 && reactor.player_attack_transaction.is_none()
                 && reactor.transitions.contains_key(&reactor.state)
                 && reactor.layer == player_layer
-                && (reactor.position.y - player_y).abs() <= rules.attack_vertical_reach
-                && in_facing_range(
-                    reactor.position.x - player_x,
-                    facing_left,
-                    rules.player_attack_range,
+                && vertical_attack_intersects(
+                    player_y,
+                    reach,
+                    reactor.position.y,
+                    if intersects_target_body {
+                        reactor.vertical_bounds
+                    } else {
+                        POINT_VERTICAL_BOUNDS
+                    },
                 )
+                && in_facing_range(reactor.position.x - player_x, facing_left, reach.horizontal)
         })
         .map(|(index, reactor)| (index, (reactor.position.x - player_x).abs()))
         .min_by(|left, right| left.1.total_cmp(&right.1))
+}
+
+fn reactor_vertical_bounds(definition: &ReactorDefinition) -> VerticalBounds {
+    definition
+        .states
+        .iter()
+        .flat_map(|state| &state.frames)
+        .filter_map(|frame| {
+            let top = -frame.origin_y;
+            let bottom = frame.height - frame.origin_y;
+            (frame.height > 0.0 && top.is_finite() && bottom.is_finite() && top <= bottom)
+                .then_some(VerticalBounds { top, bottom })
+        })
+        .reduce(|bounds, frame| VerticalBounds {
+            top: bounds.top.min(frame.top),
+            bottom: bounds.bottom.max(frame.bottom),
+        })
+        .unwrap_or(DEFAULT_TARGET_VERTICAL_BOUNDS)
 }
 
 pub(super) fn prepare_attack(
@@ -282,16 +312,19 @@ mod tests {
     use oozems_proto::v1::Map;
     use oozems_proto::v1::PlayerState;
     use oozems_proto::v1::ReactorDefinition;
+    use oozems_proto::v1::ReactorFrame;
     use oozems_proto::v1::ReactorSpawnPoint;
     use oozems_proto::v1::ReactorStateDefinition;
     use oozems_proto::v1::Vec2;
 
     use super::advance;
     use super::commit_attack;
+    use super::nearest_attack_candidate;
     use super::prepare_attack;
     use super::rollback_attack;
     use super::snapshot;
     use super::spawn;
+    use crate::attacks::AttackReach;
     use crate::loot::LootCatalog;
 
     #[test]
@@ -344,6 +377,25 @@ mod tests {
         assert!(snapshot(&reactors)[0].active);
     }
 
+    #[test]
+    fn attack_candidates_respect_asymmetric_weapon_reach() {
+        let reactors = spawn(&map());
+        let reach = AttackReach {
+            horizontal: 88.0,
+            top: -62.0,
+            bottom: -6.0,
+        };
+
+        assert_eq!(
+            nearest_attack_candidate(&reactors, 12.0, 38.0, 0, false, reach, true),
+            Some((0, 88.0))
+        );
+        assert_eq!(
+            nearest_attack_candidate(&reactors, 12.0, 37.0, 0, false, reach, true),
+            None
+        );
+    }
+
     fn map() -> Map {
         Map {
             id: 1,
@@ -359,6 +411,11 @@ mod tests {
                 states: (0..=4)
                     .map(|state| ReactorStateDefinition {
                         state,
+                        frames: vec![ReactorFrame {
+                            height: 48.0,
+                            origin_y: 48.0,
+                            ..ReactorFrame::default()
+                        }],
                         next_state: (state < 4).then_some(state + 1),
                         ..ReactorStateDefinition::default()
                     })

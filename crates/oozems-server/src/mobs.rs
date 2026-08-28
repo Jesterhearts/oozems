@@ -20,6 +20,7 @@ use shipyard::Workload;
 use shipyard::World;
 use thiserror::Error;
 
+use crate::attacks::AttackReach;
 use crate::effects::ProjectedEffects;
 use crate::gameplay::CombatConfig;
 use crate::items::DropStore;
@@ -40,6 +41,7 @@ mod spawn;
 use components::CombatFormulas;
 use components::CombatRules;
 use components::MobCombat;
+use components::MobHitbox;
 use components::MobIdentity;
 use components::MobMotion;
 use components::PendingEvents;
@@ -57,6 +59,7 @@ pub use mailbox::map_snapshot;
 pub use mailbox::observe_player_with_effects;
 pub use mailbox::rollback_player_update;
 pub use mailbox::use_player_attack_with_effects;
+pub use mailbox::use_player_attack_with_reach;
 use snapshot::snapshot;
 use spawn::spawn_mob_components;
 
@@ -308,6 +311,7 @@ fn apply_use_player_attack(
     map: &Map,
     player: &PlayerState,
     attack: PlayerAttack<'_>,
+    attack_reach: Option<AttackReach>,
     effects: ProjectedEffects,
     now: Instant,
 ) -> Result<MobUpdate, MobStoreError> {
@@ -317,6 +321,19 @@ fn apply_use_player_attack(
     let loot = simulation.loot.clone();
     let drops = simulation.drops.clone();
     let rules = simulation.rules;
+    let (attack_reach, intersects_target_body) = attack_reach.map_or_else(
+        || {
+            (
+                AttackReach {
+                    horizontal: rules.player_attack_range,
+                    top: -rules.attack_vertical_reach,
+                    bottom: rules.attack_vertical_reach,
+                },
+                false,
+            )
+        },
+        |reach| (reach, true),
+    );
     let (update, player_is_present, stale_players) = {
         let state = simulation
             .maps
@@ -342,7 +359,8 @@ fn apply_use_player_attack(
                         fixed_damage: attack.fixed_damage,
                         attack_type: attack.attack_type,
                     },
-                    rules,
+                    attack_reach,
+                    intersects_target_body,
                     &formulas,
                     &loot,
                     &drops,
@@ -523,6 +541,31 @@ fn use_player_attack_at(
 }
 
 #[cfg(test)]
+fn use_player_attack_at_with_reach(
+    simulation: &mut Simulation,
+    map: &Map,
+    player: &PlayerState,
+    attack: PlayerAttack<'_>,
+    reach: AttackReach,
+    now: Instant,
+) -> Result<MobUpdate, MobStoreError> {
+    let mut update = apply_use_player_attack(
+        simulation,
+        map,
+        player,
+        attack,
+        Some(reach),
+        ProjectedEffects::default(),
+        now,
+    )?;
+    if let Some(transaction) = update.player_attack_transaction.clone() {
+        apply_commit_player_attack(simulation, &transaction)?;
+        update.player_attack_transaction = None;
+    }
+    Ok(update)
+}
+
+#[cfg(test)]
 fn use_player_attack_at_uncommitted(
     simulation: &mut Simulation,
     map: &Map,
@@ -535,6 +578,7 @@ fn use_player_attack_at_uncommitted(
         map,
         player,
         attack,
+        None,
         ProjectedEffects::default(),
         now,
     )
@@ -633,8 +677,10 @@ fn build_map_state(
     world.add_unique(PendingEvents::default());
     world.add_unique(SimulationErrors::default());
     install_tick_workload(&world)?;
-    for (identity, position, motion, combat) in spawn_mob_components(map, rules.default_respawn) {
-        world.add_entity((identity, position, motion, combat));
+    for (identity, position, hitbox, motion, combat) in
+        spawn_mob_components(map, rules.default_respawn)
+    {
+        world.add_entity((identity, position, hitbox, motion, combat));
     }
     Ok(MobMapState {
         world,
@@ -869,7 +915,8 @@ fn prepare_player_attack(
     map_id: u32,
     player: &PlayerState,
     attack: PlayerAttack<'_>,
-    rules: CombatConfig,
+    reach: AttackReach,
+    intersects_target_body: bool,
     formulas: &FormulaCatalog,
     loot: &LootCatalog,
     drops: &DropStore,
@@ -884,23 +931,34 @@ fn prepare_player_attack(
         .map(|(position, presence)| (**position, presence.clone()))
         .map_err(|error| borrow_error(error.to_string()))?;
     let mob_target = state.world.run(
-        |positions: View<Position>, identities: View<MobIdentity>, combats: View<MobCombat>| {
-            let candidates = (&positions, &identities, &combats).iter().with_id().filter(
-                |(_, (position, identity, combat))| {
+        |positions: View<Position>,
+         identities: View<MobIdentity>,
+         hitboxes: View<MobHitbox>,
+         combats: View<MobCombat>| {
+            let candidates = (&positions, &identities, &hitboxes, &combats)
+                .iter()
+                .with_id()
+                .filter(|(_, (position, identity, hitbox, combat))| {
                     combat.current_hp > 0
                         && combat.player_attack_transaction.is_none()
                         && valid_attack_target(
                             player_position,
                             **position,
+                            if intersects_target_body {
+                                hitbox.0
+                            } else {
+                                crate::attacks::POINT_VERTICAL_BOUNDS
+                            },
                             attack.facing_left,
-                            rules,
+                            reach,
                         )
                         && (attack.target_mob_id.is_empty()
                             || identity.public_id == attack.target_mob_id)
-                },
-            );
+                });
             candidates
-                .map(|(entity, (position, _, _))| (entity, (position.x - player_position.x).abs()))
+                .map(|(entity, (position, _, _, _))| {
+                    (entity, (position.x - player_position.x).abs())
+                })
                 .min_by(|left, right| left.1.total_cmp(&right.1))
         },
     );
@@ -912,7 +970,8 @@ fn prepare_player_attack(
                 player_position.y,
                 player_position.layer,
                 attack.facing_left,
-                rules,
+                reach,
+                intersects_target_body,
             )
         })
         .flatten();
@@ -1192,14 +1251,17 @@ fn prepare_reactor_attack(
 fn valid_attack_target(
     player: Position,
     target: Position,
+    target_bounds: crate::attacks::VerticalBounds,
     facing_left: bool,
-    rules: CombatConfig,
+    reach: AttackReach,
 ) -> bool {
-    if player.layer != target.layer || (player.y - target.y).abs() > rules.attack_vertical_reach {
+    if player.layer != target.layer
+        || !crate::attacks::vertical_attack_intersects(player.y, reach, target.y, target_bounds)
+    {
         return false;
     }
     let delta_x = target.x - player.x;
-    delta_x.abs() <= rules.player_attack_range
+    delta_x.abs() <= reach.horizontal
         && if facing_left {
             delta_x <= 0.0
         } else {
@@ -1281,6 +1343,7 @@ mod tests {
     use super::MobUpdate;
     use super::PlayerAttack;
     use super::PlayerRoutes;
+    use super::Position;
     use super::Simulation;
     use super::apply_map_snapshot as map_snapshot_at;
     use super::apply_restore_player_effects as restore_player_effects;
@@ -1299,7 +1362,13 @@ mod tests {
     use super::rollback_player_update;
     use super::use_player_attack_at;
     use super::use_player_attack_at_uncommitted;
+    use super::use_player_attack_at_with_reach;
     use super::use_player_attack_with_effects;
+    use super::use_player_attack_with_reach;
+    use super::valid_attack_target;
+    use crate::attacks::AttackReach;
+    use crate::attacks::POINT_VERTICAL_BOUNDS;
+    use crate::attacks::VerticalBounds;
     use crate::content::QuestDefinition;
     use crate::gameplay::CombatConfig;
     use crate::items::DropStore;
@@ -1677,6 +1746,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mailbox_preserves_the_weapon_attack_reach() {
+        let store = mailbox_store();
+        let map = map();
+        let player = player(11.0, 100.0);
+        let mut update = use_player_attack_with_reach(
+            &store,
+            &map,
+            &player,
+            PlayerAttack {
+                target_mob_id: "",
+                source_skill_id: None,
+                facing_left: false,
+                minimum_damage: 10,
+                maximum_damage: 10,
+                fixed_damage: true,
+                attack_type: SkillAttackType::Physical,
+            },
+            AttackReach {
+                horizontal: 88.0,
+                top: -62.0,
+                bottom: -6.0,
+            },
+            crate::effects::ProjectedEffects::default(),
+        )
+        .await
+        .expect("mailbox weapon attack");
+
+        assert_eq!(update.mobs[0].current_hp, 100);
+        commit_player_attack(&store, &mut update)
+            .await
+            .expect("acknowledge mailbox weapon attack");
+    }
+
+    #[tokio::test]
     async fn mailbox_restores_abandoned_reactor_destruction_and_loot() {
         let store = mailbox_store_with_loot(&format!(
             "[[reactors]]\nreactor_id = 2001\n[[reactors.drops]]\nitem_id = \
@@ -1903,6 +2006,155 @@ mod tests {
 
         assert_eq!(update.mobs[0].current_hp, 90);
         assert!(update.combat_events.iter().any(|event| event.damage == 10));
+    }
+
+    #[test]
+    fn a_weapon_attack_uses_its_authored_reach_instead_of_the_global_envelope() {
+        let map = map();
+        let attack = PlayerAttack {
+            target_mob_id: "",
+            source_skill_id: None,
+            facing_left: false,
+            minimum_damage: 10,
+            maximum_damage: 10,
+            fixed_damage: true,
+            attack_type: SkillAttackType::Physical,
+        };
+        let reach = AttackReach {
+            horizontal: 88.0,
+            top: -62.0,
+            bottom: -6.0,
+        };
+
+        let mut outside_store = store();
+        let outside = use_player_attack_at_with_reach(
+            &mut outside_store,
+            &map,
+            &player(11.0, 100.0),
+            attack,
+            reach,
+            Instant::now(),
+        )
+        .expect("attack beyond weapon reach");
+        assert_eq!(outside.mobs[0].current_hp, 100);
+
+        let mut edge_store = store();
+        let edge = use_player_attack_at_with_reach(
+            &mut edge_store,
+            &map,
+            &player(12.0, 100.0),
+            attack,
+            reach,
+            Instant::now(),
+        )
+        .expect("attack at weapon reach");
+        assert_eq!(edge.mobs[0].current_hp, 90);
+    }
+
+    #[test]
+    fn weapon_attacks_intersect_the_visible_target_bounds() {
+        let player = Position {
+            x: 0.0,
+            y: 100.0,
+            layer: 0,
+        };
+        let reach = AttackReach {
+            horizontal: 88.0,
+            top: -62.0,
+            bottom: -6.0,
+        };
+        let target_bounds = VerticalBounds {
+            top: -48.0,
+            bottom: 0.0,
+        };
+
+        assert!(valid_attack_target(
+            player,
+            Position {
+                x: 50.0,
+                y: 38.0,
+                layer: 0,
+            },
+            target_bounds,
+            false,
+            reach,
+        ));
+        assert!(!valid_attack_target(
+            player,
+            Position {
+                x: 50.0,
+                y: 37.0,
+                layer: 0,
+            },
+            target_bounds,
+            false,
+            reach,
+        ));
+        assert!(valid_attack_target(
+            player,
+            Position {
+                x: 50.0,
+                y: 100.0,
+                layer: 0,
+            },
+            target_bounds,
+            false,
+            reach,
+        ));
+        assert!(valid_attack_target(
+            player,
+            Position {
+                x: 50.0,
+                y: 142.0,
+                layer: 0,
+            },
+            target_bounds,
+            false,
+            reach,
+        ));
+        assert!(!valid_attack_target(
+            player,
+            Position {
+                x: 50.0,
+                y: 143.0,
+                layer: 0,
+            },
+            target_bounds,
+            false,
+            reach,
+        ));
+
+        let fallback = AttackReach {
+            horizontal: 220.0,
+            top: -90.0,
+            bottom: 90.0,
+        };
+        for y in [10.0, 190.0] {
+            assert!(valid_attack_target(
+                player,
+                Position {
+                    x: 50.0,
+                    y,
+                    layer: 0,
+                },
+                POINT_VERTICAL_BOUNDS,
+                false,
+                fallback,
+            ));
+        }
+        for y in [9.0, 191.0] {
+            assert!(!valid_attack_target(
+                player,
+                Position {
+                    x: 50.0,
+                    y,
+                    layer: 0,
+                },
+                POINT_VERTICAL_BOUNDS,
+                false,
+                fallback,
+            ));
+        }
     }
 
     #[test]

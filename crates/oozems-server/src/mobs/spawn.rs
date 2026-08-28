@@ -8,17 +8,20 @@ use oozems_proto::v1::MobSpawnPoint;
 
 use super::ai;
 use super::components::MobCombat;
+use super::components::MobHitbox;
 use super::components::MobIdentity;
 use super::components::MobMotion;
 use super::components::Position;
 use super::finite_position;
+use crate::attacks::DEFAULT_TARGET_VERTICAL_BOUNDS;
+use crate::attacks::VerticalBounds;
 
 const BASE_MOVE_SPEED: f32 = 80.0;
 
 pub(super) fn spawn_mob_components(
     map: &Map,
     default_respawn: Duration,
-) -> Vec<(MobIdentity, Position, MobMotion, MobCombat)> {
+) -> Vec<(MobIdentity, Position, MobHitbox, MobMotion, MobCombat)> {
     let definitions = map
         .mob_definitions
         .iter()
@@ -42,7 +45,7 @@ fn spawn_mob(
     spawn: &MobSpawnPoint,
     definition: Option<&MobDefinition>,
     default_respawn: Duration,
-) -> Option<(MobIdentity, Position, MobMotion, MobCombat)> {
+) -> Option<(MobIdentity, Position, MobHitbox, MobMotion, MobCombat)> {
     let definition = definition.filter(|definition| {
         definition
             .animations
@@ -77,6 +80,7 @@ fn spawn_mob(
             spawn_id: spawn.spawn_id,
         },
         position,
+        MobHitbox(vertical_bounds(definition)),
         MobMotion {
             spawn_position: position,
             spawn_support,
@@ -116,6 +120,42 @@ fn spawn_mob(
     ))
 }
 
+fn vertical_bounds(definition: &MobDefinition) -> VerticalBounds {
+    frame_vertical_bounds(
+        definition
+            .animations
+            .iter()
+            .filter(|animation| matches!(animation.name.as_str(), "stand" | "move" | "fly"))
+            .flat_map(|animation| &animation.frames),
+    )
+    .or_else(|| {
+        frame_vertical_bounds(
+            definition
+                .animations
+                .iter()
+                .flat_map(|animation| &animation.frames),
+        )
+    })
+    .unwrap_or(DEFAULT_TARGET_VERTICAL_BOUNDS)
+}
+
+fn frame_vertical_bounds<'a>(
+    frames: impl IntoIterator<Item = &'a oozems_proto::v1::MobFrame>
+) -> Option<VerticalBounds> {
+    frames
+        .into_iter()
+        .filter_map(|frame| {
+            let top = -frame.origin_y;
+            let bottom = frame.height - frame.origin_y;
+            (frame.height > 0.0 && top.is_finite() && bottom.is_finite() && top <= bottom)
+                .then_some(VerticalBounds { top, bottom })
+        })
+        .reduce(|bounds, frame| VerticalBounds {
+            top: bounds.top.min(frame.top),
+            bottom: bounds.bottom.max(frame.bottom),
+        })
+}
+
 fn roam_bounds(
     map: &Map,
     spawn: &MobSpawnPoint,
@@ -144,4 +184,47 @@ fn has_animation(
         .animations
         .iter()
         .any(|animation| animation.name == name && !animation.frames.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use oozems_proto::v1::MobAnimation;
+    use oozems_proto::v1::MobDefinition;
+    use oozems_proto::v1::MobFrame;
+
+    use super::vertical_bounds;
+    use crate::attacks::VerticalBounds;
+
+    #[test]
+    fn movement_frames_define_the_fake_mob_vertical_bounds() {
+        let definition = MobDefinition {
+            animations: vec![
+                MobAnimation {
+                    name: "stand".to_owned(),
+                    frames: vec![MobFrame {
+                        height: 48.0,
+                        origin_y: 42.0,
+                        ..MobFrame::default()
+                    }],
+                },
+                MobAnimation {
+                    name: "attack1".to_owned(),
+                    frames: vec![MobFrame {
+                        height: 200.0,
+                        origin_y: 100.0,
+                        ..MobFrame::default()
+                    }],
+                },
+            ],
+            ..MobDefinition::default()
+        };
+
+        assert_eq!(
+            vertical_bounds(&definition),
+            VerticalBounds {
+                top: -42.0,
+                bottom: 6.0,
+            }
+        );
+    }
 }

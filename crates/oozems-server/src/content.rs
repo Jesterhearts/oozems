@@ -415,6 +415,13 @@ impl ContentCatalog {
             .map(|sprites| sprites.flatten())
             .map_err(Into::into)
     }
+
+    pub fn basic_attack_reach(
+        &self,
+        equipment: &[EquippedItem],
+    ) -> Option<crate::attacks::AttackReach> {
+        self.characters.as_ref()?.basic_attack_reach(equipment)
+    }
 }
 
 impl crate::items::ItemDefinitionLookup for ContentCatalog {
