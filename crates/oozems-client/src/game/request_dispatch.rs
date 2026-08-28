@@ -354,6 +354,9 @@ pub(super) fn collect_refresh_requests(
         .chain(game.world.map.dropped_items.iter().map(|drop| drop.item_id))
         .chain(super::buffs::item_source_ids(&game.player.active_buffs))
         .collect::<Vec<_>>();
+    if crate::quest_tracker::needs_refresh(&game.ui.gui, &game.player.state) {
+        game.requests.gui.cached.remove(&());
+    }
     if let Some(request) = take_gui_refresh_request(
         &mut game.requests.gui,
         &game.ui.gui,

@@ -319,6 +319,13 @@ pub(super) async fn open_interaction(
         return Ok(dialog_response(&player, npc, dialog));
     }
     if let Some(quest) = active_quest_for_npc(&player, &quests, npc.npc_id) {
+        let mob_ids = quest
+            .completion
+            .mobs
+            .iter()
+            .map(|objective| objective.mob_id)
+            .collect();
+        let mob_definitions = state.catalog.mob_definitions(&mob_ids);
         let ready = crate::quests::completion_readiness(
             &player,
             &effects,
@@ -365,6 +372,7 @@ pub(super) async fn open_interaction(
                 quest,
                 quest_definitions,
                 state.catalog.item_definition_slice(),
+                &mob_definitions,
                 &state.quest_scripts,
                 environment,
             )
@@ -527,6 +535,7 @@ pub(super) fn active_quest_dialog(
     quest: &QuestDefinition,
     quest_definitions: &[&QuestDefinition],
     item_definitions: &[oozems_proto::v1::ItemDefinition],
+    mob_definitions: &[oozems_proto::v1::MobDefinition],
     scripts: &crate::quest_scripts::QuestScriptCatalog,
     environment: crate::quests::QuestEnvironment,
 ) -> NpcDialogView {
@@ -554,6 +563,7 @@ pub(super) fn active_quest_dialog(
                 quest,
                 quest_definitions,
                 item_definitions,
+                mob_definitions,
                 scripts,
                 environment,
             ),

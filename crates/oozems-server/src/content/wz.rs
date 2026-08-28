@@ -259,6 +259,26 @@ impl WzContent {
         Ok(map)
     }
 
+    pub(super) fn mob_definitions(
+        &self,
+        mob_ids: &std::collections::BTreeSet<u32>,
+    ) -> Vec<oozems_proto::v1::MobDefinition> {
+        let Some(content) = &self.mobs else {
+            return Vec::new();
+        };
+        mob_ids
+            .iter()
+            .filter_map(|mob_id| match content.get_definition(*mob_id) {
+                Ok(Some(loaded)) => Some(loaded.definition),
+                Ok(None) => None,
+                Err(error) => {
+                    tracing::warn!(mob_id, %error, "mob definition is unavailable for quest text");
+                    None
+                }
+            })
+            .collect()
+    }
+
     pub fn get_asset(
         &self,
         asset_id: &str,

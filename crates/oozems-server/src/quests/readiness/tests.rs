@@ -241,6 +241,9 @@ fn completed_quest_count_uses_only_known_eligible_completed_definitions() {
         incomplete.objectives[0],
         super::QuestObjectiveProgress {
             kind: super::QuestObjectiveKind::CompletedQuests,
+            tracker_kind: oozems_proto::v1::QuestTrackerProgressKind::Snapshot,
+            target_ids: Vec::new(),
+            target_quest_status: QuestStatus::Unspecified,
             label: "Eligible completed quests".to_owned(),
             current: 1,
             required: 2,
@@ -535,4 +538,88 @@ fn selected_skill_mob_credit_requires_exact_authoritative_provenance() {
     let readiness = completion_readiness(&capped.player, &quests[1], &[], scripts());
     assert!(readiness.objectives[0].label.contains("Power Strike"));
     assert!(readiness.objectives[0].label.contains("1001004"));
+}
+
+#[test]
+fn quest_tracker_projects_named_mob_progress() {
+    let mut quest = quest(100);
+    quest.name = "Pest Control".to_owned();
+    quest.completion.mobs.push(QuestMobObjective {
+        mob_id: MOB_A,
+        count: 4,
+    });
+    let player = PlayerState {
+        quests: vec![PlayerQuest {
+            quest_id: quest.id,
+            status: QuestStatus::Started as i32,
+            mob_progress: vec![QuestMobProgress {
+                mob_id: MOB_A,
+                count: 2,
+            }],
+            ..PlayerQuest::default()
+        }],
+        ..PlayerState::default()
+    };
+    let definitions = [&quest];
+    let mobs = [oozems_proto::v1::MobDefinition {
+        id: MOB_A,
+        name: "Snail".to_owned(),
+        ..oozems_proto::v1::MobDefinition::default()
+    }];
+
+    let tracker = super::quest_tracker(
+        &player,
+        &PlayerEffects::default(),
+        &definitions,
+        &[],
+        &mobs,
+        scripts(),
+        environment(0),
+    );
+
+    assert_eq!(tracker.len(), 1);
+    assert_eq!(tracker[0].title, "Pest Control");
+    assert_eq!(tracker[0].objectives[0].label, "Snail");
+    assert_eq!(tracker[0].objectives[0].current, 2);
+    assert_eq!(tracker[0].objectives[0].required, 4);
+    assert_eq!(
+        tracker[0].objectives[0].progress_kind,
+        oozems_proto::v1::QuestTrackerProgressKind::Mob as i32
+    );
+    assert_eq!(tracker[0].objectives[0].target_ids, vec![MOB_A]);
+
+    let fallback = super::quest_tracker(
+        &player,
+        &PlayerEffects::default(),
+        &definitions,
+        &[],
+        &[],
+        scripts(),
+        environment(0),
+    );
+    assert_eq!(fallback[0].objectives[0].label, format!("Mob {MOB_A}"));
+}
+
+#[test]
+fn quest_tracker_keeps_unknown_active_quests_in_the_projection() {
+    let player = PlayerState {
+        quests: vec![player_quest(777, QuestStatus::Started)],
+        ..PlayerState::default()
+    };
+
+    let tracker = super::quest_tracker(
+        &player,
+        &PlayerEffects::default(),
+        &[],
+        &[],
+        &[],
+        scripts(),
+        environment(0),
+    );
+
+    assert_eq!(tracker.len(), 1);
+    assert_eq!(tracker[0].quest_id, 777);
+    assert_eq!(tracker[0].title, "Quest 777");
+    assert_eq!(tracker[0].summary, "Quest data is unavailable.");
+    assert!(!tracker[0].ready);
 }

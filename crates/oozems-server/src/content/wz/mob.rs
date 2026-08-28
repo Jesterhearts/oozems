@@ -37,11 +37,14 @@ use super::wrap_archive_root;
 use crate::content::sound::SoundContent;
 
 const MOB_ARCHIVE: &str = "Mob.wz";
+const STRING_ARCHIVE: &str = "String.wz";
 const DEFAULT_FRAME_DELAY_MS: u32 = 100;
 
 pub(super) struct MobContent {
     _base: WzNodeArc,
+    _string_base: Option<WzNodeArc>,
     root: WzNodeArc,
+    strings: Option<WzNodeArc>,
     fingerprint: String,
     definitions: RwLock<HashMap<u32, LoadedMobDefinition>>,
     assets: RwLock<HashMap<String, Arc<WzAsset>>>,
@@ -79,11 +82,17 @@ impl MobContent {
         let base = wrap_archive_root(&root)?;
         parse(&root, format!("{} root", path.display()))?;
         let fingerprint = archive_fingerprint(&path)?;
+        let (string_base, strings) = open_mob_strings(directory).unwrap_or_else(|error| {
+            tracing::warn!(%error, "mob names are unavailable; using numeric mob names");
+            (None, None)
+        });
 
         tracing::info!(path = %path.display(), "WZ mob source ready");
         Ok(Some(Self {
             _base: base,
+            _string_base: string_base,
             root,
+            strings,
             fingerprint,
             definitions: RwLock::new(HashMap::new()),
             assets: RwLock::new(HashMap::new()),
@@ -110,7 +119,8 @@ impl MobContent {
             return Ok(None);
         };
         parse(&node, format!("mob {mob_id}"))?;
-        let definition = build_definition(self, mob_id, &node)?;
+        let mut definition = build_definition(self, mob_id, &node)?;
+        definition.definition.name = self.mob_name(mob_id);
         self.definitions
             .write()
             .map_err(|_| lock_error("WZ mob definition cache"))?
@@ -145,6 +155,49 @@ impl MobContent {
             url: format!("/wz-assets/{version}.png"),
         })
     }
+
+    fn mob_name(
+        &self,
+        mob_id: u32,
+    ) -> String {
+        let fallback = format!("Mob {mob_id}");
+        let result: Result<Option<String>, WzContentError> = (|| {
+            let Some(strings) = self.strings.as_ref() else {
+                return Ok(None);
+            };
+            let Some(entry) = child(strings, &mob_id.to_string())? else {
+                return Ok(None);
+            };
+            string_value(&entry, "name")
+        })();
+        match result {
+            Ok(Some(name)) if !name.is_empty() => name,
+            Ok(_) => fallback,
+            Err(error) => {
+                tracing::warn!(mob_id, %error, "mob name is unavailable; using its numeric name");
+                fallback
+            }
+        }
+    }
+}
+
+fn open_mob_strings(
+    directory: &Path
+) -> Result<(Option<WzNodeArc>, Option<WzNodeArc>), WzContentError> {
+    let path = directory.join(STRING_ARCHIVE);
+    if !archive_exists(&path)? {
+        tracing::warn!(path = %path.display(), "String.wz is absent; using numeric mob names");
+        return Ok((None, None));
+    }
+    let root = open_archive(&path)?;
+    let base = wrap_archive_root(&root)?;
+    parse(&root, format!("{} root", path.display()))?;
+    let Some(strings) = child(&root, "Mob.img")? else {
+        tracing::warn!(path = %path.display(), "String.wz has no Mob.img; using numeric mob names");
+        return Ok((Some(base), None));
+    };
+    parse(&strings, format!("{} Mob.img", path.display()))?;
+    Ok((Some(base), Some(strings)))
 }
 
 fn archive_exists(path: &Path) -> Result<bool, WzContentError> {
@@ -278,6 +331,7 @@ fn build_definition(
     let definition = match info {
         Some(info) => MobDefinition {
             id: mob_id,
+            name: String::new(),
             level: positive_u32(numeric_value(&info, "level")?.unwrap_or_default()),
             max_hp: positive_u64(numeric_value(&info, "maxHP")?.unwrap_or(1)),
             max_mp: positive_u64(numeric_value(&info, "maxMP")?.unwrap_or_default()),
@@ -299,6 +353,7 @@ fn build_definition(
         },
         None => MobDefinition {
             id: mob_id,
+            name: String::new(),
             max_hp: 1,
             animations,
             can_jump,

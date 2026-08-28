@@ -300,6 +300,13 @@ impl ContentCatalog {
             .unwrap_or_default()
     }
 
+    pub(crate) fn mob_definitions(
+        &self,
+        mob_ids: &std::collections::BTreeSet<u32>,
+    ) -> Vec<oozems_proto::v1::MobDefinition> {
+        self.wz.mob_definitions(mob_ids)
+    }
+
     pub(crate) fn consume_effect_definitions(&self) -> Vec<ConsumeEffectDefinition> {
         self.items
             .as_ref()

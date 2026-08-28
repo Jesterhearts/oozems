@@ -22,6 +22,9 @@ pub fn completion_readiness(
         let current = effects.contains_item(requirement.item_id);
         objectives.push(QuestObjectiveProgress {
             kind: QuestObjectiveKind::Buff,
+            tracker_kind: QuestTrackerProgressKind::EffectItem,
+            target_ids: vec![requirement.item_id],
+            target_quest_status: QuestStatus::Unspecified,
             label: if requirement.active {
                 format!("Effect item {} is active", requirement.item_id)
             } else {
@@ -36,6 +39,9 @@ pub fn completion_readiness(
         let current = effects.projected().morph_id;
         objectives.push(QuestObjectiveProgress {
             kind: QuestObjectiveKind::Buff,
+            tracker_kind: QuestTrackerProgressKind::Morph,
+            target_ids: Vec::new(),
+            target_quest_status: QuestStatus::Unspecified,
             label: format!("Active morph {}", morph_id),
             current: u64::from(current.unwrap_or_default()),
             required: u64::from(morph_id.get()),
@@ -46,6 +52,9 @@ pub fn completion_readiness(
         let complete = environment.now_unix_ms >= start.unix_ms;
         objectives.push(QuestObjectiveProgress {
             kind: QuestObjectiveKind::Availability,
+            tracker_kind: QuestTrackerProgressKind::Snapshot,
+            target_ids: Vec::new(),
+            target_quest_status: QuestStatus::Unspecified,
             label: format!("Completion available from {}", start.source),
             current: environment.now_unix_ms,
             required: start.unix_ms,
@@ -56,6 +65,9 @@ pub fn completion_readiness(
         let complete = environment.now_unix_ms <= end.unix_ms;
         objectives.push(QuestObjectiveProgress {
             kind: QuestObjectiveKind::Availability,
+            tracker_kind: QuestTrackerProgressKind::Snapshot,
+            target_ids: Vec::new(),
+            target_quest_status: QuestStatus::Unspecified,
             label: format!("Completion available through {}", end.source),
             current: environment.now_unix_ms,
             required: end.unix_ms,
@@ -65,6 +77,9 @@ pub fn completion_readiness(
     if let Some(required) = quest.completion.minimum_mesos {
         objectives.push(QuestObjectiveProgress {
             kind: QuestObjectiveKind::Mesos,
+            tracker_kind: QuestTrackerProgressKind::Mesos,
+            target_ids: Vec::new(),
+            target_quest_status: QuestStatus::Unspecified,
             label: "Mesos".to_owned(),
             current: player.mesos,
             required,
@@ -75,6 +90,9 @@ pub fn completion_readiness(
         let current = eligible_completed_quest_count(player, quest_definitions);
         objectives.push(QuestObjectiveProgress {
             kind: QuestObjectiveKind::CompletedQuests,
+            tracker_kind: QuestTrackerProgressKind::Snapshot,
+            target_ids: Vec::new(),
+            target_quest_status: QuestStatus::Unspecified,
             label: "Eligible completed quests".to_owned(),
             current,
             required: u64::from(required),
@@ -105,6 +123,9 @@ pub fn completion_readiness(
         };
         objectives.push(QuestObjectiveProgress {
             kind: QuestObjectiveKind::Item,
+            tracker_kind: QuestTrackerProgressKind::Item,
+            target_ids: vec![requirement.item_id],
+            target_quest_status: QuestStatus::Unspecified,
             label,
             current: current.unwrap_or_default(),
             required,
@@ -119,6 +140,9 @@ pub fn completion_readiness(
         if let Some(required) = requirement.minimum_count {
             objectives.push(QuestObjectiveProgress {
                 kind: QuestObjectiveKind::MonsterBookCardMinimum,
+                tracker_kind: QuestTrackerProgressKind::MonsterBookCardMinimum,
+                target_ids: vec![requirement.card_item_id],
+                target_quest_status: QuestStatus::Unspecified,
                 label: format!("Monster Book card {}", requirement.card_item_id),
                 current,
                 required: u64::from(required),
@@ -128,6 +152,9 @@ pub fn completion_readiness(
         if let Some(required) = requirement.maximum_count {
             objectives.push(QuestObjectiveProgress {
                 kind: QuestObjectiveKind::MonsterBookCardMaximum,
+                tracker_kind: QuestTrackerProgressKind::MonsterBookCardMaximum,
+                target_ids: vec![requirement.card_item_id],
+                target_quest_status: QuestStatus::Unspecified,
                 label: format!("At most Monster Book card {}", requirement.card_item_id),
                 current,
                 required: u64::from(required),
@@ -139,6 +166,9 @@ pub fn completion_readiness(
     if let Some(required) = quest.completion.monster_book.minimum_unique_cards {
         objectives.push(QuestObjectiveProgress {
             kind: QuestObjectiveKind::MonsterBookUniqueMinimum,
+            tracker_kind: QuestTrackerProgressKind::MonsterBookUniqueMinimum,
+            target_ids: Vec::new(),
+            target_quest_status: QuestStatus::Unspecified,
             label: "Unique Monster Book cards".to_owned(),
             current: unique_card_count,
             required: u64::from(required),
@@ -148,6 +178,9 @@ pub fn completion_readiness(
     if let Some(required) = quest.completion.monster_book.maximum_unique_cards {
         objectives.push(QuestObjectiveProgress {
             kind: QuestObjectiveKind::MonsterBookUniqueMaximum,
+            tracker_kind: QuestTrackerProgressKind::MonsterBookUniqueMaximum,
+            target_ids: Vec::new(),
+            target_quest_status: QuestStatus::Unspecified,
             label: "Maximum unique Monster Book cards".to_owned(),
             current: unique_card_count,
             required: u64::from(required),
@@ -169,6 +202,9 @@ pub fn completion_readiness(
         let complete = equipped_item_ids.contains(item_id);
         objectives.push(QuestObjectiveProgress {
             kind: QuestObjectiveKind::Equipment,
+            tracker_kind: QuestTrackerProgressKind::EquipmentAll,
+            target_ids: vec![*item_id],
+            target_quest_status: QuestStatus::Unspecified,
             label: format!("Equip {}", item_name(item_definitions, *item_id)),
             current: u64::from(complete),
             required: 1,
@@ -192,6 +228,9 @@ pub fn completion_readiness(
             .join(", ");
         objectives.push(QuestObjectiveProgress {
             kind: QuestObjectiveKind::Equipment,
+            tracker_kind: QuestTrackerProgressKind::EquipmentAny,
+            target_ids: quest.completion.equipped_items.any_of.clone(),
+            target_quest_status: QuestStatus::Unspecified,
             label: format!("Equip one of: {names}"),
             current: u64::from(complete),
             required: 1,
@@ -221,6 +260,9 @@ pub fn completion_readiness(
         );
         objectives.push(QuestObjectiveProgress {
             kind: QuestObjectiveKind::Mob,
+            tracker_kind: QuestTrackerProgressKind::Mob,
+            target_ids: vec![objective.mob_id],
+            target_quest_status: QuestStatus::Unspecified,
             label,
             current: u64::from(current),
             required: u64::from(objective.count),
@@ -231,6 +273,9 @@ pub fn completion_readiness(
         let current = progress(player, requirement.quest_id);
         objectives.push(QuestObjectiveProgress {
             kind: QuestObjectiveKind::Quest,
+            tracker_kind: QuestTrackerProgressKind::Quest,
+            target_ids: vec![requirement.quest_id],
+            target_quest_status: required_quest_status(requirement.state),
             label: format!(
                 "Quest {}: {}",
                 requirement.quest_id,
@@ -246,6 +291,9 @@ pub fn completion_readiness(
         let current = crate::quest_records::get(player, requirement.quest_id, requirement.index);
         objectives.push(QuestObjectiveProgress {
             kind: QuestObjectiveKind::Record,
+            tracker_kind: QuestTrackerProgressKind::Snapshot,
+            target_ids: Vec::new(),
+            target_quest_status: QuestStatus::Unspecified,
             label: match (complete, current) {
                 (true, _) => format!(
                     "Quest record {}[{}] progress",
@@ -268,6 +316,9 @@ pub fn completion_readiness(
     if let Some(required_level) = quest.completion.required_level {
         objectives.push(QuestObjectiveProgress {
             kind: QuestObjectiveKind::Level,
+            tracker_kind: QuestTrackerProgressKind::Level,
+            target_ids: Vec::new(),
+            target_quest_status: QuestStatus::Unspecified,
             label: format!("Level {required_level}"),
             current: u64::from(player.level),
             required: u64::from(required_level),
@@ -296,6 +347,9 @@ pub fn completion_readiness(
         };
         objectives.push(QuestObjectiveProgress {
             kind: QuestObjectiveKind::Script,
+            tracker_kind: QuestTrackerProgressKind::Snapshot,
+            target_ids: Vec::new(),
+            target_quest_status: QuestStatus::Unspecified,
             label,
             current: u64::from(complete),
             required: 1,
@@ -314,17 +368,22 @@ pub fn objective_progress_text(
     quest: &QuestDefinition,
     quest_definitions: &[&QuestDefinition],
     item_definitions: &[ItemDefinition],
+    mob_definitions: &[MobDefinition],
     scripts: &QuestScriptCatalog,
     environment: QuestEnvironment,
 ) -> Vec<String> {
-    completion_readiness(
-        player,
-        effects,
+    resolved_objectives(
+        completion_readiness(
+            player,
+            effects,
+            quest,
+            quest_definitions,
+            item_definitions,
+            scripts,
+            environment,
+        ),
         quest,
-        quest_definitions,
-        item_definitions,
-        scripts,
-        environment,
+        mob_definitions,
     )
     .objectives
     .into_iter()
@@ -340,12 +399,138 @@ pub fn objective_progress_text(
     .collect()
 }
 
+pub fn quest_tracker(
+    player: &PlayerState,
+    effects: &PlayerEffects,
+    quest_definitions: &[&QuestDefinition],
+    item_definitions: &[ItemDefinition],
+    mob_definitions: &[MobDefinition],
+    scripts: &QuestScriptCatalog,
+    environment: QuestEnvironment,
+) -> Vec<QuestTrackerEntry> {
+    player
+        .quests
+        .iter()
+        .filter(|entry| QuestStatus::try_from(entry.status) == Ok(QuestStatus::Started))
+        .map(|entry| {
+            let Some(quest) = quest_definitions
+                .iter()
+                .copied()
+                .find(|quest| quest.id == entry.quest_id)
+            else {
+                return QuestTrackerEntry {
+                    quest_id: entry.quest_id,
+                    title: format!("Quest {}", entry.quest_id),
+                    summary: "Quest data is unavailable.".to_owned(),
+                    objectives: Vec::new(),
+                    ready: false,
+                };
+            };
+            let readiness = resolved_objectives(
+                completion_readiness(
+                    player,
+                    effects,
+                    quest,
+                    quest_definitions,
+                    item_definitions,
+                    scripts,
+                    environment,
+                ),
+                quest,
+                mob_definitions,
+            );
+            let objectives = readiness
+                .objectives
+                .into_iter()
+                .map(|objective| {
+                    let show_counter = matches!(
+                        objective.tracker_kind,
+                        QuestTrackerProgressKind::Mob
+                            | QuestTrackerProgressKind::Item
+                            | QuestTrackerProgressKind::Level
+                            | QuestTrackerProgressKind::Mesos
+                            | QuestTrackerProgressKind::MonsterBookCardMinimum
+                            | QuestTrackerProgressKind::MonsterBookCardMaximum
+                            | QuestTrackerProgressKind::MonsterBookUniqueMinimum
+                            | QuestTrackerProgressKind::MonsterBookUniqueMaximum
+                    ) && objective.required > 0;
+                    QuestTrackerObjective {
+                        label: objective.label,
+                        current: objective.current,
+                        required: objective.required,
+                        complete: objective.complete,
+                        progress_kind: objective.tracker_kind as i32,
+                        target_ids: objective.target_ids,
+                        target_quest_status: objective.target_quest_status as i32,
+                        show_counter,
+                    }
+                })
+                .collect();
+            QuestTrackerEntry {
+                quest_id: quest.id,
+                title: quest.name.clone(),
+                summary: quest
+                    .info
+                    .demand_summary
+                    .as_ref()
+                    .or(quest.info.summary.as_ref())
+                    .cloned()
+                    .unwrap_or_default(),
+                objectives,
+                ready: readiness.ready,
+            }
+        })
+        .collect()
+}
+
+fn required_quest_status(state: RequiredQuestState) -> QuestStatus {
+    match state {
+        RequiredQuestState::NotStarted => QuestStatus::Unspecified,
+        RequiredQuestState::Started => QuestStatus::Started,
+        RequiredQuestState::Completed => QuestStatus::Completed,
+    }
+}
+
+fn resolved_objectives(
+    mut readiness: QuestReadiness,
+    quest: &QuestDefinition,
+    mob_definitions: &[MobDefinition],
+) -> QuestReadiness {
+    for objective in &mut readiness.objectives {
+        if objective.kind != QuestObjectiveKind::Mob {
+            continue;
+        }
+        let Some(mob_id) = objective.target_ids.first().copied() else {
+            continue;
+        };
+        let name = mob_definitions
+            .iter()
+            .find(|definition| definition.id == mob_id)
+            .map(|definition| definition.name.as_str())
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("Mob {mob_id}"));
+        objective.label = quest
+            .info
+            .selected_skill
+            .as_ref()
+            .map_or(name.clone(), |skill| match &skill.name {
+                Some(skill_name) => {
+                    format!("{name} using {skill_name} (skill {})", skill.id.get())
+                }
+                None => format!("{name} using skill {}", skill.id.get()),
+            });
+    }
+    readiness
+}
+
 pub fn incomplete_dialogue_pages(
     player: &PlayerState,
     effects: &PlayerEffects,
     quest: &QuestDefinition,
     quest_definitions: &[&QuestDefinition],
     item_definitions: &[ItemDefinition],
+    mob_definitions: &[MobDefinition],
     scripts: &QuestScriptCatalog,
     environment: QuestEnvironment,
 ) -> Vec<String> {
@@ -405,6 +590,7 @@ pub fn incomplete_dialogue_pages(
             quest,
             quest_definitions,
             item_definitions,
+            mob_definitions,
             scripts,
             environment,
         ))

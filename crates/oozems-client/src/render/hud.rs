@@ -27,7 +27,8 @@ pub(super) fn draw(game: &Game) {
     if !draw_wz_hud(game) {
         draw_fallback_hud(game);
     }
-    super::skill_info::draw_active_buffs(game);
+    let active_buff_bottom = super::skill_info::draw_active_buffs(game);
+    super::quest_tracker::draw(game, active_buff_bottom);
     if game.ui.gui_state.borrow().stats_open {
         draw_stat_window(game);
     }

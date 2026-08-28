@@ -30,6 +30,7 @@ use oozems_proto::v1::ItemActionResponse;
 use oozems_proto::v1::ItemCategory;
 use oozems_proto::v1::PickUpItemRequest;
 use oozems_proto::v1::PlayerState;
+use oozems_proto::v1::QuestStatus;
 use oozems_proto::v1::RecoverPlayerRequest;
 use oozems_proto::v1::RecoverPlayerResponse;
 use oozems_proto::v1::SavePlayerRequest;
@@ -572,9 +573,41 @@ pub async fn get_gui(
         .chain(inventory.equipment.iter().map(|equipped| equipped.item_id))
         .chain(request.observed_item_ids)
         .collect();
-    Ok(Protobuf(GetGuiResponse {
-        gui: Some(state.catalog.game_gui(&item_ids)?),
-    }))
+    let now_unix_ms = unix_time_ms()?;
+    let effects = crate::effects::snapshot(&state.active_effects, player_id.as_str(), now_unix_ms)?;
+    let quest_definitions = state.catalog.quest_definitions().collect::<Vec<_>>();
+    let active_quest_ids = player
+        .quests
+        .iter()
+        .filter(|quest| QuestStatus::try_from(quest.status) == Ok(QuestStatus::Started))
+        .map(|quest| quest.quest_id)
+        .collect::<std::collections::BTreeSet<_>>();
+    let mob_ids = quest_definitions
+        .iter()
+        .filter(|quest| active_quest_ids.contains(&quest.id))
+        .flat_map(|quest| {
+            quest
+                .completion
+                .mobs
+                .iter()
+                .map(|objective| objective.mob_id)
+        })
+        .collect();
+    let mob_definitions = state.catalog.mob_definitions(&mob_ids);
+    let mut gui = state.catalog.game_gui(&item_ids)?;
+    gui.quest_tracker = crate::quests::quest_tracker(
+        &player,
+        &effects,
+        &quest_definitions,
+        state.catalog.item_definition_slice(),
+        &mob_definitions,
+        &state.quest_scripts,
+        crate::quests::QuestEnvironment {
+            now_unix_ms,
+            world_id: state.gameplay.world_id,
+        },
+    );
+    Ok(Protobuf(GetGuiResponse { gui: Some(gui) }))
 }
 
 pub async fn get_skill_book(

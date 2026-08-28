@@ -7,6 +7,7 @@ use oozems_proto::v1::CharacterStats;
 use oozems_proto::v1::InventoryItemStack;
 use oozems_proto::v1::InventoryState;
 use oozems_proto::v1::ItemDefinition;
+use oozems_proto::v1::MobDefinition;
 use oozems_proto::v1::Npc;
 use oozems_proto::v1::NpcAnimation;
 use oozems_proto::v1::NpcDialogChoice;
@@ -47,6 +48,7 @@ use crate::content::QuestItemCondition;
 use crate::content::QuestItemExpiration;
 use crate::content::QuestItemRequirement;
 use crate::content::QuestLostItemDialogue;
+use crate::content::QuestMobObjective;
 use crate::content::QuestQuestionSequence;
 use crate::content::QuestQuestionStep;
 use crate::content::QuestRestorableItem;
@@ -80,6 +82,7 @@ fn active_dialog(
         quest,
         &[quest],
         item_definitions,
+        &[],
         scripts,
         environment(now_unix_ms),
     )
@@ -760,6 +763,62 @@ fn active_ordinary_quest_shows_progress_then_complete_choice() {
         NpcDialogChoiceKind::try_from(ready.choices[0].kind),
         Ok(NpcDialogChoiceKind::CompleteQuest)
     );
+}
+
+#[test]
+fn active_mob_quest_dialog_uses_the_mob_name() {
+    let quest = QuestDefinition {
+        id: 101,
+        name: "Pest Control".to_owned(),
+        start: QuestStartRequirements::default(),
+        completion: QuestCompletionRequirements {
+            mobs: vec![QuestMobObjective {
+                mob_id: 100_100,
+                count: 3,
+            }],
+            ..QuestCompletionRequirements::default()
+        },
+        dialogue: QuestDialogue {
+            completion: QuestCompletionDialogue {
+                incomplete: QuestIncompleteDialogue {
+                    mob_pages: vec!["There are still too many around.".to_owned()],
+                    ..QuestIncompleteDialogue::default()
+                },
+                ..QuestCompletionDialogue::default()
+            },
+            ..QuestDialogue::default()
+        },
+        start_actions: QuestActions::default(),
+        completion_actions: QuestActions::default(),
+        info: QuestInfo::default(),
+    };
+    let player = PlayerState {
+        quests: vec![PlayerQuest {
+            quest_id: quest.id,
+            status: QuestStatus::Started as i32,
+            ..PlayerQuest::default()
+        }],
+        ..PlayerState::default()
+    };
+    let mob_definitions = [MobDefinition {
+        id: 100_100,
+        name: "Snail".to_owned(),
+        ..MobDefinition::default()
+    }];
+
+    let dialog = active_quest_dialog(
+        &player,
+        &crate::effects::PlayerEffects::default(),
+        &quest,
+        &[&quest],
+        &[],
+        &mob_definitions,
+        &crate::quest_scripts::QuestScriptCatalog::default(),
+        environment(200),
+    );
+
+    assert!(dialog.pages[1].contains("Snail: 0/3"));
+    assert!(!dialog.pages[1].contains("Mob 100100"));
 }
 
 #[test]

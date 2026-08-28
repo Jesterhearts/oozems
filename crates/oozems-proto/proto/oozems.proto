@@ -496,6 +496,43 @@ message GameGui {
   GuiWindow death_notice_window = 16;
   repeated AnimationFrame death_tomb_frames = 17;
   repeated AnimationFrame level_up_frames = 18;
+  repeated QuestTrackerEntry quest_tracker = 19;
+}
+
+message QuestTrackerEntry {
+  uint32 quest_id = 1;
+  string title = 2;
+  string summary = 3;
+  repeated QuestTrackerObjective objectives = 4;
+  bool ready = 5;
+}
+
+message QuestTrackerObjective {
+  string label = 1;
+  uint64 current = 2;
+  uint64 required = 3;
+  bool complete = 4;
+  QuestTrackerProgressKind progress_kind = 5;
+  repeated uint32 target_ids = 6;
+  QuestStatus target_quest_status = 7;
+  bool show_counter = 8;
+}
+
+enum QuestTrackerProgressKind {
+  QUEST_TRACKER_PROGRESS_KIND_SNAPSHOT = 0;
+  QUEST_TRACKER_PROGRESS_KIND_MOB = 1;
+  QUEST_TRACKER_PROGRESS_KIND_ITEM = 2;
+  QUEST_TRACKER_PROGRESS_KIND_LEVEL = 3;
+  QUEST_TRACKER_PROGRESS_KIND_MESOS = 4;
+  QUEST_TRACKER_PROGRESS_KIND_EQUIPMENT_ALL = 5;
+  QUEST_TRACKER_PROGRESS_KIND_EQUIPMENT_ANY = 6;
+  QUEST_TRACKER_PROGRESS_KIND_QUEST = 7;
+  QUEST_TRACKER_PROGRESS_KIND_EFFECT_ITEM = 8;
+  QUEST_TRACKER_PROGRESS_KIND_MORPH = 9;
+  QUEST_TRACKER_PROGRESS_KIND_MONSTER_BOOK_CARD_MINIMUM = 10;
+  QUEST_TRACKER_PROGRESS_KIND_MONSTER_BOOK_CARD_MAXIMUM = 11;
+  QUEST_TRACKER_PROGRESS_KIND_MONSTER_BOOK_UNIQUE_MINIMUM = 12;
+  QUEST_TRACKER_PROGRESS_KIND_MONSTER_BOOK_UNIQUE_MAXIMUM = 13;
 }
 
 message SkillBook {
@@ -1084,6 +1121,7 @@ message MobDefinition {
   bool can_jump = 17;
   AssetDescriptor damage_sound = 18;
   AssetDescriptor death_sound = 19;
+  string name = 20;
 }
 
 message MobAnimation {

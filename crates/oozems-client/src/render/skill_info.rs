@@ -57,12 +57,16 @@ struct WzTextFragment {
     highlighted: bool,
 }
 
-pub(super) fn draw_active_buffs(game: &Game) {
+pub(super) fn draw_active_buffs(game: &Game) -> Option<f64> {
     let placements = buff_placements(
         game.player.active_buffs.buffs.len(),
         game.surface.canvas.width() as f32,
         game.surface.canvas.client_width() as f32,
     );
+    let bottom = placements
+        .iter()
+        .map(|placement| f64::from(placement.y + placement.height))
+        .max_by(f64::total_cmp);
     let now_ms = game.clock.now_ms;
     for placement in placements {
         let buff = &game.player.active_buffs.buffs[placement.index];
@@ -88,6 +92,7 @@ pub(super) fn draw_active_buffs(game: &Game) {
         }
         draw_buff_time(game, buff, placement, now_ms);
     }
+    bottom
 }
 
 pub(super) fn draw_hovered_skill(game: &Game) {

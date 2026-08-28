@@ -156,6 +156,7 @@ pub(super) fn incomplete_dialogue_pages_in_environment(
         quest,
         quest_definitions,
         item_definitions,
+        &[],
         scripts,
         environment,
     )

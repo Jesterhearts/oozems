@@ -7,6 +7,7 @@ mod hud;
 mod interaction;
 mod mob;
 pub(crate) mod npc;
+mod quest_tracker;
 mod reactor;
 mod skill_info;
 mod skillbook;

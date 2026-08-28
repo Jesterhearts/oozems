@@ -7,10 +7,14 @@ use jiff::tz::Offset;
 use oozems_proto::v1::CharacterGender;
 use oozems_proto::v1::ItemDefinition;
 use oozems_proto::v1::LearnedSkill;
+use oozems_proto::v1::MobDefinition;
 use oozems_proto::v1::PlayerQuest;
 use oozems_proto::v1::PlayerState;
 use oozems_proto::v1::QuestMobProgress;
 use oozems_proto::v1::QuestStatus;
+use oozems_proto::v1::QuestTrackerEntry;
+use oozems_proto::v1::QuestTrackerObjective;
+use oozems_proto::v1::QuestTrackerProgressKind;
 use thiserror::Error;
 
 use crate::content::ConsumeEffectDefinition;
@@ -107,6 +111,9 @@ pub enum QuestObjectiveKind {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QuestObjectiveProgress {
     pub kind: QuestObjectiveKind,
+    pub tracker_kind: QuestTrackerProgressKind,
+    pub target_ids: Vec<u32>,
+    pub target_quest_status: QuestStatus,
     pub label: String,
     pub current: u64,
     pub required: u64,
