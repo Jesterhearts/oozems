@@ -271,16 +271,20 @@ pub fn completion_readiness(
     }
     for requirement in &quest.completion.quests {
         let current = progress(player, requirement.quest_id);
+        let name = quest_definitions
+            .iter()
+            .copied()
+            .find(|quest| quest.id == requirement.quest_id)
+            .map(|quest| quest.name.as_str())
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("Quest {}", requirement.quest_id));
         objectives.push(QuestObjectiveProgress {
             kind: QuestObjectiveKind::Quest,
             tracker_kind: QuestTrackerProgressKind::Quest,
             target_ids: vec![requirement.quest_id],
             target_quest_status: required_quest_status(requirement.state),
-            label: format!(
-                "Quest {}: {}",
-                requirement.quest_id,
-                state_label(requirement.state)
-            ),
+            label: format!("{name}: {}", state_label(requirement.state)),
             current: u64::from(current == required_progress(requirement.state)),
             required: 1,
             complete: current == required_progress(requirement.state),

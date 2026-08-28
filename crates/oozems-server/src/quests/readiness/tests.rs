@@ -601,6 +601,45 @@ fn quest_tracker_projects_named_mob_progress() {
 }
 
 #[test]
+fn quest_dependency_progress_uses_the_referenced_quest_title() {
+    let mut dependent = quest(100);
+    dependent.completion.quests.push(QuestStateRequirement {
+        quest_id: 200,
+        state: RequiredQuestState::Completed,
+    });
+    let mut prerequisite = quest(200);
+    prerequisite.name = "A Hero's Proof".to_owned();
+    let player = PlayerState {
+        quests: vec![player_quest(dependent.id, QuestStatus::Started)],
+        ..PlayerState::default()
+    };
+    let definitions = [&dependent, &prerequisite];
+
+    let tracker = super::quest_tracker(
+        &player,
+        &PlayerEffects::default(),
+        &definitions,
+        &[],
+        &[],
+        scripts(),
+        environment(0),
+    );
+    let progress = super::objective_progress_text(
+        &player,
+        &PlayerEffects::default(),
+        &dependent,
+        &definitions,
+        &[],
+        &[],
+        scripts(),
+        environment(0),
+    );
+
+    assert_eq!(tracker[0].objectives[0].label, "A Hero's Proof: completed");
+    assert_eq!(progress, ["A Hero's Proof: completed: 0/1"]);
+}
+
+#[test]
 fn quest_tracker_keeps_unknown_active_quests_in_the_projection() {
     let player = PlayerState {
         quests: vec![player_quest(777, QuestStatus::Started)],
