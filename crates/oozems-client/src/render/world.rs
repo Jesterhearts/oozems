@@ -40,6 +40,8 @@ const PLAYER_LAYER_PASSES: &[LayerPass] = &[
     LayerPass::Player,
     LayerPass::SkillEffects,
 ];
+const DROPPED_ITEM_BOB_HEIGHT: f64 = 4.0;
+const DROPPED_ITEM_BOB_PERIOD_MS: f64 = 1_400.0;
 
 pub(super) fn draw(game: &Game) {
     let viewport_width = f64::from(game.surface.canvas.width());
@@ -384,12 +386,11 @@ fn draw_dropped_items(
         let Some(definition) = super::item_definition(game, drop.item_id) else {
             continue;
         };
-        let bounce = (game.clock.now_ms / 220.0).sin() as f32 * 2.0;
         draw_sprite(
             game,
             &definition.icon_asset_id,
             position.x - definition.icon_width / 2.0,
-            position.y - definition.icon_height - 3.0 + bounce,
+            position.y - definition.icon_height - 3.0 + dropped_item_bob_offset(game.clock.now_ms),
             definition.icon_width,
             definition.icon_height,
             false,
@@ -397,6 +398,12 @@ fn draw_dropped_items(
             camera_y,
         );
     }
+}
+
+fn dropped_item_bob_offset(timestamp_ms: f64) -> f32 {
+    let phase = timestamp_ms.rem_euclid(DROPPED_ITEM_BOB_PERIOD_MS) / DROPPED_ITEM_BOB_PERIOD_MS
+        * std::f64::consts::TAU;
+    ((phase.cos() - 1.0) * DROPPED_ITEM_BOB_HEIGHT / 2.0) as f32
 }
 
 pub(super) fn portal_frame_index(
@@ -594,8 +601,18 @@ fn tomb_anchor_y(
 
 #[cfg(test)]
 mod tests {
+    use super::dropped_item_bob_offset;
     use super::setup_horizontal_scale;
     use super::tomb_anchor_y;
+
+    #[test]
+    fn dropped_items_float_up_and_return_to_their_resting_height() {
+        assert_eq!(dropped_item_bob_offset(0.0), 0.0);
+        assert_eq!(dropped_item_bob_offset(350.0), -2.0);
+        assert_eq!(dropped_item_bob_offset(700.0), -4.0);
+        assert_eq!(dropped_item_bob_offset(1_050.0), -2.0);
+        assert_eq!(dropped_item_bob_offset(1_400.0), 0.0);
+    }
 
     #[test]
     fn setup_item_uses_the_character_facing_transform() {
