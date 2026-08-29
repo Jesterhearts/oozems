@@ -7,8 +7,6 @@ use crate::assets::ready_image;
 use crate::game::Game;
 use crate::game_gui;
 
-const ICON_INSET: f32 = 3.0;
-const ROW_TEXT_GAP: f32 = 2.0;
 const TEXT_BOTTOM_PADDING: f32 = 3.0;
 
 struct SkillUi<'a> {
@@ -18,6 +16,11 @@ struct SkillUi<'a> {
     page_previous: &'a GuiRegion,
     page_label: &'a GuiRegion,
     page_next: &'a GuiRegion,
+    row_icon: &'a GuiRegion,
+    row_name: &'a GuiRegion,
+    row_level: &'a GuiRegion,
+    row_point_button: &'a GuiRegion,
+    empty_message: &'a GuiRegion,
     row: &'a GuiSpriteTemplate,
     selected_row: Option<&'a GuiSpriteTemplate>,
     point_up: Option<&'a GuiSpriteTemplate>,
@@ -85,17 +88,29 @@ pub(super) fn draw(game: &Game) {
             ui.row
         };
         draw_sprite_template(game, row, row_x, row_y);
-        draw_skill_icon(game, definition, row_x, row_y, ui.row.height);
+        let icon = repeated_region(ui.row_icon, index, ui.row.height);
+        let name = repeated_region(ui.row_name, index, ui.row.height);
+        let level = repeated_region(ui.row_level, index, ui.row.height);
+        let point_button = repeated_region(ui.row_point_button, index, ui.row.height);
+        draw_skill_icon(game, definition, window_x, window_y, icon);
         draw_skill_text(
             game,
             definition,
             skill.level,
             crate::game_gui::maximum_skill_level(skill),
-            row_x,
-            row_y,
-            ui.row,
+            window_x,
+            window_y,
+            name,
+            level,
         );
-        draw_skill_point_button(game, definition.skill_id, row_x, row_y, ui.row, &ui);
+        draw_skill_point_button(
+            game,
+            definition.skill_id,
+            window_x,
+            window_y,
+            point_button,
+            &ui,
+        );
     }
     draw_page_controls(game, window_x, window_y, page, page_count, &ui);
 }
@@ -107,6 +122,11 @@ fn resolve_skill_ui(layout: &GuiLayout) -> Option<SkillUi<'_>> {
     let page_previous = game_gui::named_region(layout, "skill-page-previous")?;
     let page_label = game_gui::named_region(layout, "skill-page-label")?;
     let page_next = game_gui::named_region(layout, "skill-page-next")?;
+    let row_icon = game_gui::named_region(layout, "skill-row-icon")?;
+    let row_name = game_gui::named_region(layout, "skill-row-name")?;
+    let row_level = game_gui::named_region(layout, "skill-row-level")?;
+    let row_point_button = game_gui::named_region(layout, "skill-row-point-button")?;
+    let empty_message = game_gui::named_region(layout, "skill-empty-message")?;
     let row = game_gui::named_sprite_template(layout, "skill-row")?;
     let selected_row = game_gui::named_sprite_template(layout, "skill-row-selected");
     let point_up = game_gui::named_sprite_template(layout, "skill-point-up");
@@ -137,6 +157,11 @@ fn resolve_skill_ui(layout: &GuiLayout) -> Option<SkillUi<'_>> {
         page_previous,
         page_label,
         page_next,
+        row_icon,
+        row_name,
+        row_level,
+        row_point_button,
+        empty_message,
         row,
         selected_row,
         point_up,
@@ -188,9 +213,9 @@ fn job_tab_index(job_id: u32) -> usize {
 fn draw_skill_point_button(
     game: &Game,
     skill_id: u32,
-    row_x: f32,
-    row_y: f32,
-    row: &GuiSpriteTemplate,
+    window_x: f32,
+    window_y: f32,
+    region: GuiRegion,
     ui: &SkillUi<'_>,
 ) {
     let enabled = game_gui::can_allocate_skill(&game.player.skill_book, skill_id);
@@ -202,8 +227,8 @@ fn draw_skill_point_button(
     let Some(template) = template else {
         return;
     };
-    let x = row_x + row.width - template.width - 2.0;
-    let y = row_y + (row.height - template.height) / 2.0;
+    let x = window_x + region.x + (region.width - template.width) / 2.0;
+    let y = window_y + region.y + (region.height - template.height) / 2.0;
     draw_sprite_template(game, template, x, y);
 }
 
@@ -279,9 +304,9 @@ fn draw_empty_message(
     game.surface.context.set_font("10px Arial");
     let _ = game.surface.context.fill_text_with_max_width(
         "No skills available.",
-        f64::from(window_x + ui.list.x + 7.0),
-        f64::from(window_y + ui.list.y + ui.row.height - 9.0),
-        f64::from(ui.list.width - 14.0),
+        f64::from(window_x + ui.empty_message.x),
+        f64::from(window_y + text_baseline(ui.empty_message)),
+        f64::from(ui.empty_message.width),
     );
 }
 
@@ -309,16 +334,15 @@ fn draw_sprite_template(
 fn draw_skill_icon(
     game: &Game,
     definition: &oozems_proto::v1::SkillDefinition,
-    row_x: f32,
-    row_y: f32,
-    row_height: f32,
+    window_x: f32,
+    window_y: f32,
+    region: GuiRegion,
 ) {
     let Some(image) = ready_image(&game.surface.images, &definition.icon_asset_id) else {
         return;
     };
-    let slot_size = row_height - ICON_INSET;
-    let x = row_x + (slot_size - definition.icon_width) / 2.0;
-    let y = row_y + (slot_size - definition.icon_height) / 2.0;
+    let x = window_x + region.x + (region.width - definition.icon_width) / 2.0;
+    let y = window_y + region.y + (region.height - definition.icon_height) / 2.0;
     let _ = game
         .surface
         .context
@@ -336,28 +360,38 @@ fn draw_skill_text(
     definition: &oozems_proto::v1::SkillDefinition,
     level: u32,
     maximum_level: u32,
-    row_x: f32,
-    row_y: f32,
-    row: &GuiSpriteTemplate,
+    window_x: f32,
+    window_y: f32,
+    name: GuiRegion,
+    level_region: GuiRegion,
 ) {
-    let text_x = row_x + row.height + ROW_TEXT_GAP;
-    let text_width = row.width - row.height - ROW_TEXT_GAP;
     game.surface.context.set_fill_style_str("#30383b");
     game.surface.context.set_font("bold 10px Arial");
     let _ = game.surface.context.fill_text_with_max_width(
         &definition.name,
-        f64::from(text_x),
-        f64::from(row_y + 12.0),
-        f64::from(text_width),
+        f64::from(window_x + name.x),
+        f64::from(window_y + text_baseline(&name)),
+        f64::from(name.width),
     );
     game.surface.context.set_fill_style_str("#596469");
     game.surface.context.set_font("9px Arial");
     let _ = game.surface.context.fill_text_with_max_width(
         &format!("Level {level}/{maximum_level}"),
-        f64::from(text_x),
-        f64::from(row_y + 27.0),
-        f64::from(text_width),
+        f64::from(window_x + level_region.x),
+        f64::from(window_y + text_baseline(&level_region)),
+        f64::from(level_region.width),
     );
+}
+
+fn repeated_region(
+    prototype: &GuiRegion,
+    index: usize,
+    step_y: f32,
+) -> GuiRegion {
+    GuiRegion {
+        y: prototype.y + index as f32 * step_y,
+        ..prototype.clone()
+    }
 }
 
 fn text_baseline(region: &GuiRegion) -> f32 {
@@ -435,6 +469,11 @@ mod tests {
                 region("skill-page-previous", 80.0, 64.0, 18.0, 19.0),
                 region("skill-page-label", 98.0, 64.0, 41.0, 19.0),
                 region("skill-page-next", 139.0, 64.0, 18.0, 19.0),
+                region("skill-row-icon", 17.0, 94.0, 32.0, 32.0),
+                region("skill-row-name", 54.0, 94.0, 104.0, 15.0),
+                region("skill-row-level", 54.0, 109.0, 104.0, 15.0),
+                region("skill-row-point-button", 144.0, 105.5, 12.0, 12.0),
+                region("skill-empty-message", 24.0, 108.0, 127.0, 15.0),
             ],
             ..GuiLayout::default()
         };

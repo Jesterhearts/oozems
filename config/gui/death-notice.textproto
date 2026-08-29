@@ -12,12 +12,6 @@ sprites: [{
   y: 92.0
 }]
 regions: [{
-  name: "death-notice-text"
-  x: 14.0
-  y: 40.0
-  width: 236.0
-  height: 45.0
-}, {
   name: "death-notice-ok"
   x: 100.0
   y: 92.0

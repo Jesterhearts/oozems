@@ -108,11 +108,12 @@ pub fn bound_key_icons(
             let slot = gui.key_slots.iter().find(|slot| {
                 slot.code == binding.code && valid_key_slot(slot, layout.width, layout.height)
             })?;
+            let (x, y, width, height) = key_slot_geometry(layout, slot);
             Some(KeyIconPlacement {
                 target,
                 asset_id: icon.asset_id,
-                x: placement.origin.x + slot.x + (slot.width - icon.width) / 2.0,
-                y: placement.origin.y + slot.y + (slot.height - icon.height) / 2.0,
+                x: placement.origin.x + x + (width - icon.width) / 2.0,
+                y: placement.origin.y + y + (height - icon.height) / 2.0,
                 width: icon.width,
                 height: icon.height,
             })
@@ -230,17 +231,28 @@ fn key_code_at(
         if !valid_key_slot(slot, layout.width, layout.height) {
             return None;
         }
+        let (x, y, width, height) = key_slot_geometry(layout, slot);
         rect_contains(
             CanvasRect {
-                x: placement.origin.x + slot.x,
-                y: placement.origin.y + slot.y,
-                width: slot.width,
-                height: slot.height,
+                x: placement.origin.x + x,
+                y: placement.origin.y + y,
+                width,
+                height,
             },
             point,
         )
         .then_some(slot.code.as_str())
     })
+}
+
+fn key_slot_geometry(
+    layout: &oozems_proto::v1::GuiLayout,
+    slot: &oozems_proto::v1::KeySlot,
+) -> (f32, f32, f32, f32) {
+    super::named_region(layout, &format!("key-config-slot-{}", slot.code))
+        .map_or((slot.x, slot.y, slot.width, slot.height), |region| {
+            (region.x, region.y, region.width, region.height)
+        })
 }
 
 fn action_definition(
@@ -452,7 +464,10 @@ mod tests {
                     height: 289.0,
                     background: Some(sprite("skill-background", 0.0, 0.0, 175.0, 289.0)),
                     sprite_templates: vec![template("skill-row", 141.0, 35.0)],
-                    regions: vec![region("skill-list", 17.0, 94.0, 141.0, 140.0)],
+                    regions: vec![
+                        region("skill-list", 17.0, 94.0, 141.0, 140.0),
+                        region("skill-row-action", 17.0, 94.0, 35.0, 35.0),
+                    ],
                     ..GuiLayout::default()
                 }),
             }),

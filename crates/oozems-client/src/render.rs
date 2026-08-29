@@ -13,8 +13,8 @@ mod skill_info;
 mod skillbook;
 mod world;
 
-use hud::draw_item_icon;
-use hud::draw_item_quantity;
+use hud::draw_item_icon_in_region;
+use hud::draw_item_quantity_in_region;
 use hud::draw_window;
 use hud::draw_window_at;
 use hud::item_definition;

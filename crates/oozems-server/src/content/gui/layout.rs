@@ -102,22 +102,13 @@ pub(super) fn compose_death_notice_window(
         background: Some(place_sprite(&sources.background, 0.0, 0.0, false)),
         sprites: vec![place_sprite(&sources.ok, button_x, button_y, false)],
         sprite_templates: Vec::new(),
-        regions: vec![
-            region(
-                "death-notice-text",
-                14.0,
-                40.0,
-                (sources.background.width - 28.0).max(0.0),
-                45.0,
-            ),
-            region(
-                "death-notice-ok",
-                button_x,
-                button_y,
-                sources.ok.width,
-                sources.ok.height,
-            ),
-        ],
+        regions: vec![region(
+            "death-notice-ok",
+            button_x,
+            button_y,
+            sources.ok.width,
+            sources.ok.height,
+        )],
     };
     validate_layout(&layout)?;
     Ok(GuiWindow {

@@ -118,15 +118,19 @@ fn draw_equipment_window(game: &Game) {
     };
     let now_unix_ms = js_sys::Date::now().max(0.0) as u64;
     for equipped in &inventory.equipment {
-        let Some((x, y)) = game_gui::equipment_slot_position(equipped.slot) else {
+        let Some((x, y, width, height)) =
+            game_gui::equipment_slot_geometry(placement.layout, equipped.slot)
+        else {
             continue;
         };
         if let Some(definition) = item_definition(game, equipped.item_id) {
-            draw_item_icon(
+            draw_item_icon_in_region(
                 game,
                 definition,
                 placement.origin.x + x,
                 placement.origin.y + y,
+                width,
+                height,
             );
             draw_item_expiration(
                 game,
@@ -156,7 +160,9 @@ fn draw_inventory_locked_slots(
     };
     let visible_capacity = capacity.min(game_gui::INVENTORY_VISIBLE_SLOTS);
     for index in visible_capacity..game_gui::INVENTORY_VISIBLE_SLOTS {
-        let (x, y) = game_gui::inventory_slot_position(index);
+        let Some((x, y, _, _)) = game_gui::inventory_slot_geometry(layout, index) else {
+            continue;
+        };
         let _ = game
             .surface
             .context
@@ -231,18 +237,26 @@ fn draw_inventory_window(game: &Game) {
     draw_inventory_mesos(game, placement.window, placement.origin);
     let now_unix_ms = js_sys::Date::now().max(0.0) as u64;
     for slot in game_gui::inventory_slots(&game.ui.gui, inventory, selected_tab) {
-        let (x, y) = game_gui::inventory_slot_position(slot.visual_index);
-        draw_item_icon(
+        let Some((x, y, width, height)) =
+            game_gui::inventory_slot_geometry(placement.layout, slot.visual_index)
+        else {
+            continue;
+        };
+        draw_item_icon_in_region(
             game,
             slot.definition,
             placement.origin.x + x,
             placement.origin.y + y,
+            width,
+            height,
         );
-        draw_item_quantity(
+        draw_item_quantity_in_region(
             game,
             slot.stack.quantity,
             placement.origin.x + x,
             placement.origin.y + y,
+            width,
+            height,
         );
         draw_item_expiration(
             game,
@@ -356,17 +370,19 @@ pub(super) fn draw_window_at(
     true
 }
 
-pub(super) fn draw_item_icon(
+pub(super) fn draw_item_icon_in_region(
     game: &Game,
     definition: &ItemDefinition,
     slot_x: f32,
     slot_y: f32,
+    slot_width: f32,
+    slot_height: f32,
 ) {
     let Some(image) = ready_image(&game.surface.images, &definition.icon_asset_id) else {
         return;
     };
-    let x = f64::from(slot_x + (32.0 - definition.icon_width) / 2.0);
-    let y = f64::from(slot_y + (32.0 - definition.icon_height) / 2.0);
+    let x = f64::from(slot_x + (slot_width - definition.icon_width) / 2.0);
+    let y = f64::from(slot_y + (slot_height - definition.icon_height) / 2.0);
     let _ = game
         .surface
         .context
@@ -379,11 +395,13 @@ pub(super) fn draw_item_icon(
         );
 }
 
-pub(super) fn draw_item_quantity(
+pub(super) fn draw_item_quantity_in_region(
     game: &Game,
     quantity: u32,
     slot_x: f32,
     slot_y: f32,
+    slot_width: f32,
+    slot_height: f32,
 ) {
     if quantity <= 1 {
         return;
@@ -398,14 +416,14 @@ pub(super) fn draw_item_quantity(
     game.surface.context.set_fill_style_str("#202020");
     let _ = game.surface.context.fill_text(
         &label,
-        f64::from(slot_x + 31.0) - width,
-        f64::from(slot_y + 31.0),
+        f64::from(slot_x + slot_width - 1.0) - width,
+        f64::from(slot_y + slot_height - 1.0),
     );
     game.surface.context.set_fill_style_str("#ffffff");
     let _ = game.surface.context.fill_text(
         &label,
-        f64::from(slot_x + 30.0) - width,
-        f64::from(slot_y + 30.0),
+        f64::from(slot_x + slot_width - 2.0) - width,
+        f64::from(slot_y + slot_height - 2.0),
     );
 }
 
@@ -544,47 +562,35 @@ fn draw_wz_hud(game: &Game) -> bool {
             f64::from(background.height),
         );
     let gui_state = *game.ui.gui_state.borrow();
+    let mut gauge_drawn = false;
     for sprite in layout
         .sprites
         .iter()
         .filter(|sprite| game_gui::status_sprite_visible(gui_state, sprite))
     {
-        draw_gui_sprite(
+        gauge_drawn |= draw_gui_sprite(
             game,
+            layout,
             sprite,
             viewport_width,
             f64::from(layout.width),
             origin_y,
         );
     }
-    let gauge_origin = layout
-        .sprites
-        .iter()
-        .find(|sprite| sprite.name == "gauge")
-        .filter(|sprite| ready_image(&game.surface.images, &sprite.asset_id).is_some())
-        .map(|sprite| {
-            (
-                f64::from(game_gui::sprite_screen_x(
-                    viewport_width as f32,
-                    layout.width,
-                    sprite,
-                )),
-                origin_y + f64::from(sprite.y),
-            )
-        });
-    draw_status_bar_text(game, origin_y, f64::from(background.y), gauge_origin);
+    draw_status_bar_text(game, layout, origin_y, gauge_drawn);
     true
 }
 
 fn draw_gui_sprite(
     game: &Game,
+    layout: &oozems_proto::v1::GuiLayout,
     sprite: &GuiSprite,
     viewport_width: f64,
     layout_width: f64,
     origin_y: f64,
-) {
+) -> bool {
     let Some(image) = ready_image(&game.surface.images, &sprite.asset_id) else {
-        return;
+        return false;
     };
     let destination_x = f64::from(game_gui::sprite_screen_x(
         viewport_width as f32,
@@ -594,9 +600,17 @@ fn draw_gui_sprite(
     let destination_y = origin_y + f64::from(sprite.y);
     if sprite.name == "gauge"
         && let Some(stats) = game.player.stats.as_ref()
-        && draw_gauge_fill(game, image, sprite, stats, destination_x, destination_y)
+        && draw_gauge_fill(
+            game,
+            layout,
+            image,
+            sprite,
+            stats,
+            destination_x,
+            destination_y,
+        )
     {
-        return;
+        return true;
     }
     let _ = game
         .surface
@@ -608,10 +622,12 @@ fn draw_gui_sprite(
             f64::from(sprite.width),
             f64::from(sprite.height),
         );
+    false
 }
 
 fn draw_gauge_fill(
     game: &Game,
+    layout: &oozems_proto::v1::GuiLayout,
     image: &HtmlImageElement,
     sprite: &GuiSprite,
     stats: &CharacterStats,
@@ -635,10 +651,18 @@ fn draw_gauge_fill(
             f64::from(sprite.width),
             GAUGE_HEADER_HEIGHT,
         );
-    for fill in game_gui::gauge_fills(stats) {
+    for (fill, name) in game_gui::gauge_fills(stats).into_iter().zip([
+        "status-hp-gauge",
+        "status-mp-gauge",
+        "status-exp-gauge",
+    ]) {
         if fill.filled_width == 0.0 {
             continue;
         }
+        let Some(region) = game_gui::named_region(layout, name) else {
+            continue;
+        };
+        let ratio = fill.filled_width / fill.full_width;
         let _ = game
             .surface
             .context
@@ -648,10 +672,10 @@ fn draw_gauge_fill(
                 GAUGE_FILL_TOP,
                 fill.filled_width,
                 GAUGE_FILL_HEIGHT,
-                destination_x + fill.source_x,
-                destination_y + GAUGE_FILL_TOP,
-                fill.filled_width,
-                GAUGE_FILL_HEIGHT,
+                f64::from(region.x),
+                f64::from(region.y) + destination_y - f64::from(sprite.y),
+                f64::from(region.width) * ratio,
+                f64::from(region.height),
             );
     }
     true
@@ -659,17 +683,19 @@ fn draw_gauge_fill(
 
 fn draw_status_bar_text(
     game: &Game,
+    layout: &oozems_proto::v1::GuiLayout,
     origin_y: f64,
-    bar_y: f64,
-    gauge_origin: Option<(f64, f64)>,
+    gauge_drawn: bool,
 ) {
-    let bar_top = origin_y + bar_y;
     game.surface.context.set_fill_style_str("#e9eef2");
     game.surface.context.set_font("bold 12px Arial");
-    let _ = game
-        .surface
-        .context
-        .fill_text(&game.player.level.to_string(), 44.0, bar_top + 61.0);
+    draw_status_text(
+        game,
+        layout,
+        origin_y,
+        "status-level",
+        &game.player.level.to_string(),
+    );
 
     game.surface.context.set_font("bold 10px Arial");
     let job = game
@@ -677,57 +703,74 @@ fn draw_status_bar_text(
         .stats
         .as_ref()
         .map_or("Beginner", |stats| job_name(stats.job_id));
-    let _ = game
-        .surface
-        .context
-        .fill_text_with_max_width(job, 84.0, bar_top + 50.0, 118.0);
+    draw_status_text(game, layout, origin_y, "status-job", job);
     game.surface.context.set_font("11px Arial");
-    let _ = game.surface.context.fill_text_with_max_width(
-        &game.player.name,
-        84.0,
-        bar_top + 65.0,
-        118.0,
-    );
+    draw_status_text(game, layout, origin_y, "status-name", &game.player.name);
 
     game.surface.context.set_fill_style_str("#263139");
     game.surface.context.set_font("12px Arial");
-    let _ = game.surface.context.fill_text_with_max_width(
+    draw_status_text(
+        game,
+        layout,
+        origin_y,
+        "status-map-name",
         &game.world.map.name,
-        10.0,
-        bar_top + 22.0,
-        550.0,
     );
 
-    if let (Some(stats), Some((gauge_x, gauge_y))) = (game.player.stats.as_ref(), gauge_origin) {
-        draw_gauge_text(game, stats, gauge_x, gauge_y);
+    if gauge_drawn && let Some(stats) = game.player.stats.as_ref() {
+        draw_gauge_text(game, layout, stats, origin_y);
     }
+}
+
+fn draw_status_text(
+    game: &Game,
+    layout: &oozems_proto::v1::GuiLayout,
+    origin_y: f64,
+    name: &str,
+    text: &str,
+) {
+    let Some(region) = game_gui::named_region(layout, name) else {
+        return;
+    };
+    let _ = game.surface.context.fill_text_with_max_width(
+        text,
+        f64::from(region.x),
+        origin_y + f64::from(region.y + region.height - 3.0),
+        f64::from(region.width),
+    );
 }
 
 fn draw_gauge_text(
     game: &Game,
+    layout: &oozems_proto::v1::GuiLayout,
     stats: &CharacterStats,
-    gauge_x: f64,
-    gauge_y: f64,
+    origin_y: f64,
 ) {
-    let fills = game_gui::gauge_fills(stats);
     let labels = game_gui::gauge_labels(stats);
     game.surface.context.set_font("bold 10px Arial");
     game.surface.context.set_text_align("center");
-    for (fill, label) in fills.into_iter().zip(labels) {
-        let center_x = gauge_x + fill.source_x + fill.full_width / 2.0;
+    for (name, label) in ["status-hp-gauge", "status-mp-gauge", "status-exp-gauge"]
+        .into_iter()
+        .zip(labels)
+    {
+        let Some(region) = game_gui::named_region(layout, name) else {
+            continue;
+        };
+        let center_x = f64::from(region.x + region.width / 2.0);
+        let baseline = origin_y + f64::from(region.y + region.height - 2.0);
         game.surface.context.set_fill_style_str("#202020");
         let _ = game.surface.context.fill_text_with_max_width(
             &label,
             center_x + 1.0,
-            gauge_y + 28.0,
-            fill.full_width - 4.0,
+            baseline + 1.0,
+            f64::from((region.width - 4.0).max(1.0)),
         );
         game.surface.context.set_fill_style_str("#ffffff");
         let _ = game.surface.context.fill_text_with_max_width(
             &label,
             center_x,
-            gauge_y + 27.0,
-            fill.full_width - 4.0,
+            baseline,
+            f64::from((region.width - 4.0).max(1.0)),
         );
     }
     game.surface.context.set_text_align("left");
@@ -768,7 +811,7 @@ fn draw_stat_window(game: &Game) {
     }
     draw_stat_ability_buttons(game, layout, origin_x, origin_y, can_allocate_ability);
     if let Some(stats) = game.player.stats.as_ref() {
-        draw_stat_values(game, stats, origin_x, origin_y);
+        draw_stat_values(game, layout, stats, origin_x, origin_y);
     }
 }
 
@@ -835,50 +878,39 @@ fn draw_window_sprite(
 
 fn draw_stat_values(
     game: &Game,
+    layout: &oozems_proto::v1::GuiLayout,
     stats: &CharacterStats,
     origin_x: f64,
     origin_y: f64,
 ) {
     let values = [
-        (game.player.name.clone(), 45.0),
-        (game.player.level.to_string(), 89.0),
-        ("-".to_owned(), 106.0),
-        (format!("{} / {}", stats.hp, stats.max_hp), 124.0),
-        (format!("{} / {}", stats.mp, stats.max_mp), 142.0),
+        ("stat-character-name", game.player.name.clone()),
+        ("stat-level", game.player.level.to_string()),
+        ("stat-guild", "-".to_owned()),
+        ("stat-hp", format!("{} / {}", stats.hp, stats.max_hp)),
+        ("stat-mp", format!("{} / {}", stats.mp, stats.max_mp)),
         (
+            "stat-experience",
             experience_label(stats.experience, stats.experience_required),
-            160.0,
         ),
-        (stats.fame.to_string(), 178.0),
+        ("stat-fame", stats.fame.to_string()),
+        ("stat-ability-points", stats.ability_points.to_string()),
+        ("stat-strength", stats.strength.to_string()),
+        ("stat-dexterity", stats.dexterity.to_string()),
+        ("stat-intelligence", stats.intelligence.to_string()),
+        ("stat-luck", stats.luck.to_string()),
     ];
     game.surface.context.set_fill_style_str("#30383b");
     game.surface.context.set_font("10px Arial");
-    for (value, y) in values {
+    for (name, value) in values {
+        let Some(region) = game_gui::named_region(layout, name) else {
+            continue;
+        };
         let _ = game.surface.context.fill_text_with_max_width(
             &value,
-            origin_x + 60.0,
-            origin_y + y,
-            106.0,
-        );
-    }
-
-    let _ = game.surface.context.fill_text_with_max_width(
-        &stats.ability_points.to_string(),
-        origin_x + 64.0,
-        origin_y + 226.0,
-        22.0,
-    );
-    for (value, y) in [
-        (stats.strength, 256.0),
-        (stats.dexterity, 273.0),
-        (stats.intelligence, 290.0),
-        (stats.luck, 307.0),
-    ] {
-        let _ = game.surface.context.fill_text_with_max_width(
-            &value.to_string(),
-            origin_x + 60.0,
-            origin_y + y,
-            106.0,
+            origin_x + f64::from(region.x),
+            origin_y + f64::from(region.y + region.height - 3.0),
+            f64::from(region.width),
         );
     }
 }

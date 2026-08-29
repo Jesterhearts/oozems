@@ -305,35 +305,45 @@ fn build_game_gui(
     definitions: &[GuiWindowDefinition],
 ) -> Result<GameGui, GuiContentError> {
     let (status_sources, mut assets) = load_status_bar_sources(content, status_bar)?;
-    let status_bar = compose_status_bar(&status_sources)?;
+    let mut status_bar = compose_status_bar(&status_sources)?;
+    add_runtime_regions("status-bar", &mut status_bar);
     let (stat_sources, stat_assets) = load_stat_window_sources(content, ui_window)?;
-    let stat_window = compose_stat_window(&stat_sources)?;
+    let mut stat_window = compose_stat_window(&stat_sources)?;
+    add_window_runtime_regions("stats", &mut stat_window);
     assets.extend(stat_assets);
     let (equipment_sources, equipment_assets) = load_equipment_window_sources(content, ui_window)?;
-    let equipment_window =
+    let mut equipment_window =
         compose_equipment_window(&equipment_sources, EQUIPMENT_WINDOW_X, EQUIPMENT_WINDOW_Y)?;
+    add_window_runtime_regions("equipment", &mut equipment_window);
     assets.extend(equipment_assets);
     let (inventory_sources, inventory_assets) = load_inventory_window_sources(content, ui_window)?;
-    let inventory_window =
+    let mut inventory_window =
         compose_inventory_window(&inventory_sources, INVENTORY_WINDOW_X, INVENTORY_WINDOW_Y)?;
+    add_window_runtime_regions("inventory", &mut inventory_window);
     assets.extend(inventory_assets);
     let (skill_sources, skill_assets) = load_skill_window_sources(content, ui_window)?;
-    let skill_window = compose_skill_window(&skill_sources)?;
+    let mut skill_window = compose_skill_window(&skill_sources)?;
+    add_window_runtime_regions("skills", &mut skill_window);
     assets.extend(skill_assets);
     let (key_config_sources, key_config_assets) = load_key_config_sources(content, ui_window)?;
-    let (key_config_window, key_actions) = compose_key_config(&key_config_sources)?;
+    let (mut key_config_window, key_actions) = compose_key_config(&key_config_sources)?;
+    add_window_runtime_regions("key-config", &mut key_config_window);
     assets.extend(key_config_assets);
     let (npc_dialog_sources, npc_dialog_assets) = load_npc_dialog_sources(content, ui_window)?;
-    let npc_dialog_window = compose_npc_dialog_window(&npc_dialog_sources)?;
+    let mut npc_dialog_window = compose_npc_dialog_window(&npc_dialog_sources)?;
+    add_window_runtime_regions("npc-dialog", &mut npc_dialog_window);
     assets.extend(npc_dialog_assets);
     let (shop_sources, shop_assets) = load_shop_window_sources(content, ui_window)?;
-    let shop_window = compose_shop_window(&shop_sources)?;
+    let mut shop_window = compose_shop_window(&shop_sources)?;
+    add_window_runtime_regions("shop", &mut shop_window);
     assets.extend(shop_assets);
     let (cash_shop_sources, cash_shop_assets) = load_cash_shop_window_sources(content, cash_shop)?;
-    let cash_shop_window = compose_cash_shop_window(&cash_shop_sources)?;
+    let mut cash_shop_window = compose_cash_shop_window(&cash_shop_sources)?;
+    add_window_runtime_regions("cash-shop", &mut cash_shop_window);
     assets.extend(cash_shop_assets);
     let (death_notice_sources, death_notice_assets) = load_death_notice_sources(content, basic)?;
-    let death_notice_window = compose_death_notice_window(&death_notice_sources)?;
+    let mut death_notice_window = compose_death_notice_window(&death_notice_sources)?;
+    add_window_runtime_regions("death-notice", &mut death_notice_window);
     assets.extend(death_notice_assets);
     let (quest_available_frames, quest_available_assets) =
         load_quest_icon_frames(content, ui_window, QUEST_AVAILABLE_ICON_ID)?;
@@ -470,6 +480,27 @@ fn compose_window_definition(
     ))
 }
 
+fn add_window_runtime_regions(
+    name: &str,
+    window: &mut GuiWindow,
+) {
+    if let Some(layout) = window.layout.as_mut() {
+        add_runtime_regions(name, layout);
+    }
+}
+
+fn add_runtime_regions(
+    name: &str,
+    layout: &mut GuiLayout,
+) {
+    oozems_ui_layout::add_missing_runtime_regions(
+        name,
+        layout.width,
+        layout.height,
+        &mut layout.regions,
+    );
+}
+
 fn load_authored_source(
     content: &GuiContent,
     root: &WzNodeArc,
@@ -516,6 +547,20 @@ fn install_window_definition(
                     {
                         *icon = sprite.clone();
                     }
+                }
+                for slot in &mut gui.key_slots {
+                    let region_name = format!("key-config-slot-{}", slot.code);
+                    let Some(region) = layout
+                        .regions
+                        .iter()
+                        .find(|region| region.name == region_name)
+                    else {
+                        continue;
+                    };
+                    slot.x = region.x;
+                    slot.y = region.y;
+                    slot.width = region.width;
+                    slot.height = region.height;
                 }
             }
             gui.key_config_window = Some(window);
@@ -1239,6 +1284,7 @@ mod tests {
     use oozems_proto::v1::GuiWindow;
     use oozems_proto::v1::GuiWindowDefinition;
     use oozems_proto::v1::KeyActionDefinition;
+    use oozems_proto::v1::KeySlot;
 
     use super::CashShopWindowSources;
     use super::EquipmentWindowSources;
@@ -1251,6 +1297,7 @@ mod tests {
     use super::SourceSprite;
     use super::StatWindowSources;
     use super::StatusBarSources;
+    use super::add_runtime_regions;
     use super::compose_cash_shop_window;
     use super::compose_equipment_window;
     use super::compose_inventory_window;
@@ -1646,6 +1693,13 @@ mod tests {
                 }),
                 ..KeyActionDefinition::default()
             }],
+            key_slots: vec![KeySlot {
+                code: "KeyA".to_owned(),
+                x: 1.0,
+                y: 2.0,
+                width: 3.0,
+                height: 4.0,
+            }],
             ..GameGui::default()
         };
         let window = GuiWindow {
@@ -1656,6 +1710,13 @@ mod tests {
                     x: 47.0,
                     y: 53.0,
                     ..GuiSprite::default()
+                }],
+                regions: vec![oozems_proto::v1::GuiRegion {
+                    name: "key-config-slot-KeyA".to_owned(),
+                    x: 11.0,
+                    y: 13.0,
+                    width: 17.0,
+                    height: 19.0,
                 }],
                 ..GuiLayout::default()
             }),
@@ -1671,6 +1732,39 @@ mod tests {
         let icon = gui.key_actions[0].icon.as_ref().expect("key action icon");
         assert_eq!(icon.asset_id, "authored-asset");
         assert_eq!((icon.x, icon.y), (47.0, 53.0));
+        let slot = &gui.key_slots[0];
+        assert_eq!(
+            (slot.x, slot.y, slot.width, slot.height),
+            (11.0, 13.0, 17.0, 19.0)
+        );
+    }
+
+    #[test]
+    fn runtime_region_injection_adds_dynamic_cash_shop_content() {
+        let mut layout = GuiLayout {
+            width: 800.0,
+            height: 600.0,
+            regions: vec![oozems_proto::v1::GuiRegion {
+                name: "cash-shop-item-icon-0".to_owned(),
+                x: 1.0,
+                y: 2.0,
+                width: 3.0,
+                height: 4.0,
+            }],
+            ..GuiLayout::default()
+        };
+
+        add_runtime_regions("cash-shop", &mut layout);
+
+        assert_eq!(
+            region_geometry(&layout, "cash-shop-item-icon-0"),
+            Some((1.0, 2.0, 3.0, 4.0))
+        );
+        assert_eq!(
+            region_geometry(&layout, "cash-shop-item-icon-9"),
+            Some((504.0, 446.0, 32.0, 32.0))
+        );
+        assert!(region_geometry(&layout, "cash-shop-item-name-9").is_some());
     }
 
     fn source(

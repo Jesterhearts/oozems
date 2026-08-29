@@ -1,5 +1,7 @@
 use oozems_proto::v1::CashShopOffer;
 use oozems_proto::v1::GuiLayout;
+use oozems_proto::v1::GuiRegion;
+use oozems_proto::v1::GuiWindow;
 
 use super::Game;
 use crate::assets::ready_image;
@@ -9,11 +11,6 @@ use crate::character_render::CharacterAnimation;
 use crate::character_render::CharacterPlacement;
 use crate::game::character_animation_elapsed_ms;
 use crate::game_gui;
-
-const CARD_ICON_X: f32 = 20.0;
-const CARD_ICON_Y: f32 = 24.0;
-const CARD_TEXT_X: f32 = 78.0;
-const CARD_TEXT_WIDTH: f64 = 117.0;
 
 pub(super) fn draw(game: &Game) {
     let viewport_width = game.surface.canvas.width() as f32;
@@ -48,15 +45,22 @@ pub(super) fn draw(game: &Game) {
                 .scale(f64::from(transform.scale), f64::from(transform.scale))
         });
     if transformed.is_ok() && super::draw_window(game, window) {
-        draw_character_preview(game);
-        draw_account_details(game);
-        draw_offers(game, layout);
-        draw_request_state(game, layout);
+        draw_character_preview(game, window, layout);
+        draw_account_details(game, window, layout);
+        draw_offers(game, window, layout);
+        draw_request_state(game, window, layout);
     }
     game.surface.context.restore();
 }
 
-fn draw_character_preview(game: &Game) {
+fn draw_character_preview(
+    game: &Game,
+    window: &GuiWindow,
+    layout: &GuiLayout,
+) {
+    let Some(region) = game_gui::named_region(layout, "cash-shop-character") else {
+        return;
+    };
     character_render::draw_character(
         &game.surface.context,
         &game.surface.images,
@@ -64,80 +68,90 @@ fn draw_character_preview(game: &Game) {
         CharacterAnimation::Idle,
         character_animation_elapsed_ms(game.world.character_animation, game.clock.now_ms),
         CharacterPlacement {
-            anchor_x: 130.0,
-            anchor_y: 173.0,
+            anchor_x: f64::from(window.x + region.x + region.width / 2.0),
+            anchor_y: f64::from(window.y + region.y + region.height),
             scale: 1.0,
             facing_left: false,
         },
     );
 }
 
-fn draw_account_details(game: &Game) {
+fn draw_account_details(
+    game: &Game,
+    window: &GuiWindow,
+    layout: &GuiLayout,
+) {
     game.surface.context.set_fill_style_str("#263238");
     game.surface.context.set_font("bold 12px Arial");
-    let _ = game
-        .surface
-        .context
-        .fill_text(&game.player.name, 49.0, 225.0);
-    let _ = game.surface.context.fill_text_with_max_width(
+    draw_region_text(
+        game,
+        window,
+        layout,
+        "cash-shop-player-name",
+        &game.player.name,
+    );
+    draw_region_text(
+        game,
+        window,
+        layout,
+        "cash-shop-balance",
         &currency_amount_label(game.player.cash_points, &game.ui.cash_shop.currency_name),
-        49.0,
-        245.0,
-        164.0,
     );
 }
 
 fn draw_offers(
     game: &Game,
+    window: &GuiWindow,
     layout: &GuiLayout,
 ) {
     let Some(offers) = game.ui.cash_shop.offers.as_ref() else {
         return;
     };
     for (index, offer) in offers.iter().take(10).enumerate() {
-        let card_name = format!("cash-shop-item-card-{index}");
-        let Some(card) = layout
-            .sprites
-            .iter()
-            .find(|sprite| sprite.name == card_name)
-        else {
-            continue;
-        };
         let Some(buy_region) = game_gui::named_region(layout, &format!("cash-shop-buy-{index}"))
         else {
             continue;
         };
         let gift_region = game_gui::named_region(layout, &format!("cash-shop-gift-{index}"));
-        let card_x = card.x;
-        let card_y = card.y;
-        if let Some(definition) = super::item_definition(game, offer.item_id) {
-            super::draw_item_icon(game, definition, card_x + CARD_ICON_X, card_y + CARD_ICON_Y);
-            game.surface.context.set_fill_style_str("#25323a");
-            game.surface.context.set_font("bold 11px Arial");
-            let _ = game.surface.context.fill_text_with_max_width(
-                &definition.name,
-                f64::from(card_x + CARD_TEXT_X),
-                f64::from(card_y + 17.0),
-                CARD_TEXT_WIDTH,
-            );
-        } else {
-            game.surface.context.set_fill_style_str("#25323a");
-            game.surface.context.set_font("bold 11px Arial");
-            let _ = game.surface.context.fill_text(
-                &format!("Item {}", offer.item_id),
-                f64::from(card_x + CARD_TEXT_X),
-                f64::from(card_y + 19.0),
+        let definition = super::item_definition(game, offer.item_id);
+        if let (Some(definition), Some(icon_region)) = (
+            definition,
+            game_gui::named_region(layout, &format!("cash-shop-item-icon-{index}")),
+        ) {
+            super::draw_item_icon_in_region(
+                game,
+                definition,
+                window.x + icon_region.x,
+                window.y + icon_region.y,
+                icon_region.width,
+                icon_region.height,
             );
         }
-        draw_offer_details(game, offer, card_x, card_y);
-        draw_offer_button(game, layout, "cash-shop-buy", buy_region.x, buy_region.y);
+        if let Some(name_region) =
+            game_gui::named_region(layout, &format!("cash-shop-item-name-{index}"))
+        {
+            game.surface.context.set_fill_style_str("#25323a");
+            game.surface.context.set_font("bold 11px Arial");
+            let name = definition
+                .map(|definition| definition.name.clone())
+                .unwrap_or_else(|| format!("Item {}", offer.item_id));
+            draw_text_in_region(game, window, name_region, &name);
+        }
+        draw_offer_details(game, window, layout, offer, index);
+        draw_offer_button(
+            game,
+            layout,
+            "cash-shop-buy",
+            window.x + buy_region.x,
+            window.y + buy_region.y,
+        );
         if let Some(gift_region) = gift_region {
             draw_offer_button(
                 game,
                 layout,
                 "cash-shop-gift-disabled",
-                gift_region.x,
-                gift_region.y,
+                window.x + gift_region.x,
+                window.y + gift_region.y,
             );
         }
     }
@@ -145,25 +159,28 @@ fn draw_offers(
 
 fn draw_offer_details(
     game: &Game,
+    window: &GuiWindow,
+    layout: &GuiLayout,
     offer: &CashShopOffer,
-    card_x: f32,
-    card_y: f32,
+    index: usize,
 ) {
-    game.surface.context.set_font("10px Arial");
-    game.surface.context.set_fill_style_str("#4b5f6b");
-    let _ = game.surface.context.fill_text(
-        &duration_label(offer.duration_ms),
-        f64::from(card_x + CARD_TEXT_X),
-        f64::from(card_y + 36.0),
-    );
-    game.surface.context.set_fill_style_str("#b45d26");
-    game.surface.context.set_font("bold 10px Arial");
-    let _ = game.surface.context.fill_text_with_max_width(
-        &currency_amount_label(offer.price, &game.ui.cash_shop.currency_name),
-        f64::from(card_x + CARD_TEXT_X),
-        f64::from(card_y + 51.0),
-        CARD_TEXT_WIDTH,
-    );
+    if let Some(duration) =
+        game_gui::named_region(layout, &format!("cash-shop-item-duration-{index}"))
+    {
+        game.surface.context.set_font("10px Arial");
+        game.surface.context.set_fill_style_str("#4b5f6b");
+        draw_text_in_region(game, window, duration, &duration_label(offer.duration_ms));
+    }
+    if let Some(price) = game_gui::named_region(layout, &format!("cash-shop-item-price-{index}")) {
+        game.surface.context.set_fill_style_str("#b45d26");
+        game.surface.context.set_font("bold 10px Arial");
+        draw_text_in_region(
+            game,
+            window,
+            price,
+            &currency_amount_label(offer.price, &game.ui.cash_shop.currency_name),
+        );
+    }
 }
 
 fn draw_offer_button(
@@ -193,6 +210,7 @@ fn draw_offer_button(
 
 fn draw_request_state(
     game: &Game,
+    window: &GuiWindow,
     layout: &GuiLayout,
 ) {
     let message = if game.cash_shop_request_in_flight() {
@@ -207,17 +225,49 @@ fn draw_request_state(
     let Some(message) = message else {
         return;
     };
+    let Some(panel) = game_gui::named_region(layout, "cash-shop-request-panel") else {
+        return;
+    };
+    let Some(text) = game_gui::named_region(layout, "cash-shop-request-text") else {
+        return;
+    };
     game.surface
         .context
         .set_fill_style_str("rgba(245, 248, 250, 0.94)");
-    game.surface.context.fill_rect(236.0, 270.0, 428.0, 48.0);
+    game.surface.context.fill_rect(
+        f64::from(window.x + panel.x),
+        f64::from(window.y + panel.y),
+        f64::from(panel.width),
+        f64::from(panel.height),
+    );
     game.surface.context.set_fill_style_str("#38464f");
     game.surface.context.set_font("bold 12px Arial");
+    draw_text_in_region(game, window, text, message);
+}
+
+fn draw_region_text(
+    game: &Game,
+    window: &GuiWindow,
+    layout: &GuiLayout,
+    name: &str,
+    text: &str,
+) {
+    if let Some(region) = game_gui::named_region(layout, name) {
+        draw_text_in_region(game, window, region, text);
+    }
+}
+
+fn draw_text_in_region(
+    game: &Game,
+    window: &GuiWindow,
+    region: &GuiRegion,
+    text: &str,
+) {
     let _ = game.surface.context.fill_text_with_max_width(
-        message,
-        252.0,
-        299.0,
-        f64::from(layout.width - 388.0),
+        text,
+        f64::from(window.x + region.x),
+        f64::from(window.y + region.y + region.height - 3.0),
+        f64::from(region.width),
     );
 }
 

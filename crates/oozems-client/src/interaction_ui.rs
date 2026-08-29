@@ -9,8 +9,6 @@ use oozems_proto::v1::npc_interaction;
 
 use crate::game_gui::CanvasPoint;
 
-const LIST_ROW_HEIGHT: f32 = 24.0;
-const SHOP_ROW_HEIGHT: f32 = 37.0;
 pub const SHOP_PAGE_SIZE: usize = 5;
 pub const DIALOG_CHOICE_PAGE_SIZE: usize = 4;
 const DIALOG_PAGE_CHARACTER_LIMIT: usize = 360;
@@ -124,8 +122,8 @@ pub fn click_action(
                 }
                 return Some(InteractionUiAction::Consume);
             }
-            if let Some(index) = row_at(window, "npc-choices", point, LIST_ROW_HEIGHT)
-                && index < DIALOG_CHOICE_PAGE_SIZE
+            if let Some(index) =
+                indexed_region_at(window, "npc-choice-row", DIALOG_CHOICE_PAGE_SIZE, point)
                 && let Some(choice) = dialog
                     .choices
                     .get(state.choice_page * DIALOG_CHOICE_PAGE_SIZE + index)
@@ -168,13 +166,14 @@ pub fn click_action(
             {
                 return Some(InteractionUiAction::NextInventoryPage);
             }
-            if let Some(index) = row_at(window, "shop-stock", point, SHOP_ROW_HEIGHT)
+            if let Some(index) = indexed_region_at(window, "shop-stock-row", SHOP_PAGE_SIZE, point)
                 && index < shop.offers.len()
             {
                 return Some(InteractionUiAction::SelectOffer { index });
             }
             if !cash_point_shop
-                && let Some(index) = row_at(window, "shop-inventory", point, SHOP_ROW_HEIGHT)
+                && let Some(index) =
+                    indexed_region_at(window, "shop-inventory-row", SHOP_PAGE_SIZE, point)
             {
                 let index = state.inventory_page * SHOP_PAGE_SIZE + index;
                 if index < inventory_len {
@@ -191,7 +190,8 @@ pub fn click_action(
             if contains_region(window, "npc-close", point) {
                 return Some(InteractionUiAction::Close);
             }
-            if let Some(index) = row_at(window, "npc-choices", point, LIST_ROW_HEIGHT)
+            if let Some(index) =
+                indexed_region_at(window, "npc-choice-row", DIALOG_CHOICE_PAGE_SIZE, point)
                 && let Some(destination) = taxi.destinations.get(index)
             {
                 return Some(InteractionUiAction::TakeTaxi {
@@ -362,23 +362,13 @@ fn contains_region(
     })
 }
 
-fn row_at(
+fn indexed_region_at(
     window: &oozems_proto::v1::GuiWindow,
-    region_name: &str,
+    prefix: &str,
+    count: usize,
     point: CanvasPoint,
-    row_height: f32,
 ) -> Option<usize> {
-    let layout = window.layout.as_ref()?;
-    let region = layout
-        .regions
-        .iter()
-        .find(|region| region.name == region_name)?;
-    let local_x = point.x - window.x - region.x;
-    let local_y = point.y - window.y - region.y;
-    if local_x < 0.0 || local_x >= region.width || local_y < 0.0 || local_y >= region.height {
-        return None;
-    }
-    Some((local_y / row_height) as usize)
+    (0..count).find(|index| contains_region(window, &format!("{prefix}-{index}"), point))
 }
 
 #[cfg(test)]
@@ -402,38 +392,38 @@ mod tests {
     use super::InteractionUiAction;
     use super::click_action;
     use super::dialog_previous_region;
-    use super::row_at;
+    use super::indexed_region_at;
     use super::visual_dialog_pages;
     use crate::game_gui::CanvasPoint;
 
     #[test]
-    fn list_rows_use_window_and_region_offsets() {
+    fn indexed_regions_use_window_and_region_offsets() {
         let window = GuiWindow {
             x: 100.0,
             y: 50.0,
             layout: Some(GuiLayout {
                 regions: vec![GuiRegion {
-                    name: "rows".to_owned(),
+                    name: "rows-2".to_owned(),
                     x: 20.0,
-                    y: 30.0,
+                    y: 78.0,
                     width: 100.0,
-                    height: 100.0,
+                    height: 24.0,
                 }],
                 ..GuiLayout::default()
             }),
         };
 
         assert_eq!(
-            row_at(&window, "rows", CanvasPoint { x: 125.0, y: 129.0 }, 24.0),
+            indexed_region_at(&window, "rows", 4, CanvasPoint { x: 125.0, y: 129.0 }),
             Some(2)
         );
         assert_eq!(
-            row_at(&window, "rows", CanvasPoint { x: 110.0, y: 90.0 }, 24.0),
+            indexed_region_at(&window, "rows", 4, CanvasPoint { x: 110.0, y: 129.0 }),
             None
         );
         assert_eq!(
-            row_at(&window, "rows", CanvasPoint { x: 125.0, y: 164.0 }, 24.0),
-            Some(3)
+            indexed_region_at(&window, "rows", 4, CanvasPoint { x: 125.0, y: 152.0 }),
+            None
         );
     }
 
@@ -646,6 +636,13 @@ mod tests {
                         y: 90.0,
                         width: 100.0,
                         height: 40.0,
+                    },
+                    GuiRegion {
+                        name: "shop-stock-row-0".to_owned(),
+                        x: 10.0,
+                        y: 90.0,
+                        width: 100.0,
+                        height: 37.0,
                     },
                 ],
                 ..GuiLayout::default()

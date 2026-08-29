@@ -13,7 +13,7 @@ pub fn builtin_definition<E>(
     name: &str,
     mut dimensions: impl FnMut(&str) -> Result<SpriteDimensions, E>,
 ) -> Result<Option<GuiWindowDefinition>, E> {
-    let definition = match name {
+    let mut definition = match name {
         "status-bar" => status_bar(&mut dimensions)?,
         "stats" => stats(&mut dimensions)?,
         "equipment" => equipment(&mut dimensions)?,
@@ -26,6 +26,12 @@ pub fn builtin_definition<E>(
         "death-notice" => death_notice(&mut dimensions)?,
         _ => return Ok(None),
     };
+    crate::add_missing_runtime_regions(
+        name,
+        definition.width,
+        definition.height,
+        &mut definition.regions,
+    );
     Ok(Some(definition))
 }
 
@@ -281,9 +287,6 @@ fn inventory<E>(
             19.0,
         ));
     }
-    definition
-        .regions
-        .push(crate::default_inventory_mesos_region());
     definition.sprite_templates.push(template(
         "inventory-locked-slot",
         "UIWindow.img/Item/disabled",
@@ -600,16 +603,13 @@ fn death_notice<E>(
     definition
         .sprites
         .push(source("death-notice-ok", ok_path, button_x, button_y));
-    definition.regions.extend([
-        region(
-            "death-notice-text",
-            14.0,
-            40.0,
-            (background.width - 28.0).max(0.0),
-            45.0,
-        ),
-        region("death-notice-ok", button_x, button_y, ok.width, ok.height),
-    ]);
+    definition.regions.push(region(
+        "death-notice-ok",
+        button_x,
+        button_y,
+        ok.width,
+        ok.height,
+    ));
     Ok(definition)
 }
 
@@ -781,16 +781,25 @@ mod tests {
             .iter()
             .find(|sprite| sprite.name == "death-notice-ok")
             .expect("OK sprite");
-        let text = definition
+        let title = definition
             .regions
             .iter()
-            .find(|region| region.name == "death-notice-text")
-            .expect("text region");
+            .find(|region| region.name == "death-notice-title")
+            .expect("title region");
+        let detail = definition
+            .regions
+            .iter()
+            .find(|region| region.name == "death-notice-detail")
+            .expect("detail region");
 
         assert_eq!((ok.x, ok.y), (100.0, 92.0));
         assert_eq!(
-            (text.x, text.y, text.width, text.height),
-            (14.0, 40.0, 236.0, 45.0)
+            (title.x, title.y, title.width, title.height),
+            (14.0, 40.0, 236.0, 21.0)
+        );
+        assert_eq!(
+            (detail.x, detail.y, detail.width, detail.height),
+            (14.0, 61.0, 236.0, 24.0)
         );
     }
 

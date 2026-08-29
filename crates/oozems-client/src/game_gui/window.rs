@@ -96,13 +96,22 @@ pub fn begin_window_drag(
         viewport_width,
         viewport_height,
     )?;
-    let title_height = placement.layout.height.min(WINDOW_TITLE_HEIGHT);
+    let drag_handle = super::named_region(placement.layout, "window-drag-handle");
+    let (x, y, width, height) = drag_handle.map_or(
+        (
+            0.0,
+            0.0,
+            placement.layout.width,
+            placement.layout.height.min(WINDOW_TITLE_HEIGHT),
+        ),
+        |region| (region.x, region.y, region.width, region.height),
+    );
     rect_contains(
         CanvasRect {
-            x: placement.origin.x,
-            y: placement.origin.y,
-            width: placement.layout.width,
-            height: title_height,
+            x: placement.origin.x + x,
+            y: placement.origin.y + y,
+            width,
+            height,
         },
         point,
     )
@@ -221,7 +230,10 @@ fn resolve_window_origin(
     } else {
         0.0
     };
-    let title_height = layout.height.min(WINDOW_TITLE_HEIGHT);
+    let title_height = super::named_region(layout, "window-drag-handle")
+        .map_or(layout.height.min(WINDOW_TITLE_HEIGHT), |region| {
+            (region.y + region.height).min(layout.height)
+        });
     let maximum_y = if layout.height <= viewport_height {
         viewport_height - layout.height
     } else {
@@ -296,6 +308,7 @@ fn visible_windows_front_to_back(state: GuiState) -> impl Iterator<Item = Window
 mod tests {
     use oozems_proto::v1::GameGui;
     use oozems_proto::v1::GuiLayout;
+    use oozems_proto::v1::GuiRegion;
     use oozems_proto::v1::GuiSprite;
     use oozems_proto::v1::GuiWindow;
 
@@ -388,6 +401,36 @@ mod tests {
         assert!(
             begin_window_drag(state, &gui, 960.0, 600.0, CanvasPoint { x: 30.0, y: 110.0 },)
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn title_drag_follows_the_authored_drag_region() {
+        let mut gui = gui_fixture();
+        gui.stat_window
+            .as_mut()
+            .and_then(|window| window.layout.as_mut())
+            .expect("stat layout")
+            .regions
+            .push(GuiRegion {
+                name: "window-drag-handle".to_owned(),
+                x: 40.0,
+                y: 40.0,
+                width: 80.0,
+                height: 20.0,
+            });
+        let state = GuiState {
+            stats_open: true,
+            ..GuiState::default()
+        };
+
+        assert!(
+            begin_window_drag(state, &gui, 960.0, 600.0, CanvasPoint { x: 30.0, y: 90.0 })
+                .is_none()
+        );
+        assert!(
+            begin_window_drag(state, &gui, 960.0, 600.0, CanvasPoint { x: 61.0, y: 121.0 })
+                .is_some()
         );
     }
 

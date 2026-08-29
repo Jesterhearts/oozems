@@ -1,0 +1,149 @@
+name: "stats"
+x: 20.0
+y: 80.0
+background {
+  name: "stat-background"
+  wz_path: "UIWindow.img/Stat/backgrnd"
+}
+sprites: [{
+  name: "stat-close"
+  wz_path: "UIWindow.img/BtUIClose/normal/0"
+  y: 5.0
+  pin_right: true
+  right: 5.0
+}, {
+  name: "stat-job"
+  wz_path: "UIWindow.img/Stat/Job/main/0"
+  x: 60.0
+  y: 57.0
+}, {
+  name: "stat-auto-assign-disabled"
+  wz_path: "UIWindow.img/Stat/BtAuto/disabled/0"
+  x: 95.0
+  y: 197.0
+}, {
+  name: "stat-detail-disabled"
+  wz_path: "UIWindow.img/Stat/BtDetail/disabled/0"
+  x: 113.0
+  y: 324.0
+}, {
+  name: "stat-hp-up-disabled"
+  wz_path: "UIWindow.img/Stat/BtApUp/disabled/0"
+  x: 153.0
+  y: 116.0
+}, {
+  name: "stat-mp-up-disabled"
+  wz_path: "UIWindow.img/Stat/BtApUp/disabled/0"
+  x: 153.0
+  y: 134.0
+}]
+sprite_templates: [{
+  name: "stat-ability-up"
+  wz_path: "UIWindow.img/Stat/BtApUp/normal/0"
+}, {
+  name: "stat-ability-up-disabled"
+  wz_path: "UIWindow.img/Stat/BtApUp/disabled/0"
+}]
+regions: [{
+  name: "stat-strength-up"
+  x: 153.0
+  y: 246.0
+  width: 12.0
+  height: 12.0
+}, {
+  name: "stat-dexterity-up"
+  x: 153.0
+  y: 264.0
+  width: 12.0
+  height: 12.0
+}, {
+  name: "stat-intelligence-up"
+  x: 153.0
+  y: 282.0
+  width: 12.0
+  height: 12.0
+}, {
+  name: "stat-luck-up"
+  x: 153.0
+  y: 300.0
+  width: 12.0
+  height: 12.0
+}, {
+  name: "window-drag-handle"
+  width: 175.0
+  height: 20.0
+}, {
+  name: "stat-character-name"
+  x: 60.0
+  y: 34.0
+  width: 106.0
+  height: 14.0
+}, {
+  name: "stat-level"
+  x: 60.0
+  y: 79.0
+  width: 106.0
+  height: 14.0
+}, {
+  name: "stat-guild"
+  x: 60.0
+  y: 97.0
+  width: 106.0
+  height: 14.0
+}, {
+  name: "stat-hp"
+  x: 60.0
+  y: 115.0
+  width: 106.0
+  height: 14.0
+}, {
+  name: "stat-mp"
+  x: 60.0
+  y: 133.0
+  width: 106.0
+  height: 14.0
+}, {
+  name: "stat-experience"
+  x: 60.0
+  y: 151.0
+  width: 106.0
+  height: 14.0
+}, {
+  name: "stat-fame"
+  x: 60.0
+  y: 169.0
+  width: 106.0
+  height: 14.0
+}, {
+  name: "stat-ability-points"
+  x: 62.0
+  y: 215.0
+  width: 26.0
+  height: 14.0
+}, {
+  name: "stat-strength"
+  x: 60.0
+  y: 245.0
+  width: 106.0
+  height: 14.0
+}, {
+  name: "stat-dexterity"
+  x: 60.0
+  y: 263.0
+  width: 106.0
+  height: 14.0
+}, {
+  name: "stat-intelligence"
+  x: 60.0
+  y: 281.0
+  width: 106.0
+  height: 14.0
+}, {
+  name: "stat-luck"
+  x: 60.0
+  y: 299.0
+  width: 106.0
+  height: 14.0
+}]
+width: 175.0
+height: 347.0

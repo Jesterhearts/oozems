@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 mod builtin;
+mod runtime_regions;
 
 use std::collections::HashSet;
 use std::fs;
@@ -20,12 +21,6 @@ use prost_reflect::text_format::FormatOptions;
 use thiserror::Error;
 
 const DEFINITION_MESSAGE: &str = "oozems.v1.GuiWindowDefinition";
-const INVENTORY_MESOS_REGION_NAME: &str = "inventory-mesos";
-const INVENTORY_MESOS_LEFT: f32 = 26.0;
-const INVENTORY_MESOS_TOP: f32 = 274.0;
-const INVENTORY_MESOS_WIDTH: f32 = 111.0;
-const INVENTORY_MESOS_HEIGHT: f32 = 14.0;
-
 pub const SUPPORTED_WINDOWS: [&str; 10] = [
     "status-bar",
     "stats",
@@ -162,36 +157,31 @@ pub fn load_file(path: &Path) -> Result<GuiWindowDefinition, LayoutError> {
             source,
         }
     })?;
-    let mut definition = dynamic
-        .transcode_to()
-        .map_err(|source| LayoutError::Decode {
-            path: path.to_owned(),
-            source,
-        })?;
-    migrate_legacy_definition(&mut definition);
+    let mut definition: GuiWindowDefinition =
+        dynamic
+            .transcode_to()
+            .map_err(|source| LayoutError::Decode {
+                path: path.to_owned(),
+                source,
+            })?;
+    let name = definition.name.clone();
+    add_missing_runtime_regions(
+        &name,
+        definition.width,
+        definition.height,
+        &mut definition.regions,
+    );
     validate(&definition)?;
     Ok(definition)
 }
 
-fn migrate_legacy_definition(definition: &mut GuiWindowDefinition) {
-    if definition.name == "inventory"
-        && !definition
-            .regions
-            .iter()
-            .any(|region| region.name == INVENTORY_MESOS_REGION_NAME)
-    {
-        definition.regions.push(default_inventory_mesos_region());
-    }
-}
-
-pub(crate) fn default_inventory_mesos_region() -> GuiRegion {
-    GuiRegion {
-        name: INVENTORY_MESOS_REGION_NAME.to_owned(),
-        x: INVENTORY_MESOS_LEFT,
-        y: INVENTORY_MESOS_TOP,
-        width: INVENTORY_MESOS_WIDTH,
-        height: INVENTORY_MESOS_HEIGHT,
-    }
+pub fn add_missing_runtime_regions(
+    name: &str,
+    width: f32,
+    height: f32,
+    regions: &mut Vec<GuiRegion>,
+) {
+    runtime_regions::add_missing(name, width, height, regions);
 }
 
 pub fn save_file(
@@ -492,7 +482,23 @@ fn validate_contract(
         template_names,
         contract.templates,
     )?;
-    require_names(definition, "region", region_names, contract.regions)
+    require_names(definition, "region", region_names, contract.regions)?;
+    let runtime_regions = runtime_regions::defaults(
+        &definition.name,
+        definition.width,
+        definition.height,
+        &definition.regions,
+    );
+    let runtime_region_names = runtime_regions
+        .iter()
+        .map(|region| region.name.as_str())
+        .collect::<Vec<_>>();
+    require_names(
+        definition,
+        "runtime region",
+        region_names,
+        &runtime_region_names,
+    )
 }
 
 struct LayoutContract {
@@ -568,7 +574,7 @@ const LAYOUT_CONTRACTS: &[LayoutContract] = &[
             "inventory-tab-install",
             "inventory-tab-etc",
             "inventory-tab-cash",
-            INVENTORY_MESOS_REGION_NAME,
+            "inventory-mesos",
         ],
     },
     LayoutContract {
@@ -702,7 +708,7 @@ const LAYOUT_CONTRACTS: &[LayoutContract] = &[
         name: "death-notice",
         sprites: &["death-notice-ok"],
         templates: EMPTY_NAMES,
-        regions: &["death-notice-text", "death-notice-ok"],
+        regions: &["death-notice-ok"],
     },
 ];
 
@@ -797,11 +803,11 @@ mod tests {
 
     use super::LAYOUT_CONTRACTS;
     use super::SUPPORTED_WINDOWS;
+    use super::add_missing_runtime_regions;
     use super::contract_for;
     use super::format_textproto;
     use super::load_directory;
     use super::load_file;
-    use super::migrate_legacy_definition;
     use super::save_file;
     use super::validate;
 
@@ -835,7 +841,12 @@ mod tests {
             .regions
             .retain(|region| region.name != "inventory-mesos");
 
-        migrate_legacy_definition(&mut definition);
+        add_missing_runtime_regions(
+            "inventory",
+            definition.width,
+            definition.height,
+            &mut definition.regions,
+        );
 
         let mesos = definition
             .regions
@@ -1074,12 +1085,13 @@ mod tests {
                 height: 4.0,
             }),
         );
+        add_missing_runtime_regions("skills", 0.0, 0.0, &mut definition.regions);
         definition
     }
 
     fn contract_definition(name: &str) -> GuiWindowDefinition {
         let contract = contract_for(name);
-        GuiWindowDefinition {
+        let mut definition = GuiWindowDefinition {
             name: name.to_owned(),
             x: if name == "status-bar" { 0.0 } else { 20.0 },
             y: if name == "status-bar" { 0.0 } else { 80.0 },
@@ -1103,7 +1115,9 @@ mod tests {
                 .collect(),
             width: 0.0,
             height: 0.0,
-        }
+        };
+        add_missing_runtime_regions(name, 0.0, 0.0, &mut definition.regions);
+        definition
     }
 
     fn source(name: &str) -> GuiSpriteSource {

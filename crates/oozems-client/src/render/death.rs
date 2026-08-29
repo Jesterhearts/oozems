@@ -28,13 +28,39 @@ fn draw_native_text(game: &Game) {
     let Some(layout) = window.layout.as_ref() else {
         return;
     };
-    let Some(region) = game_gui::named_region(layout, "death-notice-text") else {
+    let Some(title) = game_gui::named_region(layout, "death-notice-title") else {
         return;
     };
-    draw_message(
-        game,
-        f64::from(window.x + region.x),
-        f64::from(window.y + region.y),
+    let Some(detail) = game_gui::named_region(layout, "death-notice-detail") else {
+        return;
+    };
+    let context = &game.surface.context;
+    context.set_fill_style_str(TEXT_COLOR);
+    context.set_text_align("center");
+    context.set_text_baseline("middle");
+    context.set_font("bold 12px Arial");
+    draw_native_line(game, window, title, "You have died.");
+    context.set_font("11px Arial");
+    let message = if game.ui.death.respawn_requested {
+        "Returning to the nearest town..."
+    } else {
+        "You will be revived in the nearest town."
+    };
+    draw_native_line(game, window, detail, message);
+    context.set_text_baseline("alphabetic");
+    context.set_text_align("left");
+}
+
+fn draw_native_line(
+    game: &Game,
+    window: &oozems_proto::v1::GuiWindow,
+    region: &oozems_proto::v1::GuiRegion,
+    text: &str,
+) {
+    let _ = game.surface.context.fill_text_with_max_width(
+        text,
+        f64::from(window.x + region.x + region.width / 2.0),
+        f64::from(window.y + region.y + region.height / 2.0),
         f64::from(region.width),
     );
 }

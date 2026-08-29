@@ -27,6 +27,7 @@ pub use key_config::finish_key_drag;
 pub use key_config::move_key_drag;
 pub use window::WindowDrag;
 pub use window::WindowKind;
+use window::WindowPlacement;
 pub use window::WindowPlacements;
 pub use window::begin_window_drag;
 pub use window::close_topmost_window;
@@ -144,10 +145,6 @@ pub enum PointerButton {
 }
 
 const INVENTORY_COLUMNS: usize = 4;
-const INVENTORY_SLOT_LEFT: f32 = 7.0;
-const INVENTORY_SLOT_TOP: f32 = 50.0;
-const INVENTORY_SLOT_STEP: f32 = 36.0;
-const ITEM_SLOT_SIZE: f32 = 32.0;
 pub(crate) const INVENTORY_VISIBLE_SLOTS: usize = 24;
 
 pub fn click_action(
@@ -344,13 +341,23 @@ pub fn status_sprite_visible(
     }
 }
 
-pub fn inventory_slot_position(index: usize) -> (f32, f32) {
+pub fn inventory_slot_geometry(
+    layout: &GuiLayout,
+    index: usize,
+) -> Option<(f32, f32, f32, f32)> {
+    let slots = named_region(layout, "inventory-slots")?;
+    let template = named_sprite_template(layout, "inventory-locked-slot")?;
     let column = (index % INVENTORY_COLUMNS) as f32;
     let row = (index / INVENTORY_COLUMNS) as f32;
-    (
-        INVENTORY_SLOT_LEFT + column * INVENTORY_SLOT_STEP,
-        INVENTORY_SLOT_TOP + row * INVENTORY_SLOT_STEP,
-    )
+    let rows = INVENTORY_VISIBLE_SLOTS.div_ceil(INVENTORY_COLUMNS);
+    let step_x = (slots.width - template.width) / (INVENTORY_COLUMNS - 1) as f32;
+    let step_y = (slots.height - template.height) / (rows - 1) as f32;
+    Some((
+        slots.x + column * step_x,
+        slots.y + row * step_y,
+        template.width,
+        template.height,
+    ))
 }
 
 pub(crate) fn inventory_slots<'a>(
@@ -429,14 +436,18 @@ pub(crate) fn item_definition_refresh_ids(
         .then_some(observed_item_ids)
 }
 
-pub fn equipment_slot_position(slot_value: i32) -> Option<(f32, f32)> {
-    match EquipmentSlot::try_from(slot_value).ok()? {
-        EquipmentSlot::Top => Some((71.0, 134.0)),
-        EquipmentSlot::Bottom => Some((38.0, 167.0)),
-        EquipmentSlot::Shoes => Some((71.0, 167.0)),
-        EquipmentSlot::Weapon => Some((104.0, 134.0)),
-        EquipmentSlot::Unspecified => None,
-    }
+pub fn equipment_slot_geometry(
+    layout: &GuiLayout,
+    slot_value: i32,
+) -> Option<(f32, f32, f32, f32)> {
+    let name = match EquipmentSlot::try_from(slot_value).ok()? {
+        EquipmentSlot::Top => "equipment-slot-top",
+        EquipmentSlot::Bottom => "equipment-slot-bottom",
+        EquipmentSlot::Shoes => "equipment-slot-shoes",
+        EquipmentSlot::Weapon => "equipment-slot-weapon",
+        EquipmentSlot::Unspecified => return None,
+    };
+    named_region(layout, name).map(|region| (region.x, region.y, region.width, region.height))
 }
 
 pub fn gauge_fills(stats: &CharacterStats) -> [GaugeFill; 3] {
@@ -568,23 +579,19 @@ fn skill_action_at(
     )?;
     let layout = placement.layout;
     let button = named_sprite_template(layout, "skill-point-up")?;
+    let button_region = repeated_skill_region(placement, row, "skill-row-point-button")?;
     let button_rect = CanvasRect {
-        x: row.x + row.width - button.width - 2.0 + button.offset_x,
-        y: row.y + (row.height - button.height) / 2.0 + button.offset_y,
-        width: button.width,
-        height: button.height,
+        x: button_region.x + button.offset_x,
+        y: button_region.y + button.offset_y,
+        width: button_region.width,
+        height: button_region.height,
     };
     if rect_contains(button_rect, point) && can_allocate_skill(book, definition.skill_id) {
         return Some(GuiAction::AllocateSkill {
             skill_id: definition.skill_id,
         });
     }
-    let icon_slot = CanvasRect {
-        x: row.x,
-        y: row.y,
-        width: row.height,
-        height: row.height,
-    };
+    let icon_slot = repeated_skill_region(placement, row, "skill-row-action")?;
     (skill.level > 0 && rect_contains(icon_slot, point)).then_some(GuiAction::UseSkill {
         skill_id: definition.skill_id,
     })
@@ -599,12 +606,14 @@ fn skill_at_point(
     point: CanvasPoint,
 ) -> Option<u32> {
     let (skill, row) = skill_row_at(state, gui, book, viewport_width, viewport_height, point)?;
-    let icon_slot = CanvasRect {
-        x: row.x,
-        y: row.y,
-        width: row.height,
-        height: row.height,
-    };
+    let placement = resolve_window(
+        gui,
+        state.window_placements,
+        WindowKind::Skills,
+        viewport_width,
+        viewport_height,
+    )?;
+    let icon_slot = repeated_skill_region(placement, row, "skill-row-action")?;
     (skill.level > 0 && rect_contains(icon_slot, point))
         .then(|| {
             skill
@@ -647,13 +656,17 @@ pub(crate) fn hovered_inventory_item<'a>(
     inventory_slots(gui, inventory, state.inventory_tab)
         .into_iter()
         .find(|slot| {
-            let (x, y) = inventory_slot_position(slot.visual_index);
+            let Some((x, y, width, height)) =
+                inventory_slot_geometry(placement.layout, slot.visual_index)
+            else {
+                return false;
+            };
             rect_contains(
                 CanvasRect {
                     x: placement.origin.x + x,
                     y: placement.origin.y + y,
-                    width: ITEM_SLOT_SIZE,
-                    height: ITEM_SLOT_SIZE,
+                    width,
+                    height,
                 },
                 point,
             )
@@ -806,13 +819,14 @@ fn inventory_item_at(
     inventory_slots(gui, inventory, state.inventory_tab)
         .into_iter()
         .find_map(|slot| {
-            let (x, y) = inventory_slot_position(slot.visual_index);
+            let (x, y, width, height) =
+                inventory_slot_geometry(placement.layout, slot.visual_index)?;
             rect_contains(
                 CanvasRect {
                     x: placement.origin.x + x,
                     y: placement.origin.y + y,
-                    width: ITEM_SLOT_SIZE,
-                    height: ITEM_SLOT_SIZE,
+                    width,
+                    height,
                 },
                 point,
             )
@@ -880,17 +894,33 @@ fn equipped_item_at(
         viewport_height,
     )?;
     inventory.equipment.iter().find_map(|equipped| {
-        let (x, y) = equipment_slot_position(equipped.slot)?;
+        let (x, y, width, height) = equipment_slot_geometry(placement.layout, equipped.slot)?;
         rect_contains(
             CanvasRect {
                 x: placement.origin.x + x,
                 y: placement.origin.y + y,
-                width: ITEM_SLOT_SIZE,
-                height: ITEM_SLOT_SIZE,
+                width,
+                height,
             },
             point,
         )
         .then_some(equipped.slot)
+    })
+}
+
+fn repeated_skill_region(
+    placement: WindowPlacement<'_>,
+    row: CanvasRect,
+    name: &str,
+) -> Option<CanvasRect> {
+    let list = named_region(placement.layout, "skill-list")?;
+    let prototype = named_region(placement.layout, name)?;
+    let row_offset = row.y - placement.origin.y - list.y;
+    Some(CanvasRect {
+        x: placement.origin.x + prototype.x,
+        y: placement.origin.y + prototype.y + row_offset,
+        width: prototype.width,
+        height: prototype.height,
     })
 }
 
@@ -1022,10 +1052,11 @@ mod tests {
     use super::canvas_point;
     use super::click_action;
     use super::double_click_action;
-    use super::equipment_slot_position;
+    use super::equipment_slot_geometry;
     use super::gauge_fills;
     use super::gauge_labels;
     use super::hovered_inventory_item;
+    use super::inventory_slot_geometry;
     use super::inventory_slots;
     use super::inventory_tab_template_position;
     use super::item_definition_refresh_ids;
@@ -1180,10 +1211,28 @@ mod tests {
     }
 
     #[test]
-    fn weapon_uses_the_native_weapon_slot() {
+    fn equipment_geometry_follows_the_authored_slot_region() {
+        let layout = GuiLayout {
+            regions: vec![region("equipment-slot-weapon", 12.0, 34.0, 40.0, 28.0)],
+            ..GuiLayout::default()
+        };
         assert_eq!(
-            equipment_slot_position(EquipmentSlot::Weapon as i32),
-            Some((104.0, 134.0))
+            equipment_slot_geometry(&layout, EquipmentSlot::Weapon as i32),
+            Some((12.0, 34.0, 40.0, 28.0))
+        );
+    }
+
+    #[test]
+    fn inventory_geometry_follows_the_authored_grid_region() {
+        let layout = GuiLayout {
+            sprite_templates: vec![template("inventory-locked-slot", 20.0, 18.0)],
+            regions: vec![region("inventory-slots", 11.0, 13.0, 122.0, 153.0)],
+            ..GuiLayout::default()
+        };
+
+        assert_eq!(
+            inventory_slot_geometry(&layout, 5),
+            Some((45.0, 40.0, 20.0, 18.0))
         );
     }
 
@@ -1759,6 +1808,56 @@ mod tests {
     }
 
     #[test]
+    fn learned_skill_action_follows_the_authored_region() {
+        let mut gui = gui_fixture();
+        let action = gui
+            .skill_window
+            .as_mut()
+            .and_then(|window| window.layout.as_mut())
+            .and_then(|layout| {
+                layout
+                    .regions
+                    .iter_mut()
+                    .find(|region| region.name == "skill-row-action")
+            })
+            .expect("skill action region");
+        action.x = 80.0;
+        action.width = 20.0;
+        let book = skill_book_fixture(1, 0);
+        let state = GuiState {
+            skills_open: true,
+            ..GuiState::default()
+        };
+
+        assert_eq!(
+            click_action(
+                state,
+                &gui,
+                None,
+                Some(&book),
+                960.0,
+                600.0,
+                CanvasPoint { x: 101.0, y: 180.0 },
+                PointerButton::Left,
+            ),
+            Some(GuiAction::UseSkill { skill_id: 1_000 })
+        );
+        assert_eq!(
+            click_action(
+                state,
+                &gui,
+                None,
+                Some(&book),
+                960.0,
+                600.0,
+                CanvasPoint { x: 40.0, y: 180.0 },
+                PointerButton::Left,
+            ),
+            None
+        );
+    }
+
+    #[test]
     fn skill_point_template_offset_moves_its_click_target() {
         let mut gui = gui_fixture();
         let button = gui
@@ -1789,6 +1888,56 @@ mod tests {
                 960.0,
                 600.0,
                 CanvasPoint { x: 145.0, y: 196.0 },
+                PointerButton::Left,
+            ),
+            Some(GuiAction::AllocateSkill { skill_id: 1_000 })
+        );
+        assert_ne!(
+            click_action(
+                state,
+                &gui,
+                None,
+                Some(&book),
+                960.0,
+                600.0,
+                CanvasPoint { x: 165.0, y: 186.0 },
+                PointerButton::Left,
+            ),
+            Some(GuiAction::AllocateSkill { skill_id: 1_000 })
+        );
+    }
+
+    #[test]
+    fn skill_point_button_follows_the_authored_region() {
+        let mut gui = gui_fixture();
+        let region = gui
+            .skill_window
+            .as_mut()
+            .and_then(|window| window.layout.as_mut())
+            .and_then(|layout| {
+                layout
+                    .regions
+                    .iter_mut()
+                    .find(|region| region.name == "skill-row-point-button")
+            })
+            .expect("skill point region");
+        region.x = 100.0;
+        region.width = 20.0;
+        let book = skill_book_fixture(0, 1);
+        let state = GuiState {
+            skills_open: true,
+            ..GuiState::default()
+        };
+
+        assert_eq!(
+            click_action(
+                state,
+                &gui,
+                None,
+                Some(&book),
+                960.0,
+                600.0,
+                CanvasPoint { x: 121.0, y: 186.0 },
                 PointerButton::Left,
             ),
             Some(GuiAction::AllocateSkill { skill_id: 1_000 })
@@ -1852,6 +2001,12 @@ mod tests {
                     height: 304.0,
                     background: Some(sprite("equipment-background", 0.0, 0.0, 175.0, 304.0)),
                     sprites: vec![sprite("equipment-close", 138.0, 5.0, 32.0, 15.0)],
+                    regions: vec![
+                        region("equipment-slot-top", 71.0, 134.0, 32.0, 32.0),
+                        region("equipment-slot-bottom", 38.0, 167.0, 32.0, 32.0),
+                        region("equipment-slot-shoes", 71.0, 167.0, 32.0, 32.0),
+                        region("equipment-slot-weapon", 104.0, 134.0, 32.0, 32.0),
+                    ],
                     ..GuiLayout::default()
                 }),
             }),
@@ -1863,20 +2018,24 @@ mod tests {
                     height: 289.0,
                     background: Some(sprite("inventory-background", 0.0, 0.0, 175.0, 289.0)),
                     sprites: vec![sprite("inventory-close", 138.0, 5.0, 32.0, 15.0)],
-                    regions: ["equipment", "consume", "install", "etc", "cash"]
-                        .into_iter()
-                        .enumerate()
-                        .map(|(index, name)| {
-                            region(
-                                &format!("inventory-tab-{name}"),
-                                3.0 + index as f32 * 34.0,
-                                22.0,
-                                34.0,
-                                19.0,
-                            )
-                        })
-                        .collect(),
-                    ..GuiLayout::default()
+                    sprite_templates: vec![template("inventory-locked-slot", 32.0, 32.0)],
+                    regions: {
+                        let mut regions = ["equipment", "consume", "install", "etc", "cash"]
+                            .into_iter()
+                            .enumerate()
+                            .map(|(index, name)| {
+                                region(
+                                    &format!("inventory-tab-{name}"),
+                                    3.0 + index as f32 * 34.0,
+                                    22.0,
+                                    34.0,
+                                    19.0,
+                                )
+                            })
+                            .collect::<Vec<_>>();
+                        regions.push(region("inventory-slots", 7.0, 50.0, 140.0, 212.0));
+                        regions
+                    },
                 }),
             }),
             stat_window: Some(GuiWindow {
@@ -1904,6 +2063,8 @@ mod tests {
                     ],
                     regions: vec![
                         region("skill-list", 17.0, 94.0, 141.0, 140.0),
+                        region("skill-row-action", 17.0, 94.0, 35.0, 35.0),
+                        region("skill-row-point-button", 144.0, 105.5, 12.0, 12.0),
                         region("skill-page-previous", 80.0, 64.0, 18.0, 19.0),
                         region("skill-page-next", 139.0, 64.0, 18.0, 19.0),
                     ],
