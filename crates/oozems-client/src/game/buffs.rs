@@ -10,8 +10,14 @@ use crate::movement::PlayerInput;
 pub(crate) struct TrackedBuff {
     buff: ActiveBuff,
     key: BuffKey,
-    expires_at_local_ms: f64,
+    lifetime: BuffLifetime,
     attacks_disabled: bool,
+}
+
+#[derive(Clone, Copy)]
+enum BuffLifetime {
+    Timed { expires_at_local_ms: f64 },
+    Permanent,
 }
 
 impl TrackedBuff {
@@ -22,8 +28,17 @@ impl TrackedBuff {
     pub fn remaining_ms(
         &self,
         now_local_ms: f64,
-    ) -> u64 {
-        (self.expires_at_local_ms - now_local_ms).max(0.0) as u64
+    ) -> Option<u64> {
+        match self.lifetime {
+            BuffLifetime::Timed {
+                expires_at_local_ms,
+            } => Some((expires_at_local_ms - now_local_ms).max(0.0) as u64),
+            BuffLifetime::Permanent => None,
+        }
+    }
+
+    pub fn is_permanent(&self) -> bool {
+        matches!(self.lifetime, BuffLifetime::Permanent)
     }
 }
 
@@ -104,17 +119,24 @@ pub(super) fn install(
         .into_iter()
         .filter_map(|buff| {
             let key = source_key(&buff).expect("validated buff source");
-            let remaining_ms = effect_remaining_ms(
-                buff.expires_at_unix_ms,
-                observed_at_unix_ms,
-                response_transit_ms,
-            );
-            (remaining_ms > 0).then(|| TrackedBuff {
+            let lifetime = if buff.permanent {
+                BuffLifetime::Permanent
+            } else {
+                let remaining_ms = effect_remaining_ms(
+                    buff.expires_at_unix_ms,
+                    observed_at_unix_ms,
+                    response_transit_ms,
+                );
+                (remaining_ms > 0).then_some(BuffLifetime::Timed {
+                    expires_at_local_ms: now_local_ms + remaining_ms as f64,
+                })?
+            };
+            Some(TrackedBuff {
                 attacks_disabled: attacks_disabled
                     && projected_morph_id.is_some_and(|morph_id| buff.morph_id == morph_id),
                 buff,
                 key,
-                expires_at_local_ms: now_local_ms + remaining_ms as f64,
+                lifetime,
             })
         })
         .collect::<Vec<_>>();
@@ -141,9 +163,12 @@ pub(super) fn apply(
     input: &mut PlayerInput,
     now_local_ms: f64,
 ) {
-    active
-        .buffs
-        .retain(|buff| buff.expires_at_local_ms > now_local_ms);
+    active.buffs.retain(|buff| match buff.lifetime {
+        BuffLifetime::Timed {
+            expires_at_local_ms,
+        } => expires_at_local_ms > now_local_ms,
+        BuffLifetime::Permanent => true,
+    });
     project(active);
     input.speed_bonus = active.speed;
     input.jump_bonus = active.jump;
@@ -224,7 +249,9 @@ mod tests {
         TrackedBuff {
             buff,
             key,
-            expires_at_local_ms: deadline,
+            lifetime: BuffLifetime::Timed {
+                expires_at_local_ms: deadline,
+            },
             attacks_disabled: false,
         }
     }
@@ -247,8 +274,8 @@ mod tests {
 
         assert_eq!(active.buffs.len(), 1);
         assert_eq!(active.buffs[0].key(), BuffKey::Skill(2));
-        assert_eq!(active.buffs[0].remaining_ms(40.0), 300);
-        assert_eq!(active.buffs[0].remaining_ms(140.0), 200);
+        assert_eq!(active.buffs[0].remaining_ms(40.0), Some(300));
+        assert_eq!(active.buffs[0].remaining_ms(140.0), Some(200));
     }
 
     #[test]
@@ -274,8 +301,36 @@ mod tests {
         assert_eq!(active.buffs.len(), 1);
         assert_eq!(active.buffs[0].key(), BuffKey::Item(2_022_253));
         assert_eq!(active.buffs[0].jump_bonus, 3);
-        assert_eq!(active.buffs[0].remaining_ms(40.0), 180_000);
+        assert_eq!(active.buffs[0].remaining_ms(40.0), Some(180_000));
         assert_eq!(item_source_ids(&active).collect::<Vec<_>>(), [2_022_253]);
+    }
+
+    #[test]
+    fn permanent_buffs_have_no_deadline_and_survive_local_pruning() {
+        let mut active = from_state(
+            ActiveBuffState {
+                buffs: vec![ActiveBuff {
+                    source: Some(active_buff::Source::SkillId(1_002)),
+                    speed_bonus: 20,
+                    permanent: true,
+                    ..ActiveBuff::default()
+                }],
+                revision: 1,
+                observed_at_unix_ms: 1_000,
+                ..ActiveBuffState::default()
+            },
+            40.0,
+            0.0,
+        )
+        .expect("permanent buff state");
+        let mut input = PlayerInput::default();
+
+        apply(&mut active, &mut input, f64::MAX);
+
+        assert_eq!(active.buffs.len(), 1);
+        assert!(active.buffs[0].is_permanent());
+        assert_eq!(active.buffs[0].remaining_ms(f64::MAX), None);
+        assert_eq!(input.speed_bonus, 20);
     }
 
     #[test]
@@ -317,7 +372,7 @@ mod tests {
             0.0,
         );
 
-        assert_eq!(active.buffs[0].remaining_ms(140.0), 200);
+        assert_eq!(active.buffs[0].remaining_ms(140.0), Some(200));
     }
 
     #[test]
@@ -394,7 +449,7 @@ mod tests {
         };
 
         let active = from_state(state.clone(), 500.0, 40.0).expect("valid buff state");
-        assert_eq!(active.buffs[0].remaining_ms(500.0), 60);
+        assert_eq!(active.buffs[0].remaining_ms(500.0), Some(60));
 
         let expired = from_state(state, 500.0, 100.0).expect("valid buff state");
         assert!(expired.buffs.is_empty());

@@ -1209,7 +1209,43 @@ capturing unrelated pixels at its expected position. Cash Shop crops account
 for the screen's active centering and scale transform. The Rust library also
 exports the same function as `dumpGui` from its generated WASM module.
 
-### Inspect WZ archives
+### Edit WZ definitions
+
+The workspace includes `oozems-wz-editor`, a native editor for `Quest.wz`,
+`Skill.wz`, and `quest-scripts.toml`. The unified Quest tab resolves each
+selected quest's start and completion script references automatically, so its
+WZ definition and linked script forms are available after one search. The
+Skills tab provides a separate searchable skill list and typed WZ property
+controls. Every skill container has an **Add property** form for adding scalar,
+vector, null, or nested container nodes. Existing properties have staged remove
+and undo controls. This supports effects that the original definition omitted,
+such as adding a typed `jump` value to each level of Nimble Feet.
+
+Place matching `Quest.wz`, `Skill.wz`, and `String.wz` files in `data`, then
+run:
+
+```sh
+make wz-editor
+```
+
+The editor never overwrites a source WZ archive. It writes
+`data/Quest.edited.wz` or `data/Skill.edited.wz`, preserving the source archive
+until you review and replace it. Quest script saves update the configured TOML
+file atomically.
+
+The Skills tab initially selects Nimble Feet when it is present. Expand its
+`level` nodes and set each typed **Duration (time)** property to **Permanent**,
+then save the edited archive. The WZ boundary represents a permanent skill
+duration as `-1`. The server converts this sentinel to an explicit permanent
+lifetime, and the client displays the active buff as `PERM` instead of starting
+a countdown. The buff lasts until it is replaced or the player's server session
+ends; it is not persisted across server restarts. Skill levels also show their
+`String.wz` effect summaries, and known WZ property names are labelled with the
+stats they affect. The `hs` property is labelled as a level-description
+selector: a value such as `h3` selects the corresponding `String.wz` text
+template and does not affect a character stat.
+
+### Inspect WZ archives from the command line
 
 The workspace includes `oozems-wz`, a JSON-first CLI for repeatable WZ
 inspection and safe PKG1 property edits. It inspects standard PKG1 and PKG2

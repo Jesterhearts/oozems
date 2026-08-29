@@ -35,6 +35,14 @@ use crate::inspect::get;
 use crate::inspect::property_summary;
 use crate::verify::validate_reference_archive;
 
+mod batch;
+
+pub use batch::PropertyEdit;
+pub use batch::PropertyEditReport;
+pub use batch::PropertyKind;
+pub use batch::edit_properties;
+pub use batch::set_values;
+
 #[derive(Debug, Serialize)]
 pub struct EditReport {
     pub archive: PathBuf,
@@ -823,6 +831,98 @@ mod tests {
             Some(json!(250))
         );
         assert!(set_value(&input, &output, "/100.img/hp", json!(300), options, false).is_err());
+    }
+
+    #[test]
+    fn set_values_validates_and_installs_one_batched_image() {
+        let source_archive = test_root_archive_with(vec![
+            (String::from("hp"), WzProperty::Int(100)),
+            (String::from("mp"), WzProperty::Int(50)),
+        ]);
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("input.wz");
+        let output = directory.path().join("output.wz");
+        fs::write(&input, source_archive.data).unwrap();
+        let options = OpenOptions {
+            region: crate::Region::Gms,
+            version: Some(83),
+        };
+
+        let reports = set_values(
+            &input,
+            &output,
+            &[
+                (String::from("/100.img/hp"), json!(250)),
+                (String::from("/100.img/mp"), json!(75)),
+            ],
+            options,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(reports.len(), 2);
+        let output_archive = open_archive(&output, options).unwrap();
+        assert_eq!(
+            get(&output_archive, "/100.img/hp").unwrap().value,
+            Some(json!(250))
+        );
+        assert_eq!(
+            get(&output_archive, "/100.img/mp").unwrap().value,
+            Some(json!(75))
+        );
+    }
+
+    #[test]
+    fn structural_edits_add_and_remove_properties() {
+        let source_archive = test_root_archive_with(vec![
+            (String::from("hp"), WzProperty::Int(100)),
+            (
+                String::from("obsolete"),
+                WzProperty::SubProperty {
+                    properties: vec![(String::from("mp"), WzProperty::Int(50))],
+                },
+            ),
+        ]);
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("input.wz");
+        let output = directory.path().join("output.wz");
+        fs::write(&input, source_archive.data).unwrap();
+        let options = OpenOptions {
+            region: crate::Region::Gms,
+            version: Some(83),
+        };
+
+        let reports = edit_properties(
+            &input,
+            &output,
+            &[
+                PropertyEdit::Add {
+                    path: String::from("/100.img/common"),
+                    kind: PropertyKind::Property,
+                    value: Value::Null,
+                },
+                PropertyEdit::Add {
+                    path: String::from("/100.img/common/jump"),
+                    kind: PropertyKind::Int,
+                    value: json!(12),
+                },
+                PropertyEdit::Remove {
+                    path: String::from("/100.img/obsolete"),
+                },
+            ],
+            options,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(reports.len(), 3);
+        let output_archive = open_archive(&output, options).unwrap();
+        assert_eq!(
+            get(&output_archive, "/100.img/common/jump").unwrap().value,
+            Some(json!(12))
+        );
+        assert!(get(&output_archive, "/100.img/obsolete").is_err());
+        assert!(get(&output_archive, "/100.img/obsolete/mp").is_err());
     }
 
     #[test]

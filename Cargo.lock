@@ -4130,6 +4130,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "oozems-wz-editor"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "eframe",
+ "oozems-wz",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
+ "toml",
+]
+
+[[package]]
 name = "openssl-probe"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

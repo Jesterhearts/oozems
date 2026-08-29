@@ -325,12 +325,22 @@ pub fn prepare_skill_use(
         level_stats.avoidability.as_ref(),
         common_stats.and_then(|stats| stats.avoidability.as_ref()),
     )?;
-    let duration_seconds = numeric_stat(
+    let duration = skill_duration(
         skill_id,
         "time",
         level_stats.duration.as_ref(),
         common_stats.and_then(|stats| stats.duration.as_ref()),
     )?;
+    let duration_seconds = match duration {
+        SkillDuration::Timed(seconds) => seconds,
+        SkillDuration::None | SkillDuration::Permanent => 0,
+    };
+    if skill_id == BEGINNER_RECOVERY_SKILL_ID && duration == SkillDuration::Permanent {
+        return Err(SkillRuleError::InvalidProperty {
+            skill_id,
+            property: "time",
+        });
+    }
     if skill_id == BEGINNER_RECOVERY_SKILL_ID && hp_recovery == 0 {
         let recovery_per_tick = numeric_stat(
             skill_id,
@@ -406,6 +416,7 @@ pub fn prepare_skill_use(
             magic_defense_bonus,
             accuracy_bonus,
             avoidability_bonus,
+            permanent_buff: duration == SkillDuration::Permanent,
         },
         cooldown_ms: u64::from(cooldown_seconds).saturating_mul(1_000),
         attack_type,
@@ -656,6 +667,33 @@ fn numeric_stat(
         .map(Option::unwrap_or_default)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SkillDuration {
+    None,
+    Timed(u32),
+    Permanent,
+}
+
+fn skill_duration(
+    skill_id: u32,
+    property: &'static str,
+    level_value: Option<&SkillValue>,
+    common_value: Option<&SkillValue>,
+) -> Result<SkillDuration, SkillRuleError> {
+    let Some(value) = level_value.or(common_value) else {
+        return Ok(SkillDuration::None);
+    };
+    let number =
+        skill_value_number(value).ok_or(SkillRuleError::InvalidProperty { skill_id, property })?;
+    if number == -1.0 {
+        return Ok(SkillDuration::Permanent);
+    }
+    if !number.is_finite() || number < 0.0 || number > f64::from(u32::MAX) {
+        return Err(SkillRuleError::InvalidProperty { skill_id, property });
+    }
+    Ok(SkillDuration::Timed(number.trunc() as u32))
+}
+
 fn optional_numeric_stat(
     skill_id: u32,
     property: &'static str,
@@ -714,6 +752,7 @@ mod tests {
     use oozems_proto::v1::skill_value;
 
     use super::SkillCooldowns;
+    use super::SkillDuration;
     use super::SkillRuleError;
     use super::allocate_skill_point;
     use super::beginner_recovery_amount;
@@ -722,10 +761,38 @@ mod tests {
     use super::projected_skill_attack_bonus;
     use super::release_skill_cooldown;
     use super::reserve_skill_cooldown;
+    use super::skill_duration;
     use super::validate_bound_skills;
     use crate::effects::EffectModifiers;
     use crate::effects::ProjectedEffects;
     use crate::jobs::SkillAttackType;
+
+    #[test]
+    fn negative_one_duration_is_an_explicit_permanent_lifetime() {
+        let value = SkillValue {
+            value: Some(skill_value::Value::Integer(-1)),
+        };
+
+        assert_eq!(
+            skill_duration(1_002, "time", Some(&value), None).expect("duration"),
+            SkillDuration::Permanent
+        );
+    }
+
+    #[test]
+    fn other_negative_durations_are_rejected() {
+        let value = SkillValue {
+            value: Some(skill_value::Value::Integer(-2)),
+        };
+
+        assert_eq!(
+            skill_duration(1_002, "time", Some(&value), None),
+            Err(SkillRuleError::InvalidProperty {
+                skill_id: 1_002,
+                property: "time",
+            })
+        );
+    }
 
     #[test]
     fn allocation_consumes_a_point_and_updates_the_personalized_book() {
@@ -857,6 +924,38 @@ mod tests {
         assert_eq!(prepared.result.minimum_damage, 10);
         assert_eq!(prepared.result.maximum_damage, 10);
         assert!(prepared.result.has_damage);
+    }
+
+    #[test]
+    fn permanent_wz_duration_reaches_the_prepared_skill_result() {
+        let mut player = player(0, 5);
+        player.learned_skills.push(oozems_proto::v1::LearnedSkill {
+            skill_id: 1_000,
+            level: 1,
+            master_level: 0,
+        });
+        let mut book = book();
+        book.skills[0]
+            .definition
+            .as_mut()
+            .expect("skill definition")
+            .levels[0]
+            .stats
+            .as_mut()
+            .expect("level stats")
+            .duration = Some(integer(-1));
+
+        let prepared = prepare_skill_use(
+            player,
+            &context(book),
+            1_000,
+            &formulas(),
+            ProjectedEffects::default(),
+        )
+        .expect("use permanent skill");
+
+        assert!(prepared.result.permanent_buff);
+        assert_eq!(prepared.result.duration_ms, 0);
     }
 
     #[test]

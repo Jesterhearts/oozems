@@ -395,6 +395,7 @@ message ActiveBuff {
   sint32 accuracy = 12;
   sint32 avoidability = 13;
   uint32 morph_id = 14;
+  bool permanent = 15;
 }
 
 message RecoverPlayerRequest {
@@ -440,6 +441,7 @@ message SkillUseResult {
   sint32 magic_defense_bonus = 17;
   sint32 accuracy_bonus = 18;
   sint32 avoidability_bonus = 19;
+  bool permanent_buff = 20;
 }
 
 message SkillEffect {

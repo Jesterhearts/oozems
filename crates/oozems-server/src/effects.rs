@@ -43,7 +43,13 @@ pub struct ActiveEffect {
     pub morph_id: Option<u32>,
     pub attacks_disabled: bool,
     pub activated_at_unix_ms: u64,
-    pub expires_at_unix_ms: u64,
+    pub lifetime: EffectLifetime,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EffectLifetime {
+    Timed { expires_at_unix_ms: u64 },
+    Permanent,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -182,9 +188,16 @@ pub fn apply_skill_effect(
     effects
         .holders
         .remove(&EffectSource::Skill(result.skill_id));
-    if result.duration_ms == 0 {
+    if result.duration_ms == 0 && !result.permanent_buff {
         return;
     }
+    let lifetime = if result.permanent_buff {
+        EffectLifetime::Permanent
+    } else {
+        EffectLifetime::Timed {
+            expires_at_unix_ms: now_unix_ms.saturating_add(result.duration_ms),
+        }
+    };
     apply_effect(
         effects,
         ActiveEffect {
@@ -203,7 +216,7 @@ pub fn apply_skill_effect(
             morph_id: None,
             attacks_disabled: false,
             activated_at_unix_ms: now_unix_ms,
-            expires_at_unix_ms: now_unix_ms.saturating_add(result.duration_ms),
+            lifetime,
         },
     );
 }
@@ -239,7 +252,9 @@ pub fn apply_consume_effect(
             morph_id: definition.morph_id,
             attacks_disabled: definition.morph_id.is_some_and(|morph_id| morph_id < 100),
             activated_at_unix_ms: now_unix_ms,
-            expires_at_unix_ms: now_unix_ms.saturating_add(definition.duration_ms),
+            lifetime: EffectLifetime::Timed {
+                expires_at_unix_ms: now_unix_ms.saturating_add(definition.duration_ms),
+            },
         },
     );
     player
@@ -305,9 +320,10 @@ pub fn prune(
     now_unix_ms: u64,
 ) -> bool {
     let previous = effects.holders.len();
-    effects
-        .holders
-        .retain(|_, effect| effect.expires_at_unix_ms > now_unix_ms);
+    effects.holders.retain(|_, effect| match effect.lifetime {
+        EffectLifetime::Timed { expires_at_unix_ms } => expires_at_unix_ms > now_unix_ms,
+        EffectLifetime::Permanent => true,
+    });
     let changed = previous != effects.holders.len();
     if changed {
         effects.revision = effects.revision.saturating_add(1);
@@ -346,12 +362,16 @@ fn to_proto(effect: &ActiveEffect) -> ActiveBuff {
         EffectSource::Skill(skill_id) => Some(active_buff::Source::SkillId(skill_id)),
         EffectSource::Item(item_id) => Some(active_buff::Source::ItemId(item_id)),
     };
+    let (expires_at_unix_ms, permanent) = match effect.lifetime {
+        EffectLifetime::Timed { expires_at_unix_ms } => (expires_at_unix_ms, false),
+        EffectLifetime::Permanent => (0, true),
+    };
     ActiveBuff {
         skill_level: effect.skill_level,
         speed_bonus: effect.modifiers.speed,
         jump_bonus: effect.modifiers.jump,
         activated_at_unix_ms: effect.activated_at_unix_ms,
-        expires_at_unix_ms: effect.expires_at_unix_ms,
+        expires_at_unix_ms,
         source,
         weapon_attack: effect.modifiers.weapon_attack,
         magic_attack: effect.modifiers.magic_attack,
@@ -360,6 +380,7 @@ fn to_proto(effect: &ActiveEffect) -> ActiveBuff {
         accuracy: effect.modifiers.accuracy,
         avoidability: effect.modifiers.avoidability,
         morph_id: effect.morph_id.unwrap_or_default(),
+        permanent,
     }
 }
 
@@ -386,7 +407,9 @@ mod tests {
             morph_id,
             attacks_disabled: morph_id.is_some_and(|morph_id| morph_id < 100),
             activated_at_unix_ms: activated,
-            expires_at_unix_ms: expires,
+            lifetime: EffectLifetime::Timed {
+                expires_at_unix_ms: expires,
+            },
         }
     }
 
@@ -464,6 +487,29 @@ mod tests {
         assert_eq!(before.holders().count(), 1);
         assert_eq!(expired.holders().count(), 0);
         assert!(expired.revision() > before.revision());
+    }
+
+    #[test]
+    fn permanent_skill_effect_survives_pruning_and_is_explicit_in_protocol() {
+        let mut effects = PlayerEffects::default();
+        apply_skill_effect(
+            &mut effects,
+            &SkillUseResult {
+                skill_id: 1_002,
+                skill_level: 3,
+                speed_bonus: 20,
+                permanent_buff: true,
+                ..SkillUseResult::default()
+            },
+            1_000,
+        );
+
+        assert!(!prune(&mut effects, u64::MAX));
+        assert_eq!(effects.projected().modifiers.speed, 20);
+        let state = state(&effects, u64::MAX);
+        assert_eq!(state.buffs.len(), 1);
+        assert!(state.buffs[0].permanent);
+        assert_eq!(state.buffs[0].expires_at_unix_ms, 0);
     }
 
     #[test]

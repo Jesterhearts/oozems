@@ -249,19 +249,25 @@ fn draw_buff_time(
     placement: BuffPlacement,
     now_ms: f64,
 ) {
-    let remaining_ms = buff.remaining_ms(now_ms);
+    let label = buff_time_label(buff.remaining_ms(now_ms));
     game.surface.context.set_fill_style_str("#ffffff");
     game.surface
         .context
         .set_font(&format!("bold {}px Arial", placement.timer_font_size));
     game.surface.context.set_text_align("center");
     let _ = game.surface.context.fill_text_with_max_width(
-        &format_short_duration(remaining_ms),
+        &label,
         f64::from(placement.x + placement.width / 2.0),
         f64::from(placement.y + placement.height - 3.0),
         f64::from(placement.width - 2.0),
     );
     game.surface.context.set_text_align("left");
+}
+
+fn buff_time_label(remaining_ms: Option<u64>) -> String {
+    remaining_ms
+        .map(format_short_duration)
+        .unwrap_or_else(|| "PERM".to_owned())
 }
 
 fn hovered_buff(
@@ -365,7 +371,10 @@ fn buff_info(
     buff: &TrackedBuff,
     now_ms: f64,
 ) -> Option<SkillInfo> {
-    let remaining_ms = buff.remaining_ms(now_ms);
+    let remaining = buff
+        .remaining_ms(now_ms)
+        .map(|remaining_ms| format!("Remaining: {}", format_long_duration(remaining_ms)))
+        .or_else(|| buff.is_permanent().then(|| "Permanent".to_owned()));
     match buff.source {
         Some(active_buff::Source::ItemId(item_id)) => {
             let definition = item_definition(game, item_id)?;
@@ -375,14 +384,11 @@ fn buff_info(
                 description: nonempty(definition.description.clone()),
                 current: buff_modifier_description(buff),
                 next: None,
-                remaining: Some(format!("Remaining: {}", format_long_duration(remaining_ms))),
+                remaining,
             })
         }
-        Some(active_buff::Source::SkillId(skill_id)) => {
-            skill_definition(game, skill_id).map(|definition| {
-                build_skill_info(definition, buff.skill_level, 0, Some(remaining_ms))
-            })
-        }
+        Some(active_buff::Source::SkillId(skill_id)) => skill_definition(game, skill_id)
+            .map(|definition| build_skill_info(definition, buff.skill_level, 0, remaining)),
         None => None,
     }
 }
@@ -413,7 +419,7 @@ fn build_skill_info(
     definition: &SkillDefinition,
     level: u32,
     master_level: u32,
-    remaining_ms: Option<u64>,
+    remaining: Option<String>,
 ) -> SkillInfo {
     let maximum_level = if master_level > 0 {
         definition.max_level.min(master_level)
@@ -439,8 +445,7 @@ fn build_skill_info(
         description: nonempty(definition.description.clone()),
         current: current.map(|description| format!("Current: {description}")),
         next: next.map(|description| format!("Next: {description}")),
-        remaining: remaining_ms
-            .map(|duration| format!("Remaining: {}", format_long_duration(duration))),
+        remaining,
     }
 }
 
@@ -842,7 +847,7 @@ mod tests {
             ..SkillDefinition::default()
         };
 
-        let info = build_skill_info(&definition, 2, 0, Some(61_000));
+        let info = build_skill_info(&definition, 2, 0, Some("Remaining: 1:01".to_owned()));
 
         assert_eq!(info.title, "Haste");
         assert_eq!(info.level, "Level 2/20");
@@ -948,6 +953,7 @@ mod tests {
         assert_eq!(format_short_duration(1), "1s");
         assert_eq!(format_short_duration(60_001), "1:01");
         assert_eq!(format_long_duration(120_000), "2:00");
+        assert_eq!(buff_time_label(None), "PERM");
     }
 
     #[test]

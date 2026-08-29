@@ -374,7 +374,9 @@ fn unique_property<'a>(
     Ok(result.map(|(property_name, property)| (property_name.as_str(), property)))
 }
 
-fn property_children_mut(property: &mut WzProperty) -> Option<&mut Vec<(String, WzProperty)>> {
+pub(crate) fn property_children_mut(
+    property: &mut WzProperty
+) -> Option<&mut Vec<(String, WzProperty)>> {
     match property {
         WzProperty::SubProperty { properties }
         | WzProperty::Canvas { properties, .. }
