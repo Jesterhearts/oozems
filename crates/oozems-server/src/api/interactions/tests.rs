@@ -248,8 +248,7 @@ fn quest_npc_animation_is_bound_to_the_interacted_spawn_and_saved_revision() {
 #[tokio::test]
 async fn failed_quest_persistence_cannot_produce_an_animation_event() {
     let directory = tempfile::tempdir().expect("temporary database directory");
-    let database = crate::database::open_surreal_kv(directory.path(), 0)
-        .await
+    let database = crate::database::open_sqlite(&directory.path().join("players.sqlite"))
         .expect("open database");
     let player = PlayerState {
         id: "animation-save-failure".to_owned(),
@@ -291,8 +290,7 @@ async fn failed_quest_persistence_cannot_produce_an_animation_event() {
 #[tokio::test]
 async fn failed_restoration_persistence_keeps_the_saved_inventory_unchanged() {
     let directory = tempfile::tempdir().expect("temporary database directory");
-    let database = crate::database::open_surreal_kv(directory.path(), 0)
-        .await
+    let database = crate::database::open_sqlite(&directory.path().join("players.sqlite"))
         .expect("open database");
     let quest = QuestDefinition {
         id: 100,
@@ -372,9 +370,9 @@ async fn failed_restoration_persistence_keeps_the_saved_inventory_unchanged() {
     let guard = acquire_player(&locks, &original.id)
         .await
         .expect("player guard");
-    let saved = crate::database::save_player(&database, &guard, &original)
+    let saved = crate::database::create_player(&database, &original)
         .await
-        .expect("save original player");
+        .expect("create original player");
     let mut restored =
         crate::quests::restore_lost_quest_items(saved.clone(), &quest, &definitions, 200)
             .expect("stage completed restoration")

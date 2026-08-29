@@ -820,7 +820,9 @@ message GetMapResponse {
 }
 
 message SavePlayerRequest {
-  PlayerState player = 1;
+  reserved 1;
+  string player_id = 2;
+  repeated KeyBinding key_bindings = 3;
 }
 
 message SavePlayerResponse {

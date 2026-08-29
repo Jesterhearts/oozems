@@ -67,14 +67,14 @@ use player_updates::synchronize_skill_book;
 use player_updates::visible_appearance_identity;
 use request_dispatch::AppearanceRefreshState;
 use request_dispatch::GuiRefreshState;
+use request_dispatch::KEY_BINDING_SAVE_INTERVAL_MS;
 use request_dispatch::MorphRefreshState;
 use request_dispatch::RequestState;
-use request_dispatch::SAVE_INTERVAL_MS;
 use request_dispatch::dispatch_requests;
 use request_dispatch::queue_appearance_refresh;
 use request_dispatch::synchronize_morph;
 use runtime::CharacterAnimationState;
-use runtime::PersistenceState;
+use runtime::KeyBindingSaveState;
 pub(crate) use runtime::character_animation_elapsed_ms;
 use runtime::new_character_animation_state;
 use runtime::update;
@@ -93,7 +93,7 @@ pub struct Game {
     pub ui: UiRuntime,
     input: GameInput,
     pub(crate) audio: Rc<RefCell<AudioState>>,
-    persistence: PersistenceState,
+    key_binding_save: KeyBindingSaveState,
     requests: RequestState,
 }
 
@@ -203,7 +203,7 @@ fn install_full_player_update(
                 game.player.state.key_bindings = updated;
                 game.player.key_bindings.generation =
                     game.player.key_bindings.generation.saturating_add(1);
-                game.persistence.dirty = true;
+                game.key_binding_save.dirty = true;
             }
         }
         let dragged_skill_was_removed = game.ui.key_drag.as_ref().is_some_and(|drag| {
@@ -542,9 +542,9 @@ fn build_game(
         },
         input: game_input,
         audio,
-        persistence: PersistenceState {
+        key_binding_save: KeyBindingSaveState {
             dirty: false,
-            next_save_ms: SAVE_INTERVAL_MS,
+            next_save_ms: KEY_BINDING_SAVE_INTERVAL_MS,
         },
         requests: RequestState {
             admission: requests::RequestAdmission::default(),

@@ -56,12 +56,12 @@ pub async fn respawn_player(
     target_map.mob_projectiles = simulation.mob_projectiles;
     target_map.simulation_sequence = simulation.sequence;
 
-    let (decision, rollback) = crate::movement::relocate_player(
+    let (decision, relocation) = crate::movement::relocate_player_to_position(
         &state.movement,
         &current,
         &source_map,
         &target_map,
-        "",
+        position,
         state.gameplay.movement,
         now_unix_ms,
     )?;
@@ -69,9 +69,7 @@ pub async fn respawn_player(
     crate::player_transaction::stage_relocation(
         &mut transaction,
         state.movement.clone(),
-        player_id.as_str().to_owned(),
-        rollback,
-        now_unix_ms,
+        relocation,
     );
     let committed = crate::player_transaction::commit_player_transaction(
         &state.database,
@@ -106,7 +104,7 @@ pub async fn respawn_player(
     }))
 }
 
-fn respawn_map_id(
+pub(super) fn respawn_map_id(
     map: &Map,
     fallback_map_id: u32,
 ) -> u32 {
@@ -116,7 +114,7 @@ fn respawn_map_id(
         .unwrap_or(fallback_map_id)
 }
 
-async fn load_respawn_target(
+pub(super) async fn load_respawn_target(
     state: &AppState,
     preferred_map_id: u32,
 ) -> Result<(Map, Vec2), ApiError> {
@@ -137,7 +135,7 @@ async fn load_respawn_target(
         let Some(map) = load_map(state, map_id).await? else {
             continue;
         };
-        let Ok(position) = crate::movement::authorized_destination(&map, "") else {
+        let Ok(position) = crate::movement::default_spawn_position(&map) else {
             continue;
         };
         return Ok((map, position));

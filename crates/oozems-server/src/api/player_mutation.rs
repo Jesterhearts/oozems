@@ -16,7 +16,7 @@ use crate::player_lock::PlayerGuard;
 pub(super) struct LoadedPlayer {
     pub(super) original: PlayerState,
     pub(super) player: PlayerState,
-    changed: bool,
+    pub(super) changed: bool,
 }
 
 pub(crate) struct PlayerMutation {
@@ -53,15 +53,31 @@ pub(crate) async fn begin_player_mutation(
     now_unix_ms: u64,
 ) -> Result<PlayerMutation, ApiError> {
     crate::player_lock::validate_player_guard(&state.player_locks, guard, player_id.as_str())?;
-    let loaded = load_player(state, player_id)
+    let mut loaded = load_player(state, player_id)
         .await?
         .filter(|loaded| loaded.player.appearance.is_some())
         .ok_or_else(|| ApiError::not_found("player_not_found", "player does not exist"))?;
-    let player = crate::movement::synchronize_player(&state.movement, loaded.player.clone())?;
+    let synchronized = crate::movement::synchronize_player(&state.movement, loaded.player.clone())?;
+    let runtime_map = if synchronized.position.is_some() {
+        loaded.player = synchronized;
+        None
+    } else {
+        let (map, position, repaired) =
+            super::resolve_reconnect_destination(state, loaded.player.map_id).await?;
+        loaded.player.map_id = map.id;
+        loaded.player.position = Some(position);
+        loaded.changed |= repaired;
+        Some(map)
+    };
     let original_effects =
-        crate::effects::snapshot(&state.active_effects, &player.id, now_unix_ms)?;
-    let advanced = advance_automatic_player(state, player, original_effects.clone(), now_unix_ms);
-    persist_player_baseline(
+        crate::effects::snapshot(&state.active_effects, &loaded.player.id, now_unix_ms)?;
+    let advanced = advance_automatic_player(
+        state,
+        loaded.player.clone(),
+        original_effects.clone(),
+        now_unix_ms,
+    );
+    let mutation = persist_player_baseline(
         &state.database,
         state.active_effects.clone(),
         guard,
@@ -70,7 +86,17 @@ pub(crate) async fn begin_player_mutation(
         advanced,
         now_unix_ms,
     )
-    .await
+    .await?;
+    if let Some(map) = runtime_map {
+        crate::movement::initialize_player(
+            &state.movement,
+            &mutation.player,
+            &map,
+            state.gameplay.movement,
+            now_unix_ms,
+        )?;
+    }
+    Ok(mutation)
 }
 
 async fn persist_player_baseline(
@@ -379,7 +405,6 @@ mod tests {
     use super::LoadedPlayer;
     use super::persist_player_baseline;
     use super::project_combat_effects;
-    use crate::database::CharacterName;
     use crate::database::PlayerId;
     use crate::player_lock::PlayerLocks;
     use crate::player_lock::acquire_player;
@@ -412,8 +437,7 @@ mod tests {
     #[tokio::test]
     async fn rejected_action_and_later_rollback_keep_the_eager_automatic_baseline() {
         let directory = tempfile::tempdir().expect("temporary database directory");
-        let database = crate::database::open_surreal_kv(directory.path(), 0)
-            .await
+        let database = crate::database::open_sqlite(&directory.path().join("players.sqlite"))
             .expect("open database");
         let player_id = PlayerId::parse("baseline-rejection").expect("player ID");
         let locks = PlayerLocks::default();
@@ -422,21 +446,31 @@ mod tests {
             .expect("player guard");
         let original = crate::database::create_player(
             &database,
-            &guard,
-            &player_id,
-            &CharacterName::parse("Mina").expect("character name"),
-            CharacterAppearance {
-                gender: CharacterGender::Female as i32,
-                skin_id: 2_000,
-                face_id: 21_000,
-                hair_id: 31_000,
+            &oozems_proto::v1::PlayerState {
+                id: player_id.as_str().to_owned(),
+                name: "Mina".to_owned(),
+                level: 1,
+                map_id: 100,
+                position: Some(Vec2 { x: 10.0, y: 20.0 }),
+                appearance: Some(CharacterAppearance {
+                    gender: CharacterGender::Female as i32,
+                    skin_id: 2_000,
+                    face_id: 21_000,
+                    hair_id: 31_000,
+                }),
+                stats: Some(oozems_proto::v1::CharacterStats {
+                    hp: 50,
+                    max_hp: 50,
+                    mp: 5,
+                    max_mp: 5,
+                    experience_required: 15,
+                    ..oozems_proto::v1::CharacterStats::default()
+                }),
+                inventory: Some(crate::items::starter_inventory()),
+                key_bindings: crate::keymap::default_bindings(),
+                skill_points: 3,
+                ..oozems_proto::v1::PlayerState::default()
             },
-            crate::items::starter_inventory(),
-            100,
-            Vec2 { x: 10.0, y: 20.0 },
-            15,
-            3,
-            0,
         )
         .await
         .expect("create player");

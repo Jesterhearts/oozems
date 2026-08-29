@@ -56,7 +56,7 @@ pub enum ApiError {
         message: String,
     },
     #[error("database operation failed")]
-    Database(#[from] surrealdb::Error),
+    Database(#[from] crate::database::DatabaseError),
     #[error("content operation failed")]
     Content(#[from] crate::content::ContentError),
     #[error("content worker failed")]
@@ -132,11 +132,28 @@ impl IntoResponse for ApiError {
             } => (status, code, message),
             Self::Database(error) => {
                 tracing::error!(%error, "database request failed");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "database_error",
-                    "the server could not access player data".to_owned(),
-                )
+                match error {
+                    crate::database::DatabaseError::Exists { .. } => (
+                        StatusCode::CONFLICT,
+                        "character_exists",
+                        "this player already has a character".to_owned(),
+                    ),
+                    crate::database::DatabaseError::RevisionConflict { .. } => (
+                        StatusCode::CONFLICT,
+                        "player_revision_conflict",
+                        "the player changed before this operation could be saved".to_owned(),
+                    ),
+                    crate::database::DatabaseError::Corrupt { .. } => (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "player_data_error",
+                        "the server could not load valid player data".to_owned(),
+                    ),
+                    _ => (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "database_error",
+                        "the server could not access player data".to_owned(),
+                    ),
+                }
             }
             Self::Content(error) => {
                 tracing::error!(%error, "content request failed");

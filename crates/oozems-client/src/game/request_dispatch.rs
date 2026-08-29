@@ -4,9 +4,9 @@ use std::rc::Rc;
 
 use oozems_proto::v1::CharacterSpriteSet;
 use oozems_proto::v1::GameGui;
+use oozems_proto::v1::KeyBinding;
 use oozems_proto::v1::MorphDefinition;
 use oozems_proto::v1::MovementSnapshot;
-use oozems_proto::v1::PlayerState;
 
 use super::Game;
 use super::cash_shop_actions;
@@ -26,7 +26,7 @@ use super::refresh;
 use super::requests;
 use super::respawn_actions;
 use super::responses;
-use super::runtime::PersistenceState;
+use super::runtime::KeyBindingSaveState;
 use super::runtime::defer_transition;
 use super::runtime::restart_character_animation;
 use super::skill_actions;
@@ -42,7 +42,7 @@ const APPEARANCE_RETRY_LIMIT: u8 = 2;
 const APPEARANCE_RETRY_BACKOFF_MS: f64 = 1_000.0;
 const MORPH_RETRY_BACKOFF_MS: f64 = 5_000.0;
 const GUI_RETRY_BACKOFF_MS: f64 = 5_000.0;
-pub(super) const SAVE_INTERVAL_MS: f64 = 2_000.0;
+pub(super) const KEY_BINDING_SAVE_INTERVAL_MS: f64 = 2_000.0;
 
 pub(super) struct RequestState {
     pub(super) admission: requests::RequestAdmission,
@@ -81,7 +81,7 @@ pub(super) enum PendingRequest {
     Skill(GuiAction),
     Recovery,
     Respawn,
-    Save(Box<PendingSave>),
+    KeyBindingSave(Box<PendingKeyBindingSave>),
     Transition(PendingTransition),
 }
 
@@ -101,7 +101,7 @@ impl PendingRequest {
             Self::BasicAttack | Self::Skill(_) => requests::RequestKind::Skill,
             Self::Recovery => requests::RequestKind::Recovery,
             Self::Respawn => requests::RequestKind::Respawn,
-            Self::Save(_) => requests::RequestKind::Save,
+            Self::KeyBindingSave(_) => requests::RequestKind::KeyBindingSave,
             Self::Transition(_) => requests::RequestKind::Transition,
         }
     }
@@ -124,7 +124,7 @@ impl PendingRequests {
         self.requests.iter().any(|request| {
             matches!(
                 request.kind(),
-                requests::RequestKind::Save
+                requests::RequestKind::KeyBindingSave
                     | requests::RequestKind::Item
                     | requests::RequestKind::Skill
                     | requests::RequestKind::Transition
@@ -426,7 +426,9 @@ pub(super) fn dispatch_requests(
             PendingRequest::Skill(action) => skill_actions::begin(game.clone(), action, permit),
             PendingRequest::Recovery => recovery_actions::begin(game.clone(), permit),
             PendingRequest::Respawn => respawn_actions::begin(game.clone(), permit),
-            PendingRequest::Save(pending) => begin_save(game.clone(), *pending, permit),
+            PendingRequest::KeyBindingSave(pending) => {
+                begin_key_binding_save(game.clone(), *pending, permit)
+            }
             PendingRequest::Transition(transition) => {
                 let player_id = game.borrow().player.id.clone();
                 movement_actions::begin_portal(
@@ -458,7 +460,7 @@ fn request_not_admitted(
             game.requests.gui.in_flight = None;
             game.requests.gui.pending = Some(request);
         }
-        PendingRequest::Save(_) => game.persistence.dirty = true,
+        PendingRequest::KeyBindingSave(_) => game.key_binding_save.dirty = true,
         PendingRequest::Transition(transition) => {
             defer_transition(
                 &mut game.requests.deferred_transitions,
@@ -643,19 +645,21 @@ fn begin_morph_refresh(
     );
 }
 
-pub(super) struct PendingSave {
-    player: PlayerState,
+pub(super) struct PendingKeyBindingSave {
+    player_id: String,
+    key_bindings: Vec<KeyBinding>,
     key_bindings_generation: u64,
 }
 
-pub(super) fn save_if_due(
-    state: &mut PersistenceState,
+pub(super) fn save_key_bindings_if_due(
+    state: &mut KeyBindingSaveState,
     admission: &requests::RequestAdmission,
-    player: &PlayerState,
+    player_id: &str,
+    key_bindings: &[KeyBinding],
     key_bindings_generation: u64,
     can_submit: bool,
     timestamp_ms: f64,
-) -> Option<PendingSave> {
+) -> Option<PendingKeyBindingSave> {
     if !state.dirty
         || timestamp_ms < state.next_save_ms
         || !can_submit
@@ -665,39 +669,61 @@ pub(super) fn save_if_due(
     }
 
     state.dirty = false;
-    state.next_save_ms = timestamp_ms + SAVE_INTERVAL_MS;
-    Some(PendingSave {
-        player: player.clone(),
+    state.next_save_ms = timestamp_ms + KEY_BINDING_SAVE_INTERVAL_MS;
+    Some(PendingKeyBindingSave {
+        player_id: player_id.to_owned(),
+        key_bindings: key_bindings.to_vec(),
         key_bindings_generation,
     })
 }
 
-fn begin_save(
+fn acknowledge_key_binding_save(
+    current_generation: u64,
+    pending: &mut bool,
+    saved_generation: u64,
+) {
+    if current_generation == saved_generation {
+        *pending = false;
+    }
+}
+
+fn retry_key_binding_save(state: &mut KeyBindingSaveState) {
+    state.dirty = true;
+}
+
+fn begin_key_binding_save(
     game: Rc<RefCell<Game>>,
-    pending: PendingSave,
+    pending: PendingKeyBindingSave,
     permit: requests::RequestPermit,
 ) {
     requests::spawn_request(
         game,
         permit,
         move || async move {
-            let mut response = api::save_player(pending.player)
+            let PendingKeyBindingSave {
+                player_id,
+                key_bindings,
+                key_bindings_generation,
+            } = pending;
+            let mut response = api::save_player(&player_id, key_bindings)
                 .await
                 .map_err(|error| error.to_string())?;
             let update = responses::take_player_and_active_buffs(&mut response)?;
-            Ok((update, pending.key_bindings_generation))
+            Ok((update, key_bindings_generation))
         },
         |game, result, request_started_ms| match result {
             Ok(((player, active_buffs), key_bindings_generation)) => {
-                if game.player.key_bindings.generation == key_bindings_generation {
-                    game.player.key_bindings.pending = false;
-                }
+                acknowledge_key_binding_save(
+                    game.player.key_bindings.generation,
+                    &mut game.player.key_bindings.pending,
+                    key_bindings_generation,
+                );
                 install_full_player_update(game, player);
                 install_active_buffs(game, active_buffs, request_started_ms);
                 requests::RequestStatus::silent()
             }
             Err(error) => {
-                game.persistence.dirty = true;
+                retry_key_binding_save(&mut game.key_binding_save);
                 requests::RequestStatus::error(format!("Save failed: {error}"))
             }
         },
@@ -707,14 +733,22 @@ fn begin_save(
 #[cfg(test)]
 mod tests {
     use oozems_proto::v1::GameGui;
+    use oozems_proto::v1::KeyAction;
+    use oozems_proto::v1::KeyBinding;
 
     use super::GuiRefreshRequest;
     use super::GuiRefreshState;
+    use super::KEY_BINDING_SAVE_INTERVAL_MS;
     use super::MorphRefreshState;
+    use super::acknowledge_key_binding_save;
     use super::next_appearance_retry;
     use super::request_not_admitted_message;
+    use super::retry_key_binding_save;
+    use super::save_key_bindings_if_due;
     use super::take_gui_refresh_request;
     use super::update_morph_refresh_request;
+    use crate::game::requests::RequestAdmission;
+    use crate::game::runtime::KeyBindingSaveState;
     use crate::game_gui::GuiAction;
 
     #[test]
@@ -819,5 +853,129 @@ mod tests {
         assert_eq!(next_appearance_retry(0, 100.0), Some((1, 1_100.0)));
         assert_eq!(next_appearance_retry(1, 1_100.0), Some((2, 3_100.0)));
         assert_eq!(next_appearance_retry(2, 3_100.0), None);
+    }
+
+    #[test]
+    fn key_binding_save_snapshots_only_narrow_preferences_after_debounce() {
+        let admission = RequestAdmission::default();
+        let bindings = vec![KeyBinding {
+            code: "Space".to_owned(),
+            action: KeyAction::Jump as i32,
+            skill_id: 0,
+        }];
+        let mut state = KeyBindingSaveState {
+            dirty: true,
+            next_save_ms: KEY_BINDING_SAVE_INTERVAL_MS,
+        };
+
+        assert!(
+            save_key_bindings_if_due(
+                &mut state,
+                &admission,
+                "player-1",
+                &bindings,
+                7,
+                true,
+                KEY_BINDING_SAVE_INTERVAL_MS - 1.0,
+            )
+            .is_none()
+        );
+
+        let save = save_key_bindings_if_due(
+            &mut state,
+            &admission,
+            "player-1",
+            &bindings,
+            7,
+            true,
+            KEY_BINDING_SAVE_INTERVAL_MS,
+        )
+        .expect("save is due");
+        assert_eq!(save.player_id, "player-1");
+        assert_eq!(save.key_bindings, bindings);
+        assert_eq!(save.key_bindings_generation, 7);
+        assert!(!state.dirty);
+        assert_eq!(state.next_save_ms, KEY_BINDING_SAVE_INTERVAL_MS * 2.0);
+    }
+
+    #[test]
+    fn edits_during_save_remain_pending_after_stale_acknowledgement() {
+        let admission = RequestAdmission::default();
+        let bindings = vec![KeyBinding {
+            code: "Space".to_owned(),
+            action: KeyAction::Jump as i32,
+            skill_id: 0,
+        }];
+        let mut pending = true;
+        let mut state = KeyBindingSaveState {
+            dirty: true,
+            next_save_ms: 0.0,
+        };
+        let first_save =
+            save_key_bindings_if_due(&mut state, &admission, "player-1", &bindings, 1, true, 0.0)
+                .expect("first save is due");
+
+        state.dirty = true;
+        acknowledge_key_binding_save(2, &mut pending, first_save.key_bindings_generation);
+
+        assert!(state.dirty);
+        assert!(pending);
+        let next_save = save_key_bindings_if_due(
+            &mut state,
+            &admission,
+            "player-1",
+            &bindings,
+            2,
+            true,
+            KEY_BINDING_SAVE_INTERVAL_MS,
+        )
+        .expect("newer edit is saved after the debounce");
+        assert_eq!(next_save.key_bindings_generation, 2);
+    }
+
+    #[test]
+    fn failed_key_binding_save_becomes_dirty_for_retry() {
+        let admission = RequestAdmission::default();
+        let mut state = KeyBindingSaveState {
+            dirty: false,
+            next_save_ms: KEY_BINDING_SAVE_INTERVAL_MS,
+        };
+
+        retry_key_binding_save(&mut state);
+
+        assert!(state.dirty);
+        assert!(
+            save_key_bindings_if_due(
+                &mut state,
+                &admission,
+                "player-1",
+                &[],
+                1,
+                true,
+                KEY_BINDING_SAVE_INTERVAL_MS - 1.0,
+            )
+            .is_none()
+        );
+        assert!(
+            save_key_bindings_if_due(
+                &mut state,
+                &admission,
+                "player-1",
+                &[],
+                1,
+                true,
+                KEY_BINDING_SAVE_INTERVAL_MS,
+            )
+            .is_some()
+        );
+    }
+
+    #[test]
+    fn current_key_binding_save_acknowledgement_clears_pending() {
+        let mut pending = true;
+
+        acknowledge_key_binding_save(4, &mut pending, 4);
+
+        assert!(!pending);
     }
 }

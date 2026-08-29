@@ -12,6 +12,7 @@ use oozems_proto::v1::AllocateSkillPointRequest;
 use oozems_proto::v1::AllocateSkillPointResponse;
 use oozems_proto::v1::BootstrapRequest;
 use oozems_proto::v1::BootstrapResponse;
+use oozems_proto::v1::CharacterStats;
 use oozems_proto::v1::CreateCharacterRequest;
 use oozems_proto::v1::CreateCharacterResponse;
 use oozems_proto::v1::DropItemRequest;
@@ -81,16 +82,15 @@ pub async fn bootstrap(
     let player = load_player(&state, &player_id)
         .await?
         .filter(|loaded| loaded.player.appearance.is_some());
-    let player = if let Some(loaded) = player {
+    let player = if let Some(mut loaded) = player {
         let activity_time_ms = unix_time_ms()?;
+        let (map, position, repaired) =
+            resolve_reconnect_destination(&state, loaded.player.map_id).await?;
+        loaded.player.map_id = map.id;
+        loaded.player.position = Some(position);
+        loaded.changed |= repaired;
         let player =
             process_automatic_quests(&state, &player_guard, loaded, activity_time_ms).await?;
-        let map = load_map(&state, player.map_id).await?.ok_or_else(|| {
-            ApiError::not_found(
-                "map_not_found",
-                format!("map {} does not exist", player.map_id),
-            )
-        })?;
         crate::movement::initialize_player(
             &state.movement,
             &player,
@@ -130,7 +130,7 @@ pub async fn create_character(
     let request: CreateCharacterRequest = decode_request(&headers, body)?;
     let player_id = PlayerId::parse(&request.player_id)
         .map_err(|error| ApiError::bad_request("invalid_player_id", error.to_string()))?;
-    let player_guard = lock_player(&state, &player_id).await?;
+    let _player_guard = lock_player(&state, &player_id).await?;
     let name = CharacterName::parse(&request.name)
         .map_err(|error| ApiError::bad_request("invalid_character_name", error.to_string()))?;
     let appearance = request.appearance.ok_or_else(|| {
@@ -164,24 +164,30 @@ pub async fn create_character(
             format!("starter map {initial_map_id} does not exist"),
         )
     })?;
-    let position = starter_position(&map);
+    let position = crate::movement::default_spawn_position(&map)?;
     let experience_required =
         crate::experience::required_for_level(state.experience.default_curve(), 1)?;
     let activity_time_ms = unix_time_ms()?;
-    let player = crate::database::create_player(
-        &state.database,
-        &player_guard,
-        &player_id,
-        &name,
-        appearance,
-        inventory,
-        initial_map_id,
-        position,
-        experience_required,
-        state.gameplay.initial_skill_points,
-        state.gameplay.initial_cash_points,
-    )
-    .await?;
+    let player = PlayerState {
+        id: player_id.as_str().to_owned(),
+        name: name.as_str().to_owned(),
+        level: 1,
+        map_id: initial_map_id,
+        position: Some(position),
+        appearance: Some(appearance),
+        stats: Some(starter_character_stats(experience_required)),
+        inventory: Some(inventory),
+        key_bindings: crate::keymap::default_bindings(),
+        skill_points: state.gameplay.initial_skill_points,
+        learned_skills: Vec::new(),
+        mesos: 0,
+        quests: Vec::new(),
+        revision: 0,
+        quest_records: Vec::new(),
+        monster_book_cards: Vec::new(),
+        cash_points: state.gameplay.initial_cash_points,
+    };
+    let player = crate::database::create_player(&state.database, &player).await?;
     crate::movement::initialize_player(
         &state.movement,
         &player,
@@ -973,21 +979,19 @@ pub async fn save_player(
     body: Bytes,
 ) -> Result<Protobuf<SavePlayerResponse>, ApiError> {
     let request: SavePlayerRequest = decode_request(&headers, body)?;
-    let requested = request.player.ok_or_else(|| {
-        ApiError::bad_request("missing_player", "request does not contain a player")
-    })?;
-    crate::keymap::validate_bindings(&requested.key_bindings)
+    crate::keymap::validate_bindings(&request.key_bindings)
         .map_err(|error| ApiError::bad_request("invalid_key_bindings", error.to_string()))?;
 
-    let player_id = PlayerId::parse(&requested.id)
+    let player_id = PlayerId::parse(&request.player_id)
         .map_err(|error| ApiError::bad_request("invalid_player_id", error.to_string()))?;
     let player_guard = lock_player(&state, &player_id).await?;
     let now_unix_ms = unix_time_ms()?;
     let mutation = begin_player_mutation(&state, &player_guard, &player_id, now_unix_ms).await?;
     let skill_context = load_skill_book(&state, &mutation.player).await?;
-    crate::skills::validate_bound_skills(&requested.key_bindings, &mutation.player, &skill_context)
+    crate::skills::validate_bound_skills(&request.key_bindings, &mutation.player, &skill_context)
         .map_err(skill_rule_error)?;
-    let player = crate::database::apply_player_preferences(mutation.player.clone(), &requested);
+    let mut player = mutation.player.clone();
+    player.key_bindings = request.key_bindings;
     let active_buffs = crate::effects::state(&mutation.effects, now_unix_ms);
     let mut transaction = crate::player_transaction::new_player_transaction(
         mutation.original,
@@ -999,12 +1003,6 @@ pub async fn save_player(
         state.active_effects.clone(),
         mutation.original_effects,
         mutation.effects,
-    );
-    crate::player_transaction::stage_movement_persistence(
-        &mut transaction,
-        state.movement.clone(),
-        player_id.as_str().to_owned(),
-        now_unix_ms,
     );
     let player = crate::player_transaction::commit_player_transaction(
         &state.database,
@@ -1061,6 +1059,68 @@ async fn load_map(
 ) -> Result<Option<oozems_proto::v1::Map>, ApiError> {
     let catalog = state.catalog.clone();
     Ok(tokio::task::spawn_blocking(move || catalog.get_map(map_id)).await??)
+}
+
+enum SavedMapResolution {
+    Use(Vec2),
+    RepairUnavailable,
+    RepairMissingSpawn,
+}
+
+fn inspect_saved_map(
+    map: Option<&oozems_proto::v1::Map>
+) -> Result<SavedMapResolution, crate::movement::MovementError> {
+    let Some(map) = map else {
+        return Ok(SavedMapResolution::RepairUnavailable);
+    };
+    match crate::movement::default_spawn_position(map) {
+        Ok(position) => Ok(SavedMapResolution::Use(position)),
+        Err(crate::movement::MovementError::MissingDefaultSpawn) => {
+            Ok(SavedMapResolution::RepairMissingSpawn)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+pub(super) async fn resolve_reconnect_destination(
+    state: &AppState,
+    saved_map_id: u32,
+) -> Result<(oozems_proto::v1::Map, Vec2, bool), ApiError> {
+    let saved_map = load_map(state, saved_map_id).await?;
+    match inspect_saved_map(saved_map.as_ref())? {
+        SavedMapResolution::Use(position) => {
+            return Ok((saved_map.expect("inspected saved map"), position, false));
+        }
+        SavedMapResolution::RepairMissingSpawn => {
+            let saved_map = saved_map.expect("inspected saved map");
+            let return_town_map_id =
+                respawn::respawn_map_id(&saved_map, state.gameplay.initial_map_id);
+            tracing::warn!(
+                saved_map_id,
+                return_town_map_id,
+                "saved player map has no usable spawn; reconnecting at its return town"
+            );
+            let (map, position) = respawn::load_respawn_target(state, return_town_map_id).await?;
+            return Ok((map, position, true));
+        }
+        SavedMapResolution::RepairUnavailable => {
+            tracing::warn!(
+                saved_map_id,
+                fallback_map_id = state.gameplay.initial_map_id,
+                "saved player map is unavailable; repairing to the initial map"
+            );
+        }
+    }
+
+    let fallback_map_id = state.gameplay.initial_map_id;
+    let map = load_map(state, fallback_map_id).await?.ok_or_else(|| {
+        ApiError::not_found(
+            "initial_map_not_found",
+            format!("initial map {fallback_map_id} does not exist"),
+        )
+    })?;
+    let position = crate::movement::default_spawn_position(&map)?;
+    Ok((map, position, saved_map_id != fallback_map_id))
 }
 
 async fn current_map_quest_indicators(
@@ -1212,16 +1272,75 @@ fn record_recovery_activity(
     }
 }
 
-fn starter_position(map: &oozems_proto::v1::Map) -> Vec2 {
-    map.portals
-        .iter()
-        .find(|portal| portal.kind == 0)
-        .map(|portal| Vec2 {
-            x: portal.x,
-            y: portal.y,
-        })
-        .unwrap_or(Vec2 {
-            x: 160.0_f32.min(map.width as f32),
-            y: 420.0_f32.min(map.height as f32),
-        })
+fn starter_character_stats(experience_required: u64) -> CharacterStats {
+    CharacterStats {
+        job_id: 0,
+        hp: 50,
+        max_hp: 50,
+        mp: 5,
+        max_mp: 5,
+        experience: 0,
+        experience_required,
+        fame: 0,
+        ability_points: 9,
+        strength: 4,
+        dexterity: 4,
+        intelligence: 4,
+        luck: 4,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use oozems_proto::v1::Map;
+    use oozems_proto::v1::Portal;
+    use oozems_proto::v1::Vec2;
+
+    use super::SavedMapResolution;
+    use super::inspect_saved_map;
+
+    #[test]
+    fn missing_saved_map_requires_initial_map_repair() {
+        assert!(matches!(
+            inspect_saved_map(None).expect("inspect missing map"),
+            SavedMapResolution::RepairUnavailable
+        ));
+    }
+
+    #[test]
+    fn spawnless_saved_map_requires_return_town_repair() {
+        let map = Map {
+            id: 100,
+            return_map_id: Some(200),
+            ..Map::default()
+        };
+
+        assert!(matches!(
+            inspect_saved_map(Some(&map)).expect("inspect map without spawn"),
+            SavedMapResolution::RepairMissingSpawn
+        ));
+        assert_eq!(super::respawn::respawn_map_id(&map, 300), 200);
+    }
+
+    #[test]
+    fn saved_map_with_a_default_spawn_is_used_directly() {
+        let map = Map {
+            id: 100,
+            width: 800,
+            height: 600,
+            portals: vec![Portal {
+                kind: 0,
+                x: 125.0,
+                y: 200.0,
+                ..Portal::default()
+            }],
+            ..Map::default()
+        };
+        let SavedMapResolution::Use(position) =
+            inspect_saved_map(Some(&map)).expect("inspect usable saved map")
+        else {
+            panic!("usable saved map must not be repaired");
+        };
+        assert_eq!(position, Vec2 { x: 125.0, y: 200.0 });
+    }
 }

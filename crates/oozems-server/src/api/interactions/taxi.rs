@@ -38,17 +38,12 @@ pub(super) async fn take_taxi(
     let mut target_map = load_map(state, destination.map_id)
         .await?
         .ok_or_else(|| invalid("the taxi destination map does not exist"))?;
-    let position = crate::movement::authorized_destination(&target_map, &destination.portal_name)?;
     target_map.dropped_items = crate::items::map_drops(&state.drops, target_map.id)?;
     let simulation = crate::mobs::map_snapshot(&state.mobs, &target_map).await?;
     target_map.mobs = simulation.mobs;
     target_map.mob_projectiles = simulation.mob_projectiles;
     target_map.simulation_sequence = simulation.sequence;
-    let mut player = current.clone();
-    player.mesos -= destination.fare;
-    player.map_id = target_map.id;
-    player.position = Some(position);
-    let (decision, rollback) = crate::movement::relocate_player(
+    let (decision, relocation) = crate::movement::relocate_player(
         &state.movement,
         &current,
         source_map,
@@ -57,16 +52,13 @@ pub(super) async fn take_taxi(
         state.gameplay.movement,
         now_unix_ms,
     )?;
+    let mut player = crate::movement::project_relocation_player(&relocation, current.clone())?;
+    player.mesos -= destination.fare;
     let (mut transaction, _) = prepare_player_mutation(state, mutation, player, true, true);
-    let player_id = crate::player_transaction::staged_player(&transaction)
-        .id
-        .clone();
     crate::player_transaction::stage_relocation(
         &mut transaction,
         state.movement.clone(),
-        player_id,
-        rollback,
-        now_unix_ms,
+        relocation,
     );
     let player =
         crate::player_transaction::commit_player_transaction(&state.database, guard, transaction)

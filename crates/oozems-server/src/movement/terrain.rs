@@ -160,6 +160,7 @@ pub(super) fn clamp_to_movement_bounds(
 ) -> Position {
     let (left, right) = horizontal_movement_bounds(map);
     position.x = position.x.clamp(left, right);
+    position.y = position.y.clamp(0.0, map.height as f32);
     position
 }
 
@@ -177,30 +178,41 @@ fn horizontal_movement_bounds(map: &Map) -> (f32, f32) {
         .map_or((0.0, map_right), |bounds| (bounds.left, bounds.right))
 }
 
-pub(super) fn destination_position(
-    map: &Map,
-    target_portal_name: &str,
-) -> Option<Position> {
+pub(super) fn default_spawn_position(map: &Map) -> Option<Position> {
     let target = map
         .portals
         .iter()
-        .find(|portal| !target_portal_name.is_empty() && portal.name == target_portal_name)
-        .or_else(|| {
-            map.portals
-                .iter()
-                .find(|portal| portal.kind == SPAWN_PORTAL_KIND)
-        })?;
+        .find(|portal| portal.kind == SPAWN_PORTAL_KIND)?;
+    Some(portal_position(map, target.x, target.y))
+}
+
+pub(super) fn named_portal_position(
+    map: &Map,
+    name: &str,
+) -> Option<Position> {
+    let target = map.portals.iter().find(|portal| portal.name == name)?;
+    Some(portal_position(map, target.x, target.y))
+}
+
+fn portal_position(
+    map: &Map,
+    x: f32,
+    y: f32,
+) -> Position {
     let floor = map
         .platforms
         .iter()
-        .filter_map(|platform| platform_y(platform, target.x))
+        .filter_map(|platform| platform_y(platform, x))
         .filter(|surface| {
-            let penetration = target.y - surface;
+            let penetration = y - surface;
             (0.0..=PORTAL_FLOOR_PENETRATION_LIMIT).contains(&penetration)
         })
         .max_by(f32::total_cmp);
-    Some(Position {
-        x: target.x,
-        y: floor.unwrap_or(target.y),
-    })
+    clamp_to_movement_bounds(
+        map,
+        Position {
+            x,
+            y: floor.unwrap_or(y),
+        },
+    )
 }

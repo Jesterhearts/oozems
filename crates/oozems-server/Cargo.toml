@@ -20,12 +20,10 @@ oozems-proto           = { path = "../oozems-proto", version = "0.1.0" }
 oozems-skill-semantics = { path = "../oozems-skill-semantics", version = "0.1.0" }
 oozems-ui-layout       = { path = "../oozems-ui-layout", version = "0.1.0" }
 prost                  = "0.14.4"
+rusqlite               = { version = "0.40.2", features = ["bundled"] }
 serde                  = { version = "1.0.229", features = ["derive"] }
 sha2                   = "0.11.0"
 shipyard               = "0.11.5"
-surrealdb              = { version = "3.2.4", default-features = false, features = [
-  "kv-surrealkv"
-] }
 thiserror              = "2.0.20"
 tokio                  = { version = "1.53.1", features = [
   "macros",

@@ -17,7 +17,7 @@ use super::request_dispatch::PendingRequest;
 use super::request_dispatch::PendingRequests;
 use super::request_dispatch::PendingTransition;
 use super::request_dispatch::collect_refresh_requests;
-use super::request_dispatch::save_if_due;
+use super::request_dispatch::save_key_bindings_if_due;
 use super::request_dispatch::synchronize_morph;
 use super::requests;
 use crate::audio;
@@ -38,7 +38,7 @@ use crate::movement::MotionState;
 use crate::movement::PlayerInput;
 use crate::skill_effects;
 
-pub(super) struct PersistenceState {
+pub(super) struct KeyBindingSaveState {
     pub(super) dirty: bool,
     pub(super) next_save_ms: f64,
 }
@@ -291,10 +291,11 @@ pub(super) fn update(
             .is_active(requests::RequestKind::Recovery),
         timestamp_ms,
     );
-    let save = save_if_due(
-        &mut game.persistence,
+    let save = save_key_bindings_if_due(
+        &mut game.key_binding_save,
         &game.requests.admission,
-        &game.player.state,
+        &game.player.state.id,
+        &game.player.state.key_bindings,
         game.player.key_bindings.generation,
         !pending.has_player_mutation()
             && !pick_up
@@ -324,7 +325,7 @@ pub(super) fn update(
         requests.push(PendingRequest::Recovery);
     }
     if let Some(save) = save {
-        requests.push(PendingRequest::Save(Box::new(save)));
+        requests.push(PendingRequest::KeyBindingSave(Box::new(save)));
     }
     if let Some(transition) = transition {
         requests.push(PendingRequest::Transition(transition));

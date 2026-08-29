@@ -43,7 +43,6 @@ pub struct MovementConfig {
     pub jump_cap: u32,
     pub snapshot_interval: Duration,
     pub maximum_snapshot_gap: Duration,
-    pub persistence_interval: Duration,
     pub position_tolerance: f32,
     pub ground_tolerance: f32,
     pub platform_edge_tolerance: f32,
@@ -117,7 +116,6 @@ struct MovementRulesFile {
     jump_cap: u32,
     snapshot_interval: String,
     maximum_snapshot_gap: String,
-    persistence_interval: String,
     position_tolerance: f32,
     ground_tolerance: f32,
     platform_edge_tolerance: f32,
@@ -332,7 +330,6 @@ fn parse_movement_config(
     };
     let snapshot_interval = parse_duration("snapshot_interval", &file.snapshot_interval)?;
     let maximum_snapshot_gap = parse_duration("maximum_snapshot_gap", &file.maximum_snapshot_gap)?;
-    let persistence_interval = parse_duration("persistence_interval", &file.persistence_interval)?;
     if snapshot_interval.is_zero() {
         return Err(GameplayConfigError::InvalidMovementValue {
             path: path.to_owned(),
@@ -344,12 +341,6 @@ fn parse_movement_config(
             path: path.to_owned(),
         });
     }
-    if persistence_interval.is_zero() {
-        return Err(GameplayConfigError::InvalidMovementValue {
-            path: path.to_owned(),
-            field: "persistence_interval",
-        });
-    }
     Ok(MovementConfig {
         walk_speed: file.walk_speed,
         climb_speed: file.climb_speed,
@@ -359,7 +350,6 @@ fn parse_movement_config(
         jump_cap: file.jump_cap,
         snapshot_interval,
         maximum_snapshot_gap,
-        persistence_interval,
         position_tolerance: file.position_tolerance,
         ground_tolerance: file.ground_tolerance,
         platform_edge_tolerance: file.platform_edge_tolerance,
@@ -419,7 +409,6 @@ mod tests {
                 jump_cap: 200,
                 snapshot_interval: Duration::from_millis(200),
                 maximum_snapshot_gap: Duration::from_secs(1),
-                persistence_interval: Duration::from_secs(2),
                 position_tolerance: 24.0,
                 ground_tolerance: 8.0,
                 platform_edge_tolerance: 20.0,
@@ -473,7 +462,6 @@ mod tests {
             ("movement", "jump_cap"),
             ("movement", "snapshot_interval"),
             ("movement", "maximum_snapshot_gap"),
-            ("movement", "persistence_interval"),
             ("movement", "position_tolerance"),
             ("movement", "ground_tolerance"),
             ("movement", "platform_edge_tolerance"),

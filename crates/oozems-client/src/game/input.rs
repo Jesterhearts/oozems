@@ -529,7 +529,7 @@ fn finish_key_drag(
         game.player.state.key_bindings = updated;
         game.player.key_bindings.generation = game.player.key_bindings.generation.saturating_add(1);
         game.player.key_bindings.pending = true;
-        game.persistence.dirty = true;
+        game.key_binding_save.dirty = true;
     }
     game.input.suppress_click = true;
 }

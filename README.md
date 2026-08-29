@@ -46,11 +46,11 @@ and `Character.wz` archives beside `Map.wz`. See
 is optional. Add `UI.wz` if you want the configured native interaction windows
 and Cash Shop screen.
 
-> **Existing player data:** SurrealKV accepts only the current persisted player
-> schema. Startup backfills a missing `cash_points` field from
-> `characters.initial_cash_points`. It does not otherwise upgrade or fill
-> missing fields from older schemas. A record that does not satisfy the current
-> schema fails to load.
+> **Existing player data:** Oozems stores players in the normalized SQLite
+> database `data/oozems.sqlite3`. This is a clean storage change: the server
+> neither imports nor modifies an existing `data/surrealkv` directory. Remove or
+> move an incompatible SQLite database before starting this version. Invalid
+> normalized player rows fail to load instead of being repaired silently.
 
 See [Choose WZ content](#choose-wz-content) for the behavior that each optional
 archive enables.
@@ -66,9 +66,8 @@ make run
 Then open <http://127.0.0.1:3000>.
 
 The Make target builds the WASM client in the server's generated `public`
-directory before it starts the server. The first server build is relatively
-large because the embedded SurrealDB dependency includes its database engine in
-the server binary.
+directory before it starts the server. SQLite is compiled into the server
+binary, so no separate database service is required.
 
 ## Run and play
 
@@ -103,12 +102,12 @@ Each action can have one assignment. Moving an action removes its previous
 assignment and replaces any action on the target key. The palette contains
 Basic Attack, Jump, Pick Up, Character, Equipment, Inventory, Key Settings, and
 Skills. New characters have Basic Attack assigned to left Control. Oozems stores
-changes with the player in SurrealKV.
+changes with the player in SQLite.
 
 ### Change runtime paths
 
 The default data directory is `./data`. Git ignores this directory. It contains
-the local WZ archives, SurrealKV state, and these version-specific files:
+the local WZ archives, `oozems.sqlite3`, and these version-specific files:
 
 - `cash-shop.toml`
 - `interactions.toml`
@@ -233,7 +232,7 @@ layer.
 
 The browser initially receives only frame metadata. It requests individual PNG
 layers when the preview or game renderer needs them. Oozems stores the chosen
-name and appearance with the player in SurrealKV.
+name and appearance with the player in SQLite.
 
 ### User interface
 
@@ -367,7 +366,7 @@ at the server-owned player position. Double-click a supported item on the Use
 tab to consume one and apply its recovery or temporary effect. Double-click a
 supported chair on the Setup tab to sit on it without consuming it. Movement,
 combat, death, and map changes end the seated state. Oozems persists equipment
-and inventory changes in SurrealKV.
+and inventory changes in SQLite.
 
 The browser requests an equipment icon from `Character.wz` only when the icon
 first becomes visible. Equipping or removing an item refreshes the composed
@@ -534,8 +533,8 @@ check to another quest record; direct `info` and `infoex` entries are OR
 alternatives against index 0. Equality is exact. Numeric conditions accept only
 strict decimal strings. A missing record never satisfies a check.
 
-SurrealKV stores quest records as required nested records and entries. They must
-be unique and valid. Missing, malformed, duplicate, or invalid data fails
+SQLite stores quest records and their entries in normalized child rows. They
+must be unique and valid. Missing, malformed, duplicate, or invalid data fails
 player load; valid entries are sorted into canonical order.
 
 #### Apply reward deadlines
@@ -834,7 +833,6 @@ speed_cap = 200
 jump_cap = 200
 snapshot_interval = "200ms"
 maximum_snapshot_gap = "1s"
-persistence_interval = "2s"
 position_tolerance = 24.0
 ground_tolerance = 8.0
 platform_edge_tolerance = 20.0
@@ -863,10 +861,8 @@ character at its first spawn portal. Changing it does not move existing
 characters.
 
 `characters.initial_cash_points` sets the cash-point balance for new
-characters. It must fit the persisted signed 64-bit range. When this field is
-first introduced to an existing database, startup also assigns its value to
-players that do not yet have a `cash_points` field. Later setting changes do not
-replace existing balances.
+characters. It must fit the persisted signed 64-bit range. Later setting
+changes do not replace existing balances.
 
 ### Configure the world ID
 
@@ -909,8 +905,11 @@ The client submits an ordered movement snapshot every `snapshot_interval`.
 The server uses its own receipt time to calculate a reachable horizontal and
 vertical envelope. `maximum_snapshot_gap` limits the time included in that
 calculation, so an absent client cannot accumulate an unlimited movement
-budget. `persistence_interval` controls partial SurrealKV position writes;
-these writes cannot overwrite character stats, skills, or inventory.
+budget. Movement coordinates are session state and are never persisted. SQLite
+stores only the current map ID. On reconnect, the server places the player at
+that map's default spawn. An unavailable saved map repairs directly to
+`characters.initial_map_id`. A saved map without a default spawn instead uses
+its WZ return town, with the initial map as the final fallback.
 
 If the character lands, grabs a ladder, or drops through a platform between
 heartbeats, the next snapshot includes that brief support contact without
@@ -1373,7 +1372,7 @@ browser
   -> POST /api/v1/skills/...      allocate a skill point or use a skill
   -> POST /api/v1/players/recover apply one rate-limited natural recovery tick
   -> GET /wz-assets/...           requested WZ PNG and skill audio assets
-  -> POST /api/v1/players/save    key bindings and authoritative session state
+  -> POST /api/v1/players/save    key bindings
 
 server
   -> config/xp-curves.toml        validated game progression rules
@@ -1394,7 +1393,7 @@ server
   -> data/Skill.wz                optional skill data, icons, and effects
   -> data/Sound.wz                optional skill sounds
   -> data/String.wz               optional map, NPC, and skill text
-  -> SurrealDB -> SurrealKV       mutable player state
+  -> data/oozems.sqlite3          normalized mutable player state
 ```
 
 The API schema is in `crates/oozems-proto/proto/oozems.proto`. Image and audio

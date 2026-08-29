@@ -233,7 +233,7 @@ pub async fn enter_portal(
             )
         })?;
     let projected = mutation.effects.projected().modifiers;
-    let (decision, rollback) = crate::movement::enter_portal_with_modifiers(
+    let (decision, relocation) = crate::movement::enter_portal_with_modifiers(
         &state.movement,
         &mutation.player,
         crate::movement::PortalMovement {
@@ -249,7 +249,7 @@ pub async fn enter_portal(
         state.gameplay.movement,
         now_ms,
     )?;
-    if let Some(rollback) = rollback {
+    if let Some(relocation) = relocation {
         let response = movement_response(
             &state,
             &player_guard,
@@ -257,7 +257,7 @@ pub async fn enter_portal(
             decision,
             true,
             now_ms,
-            Some(rollback),
+            Some(relocation),
         )
         .await?;
         return Ok(Protobuf(response));
@@ -290,31 +290,33 @@ async fn movement_response(
     decision: crate::movement::MovementDecision,
     persistence_required: bool,
     now_unix_ms: u64,
-    relocation: Option<crate::movement::RelocationRollback>,
+    relocation: Option<crate::movement::RelocationPlan>,
 ) -> Result<MovementUpdateResponse, ApiError> {
     let current = mutation.player;
+    let planned_authoritative = relocation
+        .as_ref()
+        .map(|plan| crate::movement::project_relocation_observation(plan, current.clone()))
+        .transpose()?;
     let mut transaction = crate::player_transaction::new_player_transaction(
         mutation.original,
         current.clone(),
         crate::player_transaction::PlayerPersistence::None,
     );
     let relocated = relocation.is_some();
-    if let Some(rollback) = relocation {
-        crate::player_transaction::stage_relocation(
-            &mut transaction,
-            state.movement.clone(),
-            current.id.clone(),
-            rollback,
-            now_unix_ms,
-        );
+    if let Some(plan) = relocation {
+        crate::player_transaction::stage_relocation(&mut transaction, state.movement.clone(), plan);
     }
     let preparation = async {
         let map_id = decision.authoritative.map_id;
         let map = load_map(state, map_id).await?.ok_or_else(|| {
             ApiError::not_found("map_not_found", format!("map {map_id} does not exist"))
         })?;
-        let authoritative =
-            crate::movement::synchronize_player_observation(&state.movement, current.clone())?;
+        let authoritative = match planned_authoritative {
+            Some(authoritative) => authoritative,
+            None => {
+                crate::movement::synchronize_player_observation(&state.movement, current.clone())?
+            }
+        };
         let authoritative_player = authoritative.player;
         let effects = mutation.effects;
         let equipment =
@@ -349,8 +351,6 @@ async fn movement_response(
         prepared.player,
         if prepared.should_save {
             crate::player_transaction::PlayerPersistence::Full
-        } else if decision.persist {
-            crate::player_transaction::PlayerPersistence::Position
         } else {
             crate::player_transaction::PlayerPersistence::None
         },
@@ -367,14 +367,6 @@ async fn movement_response(
         state.drops.clone(),
         simulation,
     )?;
-    if decision.persist && !relocated {
-        crate::player_transaction::stage_movement_persistence(
-            &mut transaction,
-            state.movement.clone(),
-            current.id.clone(),
-            now_unix_ms,
-        );
-    }
     if decision.activity || relocated || has_player_effects {
         crate::player_transaction::stage_activity(
             &mut transaction,
@@ -459,52 +451,35 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use oozems_proto::v1::CharacterAppearance;
-    use oozems_proto::v1::CharacterGender;
     use oozems_proto::v1::Map;
     use oozems_proto::v1::Platform;
+    use oozems_proto::v1::PlayerState;
     use oozems_proto::v1::Portal;
     use oozems_proto::v1::Vec2;
 
     use super::resolve_movement_preparation;
-    use crate::database::CharacterName;
     use crate::database::PlayerId;
     use crate::movement::MovementTracker;
     use crate::player_lock::PlayerLocks;
     use crate::player_lock::acquire_player;
 
     #[tokio::test]
-    async fn preparation_failure_aborts_and_restores_relocation() {
+    async fn preparation_failure_leaves_a_planned_relocation_uncommitted() {
         let directory = tempfile::tempdir().expect("temporary database directory");
-        let database = crate::database::open_surreal_kv(directory.path(), 0)
-            .await
+        let database = crate::database::open_sqlite(&directory.path().join("players.sqlite"))
             .expect("open database");
         let player_id = PlayerId::parse("relocation-preparation").expect("player ID");
         let locks = PlayerLocks::default();
         let guard = acquire_player(&locks, player_id.as_str())
             .await
             .expect("player guard");
-        let original = crate::database::create_player(
-            &database,
-            &guard,
-            &player_id,
-            &CharacterName::parse("Mina").expect("character name"),
-            CharacterAppearance {
-                gender: CharacterGender::Female as i32,
-                skin_id: 2_000,
-                face_id: 21_000,
-                hair_id: 31_000,
-            },
-            crate::items::starter_inventory(),
-            100,
-            Vec2 { x: 10.0, y: 20.0 },
-            15,
-            3,
-            0,
-        )
-        .await
-        .expect("create player");
-        let source_map = Map {
+        let original = PlayerState {
+            id: player_id.as_str().to_owned(),
+            map_id: 100,
+            position: Some(Vec2 { x: 10.0, y: 20.0 }),
+            ..PlayerState::default()
+        };
+        let mut source_map = Map {
             id: 100,
             width: 800,
             height: 600,
@@ -517,6 +492,14 @@ mod tests {
             }],
             ..Map::default()
         };
+        source_map.portals.push(Portal {
+            name: "source".to_owned(),
+            x: 10.0,
+            y: 20.0,
+            target_map_id: 200,
+            target_name: "taxi".to_owned(),
+            ..Portal::default()
+        });
         let target_map = Map {
             id: 200,
             width: 800,
@@ -531,24 +514,7 @@ mod tests {
             ..Map::default()
         };
         let movement = Arc::new(MovementTracker::default());
-        let movement_config = crate::gameplay::MovementConfig {
-            walk_speed: 125.0,
-            climb_speed: 100.0,
-            gravity: 2_000.0,
-            jump_speed: 500.0,
-            speed_cap: 140,
-            jump_cap: 123,
-            snapshot_interval: Duration::from_millis(100),
-            maximum_snapshot_gap: Duration::from_secs(2),
-            persistence_interval: Duration::from_secs(1),
-            position_tolerance: 20.0,
-            ground_tolerance: 10.0,
-            platform_edge_tolerance: 10.0,
-            ladder_reach: 20.0,
-            ladder_end_reach: 20.0,
-            portal_horizontal_reach: 80.0,
-            portal_vertical_reach: 80.0,
-        };
+        let movement_config = movement_config();
         crate::movement::initialize_player(
             &movement,
             &original,
@@ -557,7 +523,7 @@ mod tests {
             1_000,
         )
         .expect("initialize movement");
-        let (decision, rollback) = crate::movement::relocate_player(
+        let (_, plan) = crate::movement::relocate_player(
             &movement,
             &original,
             &source_map,
@@ -567,21 +533,19 @@ mod tests {
             1_200,
         )
         .expect("stage relocation");
-        let mut relocated = original.clone();
-        relocated.map_id = decision.authoritative.map_id;
-        relocated.position = decision.authoritative.position;
+        let relocated = crate::movement::project_relocation_player(&plan, original.clone())
+            .expect("project relocation");
         let mut transaction = crate::player_transaction::new_player_transaction(
             original.clone(),
             relocated,
             crate::player_transaction::PlayerPersistence::Full,
         );
-        crate::player_transaction::stage_relocation(
-            &mut transaction,
-            movement.clone(),
-            player_id.as_str().to_owned(),
-            rollback,
-            1_200,
-        );
+        crate::player_transaction::stage_relocation(&mut transaction, movement.clone(), plan);
+
+        let planned = crate::movement::synchronize_player(&movement, original.clone())
+            .expect("planned movement remains at source");
+        assert_eq!(planned.map_id, original.map_id);
+        assert_eq!(planned.position, original.position);
 
         let error = resolve_movement_preparation::<()>(
             &database,
@@ -603,16 +567,131 @@ mod tests {
                 ..
             }
         ));
-        let restored = crate::movement::synchronize_player(&movement, original.clone())
-            .expect("synchronize restored movement");
-        assert_eq!(restored.map_id, original.map_id);
-        assert_eq!(restored.position, original.position);
-        assert_eq!(
+        let unchanged = crate::movement::synchronize_player(&movement, original.clone())
+            .expect("synchronize unchanged movement");
+        assert_eq!(unchanged.map_id, original.map_id);
+        assert_eq!(unchanged.position, original.position);
+        assert!(
             crate::database::load_player(&database, &player_id)
                 .await
                 .expect("load durable player")
-                .expect("durable player"),
-            original
+                .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn cancelled_portal_preparation_leaves_the_source_session_unchanged() {
+        let movement = Arc::new(MovementTracker::default());
+        let original = PlayerState {
+            id: "cancelled-relocation".to_owned(),
+            map_id: 100,
+            position: Some(Vec2 { x: 10.0, y: 20.0 }),
+            ..PlayerState::default()
+        };
+        let mut source_map = Map {
+            id: 100,
+            width: 800,
+            height: 600,
+            platforms: vec![Platform {
+                x: 0.0,
+                y: 20.0,
+                end_x: 800.0,
+                end_y: 20.0,
+                ..Platform::default()
+            }],
+            ..Map::default()
+        };
+        source_map.portals.push(Portal {
+            name: "source".to_owned(),
+            x: 10.0,
+            y: 20.0,
+            target_map_id: 200,
+            target_name: "taxi".to_owned(),
+            ..Portal::default()
+        });
+        let target_map = Map {
+            id: 200,
+            width: 800,
+            height: 600,
+            platforms: source_map.platforms.clone(),
+            portals: vec![Portal {
+                name: "taxi".to_owned(),
+                x: 700.0,
+                y: 20.0,
+                ..Portal::default()
+            }],
+            ..Map::default()
+        };
+        crate::movement::initialize_player(
+            &movement,
+            &original,
+            &source_map,
+            movement_config(),
+            1_000,
+        )
+        .expect("initialize movement");
+        let (_, plan) = crate::movement::enter_portal_with_modifiers(
+            &movement,
+            &original,
+            crate::movement::PortalMovement {
+                source_map: &source_map,
+                target_map: &target_map,
+                source: crate::movement::SubmittedMovement {
+                    sequence: 1,
+                    map_id: source_map.id,
+                    position: crate::movement::Position { x: 10.0, y: 20.0 },
+                    mode: crate::movement::MovementMode::Grounded,
+                    support_contact: None,
+                    drop_through: false,
+                },
+                target_portal_name: "taxi",
+            },
+            crate::movement::MovementModifiers::default(),
+            movement_config(),
+            1_200,
+        )
+        .expect("plan portal relocation");
+        let plan = plan.expect("accepted portal relocation plan");
+        let relocated = crate::movement::project_relocation_player(&plan, original.clone())
+            .expect("project relocation");
+        let mut transaction = crate::player_transaction::new_player_transaction(
+            original.clone(),
+            relocated,
+            crate::player_transaction::PlayerPersistence::Full,
+        );
+        crate::player_transaction::stage_relocation(&mut transaction, movement.clone(), plan);
+
+        let preparation = tokio::spawn(async move {
+            let _transaction = transaction;
+            std::future::pending::<()>().await;
+        });
+        tokio::task::yield_now().await;
+        preparation.abort();
+        let _ = preparation.await;
+
+        let unchanged = crate::movement::synchronize_player(&movement, original.clone())
+            .expect("synchronize source movement");
+        assert_eq!(unchanged.map_id, original.map_id);
+        assert_eq!(unchanged.position, original.position);
+    }
+
+    fn movement_config() -> crate::gameplay::MovementConfig {
+        crate::gameplay::MovementConfig {
+            walk_speed: 125.0,
+            climb_speed: 100.0,
+            gravity: 2_000.0,
+            jump_speed: 500.0,
+            speed_cap: 140,
+            jump_cap: 123,
+            snapshot_interval: Duration::from_millis(100),
+            maximum_snapshot_gap: Duration::from_secs(2),
+            position_tolerance: 20.0,
+            ground_tolerance: 10.0,
+            platform_edge_tolerance: 10.0,
+            ladder_reach: 20.0,
+            ladder_end_reach: 20.0,
+            portal_horizontal_reach: 80.0,
+            portal_vertical_reach: 80.0,
+        }
     }
 }

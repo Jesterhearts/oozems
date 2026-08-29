@@ -36,7 +36,6 @@ speed_cap               = 200
 jump_cap                = 200
 snapshot_interval       = "200ms"
 maximum_snapshot_gap    = "1s"
-persistence_interval    = "2s"
 position_tolerance      = 24.0
 ground_tolerance        = 8.0
 platform_edge_tolerance = 20.0

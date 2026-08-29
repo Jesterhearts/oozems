@@ -102,12 +102,18 @@ async fn main() -> anyhow::Result<()> {
         &content_config,
         skill_semantics,
     )?;
-    if catalog.get_map(gameplay.initial_map_id)?.is_none() {
-        anyhow::bail!(
+    let initial_map = catalog.get_map(gameplay.initial_map_id)?.ok_or_else(|| {
+        anyhow::anyhow!(
             "configured initial character map {} does not exist",
             gameplay.initial_map_id
-        );
-    }
+        )
+    })?;
+    movement::default_spawn_position(&initial_map).with_context(|| {
+        format!(
+            "configured initial character map {} has no usable spawn portal",
+            gameplay.initial_map_id
+        )
+    })?;
     let interactions =
         InteractionCatalog::load(&config.data_dir.join("interactions.toml"), &catalog)?;
     catalog.project_item_definitions(&interactions.item_reference_ids().collect())?;
@@ -141,13 +147,9 @@ async fn main() -> anyhow::Result<()> {
     )?;
     catalog.project_item_definitions(&loot.item_reference_ids().collect())?;
     info!(table_count = loot.len(), "loot configuration ready");
-    let database = database::open_surreal_kv(
-        &config.data_dir.join("surrealkv"),
-        gameplay.initial_cash_points,
-    )
-    .await?;
+    let database = database::open_sqlite(&config.data_dir.join("oozems.sqlite3"))?;
     let router = app::router(
-        database,
+        database.clone(),
         catalog,
         cash_shop,
         interactions,
@@ -164,6 +166,7 @@ async fn main() -> anyhow::Result<()> {
     axum::serve(listener, router)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
+    database.close().await?;
 
     Ok(())
 }

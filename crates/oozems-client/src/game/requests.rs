@@ -14,7 +14,7 @@ const CASH_SHOP: u32 = 1 << 2;
 const APPEARANCE: u32 = 1 << 3;
 const MORPH: u32 = 1 << 4;
 const GUI: u32 = 1 << 5;
-const SAVE: u32 = 1 << 6;
+const KEY_BINDING_SAVE: u32 = 1 << 6;
 const ITEM: u32 = 1 << 7;
 const SKILL: u32 = 1 << 8;
 const TRANSITION: u32 = 1 << 9;
@@ -25,7 +25,7 @@ const RESPAWN: u32 = 1 << 13;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum RequestKind {
-    Save,
+    KeyBindingSave,
     Item,
     Skill,
     Transition,
@@ -43,7 +43,7 @@ pub(super) enum RequestKind {
 impl RequestKind {
     fn lanes(self) -> u32 {
         match self {
-            Self::Save => PLAYER_MUTATION | SAVE,
+            Self::KeyBindingSave => PLAYER_MUTATION | KEY_BINDING_SAVE,
             Self::Item => PLAYER_MUTATION | ITEM,
             Self::Skill => PLAYER_MUTATION | SKILL,
             Self::Transition => PLAYER_MUTATION | TRANSITION,
@@ -172,7 +172,7 @@ mod tests {
             .expect("first mutation is admitted");
 
         for kind in [
-            RequestKind::Save,
+            RequestKind::KeyBindingSave,
             RequestKind::Skill,
             RequestKind::Transition,
             RequestKind::Recovery,
@@ -184,7 +184,7 @@ mod tests {
         }
 
         drop(permit);
-        assert!(admission.admit(RequestKind::Save).is_some());
+        assert!(admission.admit(RequestKind::KeyBindingSave).is_some());
     }
 
     #[test]

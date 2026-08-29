@@ -36,6 +36,7 @@ use oozems_proto::v1::GetMovementRulesResponse;
 use oozems_proto::v1::GetSkillBookRequest;
 use oozems_proto::v1::GetSkillBookResponse;
 use oozems_proto::v1::ItemActionResponse;
+use oozems_proto::v1::KeyBinding;
 use oozems_proto::v1::Map;
 use oozems_proto::v1::MovementRules;
 use oozems_proto::v1::MovementSnapshot;
@@ -418,11 +419,15 @@ pub async fn respawn_player(player_id: &str) -> Result<RespawnPlayerResponse, Cl
     .await
 }
 
-pub async fn save_player(player: PlayerState) -> Result<SavePlayerResponse, ClientError> {
+pub async fn save_player(
+    player_id: &str,
+    key_bindings: Vec<KeyBinding>,
+) -> Result<SavePlayerResponse, ClientError> {
     post_protobuf(
         "/api/v1/players/save",
         SavePlayerRequest {
-            player: Some(player),
+            player_id: player_id.to_owned(),
+            key_bindings,
         },
     )
     .await
