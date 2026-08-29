@@ -47,6 +47,7 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> Result<Option<Edit
     let mut skill = None;
     let mut strings = None;
     let mut scripts = None;
+    let mut skill_semantics = None;
     let mut output_directory = None;
     let mut arguments = arguments.into_iter();
     while let Some(argument) = arguments.next() {
@@ -55,7 +56,13 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> Result<Option<Edit
         }
         if !matches!(
             argument.as_str(),
-            "--data" | "--quest" | "--skill" | "--strings" | "--scripts" | "--output-directory"
+            "--data"
+                | "--quest"
+                | "--skill"
+                | "--strings"
+                | "--scripts"
+                | "--skill-semantics"
+                | "--output-directory"
         ) {
             return Err(format!("unknown argument {argument:?}"));
         }
@@ -69,6 +76,7 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> Result<Option<Edit
             "--skill" => skill = Some(value),
             "--strings" => strings = Some(value),
             "--scripts" => scripts = Some(value),
+            "--skill-semantics" => skill_semantics = Some(value),
             "--output-directory" => output_directory = Some(value),
             _ => unreachable!("arguments were validated above"),
         }
@@ -81,6 +89,7 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> Result<Option<Edit
         skill_output: output.join("Skill.edited.wz"),
         strings: strings.unwrap_or_else(|| data.join("String.wz")),
         scripts: scripts.unwrap_or_else(|| data.join("quest-scripts.toml")),
+        skill_semantics: skill_semantics.unwrap_or_else(|| data.join("skill-semantics.toml")),
     }))
 }
 
@@ -90,7 +99,42 @@ fn print_help() {
          [OPTIONS]\n\nOptions:\n--data <DIR>              WZ data directory [default: \
          data]\n--quest <PATH>            Quest.wz path\n--skill <PATH>            Skill.wz \
          path\n--strings <PATH>          String.wz path\n--scripts <PATH>          Quest script \
-         TOML path\n--output-directory <DIR>  Edited WZ output directory [default: data]\n-h, \
+         TOML path\n--skill-semantics <PATH>  Skill property mapping TOML path\n--output-directory <DIR>  Edited WZ output directory [default: data]\n-h, \
          --help               Show this help"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::parse_args;
+
+    #[test]
+    fn skill_semantics_path_follows_data_unless_explicitly_overridden() {
+        let defaults = parse_args(Vec::new())
+            .expect("default arguments")
+            .expect("editor paths");
+        let custom_data = parse_args(["--data".to_owned(), "custom".to_owned()])
+            .expect("custom data arguments")
+            .expect("editor paths");
+        let explicit = parse_args([
+            "--data".to_owned(),
+            "custom".to_owned(),
+            "--skill-semantics".to_owned(),
+            "mapping.toml".to_owned(),
+        ])
+        .expect("explicit semantic arguments")
+        .expect("editor paths");
+
+        assert_eq!(
+            defaults.skill_semantics,
+            Path::new("data/skill-semantics.toml")
+        );
+        assert_eq!(
+            custom_data.skill_semantics,
+            Path::new("custom/skill-semantics.toml")
+        );
+        assert_eq!(explicit.skill_semantics, Path::new("mapping.toml"));
+    }
 }

@@ -10,6 +10,7 @@ use oozems_proto::v1::ItemDefinition;
 use oozems_proto::v1::Map;
 use oozems_proto::v1::SkillBook;
 use oozems_proto::v1::SkillEffect;
+use oozems_skill_semantics::SkillSemanticCatalog;
 use thiserror::Error;
 
 mod character;
@@ -87,6 +88,7 @@ impl ContentCatalog {
         wz_dir: &Path,
         gui_layout_dir: &Path,
         config: &ContentConfig,
+        skill_semantics: SkillSemanticCatalog,
     ) -> Result<Self, ContentError> {
         let sounds = SoundContent::open_optional(wz_dir)?;
         let wz = WzContent::open(wz_dir, config.npcs.clone(), sounds.clone())?;
@@ -100,7 +102,7 @@ impl ContentCatalog {
             .as_ref()
             .map(ItemContent::equipment_source_ids)
             .unwrap_or_default();
-        let skills = SkillContent::open_optional(wz_dir, sounds.clone())?;
+        let skills = SkillContent::open_optional(wz_dir, sounds.clone(), skill_semantics)?;
         let skill_source_ids = skills
             .as_ref()
             .map(SkillContent::authoritative_skill_ids)
@@ -480,6 +482,8 @@ impl crate::items::ItemDefinitionLookup for ContentCatalog {
 
 #[cfg(test)]
 mod tests {
+    use oozems_skill_semantics::SkillSemanticCatalog;
+
     use super::ContentCatalog;
     use super::ContentConfig;
 
@@ -490,6 +494,7 @@ mod tests {
             directory.path(),
             &directory.path().join("gui"),
             &ContentConfig::default(),
+            SkillSemanticCatalog::default(),
         )
         .err()
         .expect("missing Map.wz must fail");

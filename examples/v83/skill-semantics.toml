@@ -1,0 +1,148 @@
+schema_version = 1
+
+[[level_properties]]
+skill_ids        = [4000000, 5000000, 14000000, 15000000]
+property         = "x"
+label            = "Accuracy"
+normalized_stats = ["accuracy"]
+transform        = { type = "numeric" }
+
+[[level_properties]]
+skill_ids        = [4000000, 5000000, 14000000, 15000000]
+property         = "y"
+label            = "Avoidability"
+normalized_stats = ["avoidability"]
+transform        = { type = "numeric" }
+
+[[level_properties]]
+skill_ids        = [12, 10000012, 20000012]
+property         = "x"
+label            = "Weapon attack"
+normalized_stats = ["weapon_attack"]
+transform        = { type = "numeric" }
+
+[[level_properties]]
+skill_ids        = [12, 10000012, 20000012]
+property         = "y"
+label            = "Magic attack"
+normalized_stats = ["magic_attack"]
+transform        = { type = "numeric" }
+
+[[level_properties]]
+skill_ids        = [12, 10000012, 20000012]
+property         = "z"
+label            = "Accuracy and avoidability"
+normalized_stats = ["accuracy", "avoidability"]
+transform        = { type = "numeric" }
+
+[[level_properties]]
+skill_ids        = [1001, 10001001, 20001001]
+property         = "x"
+label            = "HP recovery per five-second tick"
+normalized_stats = ["hp_recovery_per_five_seconds"]
+transform        = { type = "numeric" }
+
+[[level_properties]]
+skill_ids = [1000001, 5100000, 11000000, 15100000]
+property  = "x"
+label     = "Maximum HP gained per level"
+transform = { type = "preserve" }
+
+[[level_properties]]
+skill_ids = [1000001, 5100000, 11000000, 15100000]
+property  = "y"
+label     = "Maximum HP gained per AP"
+transform = { type = "preserve" }
+
+[[level_properties]]
+skill_ids = [2000001, 12000000]
+property  = "x"
+label     = "Maximum MP gained per level"
+transform = { type = "preserve" }
+
+[[level_properties]]
+skill_ids = [2000001, 12000000]
+property  = "y"
+label     = "Maximum MP gained per AP"
+transform = { type = "preserve" }
+
+[[level_properties]]
+skill_ids        = [4100000, 5200000, 14100000]
+property         = "x"
+label            = "Accuracy"
+normalized_stats = ["accuracy"]
+transform        = { type = "numeric" }
+
+[[level_properties]]
+skill_ids = [4100000, 14100000]
+property  = "y"
+label     = "Throwing-star capacity"
+transform = { type = "preserve" }
+
+[[level_properties]]
+skill_ids = [5200000]
+property  = "y"
+label     = "Bullet capacity"
+transform = { type = "preserve" }
+
+[[level_properties]]
+skill_ids = [3121002, 3221002]
+property  = "x"
+label     = "Critical chance"
+transform = { type = "preserve" }
+
+[[level_properties]]
+skill_ids        = [3121002, 3221002]
+property         = "y"
+label            = "Critical damage"
+normalized_stats = ["critical_damage"]
+transform        = { type = "numeric", offset = -100 }
+
+[[level_properties]]
+skill_ids = [5101005]
+property  = "x"
+label     = "Maximum HP consumed (%)"
+transform = { type = "preserve" }
+
+[[level_properties]]
+skill_ids = [5101005]
+property  = "y"
+label     = "Consumed HP converted to MP (%)"
+transform = { type = "preserve" }
+
+[[level_properties]]
+skill_ids = [21000000]
+property  = "x"
+label     = "Combo-stat increment"
+transform = { type = "preserve" }
+
+[[level_properties]]
+skill_ids = [21000000]
+property  = "y"
+label     = "Weapon attack per combo threshold"
+transform = { type = "preserve" }
+
+[[level_properties]]
+skill_ids = [21000000]
+property  = "z"
+label     = "Weapon and magic defense per combo threshold"
+transform = { type = "preserve" }
+
+[[level_properties]]
+skill_ids = [21111005]
+property  = "x"
+label     = "Enemy speed penalty"
+transform = { type = "preserve" }
+
+[[level_properties]]
+skill_ids = [21111005]
+property  = "y"
+label     = "Enemy slow duration"
+transform = { type = "preserve" }
+
+[[level_properties]]
+skill_ids        = [21111005]
+property         = "z"
+label            = "Slow success chance"
+normalized_stats = ["success_probability"]
+transform        = { type = "numeric" }

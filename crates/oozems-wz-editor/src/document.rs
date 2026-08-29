@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 
 use anyhow::Context;
 use anyhow::Result;
@@ -153,6 +154,7 @@ pub fn skill_index(
     let images =
         oozems_wz::list(archive, "/", 0, usize::MAX).context("failed to list Skill.wz images")?;
     let mut entries = Vec::new();
+    let mut skill_ids = BTreeSet::new();
     for image in images.nodes {
         let Some(job) = image.name.strip_suffix(".img") else {
             continue;
@@ -168,6 +170,9 @@ pub fn skill_index(
             let Ok(id) = skill.name.parse::<u32>() else {
                 continue;
             };
+            if !skill_ids.insert(id) {
+                anyhow::bail!("skill {id} appears more than once in Skill.wz");
+            }
             let text = texts.get(&id);
             entries.push(DefinitionEntry {
                 id,

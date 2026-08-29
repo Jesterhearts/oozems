@@ -114,6 +114,7 @@ the local WZ archives, SurrealKV state, and these version-specific files:
 - `interactions.toml`
 - `loot.toml`
 - `quest-scripts.toml`
+- `skill-semantics.toml`
 
 Set these environment variables to override the default runtime locations:
 
@@ -394,6 +395,43 @@ one item action. It restores the drop if the player save fails.
 Project-wide configuration files are under `config`. Configuration tied to a
 specific WZ version belongs in the runtime data directory, which is `./data` by
 default.
+
+### Configure overloaded skill properties
+
+`Skill.wz` uses the property names `x`, `y`, and `z` for different purposes in
+different skills. The archive does not encode a universal meaning for those
+names. An optional `data/skill-semantics.toml` file assigns meanings for the
+specific `Skill.wz` in use. Conventional properties such as `acc`, `eva`,
+`damage`, and `time` do not need mappings.
+
+Each rule names one or more skill IDs from that archive, a direct level
+property, its editor label, and any normalized server stats:
+
+```toml
+schema_version = 1
+
+[[level_properties]]
+skill_ids = [4000000]
+property = "x"
+label = "Accuracy"
+normalized_stats = ["accuracy"]
+transform = { type = "numeric" }
+```
+
+Numeric transforms can include an `offset`. A label-only interpretation uses
+`transform = { type = "preserve" }` and omits `normalized_stats`. The server
+keeps the original `x`, `y`, or `z` value in either case. A conventional named
+property takes precedence if it and an overloaded alias target the same stat.
+
+Missing mapping files are treated as empty, so unknown overloaded properties
+remain raw and are never guessed. The server reads the mapping from the same
+directory as `Skill.wz`, including when `OOZEMS_WZ_DIR` overrides the default
+location. If a mapping file is present, `Skill.wz` must also be present. Both
+the server and WZ editor reject stale skill IDs, properties missing from any
+direct skill level, and numeric transforms that produce nonnumeric or
+out-of-range stat values. Review mappings whenever `Skill.wz` changes.
+`examples/v83/skill-semantics.toml` contains mappings audited for the
+repository's v83 example data.
 
 ### Configure loot
 
@@ -1221,8 +1259,9 @@ vector, null, or nested container nodes. Existing properties have staged remove
 and undo controls. This supports effects that the original definition omitted,
 such as adding a typed `jump` value to each level of Nimble Feet.
 
-Place matching `Quest.wz`, `Skill.wz`, and `String.wz` files in `data`, then
-run:
+Place matching `Quest.wz`, `Skill.wz`, and `String.wz` files in `data`. If the
+archive has an accompanying `skill-semantics.toml`, place that file there too,
+then run:
 
 ```sh
 make wz-editor
@@ -1243,7 +1282,10 @@ ends; it is not persisted across server restarts. Skill levels also show their
 `String.wz` effect summaries, and known WZ property names are labelled with the
 stats they affect. The `hs` property is labelled as a level-description
 selector: a value such as `h3` selects the corresponding `String.wz` text
-template and does not affect a character stat.
+template and does not affect a character stat. Labels for overloaded `x`, `y`,
+and `z` properties come from the validated `skill-semantics.toml` associated
+with the open archive. Use `--skill-semantics <PATH>` when that file is outside
+the selected `--data` directory.
 
 ### Inspect WZ archives from the command line
 
@@ -1342,6 +1384,7 @@ server
   -> data/cash-shop.toml          global Cash Shop offers, prices, and lifetimes
   -> data/loot.toml               version-specific mob item drop rates
   -> data/quest-scripts.toml      version-specific replacements for WZ quest scripts
+  -> data/skill-semantics.toml    version-specific x, y, and z skill meanings
   -> data/Map.wz                  required, lazy WZ map source
   -> data/Npc.wz                  optional NPC placement animation source
   -> data/Quest.wz                enabled quest conditions, dialogue, and rewards

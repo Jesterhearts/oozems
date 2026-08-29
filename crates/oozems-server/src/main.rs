@@ -42,6 +42,7 @@ use experience::ExperienceCurves;
 use gameplay::GameplayConfig;
 use interactions::InteractionCatalog;
 use loot::LootCatalog;
+use oozems_skill_semantics::load_optional as load_skill_semantics;
 use quest_scripts::QuestScriptCatalog;
 use skill_formula::FormulaCatalog;
 use tracing::info;
@@ -90,8 +91,17 @@ async fn main() -> anyhow::Result<()> {
         source = formulas.source_url(),
         "formula profile configuration ready"
     );
-    let mut catalog =
-        ContentCatalog::load(&config.wz_dir, &config.gui_layout_dir, &content_config)?;
+    let skill_semantics = load_skill_semantics(&config.wz_dir.join("skill-semantics.toml"))?;
+    info!(
+        mapping_count = skill_semantics.len(),
+        "skill semantic mappings ready"
+    );
+    let mut catalog = ContentCatalog::load(
+        &config.wz_dir,
+        &config.gui_layout_dir,
+        &content_config,
+        skill_semantics,
+    )?;
     if catalog.get_map(gameplay.initial_map_id)?.is_none() {
         anyhow::bail!(
             "configured initial character map {} does not exist",

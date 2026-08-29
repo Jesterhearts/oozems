@@ -21,7 +21,6 @@ use crate::skill_formula::evaluate_damage_profile;
 use crate::skill_formula::evaluate_profile_property;
 
 const MAX_DAMAGE: u32 = 99_999;
-const BEGINNER_RECOVERY_SKILL_ID: u32 = 1_001;
 
 #[derive(Default)]
 pub struct SkillCooldowns {
@@ -335,20 +334,20 @@ pub fn prepare_skill_use(
         SkillDuration::Timed(seconds) => seconds,
         SkillDuration::None | SkillDuration::Permanent => 0,
     };
-    if skill_id == BEGINNER_RECOVERY_SKILL_ID && duration == SkillDuration::Permanent {
+    let periodic_hp_recovery = numeric_stat(
+        skill_id,
+        "hpRecoveryPerFiveSeconds",
+        level_stats.hp_recovery_per_five_seconds.as_ref(),
+        common_stats.and_then(|stats| stats.hp_recovery_per_five_seconds.as_ref()),
+    )?;
+    if periodic_hp_recovery > 0 && duration == SkillDuration::Permanent {
         return Err(SkillRuleError::InvalidProperty {
             skill_id,
             property: "time",
         });
     }
-    if skill_id == BEGINNER_RECOVERY_SKILL_ID && hp_recovery == 0 {
-        let recovery_per_tick = numeric_stat(
-            skill_id,
-            "x",
-            level_stats.x.as_ref(),
-            common_stats.and_then(|stats| stats.x.as_ref()),
-        )?;
-        hp_recovery = beginner_recovery_amount(recovery_per_tick, duration_seconds);
+    if hp_recovery == 0 {
+        hp_recovery = periodic_hp_recovery_amount(periodic_hp_recovery, duration_seconds);
     }
     let cooldown_seconds = numeric_stat(
         skill_id,
@@ -423,7 +422,7 @@ pub fn prepare_skill_use(
     })
 }
 
-fn beginner_recovery_amount(
+fn periodic_hp_recovery_amount(
     recovery_per_tick: u32,
     duration_seconds: u32,
 ) -> u32 {
@@ -755,7 +754,7 @@ mod tests {
     use super::SkillDuration;
     use super::SkillRuleError;
     use super::allocate_skill_point;
-    use super::beginner_recovery_amount;
+    use super::periodic_hp_recovery_amount;
     use super::personalize_skill_book;
     use super::prepare_skill_use;
     use super::projected_skill_attack_bonus;
@@ -924,6 +923,40 @@ mod tests {
         assert_eq!(prepared.result.minimum_damage, 10);
         assert_eq!(prepared.result.maximum_damage, 10);
         assert!(prepared.result.has_damage);
+    }
+
+    #[test]
+    fn typed_periodic_hp_recovery_does_not_depend_on_the_skill_id() {
+        let mut player = player(0, 5);
+        player.stats.as_mut().expect("stats").hp = 1;
+        player.learned_skills.push(oozems_proto::v1::LearnedSkill {
+            skill_id: 1_000,
+            level: 1,
+            master_level: 0,
+        });
+        let mut book = book();
+        let stats = book.skills[0]
+            .definition
+            .as_mut()
+            .expect("skill definition")
+            .levels[0]
+            .stats
+            .as_mut()
+            .expect("level stats");
+        stats.hp_recovery_per_five_seconds = Some(integer(4));
+        stats.duration = Some(integer(30));
+
+        let prepared = prepare_skill_use(
+            player,
+            &context(book),
+            1_000,
+            &formulas(),
+            ProjectedEffects::default(),
+        )
+        .expect("use periodic recovery skill");
+
+        assert_eq!(prepared.result.hp_restored, 24);
+        assert_eq!(prepared.player.stats.expect("stats").hp, 25);
     }
 
     #[test]
@@ -1135,9 +1168,9 @@ mod tests {
     }
 
     #[test]
-    fn beginner_recovery_converts_five_second_ticks_to_the_wz_total() {
-        assert_eq!(beginner_recovery_amount(4, 30), 24);
-        assert_eq!(beginner_recovery_amount(8, 30), 48);
+    fn periodic_hp_recovery_converts_five_second_ticks_to_the_total() {
+        assert_eq!(periodic_hp_recovery_amount(4, 30), 24);
+        assert_eq!(periodic_hp_recovery_amount(8, 30), 48);
     }
 
     #[test]

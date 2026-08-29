@@ -19,6 +19,14 @@ use oozems_proto::v1::SkillStats;
 use oozems_proto::v1::SkillValue;
 use oozems_proto::v1::Vec2;
 use oozems_proto::v1::skill_value;
+use oozems_skill_semantics::NormalizedSkillStat;
+use oozems_skill_semantics::OverloadedSkillProperty;
+use oozems_skill_semantics::SkillArchiveFacts;
+use oozems_skill_semantics::SkillPropertyScope;
+use oozems_skill_semantics::SkillSemanticCatalog;
+use oozems_skill_semantics::SkillSemanticError;
+use oozems_skill_semantics::SkillValueTransform;
+use oozems_skill_semantics::validate_archive;
 use sha2::Digest;
 use sha2::Sha256;
 use thiserror::Error;
@@ -43,6 +51,7 @@ pub struct SkillContent {
     strings: WzNodeArc,
     fingerprint: String,
     sounds: Option<Arc<SoundContent>>,
+    semantics: SkillSemanticCatalog,
     books: RwLock<HashMap<u32, SkillBook>>,
     definitions: RwLock<HashMap<u32, CachedSkillDefinition>>,
     effects: RwLock<HashMap<(u32, u32, u32), SkillEffect>>,
@@ -77,6 +86,8 @@ pub(crate) struct SkillBookContext {
 pub enum SkillContentError {
     #[error(transparent)]
     Wz(#[from] WzContentError),
+    #[error(transparent)]
+    Semantics(#[from] SkillSemanticError),
     #[error("skill WZ data is invalid: {message}")]
     Invalid { message: String },
     #[error("internal skill content lock was poisoned while accessing {context}")]
@@ -87,6 +98,7 @@ impl SkillContent {
     pub fn open_optional(
         directory: &Path,
         sounds: Option<Arc<SoundContent>>,
+        semantics: SkillSemanticCatalog,
     ) -> Result<Option<Self>, SkillContentError> {
         let skill_path = directory.join(SKILL_ARCHIVE);
         if !skill_path
@@ -96,6 +108,11 @@ impl SkillContent {
                 source,
             })?
         {
+            if !semantics.is_empty() {
+                return invalid(format!(
+                    "{SKILL_ARCHIVE} is absent but skill semantic mappings are configured"
+                ));
+            }
             tracing::warn!(path = %skill_path.display(), "Skill.wz is absent; skill books will be empty");
             return Ok(None);
         }
@@ -120,6 +137,7 @@ impl SkillContent {
         wz::parse(&skill_root, format!("{} root", skill_path.display()))?;
         let jobs = index_jobs(&skill_root)?;
         let skills = index_skills(&jobs)?;
+        validate_archive(&semantics, &skill_archive_facts(&skills, &semantics)?)?;
 
         let string_root = wz::open_archive(&string_path)?;
         let string_base = wz::wrap_archive_root(&string_root)?;
@@ -141,6 +159,7 @@ impl SkillContent {
             strings,
             fingerprint,
             sounds,
+            semantics,
             books: RwLock::new(HashMap::new()),
             definitions: RwLock::new(HashMap::new()),
             effects: RwLock::new(HashMap::new()),
@@ -397,6 +416,70 @@ fn index_skills(
     Ok(indexed)
 }
 
+fn skill_archive_facts(
+    skills: &HashMap<u32, IndexedSkill>,
+    semantics: &SkillSemanticCatalog,
+) -> Result<SkillArchiveFacts, SkillContentError> {
+    let mut facts = SkillArchiveFacts::default();
+    for skill_id in skills.keys().copied() {
+        facts.add_skill(skill_id);
+    }
+    let mut configured = BTreeMap::<u32, BTreeSet<OverloadedSkillProperty>>::new();
+    for (skill_id, property) in semantics.configured_properties() {
+        configured.entry(skill_id).or_default().insert(property);
+    }
+    for (skill_id, properties) in configured {
+        let Some(skill) = skills.get(&skill_id) else {
+            continue;
+        };
+        let Some(levels) = wz::child(&skill.node, "level")? else {
+            continue;
+        };
+        let levels = wz::children(&levels)?;
+        facts.set_level_count(skill_id, levels.len());
+        for level in levels {
+            for property in &properties {
+                let Some(property_node) = wz::child(&level, property.name())? else {
+                    continue;
+                };
+                let semantic = semantics
+                    .property_semantic(skill_id, SkillPropertyScope::Level, property.name())
+                    .expect("configured property has a semantic mapping");
+                if let SkillValueTransform::Numeric { .. } = semantic.transform() {
+                    let value = read_skill_value(&property_node)?;
+                    let Some(value) = value
+                        .as_ref()
+                        .and_then(|value| normalize_skill_value(semantic.transform(), value))
+                    else {
+                        return invalid(format!(
+                            "skill {skill_id} property {} has a nonnumeric mapped value",
+                            property.name()
+                        ));
+                    };
+                    let Some(number) = skill_value_number(&value) else {
+                        return invalid(format!(
+                            "skill {skill_id} property {} has a nonnumeric mapped value",
+                            property.name()
+                        ));
+                    };
+                    if semantic
+                        .normalized_stats()
+                        .iter()
+                        .any(|stat| !stat.accepts_number(number))
+                    {
+                        return invalid(format!(
+                            "skill {skill_id} property {} normalizes outside its stat range",
+                            property.name()
+                        ));
+                    }
+                }
+                facts.add_level_property(skill_id, *property);
+            }
+        }
+    }
+    Ok(facts)
+}
+
 fn build_skill_book(
     content: &SkillContent,
     job_id: u32,
@@ -471,9 +554,14 @@ fn build_skill_definition(
         &format!("{SKILL_ARCHIVE}/{job_id:03}.img/skill/{skill_name}/icon"),
         &icon,
     )?;
-    let levels = build_levels(skill, text.as_ref())?;
+    let levels = build_levels(&content.semantics, skill_id, skill, text.as_ref())?;
     let common_properties = build_properties(wz::child(skill, "common")?.as_ref())?;
-    let common_stats = stats_from_properties(&common_properties);
+    let common_stats = stats_from_properties(
+        &content.semantics,
+        skill_id,
+        SkillPropertyScope::Common,
+        &common_properties,
+    );
     let metadata = build_metadata(skill)?;
     let requirements = build_requirements(skill)?;
     let max_level = levels
@@ -505,6 +593,8 @@ fn build_skill_definition(
 }
 
 fn build_levels(
+    semantics: &SkillSemanticCatalog,
+    skill_id: u32,
     skill: &WzNodeArc,
     text: Option<&WzNodeArc>,
 ) -> Result<Vec<SkillLevelDefinition>, SkillContentError> {
@@ -520,7 +610,12 @@ fn build_levels(
             Ok(SkillLevelDefinition {
                 level: level_number,
                 description,
-                stats: Some(stats_from_properties(&properties)),
+                stats: Some(stats_from_properties(
+                    semantics,
+                    skill_id,
+                    SkillPropertyScope::Level,
+                    &properties,
+                )),
                 properties,
             })
         })
@@ -607,34 +702,117 @@ fn read_skill_value(node: &WzNodeArc) -> Result<Option<SkillValue>, SkillContent
     Ok(Some(SkillValue { value: Some(value) }))
 }
 
-fn stats_from_properties(properties: &[SkillProperty]) -> SkillStats {
-    SkillStats {
-        hp_cost: property_value(properties, "hpCon"),
-        mp_cost: property_value(properties, "mpCon"),
-        hp: property_value(properties, "hp"),
-        mp: property_value(properties, "mp"),
-        weapon_attack: property_value(properties, "pad"),
-        magic_attack: property_value(properties, "mad"),
-        accuracy: property_value(properties, "acc"),
-        avoidability: property_value(properties, "eva"),
-        weapon_defense: property_value(properties, "pdd"),
-        magic_defense: property_value(properties, "mdd"),
-        speed: property_value(properties, "speed"),
-        jump: property_value(properties, "jump"),
-        strength: property_value(properties, "str"),
-        damage: property_value(properties, "damage"),
-        fixed_damage: property_value(properties, "fixdamage"),
-        critical_damage: property_value(properties, "criticalDamage"),
-        mastery: property_value(properties, "mastery"),
-        attack_count: property_value(properties, "attackCount"),
-        mob_count: property_value(properties, "mobCount"),
-        duration: property_value(properties, "time"),
-        cooldown: property_value(properties, "cooltime"),
-        range: property_value(properties, "range"),
-        success_probability: property_value(properties, "prop"),
+fn stats_from_properties(
+    semantics: &SkillSemanticCatalog,
+    skill_id: u32,
+    scope: SkillPropertyScope,
+    properties: &[SkillProperty],
+) -> SkillStats {
+    let mut stats = SkillStats {
         x: property_value(properties, "x"),
         y: property_value(properties, "y"),
         z: property_value(properties, "z"),
+        ..SkillStats::default()
+    };
+
+    for overloaded in [false, true] {
+        for property in properties {
+            if matches!(property.name.as_str(), "x" | "y" | "z") != overloaded {
+                continue;
+            }
+            let Some(semantic) = semantics.property_semantic(skill_id, scope, &property.name)
+            else {
+                continue;
+            };
+            let Some(value) = property
+                .value
+                .as_ref()
+                .and_then(|value| normalize_skill_value(semantic.transform(), value))
+            else {
+                continue;
+            };
+            for normalized_stat in semantic.normalized_stats() {
+                set_normalized_stat(&mut stats, *normalized_stat, value.clone());
+            }
+        }
+    }
+    stats
+}
+
+fn normalize_skill_value(
+    transform: SkillValueTransform,
+    value: &SkillValue,
+) -> Option<SkillValue> {
+    match (transform, value.value.as_ref()?) {
+        (SkillValueTransform::Preserve, _) => Some(value.clone()),
+        (SkillValueTransform::Numeric { offset }, skill_value::Value::Integer(value)) => {
+            value.checked_add(offset).map(|value| SkillValue {
+                value: Some(skill_value::Value::Integer(value)),
+            })
+        }
+        (SkillValueTransform::Numeric { offset }, skill_value::Value::Decimal(value)) => {
+            let value = *value + offset as f64;
+            value.is_finite().then_some(SkillValue {
+                value: Some(skill_value::Value::Decimal(value)),
+            })
+        }
+        (SkillValueTransform::Numeric { offset }, skill_value::Value::Text(value)) => {
+            if let Ok(value) = value.trim().parse::<i64>() {
+                return value.checked_add(offset).map(|value| SkillValue {
+                    value: Some(skill_value::Value::Integer(value)),
+                });
+            }
+            let value = value.trim().parse::<f64>().ok()? + offset as f64;
+            value.is_finite().then_some(SkillValue {
+                value: Some(skill_value::Value::Decimal(value)),
+            })
+        }
+        (SkillValueTransform::Numeric { .. }, skill_value::Value::Vector(_)) => None,
+    }
+}
+
+fn skill_value_number(value: &SkillValue) -> Option<f64> {
+    match value.value.as_ref()? {
+        skill_value::Value::Integer(value) => Some(*value as f64),
+        skill_value::Value::Decimal(value) => Some(*value),
+        skill_value::Value::Text(value) => value.trim().parse().ok(),
+        skill_value::Value::Vector(_) => None,
+    }
+}
+
+fn set_normalized_stat(
+    stats: &mut SkillStats,
+    normalized_stat: NormalizedSkillStat,
+    value: SkillValue,
+) {
+    let destination = match normalized_stat {
+        NormalizedSkillStat::HpCost => &mut stats.hp_cost,
+        NormalizedSkillStat::MpCost => &mut stats.mp_cost,
+        NormalizedSkillStat::Hp => &mut stats.hp,
+        NormalizedSkillStat::Mp => &mut stats.mp,
+        NormalizedSkillStat::WeaponAttack => &mut stats.weapon_attack,
+        NormalizedSkillStat::MagicAttack => &mut stats.magic_attack,
+        NormalizedSkillStat::Accuracy => &mut stats.accuracy,
+        NormalizedSkillStat::Avoidability => &mut stats.avoidability,
+        NormalizedSkillStat::WeaponDefense => &mut stats.weapon_defense,
+        NormalizedSkillStat::MagicDefense => &mut stats.magic_defense,
+        NormalizedSkillStat::Speed => &mut stats.speed,
+        NormalizedSkillStat::Jump => &mut stats.jump,
+        NormalizedSkillStat::Strength => &mut stats.strength,
+        NormalizedSkillStat::Damage => &mut stats.damage,
+        NormalizedSkillStat::FixedDamage => &mut stats.fixed_damage,
+        NormalizedSkillStat::CriticalDamage => &mut stats.critical_damage,
+        NormalizedSkillStat::Mastery => &mut stats.mastery,
+        NormalizedSkillStat::AttackCount => &mut stats.attack_count,
+        NormalizedSkillStat::MobCount => &mut stats.mob_count,
+        NormalizedSkillStat::Duration => &mut stats.duration,
+        NormalizedSkillStat::Cooldown => &mut stats.cooldown,
+        NormalizedSkillStat::Range => &mut stats.range,
+        NormalizedSkillStat::SuccessProbability => &mut stats.success_probability,
+        NormalizedSkillStat::HpRecoveryPerFiveSeconds => &mut stats.hp_recovery_per_five_seconds,
+    };
+    if destination.is_none() {
+        *destination = Some(value);
     }
 }
 
@@ -775,7 +953,13 @@ mod tests {
     use oozems_proto::v1::AssetDescriptor;
     use oozems_proto::v1::LearnedSkill;
     use oozems_proto::v1::SkillDefinition;
+    use oozems_proto::v1::SkillValue;
+    use oozems_proto::v1::Vec2;
     use oozems_proto::v1::skill_value;
+    use oozems_skill_semantics::SkillPropertyScope;
+    use oozems_skill_semantics::SkillSemanticCatalog;
+    use oozems_skill_semantics::SkillValueTransform;
+    use oozems_skill_semantics::validate_archive;
     use wz_reader::WzNode;
     use wz_reader::WzObjectType;
     use wz_reader::property::WzString;
@@ -786,6 +970,8 @@ mod tests {
     use super::IndexedSkill;
     use super::SkillContent;
     use super::build_properties;
+    use super::normalize_skill_value;
+    use super::skill_archive_facts;
     use super::stats_from_properties;
 
     #[test]
@@ -842,7 +1028,12 @@ mod tests {
         );
 
         let properties = build_properties(Some(&node)).expect("synthetic skill properties");
-        let stats = stats_from_properties(&properties);
+        let stats = stats_from_properties(
+            &SkillSemanticCatalog::default(),
+            1_002,
+            SkillPropertyScope::Level,
+            &properties,
+        );
         assert!(matches!(
             stats.mp_cost.and_then(|value| value.value),
             Some(skill_value::Value::Integer(3))
@@ -851,6 +1042,181 @@ mod tests {
             stats.damage.and_then(|value| value.value),
             Some(skill_value::Value::Text(value)) if value == "10+2*x"
         ));
+    }
+
+    #[test]
+    fn canonical_stats_take_precedence_while_overloaded_values_remain_raw() {
+        let node = property_node("level");
+        add_value(&node, "x", WzValue::Int(7));
+        add_value(&node, "y", WzValue::Int(9));
+        add_value(&node, "acc", WzValue::Int(12));
+
+        let properties = build_properties(Some(&node)).expect("synthetic skill properties");
+        let stats = stats_from_properties(
+            &test_semantics(),
+            40,
+            SkillPropertyScope::Level,
+            &properties,
+        );
+
+        assert_eq!(integer_stat(stats.x.as_ref()), Some(7));
+        assert_eq!(integer_stat(stats.y.as_ref()), Some(9));
+        assert_eq!(integer_stat(stats.accuracy.as_ref()), Some(12));
+        assert_eq!(integer_stat(stats.avoidability.as_ref()), Some(9));
+    }
+
+    #[test]
+    fn one_overloaded_value_can_normalize_to_multiple_stats() {
+        let node = property_node("level");
+        add_value(&node, "z", WzValue::Int(4));
+
+        let properties = build_properties(Some(&node)).expect("synthetic skill properties");
+        let stats = stats_from_properties(
+            &test_semantics(),
+            40,
+            SkillPropertyScope::Level,
+            &properties,
+        );
+
+        assert_eq!(integer_stat(stats.z.as_ref()), Some(4));
+        assert_eq!(integer_stat(stats.accuracy.as_ref()), Some(3));
+        assert_eq!(integer_stat(stats.avoidability.as_ref()), Some(3));
+    }
+
+    #[test]
+    fn mapped_periodic_recovery_populates_the_typed_stat() {
+        let node = property_node("level");
+        add_value(&node, "x", WzValue::Int(4));
+        let properties = build_properties(Some(&node)).expect("synthetic skill properties");
+        let stats = stats_from_properties(
+            &periodic_recovery_semantics(),
+            40,
+            SkillPropertyScope::Level,
+            &properties,
+        );
+
+        assert_eq!(
+            integer_stat(stats.hp_recovery_per_five_seconds.as_ref()),
+            Some(4)
+        );
+    }
+
+    #[test]
+    fn unmapped_and_nonnumeric_overloaded_values_are_not_guessed() {
+        let node = property_node("level");
+        add_value(
+            &node,
+            "x",
+            WzValue::String(WzString::from_str("10+2*x", [0; 4])),
+        );
+        let properties = build_properties(Some(&node)).expect("synthetic skill properties");
+
+        let unmapped = stats_from_properties(
+            &SkillSemanticCatalog::default(),
+            40,
+            SkillPropertyScope::Level,
+            &properties,
+        );
+        let mapped = stats_from_properties(
+            &test_semantics(),
+            40,
+            SkillPropertyScope::Level,
+            &properties,
+        );
+        let common = stats_from_properties(
+            &test_semantics(),
+            40,
+            SkillPropertyScope::Common,
+            &properties,
+        );
+
+        assert!(unmapped.x.is_some());
+        assert!(unmapped.accuracy.is_none());
+        assert!(mapped.x.is_some());
+        assert!(mapped.accuracy.is_none());
+        assert!(common.x.is_some());
+        assert!(common.accuracy.is_none());
+    }
+
+    #[test]
+    fn configured_semantics_require_skill_wz() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let error = SkillContent::open_optional(directory.path(), None, accuracy_semantics())
+            .err()
+            .expect("configured mappings without Skill.wz must fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("Skill.wz is absent but skill semantic mappings are configured")
+        );
+    }
+
+    #[test]
+    fn server_archive_facts_validate_direct_numeric_properties() {
+        let semantics = accuracy_semantics();
+        let skills = synthetic_indexed_skill(Some(WzValue::Int(7)));
+        let facts = skill_archive_facts(&skills, &semantics).expect("archive facts");
+
+        validate_archive(&semantics, &facts).expect("matching direct level property");
+
+        let missing = synthetic_indexed_skill(None);
+        let facts = skill_archive_facts(&missing, &semantics).expect("missing property facts");
+        assert!(validate_archive(&semantics, &facts).is_err());
+
+        let partial = synthetic_indexed_skill_levels(&[Some(WzValue::Int(7)), None]);
+        let facts = skill_archive_facts(&partial, &semantics).expect("partial property facts");
+        assert!(validate_archive(&semantics, &facts).is_err());
+    }
+
+    #[test]
+    fn server_archive_facts_reject_nonnumeric_mapped_properties() {
+        let semantics = accuracy_semantics();
+        let skills =
+            synthetic_indexed_skill(Some(WzValue::String(WzString::from_str("10+2*x", [0; 4]))));
+
+        assert!(skill_archive_facts(&skills, &semantics).is_err());
+    }
+
+    #[test]
+    fn server_archive_facts_reject_out_of_range_normalized_properties() {
+        let semantics = periodic_recovery_semantics();
+        let skills = synthetic_indexed_skill(Some(WzValue::Int(-1)));
+
+        assert!(skill_archive_facts(&skills, &semantics).is_err());
+    }
+
+    #[test]
+    fn numeric_normalization_accepts_scalars_and_rejects_invalid_values() {
+        let transform = SkillValueTransform::Numeric { offset: -1 };
+        let normalize = |value| {
+            normalize_skill_value(transform, &SkillValue { value: Some(value) })
+                .and_then(|value| value.value)
+        };
+
+        assert_eq!(
+            normalize(skill_value::Value::Decimal(12.5)),
+            Some(skill_value::Value::Decimal(11.5))
+        );
+        assert_eq!(
+            normalize(skill_value::Value::Text("12".to_owned())),
+            Some(skill_value::Value::Integer(11))
+        );
+        assert_eq!(
+            normalize(skill_value::Value::Text("12.5".to_owned())),
+            Some(skill_value::Value::Decimal(11.5))
+        );
+        assert!(normalize(skill_value::Value::Text("NaN".to_owned())).is_none());
+        assert!(normalize(skill_value::Value::Vector(Vec2::default())).is_none());
+        assert!(
+            normalize_skill_value(
+                SkillValueTransform::Numeric { offset: 1 },
+                &SkillValue {
+                    value: Some(skill_value::Value::Integer(i64::MAX)),
+                },
+            )
+            .is_none()
+        );
     }
 
     fn synthetic_skill_content() -> SkillContent {
@@ -904,6 +1270,7 @@ mod tests {
             strings: property_node("strings"),
             fingerprint: "synthetic".to_owned(),
             sounds: None,
+            semantics: SkillSemanticCatalog::default(),
             books: RwLock::new(HashMap::new()),
             definitions: RwLock::new(definitions),
             effects: RwLock::new(HashMap::new()),
@@ -923,8 +1290,118 @@ mod tests {
         })
     }
 
+    fn integer_stat(value: Option<&oozems_proto::v1::SkillValue>) -> Option<i64> {
+        match value?.value.as_ref()? {
+            skill_value::Value::Integer(value) => Some(*value),
+            _ => None,
+        }
+    }
+
+    fn accuracy_semantics() -> SkillSemanticCatalog {
+        oozems_skill_semantics::parse(
+            r#"
+schema_version = 1
+
+[[level_properties]]
+skill_ids = [40]
+property = "x"
+label = "Accuracy"
+normalized_stats = ["accuracy"]
+transform = { type = "numeric" }
+"#,
+        )
+        .expect("accuracy semantic mapping")
+    }
+
+    fn periodic_recovery_semantics() -> SkillSemanticCatalog {
+        oozems_skill_semantics::parse(
+            r#"
+schema_version = 1
+
+[[level_properties]]
+skill_ids = [40]
+property = "x"
+label = "HP recovery per five-second tick"
+normalized_stats = ["hp_recovery_per_five_seconds"]
+transform = { type = "numeric" }
+"#,
+        )
+        .expect("periodic recovery semantic mapping")
+    }
+
+    fn test_semantics() -> SkillSemanticCatalog {
+        oozems_skill_semantics::parse(
+            r#"
+schema_version = 1
+
+[[level_properties]]
+skill_ids = [40]
+property = "x"
+label = "Accuracy"
+normalized_stats = ["accuracy"]
+transform = { type = "numeric" }
+
+[[level_properties]]
+skill_ids = [40]
+property = "y"
+label = "Avoidability"
+normalized_stats = ["avoidability"]
+transform = { type = "numeric" }
+
+[[level_properties]]
+skill_ids = [40]
+property = "z"
+label = "Accuracy and avoidability"
+normalized_stats = ["accuracy", "avoidability"]
+transform = { type = "numeric", offset = -1 }
+"#,
+        )
+        .expect("test semantic mappings")
+    }
+
+    fn synthetic_indexed_skill(value: Option<WzValue>) -> HashMap<u32, IndexedSkill> {
+        synthetic_indexed_skill_levels(&[value])
+    }
+
+    fn synthetic_indexed_skill_levels(values: &[Option<WzValue>]) -> HashMap<u32, IndexedSkill> {
+        let skill = property_node("skill");
+        let levels = add_property(&skill, "level");
+        for (index, value) in values.iter().enumerate() {
+            let level = add_property(&levels, &(index + 1).to_string());
+            if let Some(value) = value {
+                add_value(&level, "x", value.clone());
+            }
+        }
+        HashMap::from([(
+            40,
+            IndexedSkill {
+                job_id: 0,
+                invisible: false,
+                node: skill,
+            },
+        )])
+    }
+
     fn property_node(name: &str) -> wz_reader::WzNodeArc {
         WzNode::from_str(name, WzObjectType::Property(WzSubProperty::Property), None).into_lock()
+    }
+
+    fn add_property(
+        parent: &wz_reader::WzNodeArc,
+        name: &str,
+    ) -> wz_reader::WzNodeArc {
+        let child = WzNode::from_str(
+            name,
+            WzObjectType::Property(WzSubProperty::Property),
+            Some(parent),
+        )
+        .into_lock();
+        parent
+            .write()
+            .expect("property lock")
+            .children
+            .insert(name.into(), child.clone());
+        child
     }
 
     fn add_value(

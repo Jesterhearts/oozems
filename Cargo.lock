@@ -4078,6 +4078,7 @@ dependencies = [
  "image",
  "jiff",
  "oozems-proto",
+ "oozems-skill-semantics",
  "oozems-ui-layout",
  "prost",
  "serde",
@@ -4092,6 +4093,16 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "wz_reader",
+]
+
+[[package]]
+name = "oozems-skill-semantics"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "tempfile",
+ "thiserror 2.0.20",
+ "toml",
 ]
 
 [[package]]
@@ -4135,6 +4146,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "eframe",
+ "oozems-skill-semantics",
  "oozems-wz",
  "serde",
  "serde_json",

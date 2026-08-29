@@ -622,6 +622,7 @@ message SkillStats {
   SkillValue x = 24;
   SkillValue y = 25;
   SkillValue z = 26;
+  SkillValue hp_recovery_per_five_seconds = 27;
 }
 
 message KeyActionDefinition {
