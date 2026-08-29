@@ -138,7 +138,7 @@ regions: [{
 }, {
   name: "npc-decline"
   x: 450.0
-  y: 259.0
+  y: 258.0
   width: 60.0
   height: 20.0
 }]
