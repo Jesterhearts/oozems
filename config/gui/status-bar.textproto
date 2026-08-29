@@ -161,5 +161,48 @@ sprites: [{
   pin_bottom: true
   bottom: 43.0
 }]
+regions: [{
+  name: "status-level"
+  x: 44.0
+  y: 126.0
+  width: 32.0
+  height: 14.0
+}, {
+  name: "status-job"
+  x: 84.0
+  y: 115.0
+  width: 118.0
+  height: 14.0
+}, {
+  name: "status-name"
+  x: 84.0
+  y: 130.0
+  width: 118.0
+  height: 14.0
+}, {
+  name: "status-map-name"
+  x: 10.0
+  y: 87.0
+  width: 550.0
+  height: 14.0
+}, {
+  name: "status-hp-gauge"
+  x: 211.0
+  y: 130.0
+  width: 105.0
+  height: 14.0
+}, {
+  name: "status-mp-gauge"
+  x: 319.0
+  y: 130.0
+  width: 105.0
+  height: 14.0
+}, {
+  name: "status-exp-gauge"
+  x: 432.0
+  y: 130.0
+  width: 115.0
+  height: 14.0
+}]
 width: 800.0
 height: 147.0
