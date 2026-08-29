@@ -38,6 +38,10 @@ const INVENTORY_TAB_LEFT: f32 = 3.0;
 const INVENTORY_TAB_TOP: f32 = 22.0;
 const INVENTORY_TAB_WIDTH: f32 = 34.0;
 const INVENTORY_TAB_HEIGHT: f32 = 19.0;
+const INVENTORY_MESOS_LEFT: f32 = 26.0;
+const INVENTORY_MESOS_TOP: f32 = 274.0;
+const INVENTORY_MESOS_WIDTH: f32 = 111.0;
+const INVENTORY_MESOS_HEIGHT: f32 = 14.0;
 const STAT_JOB_LEFT: f32 = 60.0;
 const STAT_JOB_TOP: f32 = 57.0;
 const SKILL_WINDOW_X: f32 = 20.0;
@@ -451,7 +455,7 @@ pub(super) fn compose_inventory_window(
         })
         .chain(std::iter::once(sprite_template(&sources.locked_slot)))
         .collect();
-    let regions = ["equipment", "consume", "install", "etc", "cash"]
+    let mut regions = ["equipment", "consume", "install", "etc", "cash"]
         .into_iter()
         .enumerate()
         .map(|(index, name)| {
@@ -463,7 +467,14 @@ pub(super) fn compose_inventory_window(
                 INVENTORY_TAB_HEIGHT,
             )
         })
-        .collect();
+        .collect::<Vec<_>>();
+    regions.push(region(
+        "inventory-mesos",
+        INVENTORY_MESOS_LEFT,
+        INVENTORY_MESOS_TOP,
+        INVENTORY_MESOS_WIDTH,
+        INVENTORY_MESOS_HEIGHT,
+    ));
     let mut control_x = INVENTORY_CONTROL_LEFT;
     let mut sprites = [&sources.gather, &sources.sort, &sources.expand]
         .into_iter()

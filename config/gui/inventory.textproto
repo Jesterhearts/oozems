@@ -1,0 +1,132 @@
+name: "inventory"
+x: 205.0
+y: 80.0
+background {
+  name: "inventory-background"
+  wz_path: "UIWindow.img/Item/backgrnd"
+}
+sprites: [{
+  name: "inventory-gather-disabled"
+  wz_path: "UIWindow.img/Item/BtGather/disabled/0"
+  x: 96.0
+  y: 6.0
+}, {
+  name: "inventory-sort-disabled"
+  wz_path: "UIWindow.img/Item/BtSort/disabled/0"
+  x: 110.0
+  y: 6.0
+}, {
+  name: "inventory-expand-disabled"
+  wz_path: "UIWindow.img/Item/BtFull/disabled/0"
+  x: 124.0
+  y: 6.0
+}, {
+  name: "inventory-close"
+  wz_path: "UIWindow.img/BtUIClose/normal/0"
+  y: 5.0
+  pin_right: true
+  right: 5.0
+}]
+sprite_templates: [{
+  name: "inventory-tab-equipment-active-background"
+  wz_path: "UIWindow.img/Item/New/Tab1/0"
+}, {
+  name: "inventory-tab-equipment-inactive-background"
+  wz_path: "UIWindow.img/Item/New/Tab0/0"
+}, {
+  name: "inventory-tab-equipment-active-label"
+  wz_path: "UIWindow.img/Item/Tab/enabled/0"
+}, {
+  name: "inventory-tab-equipment-inactive-label"
+  wz_path: "UIWindow.img/Item/Tab/disabled/0"
+}, {
+  name: "inventory-tab-consume-active-background"
+  wz_path: "UIWindow.img/Item/New/Tab1/1"
+}, {
+  name: "inventory-tab-consume-inactive-background"
+  wz_path: "UIWindow.img/Item/New/Tab0/1"
+}, {
+  name: "inventory-tab-consume-active-label"
+  wz_path: "UIWindow.img/Item/Tab/enabled/1"
+}, {
+  name: "inventory-tab-consume-inactive-label"
+  wz_path: "UIWindow.img/Item/Tab/disabled/1"
+}, {
+  name: "inventory-tab-install-active-background"
+  wz_path: "UIWindow.img/Item/New/Tab1/2"
+}, {
+  name: "inventory-tab-install-inactive-background"
+  wz_path: "UIWindow.img/Item/New/Tab0/2"
+}, {
+  name: "inventory-tab-install-active-label"
+  wz_path: "UIWindow.img/Item/Tab/enabled/2"
+}, {
+  name: "inventory-tab-install-inactive-label"
+  wz_path: "UIWindow.img/Item/Tab/disabled/2"
+}, {
+  name: "inventory-tab-etc-active-background"
+  wz_path: "UIWindow.img/Item/New/Tab1/3"
+}, {
+  name: "inventory-tab-etc-inactive-background"
+  wz_path: "UIWindow.img/Item/New/Tab0/3"
+}, {
+  name: "inventory-tab-etc-active-label"
+  wz_path: "UIWindow.img/Item/Tab/enabled/3"
+}, {
+  name: "inventory-tab-etc-inactive-label"
+  wz_path: "UIWindow.img/Item/Tab/disabled/3"
+}, {
+  name: "inventory-tab-cash-active-background"
+  wz_path: "UIWindow.img/Item/New/Tab1/4"
+}, {
+  name: "inventory-tab-cash-inactive-background"
+  wz_path: "UIWindow.img/Item/New/Tab0/4"
+}, {
+  name: "inventory-tab-cash-active-label"
+  wz_path: "UIWindow.img/Item/Tab/enabled/4"
+}, {
+  name: "inventory-tab-cash-inactive-label"
+  wz_path: "UIWindow.img/Item/Tab/disabled/4"
+}, {
+  name: "inventory-locked-slot"
+  wz_path: "UIWindow.img/Item/disabled"
+}]
+regions: [{
+  name: "inventory-tab-equipment"
+  x: 3.0
+  y: 22.0
+  width: 34.0
+  height: 19.0
+}, {
+  name: "inventory-tab-consume"
+  x: 37.0
+  y: 22.0
+  width: 34.0
+  height: 19.0
+}, {
+  name: "inventory-tab-install"
+  x: 71.0
+  y: 22.0
+  width: 34.0
+  height: 19.0
+}, {
+  name: "inventory-tab-etc"
+  x: 105.0
+  y: 22.0
+  width: 34.0
+  height: 19.0
+}, {
+  name: "inventory-tab-cash"
+  x: 139.0
+  y: 22.0
+  width: 34.0
+  height: 19.0
+}, {
+  name: "inventory-mesos"
+  x: 25.0
+  y: 267.0
+  width: 113.0
+  height: 14.0
+}]
+width: 175.0
+height: 289.0

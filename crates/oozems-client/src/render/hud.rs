@@ -1,4 +1,5 @@
 use oozems_proto::v1::CharacterStats;
+use oozems_proto::v1::GuiRegion;
 use oozems_proto::v1::GuiSprite;
 use oozems_proto::v1::GuiWindow;
 use oozems_proto::v1::ItemDefinition;
@@ -171,18 +172,36 @@ fn draw_inventory_locked_slots(
 
 fn draw_inventory_mesos(
     game: &Game,
+    window: &GuiWindow,
     origin: game_gui::CanvasPoint,
 ) {
+    let Some(layout) = window.layout.as_ref() else {
+        return;
+    };
+    let Some(region) = game_gui::named_region(layout, "inventory-mesos") else {
+        return;
+    };
+    let (right, center_y, maximum_width) = inventory_mesos_text_geometry(region);
     game.surface.context.set_fill_style_str("#30383b");
     game.surface.context.set_font("10px Arial");
     game.surface.context.set_text_align("right");
+    game.surface.context.set_text_baseline("middle");
     let _ = game.surface.context.fill_text_with_max_width(
         &format_number(game.player.mesos),
-        f64::from(origin.x + 137.0),
-        f64::from(origin.y + 285.0),
-        111.0,
+        f64::from(origin.x + right),
+        f64::from(origin.y + center_y),
+        f64::from(maximum_width),
     );
+    game.surface.context.set_text_baseline("alphabetic");
     game.surface.context.set_text_align("left");
+}
+
+fn inventory_mesos_text_geometry(region: &GuiRegion) -> (f32, f32, f32) {
+    (
+        region.x + region.width,
+        region.y + region.height / 2.0,
+        region.width,
+    )
 }
 
 fn draw_inventory_window(game: &Game) {
@@ -209,7 +228,7 @@ fn draw_inventory_window(game: &Game) {
         placement.origin,
         inventory.capacity as usize,
     );
-    draw_inventory_mesos(game, placement.origin);
+    draw_inventory_mesos(game, placement.window, placement.origin);
     let now_unix_ms = js_sys::Date::now().max(0.0) as u64;
     for slot in game_gui::inventory_slots(&game.ui.gui, inventory, selected_tab) {
         let (x, y) = game_gui::inventory_slot_position(slot.visual_index);
@@ -985,13 +1004,32 @@ fn draw_fallback_hud(game: &Game) {
 
 #[cfg(test)]
 mod tests {
+    use oozems_proto::v1::GuiRegion;
+
     use super::experience_label;
     use super::format_number;
+    use super::inventory_mesos_text_geometry;
 
     #[test]
     fn stat_and_inventory_numbers_use_classic_compact_labels() {
         assert_eq!(format_number(1_234_567), "1,234,567");
         assert_eq!(experience_label(14, 135), "14 (10.37%)");
         assert_eq!(experience_label(10, 0), "10 (0.00%)");
+    }
+
+    #[test]
+    fn inventory_mesos_geometry_uses_the_authored_region() {
+        let region = GuiRegion {
+            x: 26.0,
+            y: 274.0,
+            width: 111.0,
+            height: 14.0,
+            ..GuiRegion::default()
+        };
+
+        assert_eq!(
+            inventory_mesos_text_geometry(&region),
+            (137.0, 281.0, 111.0)
+        );
     }
 }

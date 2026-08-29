@@ -281,6 +281,9 @@ fn inventory<E>(
             19.0,
         ));
     }
+    definition
+        .regions
+        .push(crate::default_inventory_mesos_region());
     definition.sprite_templates.push(template(
         "inventory-locked-slot",
         "UIWindow.img/Item/disabled",
@@ -788,6 +791,25 @@ mod tests {
         assert_eq!(
             (text.x, text.y, text.width, text.height),
             (14.0, 40.0, 236.0, 45.0)
+        );
+    }
+
+    #[test]
+    fn inventory_exposes_the_mesos_text_region() {
+        let definition = builtin_definition("inventory", |path| {
+            Ok::<_, std::convert::Infallible>(dimensions(path))
+        })
+        .expect("infallible dimensions")
+        .expect("inventory");
+        let mesos = definition
+            .regions
+            .iter()
+            .find(|region| region.name == "inventory-mesos")
+            .expect("mesos region");
+
+        assert_eq!(
+            (mesos.x, mesos.y, mesos.width, mesos.height),
+            (26.0, 274.0, 111.0, 14.0)
         );
     }
 

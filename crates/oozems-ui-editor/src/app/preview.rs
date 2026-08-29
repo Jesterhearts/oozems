@@ -35,6 +35,10 @@ pub(super) fn paint(
     scale: f32,
     document: &LayoutDocument,
 ) {
+    if document.definition.name == "inventory" {
+        paint_inventory_mesos(painter, origin, scale, document);
+        return;
+    }
     if document.definition.name != "skills" {
         return;
     }
@@ -128,6 +132,24 @@ pub(super) fn paint(
             Align2::CENTER_CENTER,
         );
     }
+}
+
+fn paint_inventory_mesos(
+    painter: &egui::Painter,
+    origin: egui::Pos2,
+    scale: f32,
+    document: &LayoutDocument,
+) {
+    let Some(region) = named_region(&document.definition, "inventory-mesos") else {
+        return;
+    };
+    painter.text(
+        origin + egui::vec2(region.x + region.width, region.y + region.height / 2.0) * scale,
+        Align2::RIGHT_CENTER,
+        "1,234,567",
+        FontId::proportional(10.0 * scale),
+        Color32::from_rgb(48, 56, 59),
+    );
 }
 
 pub(super) fn skill_point_instances(document: &LayoutDocument) -> Option<RepeatedTemplate> {

@@ -1538,6 +1538,10 @@ mod tests {
             Some((139.0, 22.0, 34.0, 19.0))
         );
         assert_eq!(
+            region_geometry(&layout, "inventory-mesos"),
+            Some((26.0, 274.0, 111.0, 14.0))
+        );
+        assert_eq!(
             sprite_position(&layout, "inventory-gather-disabled"),
             Some((96.0, 6.0))
         );

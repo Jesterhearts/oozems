@@ -20,6 +20,11 @@ use prost_reflect::text_format::FormatOptions;
 use thiserror::Error;
 
 const DEFINITION_MESSAGE: &str = "oozems.v1.GuiWindowDefinition";
+const INVENTORY_MESOS_REGION_NAME: &str = "inventory-mesos";
+const INVENTORY_MESOS_LEFT: f32 = 26.0;
+const INVENTORY_MESOS_TOP: f32 = 274.0;
+const INVENTORY_MESOS_WIDTH: f32 = 111.0;
+const INVENTORY_MESOS_HEIGHT: f32 = 14.0;
 
 pub const SUPPORTED_WINDOWS: [&str; 10] = [
     "status-bar",
@@ -157,14 +162,36 @@ pub fn load_file(path: &Path) -> Result<GuiWindowDefinition, LayoutError> {
             source,
         }
     })?;
-    let definition = dynamic
+    let mut definition = dynamic
         .transcode_to()
         .map_err(|source| LayoutError::Decode {
             path: path.to_owned(),
             source,
         })?;
+    migrate_legacy_definition(&mut definition);
     validate(&definition)?;
     Ok(definition)
+}
+
+fn migrate_legacy_definition(definition: &mut GuiWindowDefinition) {
+    if definition.name == "inventory"
+        && !definition
+            .regions
+            .iter()
+            .any(|region| region.name == INVENTORY_MESOS_REGION_NAME)
+    {
+        definition.regions.push(default_inventory_mesos_region());
+    }
+}
+
+pub(crate) fn default_inventory_mesos_region() -> GuiRegion {
+    GuiRegion {
+        name: INVENTORY_MESOS_REGION_NAME.to_owned(),
+        x: INVENTORY_MESOS_LEFT,
+        y: INVENTORY_MESOS_TOP,
+        width: INVENTORY_MESOS_WIDTH,
+        height: INVENTORY_MESOS_HEIGHT,
+    }
 }
 
 pub fn save_file(
@@ -541,6 +568,7 @@ const LAYOUT_CONTRACTS: &[LayoutContract] = &[
             "inventory-tab-install",
             "inventory-tab-etc",
             "inventory-tab-cash",
+            INVENTORY_MESOS_REGION_NAME,
         ],
     },
     LayoutContract {
@@ -773,6 +801,7 @@ mod tests {
     use super::format_textproto;
     use super::load_directory;
     use super::load_file;
+    use super::migrate_legacy_definition;
     use super::save_file;
     use super::validate;
 
@@ -797,6 +826,27 @@ mod tests {
         let error = validate(&definition).expect_err("duplicate region");
 
         assert!(error.to_string().contains("appears more than once"));
+    }
+
+    #[test]
+    fn legacy_inventory_layouts_gain_the_mesos_region() {
+        let mut definition = contract_definition("inventory");
+        definition
+            .regions
+            .retain(|region| region.name != "inventory-mesos");
+
+        migrate_legacy_definition(&mut definition);
+
+        let mesos = definition
+            .regions
+            .iter()
+            .find(|region| region.name == "inventory-mesos")
+            .expect("migrated mesos region");
+        assert_eq!(
+            (mesos.x, mesos.y, mesos.width, mesos.height),
+            (26.0, 274.0, 111.0, 14.0)
+        );
+        validate(&definition).expect("migrated inventory definition");
     }
 
     #[test]
