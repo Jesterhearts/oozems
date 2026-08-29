@@ -367,6 +367,7 @@ pub async fn use_skill(
     skill_id: u32,
     target_mob_id: &str,
     facing_left: bool,
+    movement: MovementSnapshot,
 ) -> Result<UseSkillResponse, ClientError> {
     post_protobuf(
         "/api/v1/skills/use",
@@ -375,6 +376,7 @@ pub async fn use_skill(
             skill_id,
             target_mob_id: target_mob_id.to_owned(),
             facing_left,
+            movement: Some(movement),
         },
     )
     .await
@@ -383,12 +385,14 @@ pub async fn use_skill(
 pub async fn use_basic_attack(
     player_id: &str,
     facing_left: bool,
+    movement: MovementSnapshot,
 ) -> Result<BasicAttackResponse, ClientError> {
     post_protobuf(
         "/api/v1/combat/basic-attack",
         BasicAttackRequest {
             player_id: player_id.to_owned(),
             facing_left,
+            movement: Some(movement),
         },
     )
     .await

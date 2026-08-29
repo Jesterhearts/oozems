@@ -102,6 +102,8 @@ fn spawn_mob(
             level: definition.level,
             maximum_hp: definition.max_hp.max(1),
             current_hp: definition.max_hp.max(1),
+            stagger_threshold: definition.stagger_threshold,
+            stagger_duration_ms: animation_duration_ms(definition, "hit1"),
             physical_attack: definition.physical_attack,
             physical_defense: definition.physical_defense,
             magic_attack: definition.magic_attack,
@@ -113,11 +115,27 @@ fn spawn_mob(
             next_attack_ms: 0,
             attack_until_ms: 0,
             movement_resume_ms: 0,
+            movement_resume_mode: None,
             dead_until_ms: None,
             respawn_delay_ms,
             player_attack_transaction: None,
         },
     ))
+}
+
+fn animation_duration_ms(
+    definition: &MobDefinition,
+    name: &str,
+) -> u64 {
+    definition
+        .animations
+        .iter()
+        .find(|animation| animation.name == name)
+        .map_or(0, |animation| {
+            animation.frames.iter().fold(0_u64, |duration, frame| {
+                duration.saturating_add(u64::from(frame.delay_ms.max(1)))
+            })
+        })
 }
 
 fn vertical_bounds(definition: &MobDefinition) -> VerticalBounds {
@@ -192,6 +210,7 @@ mod tests {
     use oozems_proto::v1::MobDefinition;
     use oozems_proto::v1::MobFrame;
 
+    use super::animation_duration_ms;
     use super::vertical_bounds;
     use crate::attacks::VerticalBounds;
 
@@ -226,5 +245,28 @@ mod tests {
                 bottom: 6.0,
             }
         );
+    }
+
+    #[test]
+    fn stagger_duration_uses_the_complete_hit_animation() {
+        let definition = MobDefinition {
+            animations: vec![MobAnimation {
+                name: "hit1".to_owned(),
+                frames: vec![
+                    MobFrame {
+                        delay_ms: 200,
+                        ..MobFrame::default()
+                    },
+                    MobFrame {
+                        delay_ms: 0,
+                        ..MobFrame::default()
+                    },
+                ],
+            }],
+            ..MobDefinition::default()
+        };
+
+        assert_eq!(animation_duration_ms(&definition, "hit1"), 201);
+        assert_eq!(animation_duration_ms(&definition, "die1"), 0);
     }
 }

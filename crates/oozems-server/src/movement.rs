@@ -104,6 +104,11 @@ pub struct MovementDecision {
     pub persist: bool,
 }
 
+pub struct SynchronizedPlayer {
+    pub player: PlayerState,
+    pub platform_layer: i32,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct RelocationRollback {
     before: MovementSession,
@@ -136,6 +141,8 @@ pub enum MovementError {
     InvalidSupportMode,
     #[error("the player does not have an authoritative position")]
     MissingPlayerPosition,
+    #[error("the player does not have an authoritative movement session")]
+    MissingSession,
     #[error("the destination map has no usable portal named {portal_name:?}")]
     MissingDestinationPortal { portal_name: String },
     #[error("the player relocation changed before it could be restored")]
@@ -247,6 +254,26 @@ pub fn synchronize_player(
     Ok(player)
 }
 
+pub fn synchronize_player_observation(
+    tracker: &MovementTracker,
+    mut player: PlayerState,
+) -> Result<SynchronizedPlayer, MovementError> {
+    let players = tracker.players.lock().map_err(|_| MovementError::Tracker)?;
+    let session = players
+        .get(&player.id)
+        .and_then(|movement| movement.session)
+        .ok_or(MovementError::MissingSession)?;
+    player.map_id = session.map_id;
+    player.position = Some(Vec2 {
+        x: session.position.x,
+        y: session.position.y,
+    });
+    Ok(SynchronizedPlayer {
+        player,
+        platform_layer: session.platform_layer,
+    })
+}
+
 #[cfg(test)]
 pub fn submit_movement(
     tracker: &MovementTracker,
@@ -273,6 +300,29 @@ pub fn submit_movement_with_modifiers(
     config: MovementConfig,
     now_ms: u64,
 ) -> Result<MovementDecision, MovementError> {
+    submit_movement_with_policy(tracker, player, submitted, modifiers, config, now_ms, true)
+}
+
+pub fn submit_combat_movement_with_modifiers(
+    tracker: &MovementTracker,
+    player: &PlayerState,
+    submitted: SubmittedMovement,
+    modifiers: MovementModifiers,
+    config: MovementConfig,
+    now_ms: u64,
+) -> Result<MovementDecision, MovementError> {
+    submit_movement_with_policy(tracker, player, submitted, modifiers, config, now_ms, false)
+}
+
+fn submit_movement_with_policy(
+    tracker: &MovementTracker,
+    player: &PlayerState,
+    submitted: SubmittedMovement,
+    modifiers: MovementModifiers,
+    config: MovementConfig,
+    now_ms: u64,
+    accept_superseded: bool,
+) -> Result<MovementDecision, MovementError> {
     let map = movement_map(tracker, player.map_id)?;
     let mut players = tracker.players.lock().map_err(|_| MovementError::Tracker)?;
     let movement = players.entry(player.id.clone()).or_default();
@@ -282,7 +332,13 @@ pub fn submit_movement_with_modifiers(
         .as_mut()
         .expect("movement session was initialized above");
     Ok(apply_snapshot(
-        session, submitted, &map, config, modifiers, now_ms,
+        session,
+        submitted,
+        &map,
+        config,
+        modifiers,
+        now_ms,
+        accept_superseded,
     ))
 }
 
@@ -331,6 +387,7 @@ pub fn enter_portal_with_modifiers(
         config,
         modifiers,
         now_ms,
+        true,
     );
     if !source_decision.accepted {
         return Ok((source_decision, None));
@@ -628,9 +685,14 @@ fn apply_snapshot(
     config: MovementConfig,
     modifiers: MovementModifiers,
     now_ms: u64,
+    accept_superseded: bool,
 ) -> MovementDecision {
     if submitted.sequence <= session.sequence {
-        return reject(session, "the movement sequence is not newer", false);
+        return if accept_superseded {
+            accept(session, false, now_ms, config)
+        } else {
+            reject(session, "the movement sequence is not newer", false)
+        };
     }
     session.sequence = submitted.sequence;
     let interval_modifiers = endpoint_modifiers(session.modifiers, modifiers);
@@ -752,7 +814,7 @@ fn apply_stationary_observation(
     now_ms: u64,
 ) -> MovementDecision {
     if submitted.sequence <= session.sequence {
-        return reject(session, "the movement sequence is not newer", false);
+        return accept(session, false, now_ms, config);
     }
     session.sequence = submitted.sequence;
     session.received_at_ms = now_ms;
@@ -1189,10 +1251,12 @@ mod tests {
     use super::relocate_player;
     use super::restore_persistence;
     use super::restore_relocation;
+    use super::submit_combat_movement_with_modifiers;
     use super::submit_movement;
     use super::submit_movement_with_modifiers;
     use super::submit_stationary_observation;
     use super::synchronize_player;
+    use super::synchronize_player_observation;
     use crate::gameplay::MovementConfig;
 
     #[test]
@@ -1225,6 +1289,95 @@ mod tests {
 
         assert!(decision.accepted);
         assert!(decision.activity);
+    }
+
+    #[test]
+    fn superseded_snapshots_are_successful_no_ops() {
+        let tracker = initialized_tracker();
+        let newer = submit_movement(
+            &tracker,
+            &player(),
+            submitted(2, 140.0, 300.0, MovementMode::Grounded),
+            config(),
+            1_200,
+        )
+        .expect("newer movement");
+        let superseded = submit_movement(
+            &tracker,
+            &player(),
+            submitted(1, 120.0, 300.0, MovementMode::Grounded),
+            config(),
+            1_300,
+        )
+        .expect("superseded movement");
+
+        assert!(newer.accepted);
+        assert!(superseded.accepted);
+        assert!(!superseded.activity);
+        assert_eq!(superseded.authoritative.sequence, 2);
+        assert_eq!(
+            superseded.authoritative.position.expect("position").x,
+            140.0,
+        );
+    }
+
+    #[test]
+    fn combat_movement_rejects_an_exact_sequence_replay() {
+        let tracker = initialized_tracker();
+        let movement = submitted(1, 120.0, 300.0, MovementMode::Grounded);
+        let first = submit_combat_movement_with_modifiers(
+            &tracker,
+            &player(),
+            movement,
+            MovementModifiers::default(),
+            config(),
+            1_200,
+        )
+        .expect("first combat movement");
+        let replay = submit_combat_movement_with_modifiers(
+            &tracker,
+            &player(),
+            movement,
+            MovementModifiers::default(),
+            config(),
+            1_300,
+        )
+        .expect("replayed combat movement");
+
+        assert!(first.accepted);
+        assert!(!replay.accepted);
+        assert_eq!(replay.authoritative.sequence, 1);
+    }
+
+    #[test]
+    fn airborne_observations_preserve_the_launch_platform_layer() {
+        let mut map = map();
+        map.platforms[0].layer = 3;
+        map.platforms.push(Platform {
+            x: 0.0,
+            y: 200.0,
+            end_x: 800.0,
+            end_y: 200.0,
+            layer: 7,
+            ..Platform::default()
+        });
+        let tracker = MovementTracker::default();
+        initialize_player(&tracker, &player(), &map, config(), 1_000).expect("initialize");
+
+        let decision = submit_movement(
+            &tracker,
+            &player(),
+            submitted(1, 100.0, 230.0, MovementMode::Airborne),
+            config(),
+            1_200,
+        )
+        .expect("airborne movement");
+        let observation =
+            synchronize_player_observation(&tracker, player()).expect("authoritative observation");
+
+        assert!(decision.accepted);
+        assert_eq!(observation.player.position.expect("position").y, 230.0);
+        assert_eq!(observation.platform_layer, 3);
     }
 
     #[test]

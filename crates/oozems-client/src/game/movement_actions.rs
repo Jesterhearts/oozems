@@ -240,6 +240,10 @@ pub(super) fn install_relocation(
 }
 
 fn next_movement_snapshot(game: &mut Game) -> Option<MovementSnapshot> {
+    capture_current_snapshot(game)
+}
+
+pub(super) fn capture_current_snapshot(game: &mut Game) -> Option<MovementSnapshot> {
     let current = current_observation(game)?;
     capture_movement_snapshot(&mut game.requests.movement, Some(current))
 }

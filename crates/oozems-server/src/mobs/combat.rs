@@ -118,6 +118,7 @@ pub(super) fn respawn_mobs(
         // Movement runs later in this workload. Hold the mob for this tick so
         // clients receive its exact spawn position before normal AI resumes.
         combat.movement_resume_ms = tick.now_ms.saturating_add(1);
+        combat.movement_resume_mode = None;
         reset_mob(&mut position, motion);
         for target in &targets.0 {
             queue_event(
@@ -260,7 +261,10 @@ pub(super) fn queue_projectile_attacks(
     for (position, identity, combat, motion) in
         (&positions, &identities, &mut combats, &mut motions).iter()
     {
-        if combat.current_hp == 0 || combat.magic_attack <= 0 || tick.now_ms < combat.next_attack_ms
+        if combat.current_hp == 0
+            || combat.magic_attack <= 0
+            || tick.now_ms < combat.next_attack_ms
+            || tick.now_ms < combat.movement_resume_ms
         {
             continue;
         }
@@ -684,6 +688,21 @@ pub(super) fn queue_event(
     damage: u64,
     position: Position,
 ) {
+    queue_event_with_stagger(
+        events, recipient, kind, source_id, target_id, damage, position, false,
+    );
+}
+
+pub(super) fn queue_event_with_stagger(
+    events: &mut PendingEvents,
+    recipient: &str,
+    kind: CombatEventKind,
+    source_id: &str,
+    target_id: &str,
+    damage: u64,
+    position: Position,
+    staggered: bool,
+) {
     let event = CombatEvent {
         id: next_id(events, "combat"),
         kind: kind as i32,
@@ -691,6 +710,7 @@ pub(super) fn queue_event(
         target_id: target_id.to_owned(),
         damage,
         position: Some(position.vector()),
+        staggered,
     };
     events
         .by_player

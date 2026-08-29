@@ -327,6 +327,7 @@ message UseSkillRequest {
   uint32 skill_id = 2;
   string target_mob_id = 3;
   bool facing_left = 4;
+  MovementSnapshot movement = 5;
 }
 
 message UseSkillResponse {
@@ -346,6 +347,7 @@ message UseSkillResponse {
 message BasicAttackRequest {
   string player_id = 1;
   bool facing_left = 2;
+  MovementSnapshot movement = 3;
 }
 
 message BasicAttackResponse {
@@ -1122,6 +1124,7 @@ message MobDefinition {
   AssetDescriptor damage_sound = 18;
   AssetDescriptor death_sound = 19;
   string name = 20;
+  uint64 stagger_threshold = 21;
 }
 
 message MobAnimation {
@@ -1202,6 +1205,7 @@ message CombatEvent {
   string target_id = 4;
   uint64 damage = 5;
   Vec2 position = 6;
+  bool staggered = 7;
 }
 
 enum CombatEventKind {

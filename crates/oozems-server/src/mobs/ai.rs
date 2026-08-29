@@ -25,7 +25,7 @@ const AGGRO_STOP_DISTANCE: f32 = 12.0;
 pub(super) fn advance_mobs(
     mut positions: ViewMut<Position>,
     mut motions: ViewMut<MobMotion>,
-    combats: ViewMut<MobCombat>,
+    mut combats: ViewMut<MobCombat>,
     terrain: UniqueView<Terrain>,
     targets: UniqueView<TargetCache>,
     tick: UniqueView<Tick>,
@@ -33,7 +33,7 @@ pub(super) fn advance_mobs(
     let mut remaining = tick.elapsed_seconds.max(0.0);
     while remaining > 0.0 {
         let step = remaining.min(PHYSICS_STEP_SECONDS);
-        for (mut position, motion, combat) in (&mut positions, &mut motions, &combats).iter() {
+        for (mut position, motion, combat) in (&mut positions, &mut motions, &mut combats).iter() {
             advance_mob(
                 &terrain,
                 &targets,
@@ -53,7 +53,7 @@ fn advance_mob(
     targets: &TargetCache,
     position: &mut Position,
     motion: &mut MobMotion,
-    combat: &MobCombat,
+    combat: &mut MobCombat,
     now_ms: u64,
     elapsed_seconds: f32,
 ) {
@@ -64,6 +64,9 @@ fn advance_mob(
     if now_ms < combat.movement_resume_ms {
         motion.mode = MobMovementMode::Idle;
         return;
+    }
+    if let Some(mode) = combat.movement_resume_mode.take() {
+        motion.mode = mode;
     }
     if combat.attack_until_ms > now_ms {
         motion.mode = MobMovementMode::Attacking;

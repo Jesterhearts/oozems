@@ -28,7 +28,7 @@ pub async fn use_basic_attack(
     let player_guard = lock_player(&state, &player_id).await?;
     let now_ms = unix_time_ms()?;
     let mutation = begin_player_mutation(&state, &player_guard, &player_id, now_ms).await?;
-    let player = mutation.player.clone();
+    let mut player = mutation.player.clone();
     let effects = mutation.effects.clone();
     super::require_living_player(&player, "attack")?;
     if effects.attacks_disabled() {
@@ -37,6 +37,25 @@ pub async fn use_basic_attack(
             "the active morph does not allow attacks",
         ));
     }
+    let map = load_map(&state, player.map_id).await?.ok_or_else(|| {
+        ApiError::not_found(
+            "map_not_found",
+            format!("map {} does not exist", player.map_id),
+        )
+    })?;
+    let synchronized = super::movement::submit_action_movement(
+        &state,
+        &player,
+        request.movement,
+        crate::movement::MovementModifiers {
+            speed: effects.projected().modifiers.speed,
+            jump: effects.projected().modifiers.jump,
+        },
+        &map,
+        now_ms,
+    )?;
+    player = synchronized.player;
+    let player_layer = synchronized.platform_layer;
     let equipment = crate::items::equipment_stats(&player, state.catalog.as_ref())
         .map_err(super::item_rule_error)?;
     let attack_reach = player
@@ -63,12 +82,6 @@ pub async fn use_basic_attack(
             .saturating_add(equipment.weapon_attack),
     )
     .map_err(attack_rule_error)?;
-    let map = load_map(&state, player.map_id).await?.ok_or_else(|| {
-        ApiError::not_found(
-            "map_not_found",
-            format!("map {} does not exist", player.map_id),
-        )
-    })?;
     let mut dropped_items = crate::items::map_drops(&state.drops, map.id)?;
     let attack_reservation = crate::attacks::reserve_basic_attack(
         &state.basic_attack_cooldowns,
@@ -103,6 +116,7 @@ pub async fn use_basic_attack(
                 &state.mobs,
                 &map,
                 &player,
+                player_layer,
                 attack,
                 reach,
                 combat_effects,
@@ -114,6 +128,7 @@ pub async fn use_basic_attack(
                 &state.mobs,
                 &map,
                 &player,
+                player_layer,
                 attack,
                 combat_effects,
             )

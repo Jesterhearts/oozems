@@ -23,12 +23,16 @@ pub(super) fn begin(
         }
     }
     super::recovery_actions::reset(&mut game.borrow_mut().requests.recovery);
-    let (player_id, target_mob_id, facing_left) = {
-        let game = game.borrow();
+    let (player_id, target_mob_id, facing_left, movement) = {
+        let mut game = game.borrow_mut();
+        let movement = matches!(&action, GuiAction::UseSkill { .. })
+            .then(|| super::movement_actions::capture_current_snapshot(&mut game))
+            .flatten();
         (
             game.player.id.clone(),
             select_target(&game).unwrap_or_default(),
             game.world.facing_left,
+            movement,
         )
     };
     super::requests::spawn_request(
@@ -49,7 +53,12 @@ pub(super) fn begin(
                         .map_err(|error| format!("Skill point allocation failed: {error}"))
                 }
                 GuiAction::UseSkill { skill_id } => {
-                    api::use_skill(&player_id, skill_id, &target_mob_id, facing_left)
+                    let Some(movement) = movement else {
+                        return Err(
+                            "Skill use failed: the player has no current position".to_owned()
+                        );
+                    };
+                    api::use_skill(&player_id, skill_id, &target_mob_id, facing_left, movement)
                         .await
                         .map(|response| SkillResponse::Use(Box::new(response)))
                         .map_err(|error| format!("Skill use failed: {error}"))
@@ -101,20 +110,26 @@ pub(super) fn begin_basic_attack(
         return;
     }
     super::recovery_actions::reset(&mut game.borrow_mut().requests.recovery);
-    {
+    let request = {
         let mut state = game.borrow_mut();
-        let now_ms = state.clock.now_ms;
-        super::runtime::start_character_attack_animation(&mut state.world, now_ms);
-    }
-    let (player_id, facing_left) = {
-        let game = game.borrow();
-        (game.player.id.clone(), game.world.facing_left)
+        super::movement_actions::capture_current_snapshot(&mut state).map(|movement| {
+            let now_ms = state.clock.now_ms;
+            super::runtime::start_character_attack_animation(&mut state.world, now_ms);
+            (state.player.id.clone(), state.world.facing_left, movement)
+        })
+    };
+    let Some((player_id, facing_left, movement)) = request else {
+        show_status(
+            "Basic attack failed: the player has no current position.",
+            true,
+        );
+        return;
     };
     super::requests::spawn_request(
         game,
         permit,
         move || async move {
-            api::use_basic_attack(&player_id, facing_left)
+            api::use_basic_attack(&player_id, facing_left, movement)
                 .await
                 .map_err(|error| format!("Basic attack failed: {error}"))
         },

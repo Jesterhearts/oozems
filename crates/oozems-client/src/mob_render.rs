@@ -285,7 +285,7 @@ fn mob_reactions(events: &[CombatEvent]) -> Vec<MobReactionEvent> {
     let mut reactions = Vec::<MobReactionEvent>::new();
     for event in events {
         let kind = match CombatEventKind::try_from(event.kind) {
-            Ok(CombatEventKind::PlayerHitMob) => MobReactionKind::Hit,
+            Ok(CombatEventKind::PlayerHitMob) if event.staggered => MobReactionKind::Hit,
             Ok(CombatEventKind::MobDied) => MobReactionKind::Death,
             _ => continue,
         };
@@ -458,6 +458,7 @@ mod tests {
             vec![CombatEvent {
                 kind: CombatEventKind::PlayerHitMob as i32,
                 target_id: "slime".to_owned(),
+                staggered: true,
                 ..CombatEvent::default()
             }],
             1_000.0,
@@ -469,6 +470,26 @@ mod tests {
             reaction(&state, "slime", 1_150.0),
             Some((MobReactionKind::Hit, 150.0))
         );
+    }
+
+    #[test]
+    fn a_hit_below_the_stagger_threshold_does_not_start_a_reaction() {
+        let mut state = MobRenderState::default();
+        let reactions = install_combat_events(
+            &mut state,
+            vec![CombatEvent {
+                kind: CombatEventKind::PlayerHitMob as i32,
+                target_id: "slime".to_owned(),
+                damage: 42,
+                position: Some(Vec2 { x: 100.0, y: 200.0 }),
+                ..CombatEvent::default()
+            }],
+            1_000.0,
+        );
+
+        assert!(reactions.is_empty());
+        assert_eq!(reaction(&state, "slime", 1_000.0), None);
+        assert_eq!(combat_texts(&state, 1_000.0).len(), 1);
     }
 
     #[test]

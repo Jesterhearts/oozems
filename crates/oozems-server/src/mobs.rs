@@ -138,6 +138,9 @@ struct PlayerAttackMobState {
     dead_until_ms: Option<u64>,
     random_state: u64,
     mode: MobMovementMode,
+    attack_until_ms: u64,
+    movement_resume_ms: u64,
+    movement_resume_mode: Option<MobMovementMode>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -279,6 +282,7 @@ fn apply_observe_player(
     simulation: &mut Simulation,
     map: &Map,
     player: &PlayerState,
+    player_layer: i32,
     effects: ProjectedEffects,
     now: Instant,
 ) -> Result<MobUpdate, MobStoreError> {
@@ -292,7 +296,7 @@ fn apply_observe_player(
             .expect("the map simulation was just ensured");
         let mut stale_players = Vec::new();
         let update = (|| {
-            sync_player(state, player, effects, &formulas)?;
+            sync_player(state, player, player_layer, effects, &formulas)?;
             advance_map_to(state, now)?;
             mark_player_seen(state, &player.id)?;
             stale_players = prune_stale_players(state)?;
@@ -310,6 +314,7 @@ fn apply_use_player_attack(
     simulation: &mut Simulation,
     map: &Map,
     player: &PlayerState,
+    player_layer: i32,
     attack: PlayerAttack<'_>,
     attack_reach: Option<AttackReach>,
     effects: ProjectedEffects,
@@ -341,7 +346,7 @@ fn apply_use_player_attack(
             .expect("the map simulation was just ensured");
         let mut stale_players = Vec::new();
         let update = (|| {
-            sync_player(state, player, effects, &formulas)?;
+            sync_player(state, player, player_layer, effects, &formulas)?;
             advance_map_to(state, now)?;
             mark_player_seen(state, &player.id)?;
             stale_players = prune_stale_players(state)?;
@@ -486,6 +491,15 @@ fn apply_rollback_player_attack(
             if motion.mode == after.mode {
                 motion.mode = before.mode;
             }
+            if combat.attack_until_ms == after.attack_until_ms {
+                combat.attack_until_ms = before.attack_until_ms;
+            }
+            if combat.movement_resume_ms == after.movement_resume_ms {
+                combat.movement_resume_ms = before.movement_resume_ms;
+            }
+            if combat.movement_resume_mode == after.movement_resume_mode {
+                combat.movement_resume_mode = before.movement_resume_mode;
+            }
             combat.player_attack_transaction = None;
         }
         PlayerAttackTarget::Reactor {
@@ -521,7 +535,7 @@ fn observe_player_at(
     player: &PlayerState,
     now: Instant,
 ) -> Result<MobUpdate, MobStoreError> {
-    apply_observe_player(simulation, map, player, ProjectedEffects::default(), now)
+    apply_observe_player(simulation, map, player, 0, ProjectedEffects::default(), now)
 }
 
 #[cfg(test)]
@@ -532,7 +546,28 @@ fn use_player_attack_at(
     attack: PlayerAttack<'_>,
     now: Instant,
 ) -> Result<MobUpdate, MobStoreError> {
-    let mut update = use_player_attack_at_uncommitted(simulation, map, player, attack, now)?;
+    use_player_attack_at_on_layer(simulation, map, player, 0, attack, now)
+}
+
+#[cfg(test)]
+fn use_player_attack_at_on_layer(
+    simulation: &mut Simulation,
+    map: &Map,
+    player: &PlayerState,
+    player_layer: i32,
+    attack: PlayerAttack<'_>,
+    now: Instant,
+) -> Result<MobUpdate, MobStoreError> {
+    let mut update = apply_use_player_attack(
+        simulation,
+        map,
+        player,
+        player_layer,
+        attack,
+        None,
+        ProjectedEffects::default(),
+        now,
+    )?;
     if let Some(transaction) = update.player_attack_transaction.clone() {
         apply_commit_player_attack(simulation, &transaction)?;
         update.player_attack_transaction = None;
@@ -553,6 +588,7 @@ fn use_player_attack_at_with_reach(
         simulation,
         map,
         player,
+        0,
         attack,
         Some(reach),
         ProjectedEffects::default(),
@@ -577,6 +613,7 @@ fn use_player_attack_at_uncommitted(
         simulation,
         map,
         player,
+        0,
         attack,
         None,
         ProjectedEffects::default(),
@@ -787,6 +824,7 @@ fn queue_reactor_respawns(
 fn sync_player(
     state: &mut MobMapState,
     player: &PlayerState,
+    player_layer: i32,
     effects: ProjectedEffects,
     formulas: &FormulaCatalog,
 ) -> Result<(), MobStoreError> {
@@ -812,15 +850,10 @@ fn sync_player(
     let accuracy = bounded_combat_stat(accuracy).saturating_add(effects.modifiers.accuracy);
     let avoidability =
         bounded_combat_stat(avoidability).saturating_add(effects.modifiers.avoidability);
-    let layer = state.world.run(|terrain: shipyard::UniqueView<Terrain>| {
-        ai::nearest_platform(&terrain.platforms, position.x, position.y, None)
-            .and_then(|index| terrain.platforms.get(index))
-            .map_or(0, |platform| platform.layer)
-    });
     let simulation_position = Position {
         x: position.x,
         y: position.y,
-        layer,
+        layer: player_layer,
     };
     if let Some(entity) = state.player_entities.get(&player.id).copied()
         && let Ok((mut stored_position, mut presence)) = state
@@ -999,6 +1032,7 @@ fn prepare_player_attack(
         damage,
         died,
         missed,
+        staggered,
         staged_drops,
         before,
         after,
@@ -1013,6 +1047,9 @@ fn prepare_player_attack(
             dead_until_ms: combat.dead_until_ms,
             random_state: motion.random_state,
             mode: motion.mode,
+            attack_until_ms: combat.attack_until_ms,
+            movement_resume_ms: combat.movement_resume_ms,
+            movement_resume_mode: combat.movement_resume_mode,
         };
         let hit = combat::player_attack_hits(
             formulas,
@@ -1072,6 +1109,11 @@ fn prepare_player_attack(
         } else {
             Vec::new()
         };
+        let staggered = hit
+            && !died
+            && combat.stagger_threshold > 0
+            && damage >= combat.stagger_threshold
+            && combat.stagger_duration_ms > 0;
         if hit {
             combat.current_hp = combat.current_hp.saturating_sub(damage);
         }
@@ -1079,6 +1121,15 @@ fn prepare_player_attack(
         if combat.current_hp == 0 {
             combat.dead_until_ms = Some(state.clock_ms.saturating_add(combat.respawn_delay_ms));
             combat.aggro_target = None;
+            motion.mode = MobMovementMode::Idle;
+        } else if staggered {
+            combat.attack_until_ms = 0;
+            combat.movement_resume_ms = state.clock_ms.saturating_add(combat.stagger_duration_ms);
+            combat.movement_resume_mode = Some(if motion.mode == MobMovementMode::Jumping {
+                MobMovementMode::Jumping
+            } else {
+                MobMovementMode::Idle
+            });
             motion.mode = MobMovementMode::Idle;
         }
         combat.player_attack_transaction = Some(transaction_id);
@@ -1088,6 +1139,9 @@ fn prepare_player_attack(
             dead_until_ms: combat.dead_until_ms,
             random_state: motion.random_state,
             mode: motion.mode,
+            attack_until_ms: combat.attack_until_ms,
+            movement_resume_ms: combat.movement_resume_ms,
+            movement_resume_mode: combat.movement_resume_mode,
         };
         (
             **position,
@@ -1096,6 +1150,7 @@ fn prepare_player_attack(
             damage,
             died,
             !hit,
+            staggered,
             staged_drops,
             before,
             after,
@@ -1106,7 +1161,7 @@ fn prepare_player_attack(
     let generated_combat_events = 1 + generated_mob_deaths;
     let source_id = player_id.to_owned();
     state.world.run(|mut events: UniqueViewMut<PendingEvents>| {
-        combat::queue_event(
+        combat::queue_event_with_stagger(
             &mut events,
             player_id,
             if missed {
@@ -1118,6 +1173,7 @@ fn prepare_player_attack(
             &target_id,
             damage,
             position,
+            staggered,
         );
         if died && !missed {
             events
@@ -1324,6 +1380,7 @@ mod tests {
     use oozems_proto::v1::MobAnimation;
     use oozems_proto::v1::MobDefinition;
     use oozems_proto::v1::MobFrame;
+    use oozems_proto::v1::MobMovementMode;
     use oozems_proto::v1::MobSpawnPoint;
     use oozems_proto::v1::Platform;
     use oozems_proto::v1::PlayerQuest;
@@ -1349,6 +1406,8 @@ mod tests {
     use super::apply_restore_player_effects as restore_player_effects;
     use super::apply_rollback_player_attack;
     use super::commit_player_attack;
+    use super::components::MobCombat;
+    use super::components::MobMotion;
     use super::evaluate_player_stat;
     use super::mailbox::block_worker_for_map;
     use super::mailbox::delivery_coordinates;
@@ -1361,6 +1420,7 @@ mod tests {
     use super::observe_player_with_effects;
     use super::rollback_player_update;
     use super::use_player_attack_at;
+    use super::use_player_attack_at_on_layer;
     use super::use_player_attack_at_uncommitted;
     use super::use_player_attack_at_with_reach;
     use super::use_player_attack_with_effects;
@@ -1494,6 +1554,7 @@ mod tests {
                 &cancelled_store,
                 &cancelled_map,
                 &player(90.0, 100.0),
+                0,
                 crate::effects::ProjectedEffects::default(),
             )
             .await
@@ -1513,6 +1574,7 @@ mod tests {
                 &destination_store,
                 &destination_map,
                 &player,
+                0,
                 crate::effects::ProjectedEffects::default(),
             )
             .await
@@ -1553,6 +1615,7 @@ mod tests {
             &store,
             &first_map,
             &player,
+            0,
             crate::effects::ProjectedEffects::default(),
         )
         .await
@@ -1566,6 +1629,7 @@ mod tests {
             &store,
             &second_map,
             &player,
+            0,
             crate::effects::ProjectedEffects::default(),
         )
         .await
@@ -1604,6 +1668,7 @@ mod tests {
                 &first_store,
                 &first_request_map,
                 &first_player,
+                0,
                 crate::effects::ProjectedEffects::default(),
             )
             .await
@@ -1615,6 +1680,7 @@ mod tests {
                 &second_store,
                 &second_request_map,
                 &second_player,
+                0,
                 crate::effects::ProjectedEffects::default(),
             )
             .await
@@ -1691,6 +1757,7 @@ mod tests {
             &store,
             &second_map,
             &player,
+            0,
             crate::effects::ProjectedEffects::default(),
         )
         .await
@@ -1717,6 +1784,7 @@ mod tests {
             &store,
             &map,
             &player,
+            0,
             PlayerAttack {
                 target_mob_id: "1:1:0",
                 source_skill_id: None,
@@ -1754,6 +1822,7 @@ mod tests {
             &store,
             &map,
             &player,
+            0,
             PlayerAttack {
                 target_mob_id: "",
                 source_skill_id: None,
@@ -1900,6 +1969,7 @@ mod tests {
             &store,
             &map,
             &player,
+            0,
             crate::effects::ProjectedEffects::default(),
         )
         .await
@@ -1914,6 +1984,7 @@ mod tests {
             &store,
             &map,
             &player,
+            0,
             crate::effects::ProjectedEffects::default(),
         )
         .await
@@ -2155,6 +2226,114 @@ mod tests {
                 fallback,
             ));
         }
+    }
+
+    #[test]
+    fn airborne_attacks_use_the_authoritative_launch_layer() {
+        let mut map = map();
+        map.platforms[0].layer = 3;
+        map.platforms.push(Platform {
+            id: 2,
+            x: 0.0,
+            y: 180.0,
+            end_x: 500.0,
+            end_y: 180.0,
+            layer: 7,
+        });
+        map.mob_spawn_points[0].position = Some(Vec2 { x: 100.0, y: 160.0 });
+        map.mob_spawn_points[0].layer = 3;
+        let player = player(90.0, 220.0);
+        let attack = PlayerAttack {
+            target_mob_id: "",
+            source_skill_id: None,
+            facing_left: false,
+            minimum_damage: 10,
+            maximum_damage: 10,
+            fixed_damage: true,
+            attack_type: SkillAttackType::Physical,
+        };
+
+        let mut launch_layer_store = store();
+        let hit = use_player_attack_at_on_layer(
+            &mut launch_layer_store,
+            &map,
+            &player,
+            3,
+            attack,
+            Instant::now(),
+        )
+        .expect("airborne attack on launch layer");
+        let mut nearby_layer_store = store();
+        let miss = use_player_attack_at_on_layer(
+            &mut nearby_layer_store,
+            &map,
+            &player,
+            7,
+            attack,
+            Instant::now(),
+        )
+        .expect("airborne attack on nearby layer");
+
+        assert_eq!(hit.mobs[0].current_hp, 90);
+        assert_eq!(miss.mobs[0].current_hp, 100);
+    }
+
+    #[test]
+    fn pushed_threshold_pauses_movement_for_the_hit_animation() {
+        let now = Instant::now();
+        let player = player(50.0, 100.0);
+        let attack = PlayerAttack {
+            target_mob_id: "",
+            source_skill_id: None,
+            facing_left: false,
+            minimum_damage: 10,
+            maximum_damage: 10,
+            fixed_damage: true,
+            attack_type: SkillAttackType::Physical,
+        };
+        let vulnerable_map = stagger_map(10);
+        let mut resistant_map = stagger_map(11);
+        resistant_map.id = 2;
+        let mut vulnerable_store = store();
+        let mut resistant_store = store();
+
+        let hit =
+            use_player_attack_at(&mut vulnerable_store, &vulnerable_map, &player, attack, now)
+                .expect("staggering attack");
+        let resistant_hit = use_player_attack_at(
+            &mut resistant_store,
+            &resistant_map,
+            &PlayerState {
+                map_id: resistant_map.id,
+                ..player.clone()
+            },
+            attack,
+            now,
+        )
+        .expect("non-staggering attack");
+
+        assert!(hit.combat_events.iter().any(|event| event.staggered));
+        assert!(
+            resistant_hit
+                .combat_events
+                .iter()
+                .all(|event| !event.staggered)
+        );
+        let held = map_snapshot_at(
+            &mut vulnerable_store,
+            &vulnerable_map,
+            now + Duration::from_millis(599),
+        )
+        .expect("snapshot during stagger");
+        let resumed = map_snapshot_at(
+            &mut vulnerable_store,
+            &vulnerable_map,
+            now + Duration::from_millis(601),
+        )
+        .expect("snapshot after stagger");
+        assert_eq!(held.mobs[0].position.expect("held position").x, 100.0);
+        assert!(held.mob_projectiles.is_empty());
+        assert!(resumed.mobs[0].position.expect("resumed position").x < 100.0);
     }
 
     #[test]
@@ -2838,6 +3017,55 @@ mod tests {
     }
 
     #[test]
+    fn failed_staggering_attacks_restore_the_mob_movement_state() {
+        let mut store = store();
+        let map = stagger_map(10);
+        let player = player(50.0, 100.0);
+        let now = Instant::now();
+        let mut failed = use_player_attack_at_uncommitted(
+            &mut store,
+            &map,
+            &player,
+            PlayerAttack {
+                target_mob_id: "1:1:0",
+                source_skill_id: None,
+                facing_left: false,
+                minimum_damage: 10,
+                maximum_damage: 10,
+                fixed_damage: true,
+                attack_type: SkillAttackType::Physical,
+            },
+            now,
+        )
+        .expect("uncommitted staggering attack");
+        assert!(failed.combat_events.iter().any(|event| event.staggered));
+
+        assert!(rollback_player_attack(&mut store, &mut failed).expect("rollback stagger"));
+        let state = store.maps.get(&map.id).expect("map state");
+        let (mode, attack_until_ms, movement_resume_ms, movement_resume_mode) =
+            state
+                .world
+                .run(|motions: View<MobMotion>, combats: View<MobCombat>| {
+                    (&motions, &combats)
+                        .iter()
+                        .next()
+                        .map(|(motion, combat)| {
+                            (
+                                motion.mode,
+                                combat.attack_until_ms,
+                                combat.movement_resume_ms,
+                                combat.movement_resume_mode,
+                            )
+                        })
+                        .expect("mob components")
+                });
+        assert_eq!(mode, MobMovementMode::Idle);
+        assert_eq!(attack_until_ms, 0);
+        assert_eq!(movement_resume_ms, 0);
+        assert_eq!(movement_resume_mode, None);
+    }
+
+    #[test]
     fn failed_lethal_attacks_restore_the_mob_and_discard_their_staged_death() {
         let mut store = store_with_guaranteed_loot();
         let map = map();
@@ -3151,6 +3379,7 @@ mod tests {
             store,
             map,
             player,
+            0,
             PlayerAttack {
                 target_mob_id: "",
                 source_skill_id: None,
@@ -3369,6 +3598,27 @@ mod tests {
             }],
             ..Map::default()
         }
+    }
+
+    fn stagger_map(threshold: u64) -> Map {
+        let mut map = map();
+        let definition = &mut map.mob_definitions[0];
+        definition.stagger_threshold = threshold;
+        definition.magic_attack = 20;
+        definition.animations.extend([
+            MobAnimation {
+                name: "move".to_owned(),
+                frames: vec![MobFrame::default()],
+            },
+            MobAnimation {
+                name: "hit1".to_owned(),
+                frames: vec![MobFrame {
+                    delay_ms: 600,
+                    ..MobFrame::default()
+                }],
+            },
+        ]);
+        map
     }
 
     fn reactor_map() -> Map {

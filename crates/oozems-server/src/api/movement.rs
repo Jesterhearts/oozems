@@ -5,6 +5,7 @@ use oozems_proto::v1::EnterPortalRequest;
 use oozems_proto::v1::GetMovementRulesRequest;
 use oozems_proto::v1::GetMovementRulesResponse;
 use oozems_proto::v1::MovementRules;
+use oozems_proto::v1::MovementSnapshot;
 use oozems_proto::v1::MovementUpdateResponse;
 use oozems_proto::v1::PlayerState;
 use oozems_proto::v1::SubmitMovementRequest;
@@ -20,6 +21,46 @@ use super::parse_player_id;
 use super::prepare_simulation_player_effects;
 use super::unix_time_ms;
 use crate::app::AppState;
+
+pub(super) fn submit_action_movement(
+    state: &AppState,
+    player: &PlayerState,
+    snapshot: Option<MovementSnapshot>,
+    modifiers: crate::movement::MovementModifiers,
+    map: &oozems_proto::v1::Map,
+    now_ms: u64,
+) -> Result<crate::movement::SynchronizedPlayer, ApiError> {
+    let submitted = snapshot
+        .ok_or_else(|| {
+            ApiError::bad_request(
+                "missing_movement_snapshot",
+                "combat request does not contain a movement snapshot",
+            )
+        })
+        .and_then(|snapshot| {
+            crate::movement::parse_snapshot(snapshot).map_err(movement_request_error)
+        })?;
+    let submitted_sequence = submitted.sequence;
+    crate::movement::register_map(&state.movement, map)?;
+    let decision = crate::movement::submit_combat_movement_with_modifiers(
+        &state.movement,
+        player,
+        submitted,
+        modifiers,
+        state.gameplay.movement,
+        now_ms,
+    )?;
+    if !decision.accepted && decision.authoritative.sequence <= submitted_sequence {
+        return Err(ApiError::bad_request(
+            "invalid_combat_movement",
+            decision.rejection_reason,
+        ));
+    }
+    Ok(crate::movement::synchronize_player_observation(
+        &state.movement,
+        player.clone(),
+    )?)
+}
 
 pub async fn get_movement_rules(
     State(state): State<AppState>,
@@ -272,8 +313,9 @@ async fn movement_response(
         let map = load_map(state, map_id).await?.ok_or_else(|| {
             ApiError::not_found("map_not_found", format!("map {map_id} does not exist"))
         })?;
-        let authoritative_player =
-            crate::movement::synchronize_player(&state.movement, current.clone())?;
+        let authoritative =
+            crate::movement::synchronize_player_observation(&state.movement, current.clone())?;
+        let authoritative_player = authoritative.player;
         let effects = mutation.effects;
         let equipment =
             crate::items::equipment_stats(&authoritative_player, state.catalog.as_ref())
@@ -283,6 +325,7 @@ async fn movement_response(
             &state.mobs,
             &map,
             &authoritative_player,
+            authoritative.platform_layer,
             super::project_combat_effects(effects.projected(), equipment),
         )
         .await?;

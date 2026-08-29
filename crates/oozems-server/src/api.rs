@@ -711,10 +711,31 @@ pub async fn use_skill(
     let mutation = begin_player_mutation(&state, &player_guard, &player_id, now_ms).await?;
     require_living_player(&mutation.player, "use skills")?;
     let mut effects = mutation.effects.clone();
-    let equipment = crate::items::equipment_stats(&mutation.player, state.catalog.as_ref())
-        .map_err(item_rule_error)?;
+    let map = load_map(&state, mutation.player.map_id)
+        .await?
+        .ok_or_else(|| {
+            ApiError::not_found(
+                "map_not_found",
+                format!("map {} does not exist", mutation.player.map_id),
+            )
+        })?;
+    let synchronized = movement::submit_action_movement(
+        &state,
+        &mutation.player,
+        request.movement,
+        crate::movement::MovementModifiers {
+            speed: effects.projected().modifiers.speed,
+            jump: effects.projected().modifiers.jump,
+        },
+        &map,
+        now_ms,
+    )?;
+    let player = synchronized.player;
+    let player_layer = synchronized.platform_layer;
+    let equipment =
+        crate::items::equipment_stats(&player, state.catalog.as_ref()).map_err(item_rule_error)?;
     let projected_effects = project_combat_effects(effects.projected(), equipment);
-    let skill_context = load_skill_book(&state, &mutation.player).await?;
+    let skill_context = load_skill_book(&state, &player).await?;
     let skill_job_id = skill_context
         .book
         .skills
@@ -732,7 +753,7 @@ pub async fn use_skill(
             |definition| definition.job_id,
         );
     let prepared = crate::skills::prepare_skill_use(
-        mutation.player.clone(),
+        player,
         &skill_context,
         request.skill_id,
         &state.formulas,
@@ -752,14 +773,6 @@ pub async fn use_skill(
         prepared.result.skill_level,
     )
     .await?;
-    let map = load_map(&state, prepared.player.map_id)
-        .await?
-        .ok_or_else(|| {
-            ApiError::not_found(
-                "map_not_found",
-                format!("map {} does not exist", prepared.player.map_id),
-            )
-        })?;
     let mut dropped_items = crate::items::map_drops(&state.drops, map.id)?;
     let reservation = crate::skills::reserve_skill_cooldown(
         &state.skill_cooldowns,
@@ -785,6 +798,7 @@ pub async fn use_skill(
         &state.mobs,
         &map,
         &prepared.player,
+        player_layer,
         crate::mobs::PlayerAttack {
             target_mob_id: &request.target_mob_id,
             source_skill_id: Some(prepared.result.skill_id),

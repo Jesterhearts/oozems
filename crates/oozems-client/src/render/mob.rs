@@ -415,6 +415,7 @@ mod tests {
             vec![CombatEvent {
                 kind: CombatEventKind::PlayerHitMob as i32,
                 target_id: mob.id.clone(),
+                staggered: true,
                 ..CombatEvent::default()
             }],
             1_000.0,

@@ -144,6 +144,7 @@ pub async fn observe_player_with_effects(
     store: &MobStore,
     map: &Map,
     player: &PlayerState,
+    player_layer: i32,
     effects: ProjectedEffects,
 ) -> Result<MobUpdate, MobStoreError> {
     let (response, receiver) = oneshot::channel();
@@ -154,6 +155,7 @@ pub async fn observe_player_with_effects(
         Command::ObservePlayer {
             map: map.clone(),
             player: player.clone(),
+            player_layer,
             effects,
             response,
         },
@@ -166,27 +168,39 @@ pub async fn use_player_attack_with_effects(
     store: &MobStore,
     map: &Map,
     player: &PlayerState,
+    player_layer: i32,
     attack: PlayerAttack<'_>,
     effects: ProjectedEffects,
 ) -> Result<MobUpdate, MobStoreError> {
-    send_player_attack(store, map, player, attack, None, effects).await
+    send_player_attack(store, map, player, player_layer, attack, None, effects).await
 }
 
 pub async fn use_player_attack_with_reach(
     store: &MobStore,
     map: &Map,
     player: &PlayerState,
+    player_layer: i32,
     attack: PlayerAttack<'_>,
     reach: AttackReach,
     effects: ProjectedEffects,
 ) -> Result<MobUpdate, MobStoreError> {
-    send_player_attack(store, map, player, attack, Some(reach), effects).await
+    send_player_attack(
+        store,
+        map,
+        player,
+        player_layer,
+        attack,
+        Some(reach),
+        effects,
+    )
+    .await
 }
 
 async fn send_player_attack(
     store: &MobStore,
     map: &Map,
     player: &PlayerState,
+    player_layer: i32,
     attack: PlayerAttack<'_>,
     reach: Option<AttackReach>,
     effects: ProjectedEffects,
@@ -199,6 +213,7 @@ async fn send_player_attack(
         Command::UsePlayerAttack {
             map: map.clone(),
             player: player.clone(),
+            player_layer,
             attack: OwnedPlayerAttack::new(attack, reach),
             effects,
             response,
@@ -480,15 +495,18 @@ fn apply_command(
         Command::ObservePlayer {
             map,
             player,
+            player_layer,
             effects,
             response,
         } => {
-            let result = super::apply_observe_player(simulation, &map, &player, effects, now);
+            let result =
+                super::apply_observe_player(simulation, &map, &player, player_layer, effects, now);
             send_update_response(simulation, map.id, &player.id, response, result, now);
         }
         Command::UsePlayerAttack {
             map,
             player,
+            player_layer,
             attack,
             effects,
             response,
@@ -498,6 +516,7 @@ fn apply_command(
                 simulation,
                 &map,
                 &player,
+                player_layer,
                 attack.borrowed(),
                 reach,
                 effects,
@@ -767,12 +786,14 @@ enum Command {
     ObservePlayer {
         map: Map,
         player: PlayerState,
+        player_layer: i32,
         effects: ProjectedEffects,
         response: Response<MobUpdate>,
     },
     UsePlayerAttack {
         map: Map,
         player: PlayerState,
+        player_layer: i32,
         attack: OwnedPlayerAttack,
         effects: ProjectedEffects,
         response: Response<MobUpdate>,

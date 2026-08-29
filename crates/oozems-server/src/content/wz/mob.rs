@@ -346,6 +346,7 @@ fn build_definition(
             body_attack: flag_value(&info, "bodyAttack")?,
             boss: flag_value(&info, "boss")?,
             undead: flag_value(&info, "undead")?,
+            stagger_threshold: read_stagger_threshold(&info)?,
             animations,
             can_jump,
             damage_sound: None,
@@ -460,6 +461,12 @@ fn flag_value(
     Ok(numeric_value(node, name)?.unwrap_or_default() != 0)
 }
 
+fn read_stagger_threshold(info: &WzNodeArc) -> Result<u64, WzContentError> {
+    Ok(positive_u64(
+        numeric_value(info, "pushed")?.unwrap_or_default(),
+    ))
+}
+
 fn positive_u32(value: i64) -> u32 {
     u32::try_from(value.max(0)).unwrap_or(u32::MAX)
 }
@@ -488,11 +495,13 @@ mod tests {
     use oozems_proto::v1::MobAnimation;
     use oozems_proto::v1::MobFrame;
     use oozems_proto::v1::Platform;
+    use wz_reader::WzNode;
 
     use super::Bounds;
     use super::RawMobSpawn;
     use super::build_spawn_points;
     use super::has_jump_animation;
+    use super::read_stagger_threshold;
 
     #[test]
     fn spawn_points_snap_to_their_attached_foothold() {
@@ -558,5 +567,17 @@ mod tests {
 
         assert!(has_jump_animation(&[jump]));
         assert!(!has_jump_animation(&[empty_jump]));
+    }
+
+    #[test]
+    fn pushed_damage_becomes_the_stagger_threshold() {
+        let info = WzNode::from_str("info", 0, None).into_lock();
+        let pushed = WzNode::from_str("pushed", 50_000, Some(&info)).into_lock();
+        info.write().expect("info lock").add(&pushed);
+
+        assert_eq!(
+            read_stagger_threshold(&info).expect("stagger threshold"),
+            50_000,
+        );
     }
 }
