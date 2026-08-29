@@ -18,6 +18,7 @@ wasm-bindgen-futures     = "0.4.77"
 web-sys                  = { version = "0.3.104", features = [
   "Blob",
   "CanvasRenderingContext2d",
+  "CssStyleDeclaration",
   "Document",
   "Element",
   "Event",

@@ -42,15 +42,23 @@ pub(crate) fn click_requests_respawn(
     point: CanvasPoint,
     button: PointerButton,
 ) -> bool {
-    if !is_open(*state) || state.respawn_requested || button != PointerButton::Left {
+    if button != PointerButton::Left || !respawn_button_at(gui, *state, point) {
+        return false;
+    }
+    state.respawn_requested = true;
+    true
+}
+
+pub(crate) fn respawn_button_at(
+    gui: &GameGui,
+    state: DeathUiState,
+    point: CanvasPoint,
+) -> bool {
+    if !is_open(state) || state.respawn_requested {
         return false;
     }
     let (x, y, width, height) = ok_region(gui);
-    let inside = point.x >= x && point.x <= x + width && point.y >= y && point.y <= y + height;
-    if inside {
-        state.respawn_requested = true;
-    }
-    inside
+    point.x >= x && point.x <= x + width && point.y >= y && point.y <= y + height
 }
 
 pub(crate) fn allow_retry(state: &mut DeathUiState) {

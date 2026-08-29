@@ -101,6 +101,17 @@ pub struct BrowserSurface {
     pub canvas: HtmlCanvasElement,
     pub context: CanvasRenderingContext2d,
     pub images: HashMap<String, BrowserAsset>,
+    cursor: MouseCursorState,
+}
+
+#[derive(Default)]
+struct MouseCursorState {
+    position: Option<CanvasPoint>,
+    target_interactive: bool,
+    started_ms: f64,
+    render_interactive: bool,
+    frame_index: Option<usize>,
+    native_hidden: bool,
 }
 
 pub struct FrameClock {
@@ -460,6 +471,8 @@ fn build_game(
     let game_input = input::install(&window, &canvas, input, key_bindings.clone(), audio.clone())?;
     let gui_state = Rc::new(RefCell::new(GuiState::default()));
     let images = prepare_game_assets(&map, &character_sprites, &gui, &skill_book)?;
+    request_mouse_cursor_assets(&images, &gui);
+    set_native_cursor_hidden(&canvas, false)?;
     let motion = player
         .position
         .as_ref()
@@ -497,6 +510,7 @@ fn build_game(
             canvas: canvas.clone(),
             context,
             images,
+            cursor: MouseCursorState::default(),
         },
         clock: FrameClock {
             now_ms: 0.0,
@@ -573,6 +587,110 @@ fn prepare_game_assets(
             .chain(gui.assets.iter())
             .chain(skill_book.assets.iter()),
     )
+}
+
+fn set_native_cursor_hidden(
+    canvas: &HtmlCanvasElement,
+    hidden: bool,
+) -> Result<(), String> {
+    canvas
+        .style()
+        .set_property("cursor", if hidden { "none" } else { "default" })
+        .map_err(js_error)
+}
+
+fn request_mouse_cursor_assets(
+    images: &HashMap<String, BrowserAsset>,
+    gui: &GameGui,
+) {
+    for cursor in gui
+        .normal_cursor
+        .iter()
+        .chain(gui.interactive_cursor.iter())
+    {
+        let _ = assets::images_ready(
+            images,
+            cursor.frames.iter().map(|frame| frame.asset_id.as_str()),
+        );
+    }
+}
+
+pub(super) fn synchronize_mouse_cursor(game: &mut Game) {
+    let target_interactive = game
+        .surface
+        .cursor
+        .position
+        .is_some_and(|point| input::pointer_is_interactive(game, point));
+    if target_interactive != game.surface.cursor.target_interactive {
+        game.surface.cursor.target_interactive = target_interactive;
+        game.surface.cursor.started_ms = game.clock.now_ms;
+    }
+
+    let elapsed_ms = game.clock.now_ms - game.surface.cursor.started_ms;
+    let selection = ready_mouse_cursor_frame(
+        &game.ui.gui,
+        &game.surface.images,
+        target_interactive,
+        elapsed_ms,
+    );
+    game.surface.cursor.render_interactive = selection.is_some_and(|selection| selection.0);
+    game.surface.cursor.frame_index = selection.map(|selection| selection.1);
+
+    let native_hidden = selection.is_some() && game.surface.cursor.position.is_some();
+    if native_hidden != game.surface.cursor.native_hidden {
+        game.surface.cursor.native_hidden = native_hidden;
+        if let Err(error) = set_native_cursor_hidden(&game.surface.canvas, native_hidden) {
+            show_status(&format!("Could not update the mouse cursor: {error}"), true);
+        }
+    }
+}
+
+fn ready_mouse_cursor_frame(
+    gui: &GameGui,
+    images: &HashMap<String, BrowserAsset>,
+    interactive: bool,
+    elapsed_ms: f64,
+) -> Option<(bool, usize)> {
+    if interactive
+        && let Some(cursor) = gui.interactive_cursor.as_ref()
+        && let Some(index) = ready_cursor_frame(cursor, images, elapsed_ms)
+    {
+        return Some((true, index));
+    }
+    let cursor = gui.normal_cursor.as_ref()?;
+    ready_cursor_frame(cursor, images, elapsed_ms).map(|index| (false, index))
+}
+
+fn ready_cursor_frame(
+    cursor: &oozems_proto::v1::MouseCursor,
+    images: &HashMap<String, BrowserAsset>,
+    elapsed_ms: f64,
+) -> Option<usize> {
+    let preferred_index = crate::animation::frame_index(
+        cursor.frames.iter().map(|frame| frame.delay_ms),
+        elapsed_ms,
+        crate::animation::Playback::Loop,
+    )?;
+    assets::ready_or_fallback_index(
+        images,
+        cursor.frames.iter().map(|frame| frame.asset_id.as_str()),
+        preferred_index,
+    )
+}
+
+pub(crate) fn visible_mouse_cursor(
+    game: &Game
+) -> Option<(CanvasPoint, &oozems_proto::v1::AnimationFrame)> {
+    let position = game.surface.cursor.position?;
+    let cursor = if game.surface.cursor.render_interactive {
+        game.ui.gui.interactive_cursor.as_ref()
+    } else {
+        game.ui.gui.normal_cursor.as_ref()
+    }?;
+    Some((
+        position,
+        cursor.frames.get(game.surface.cursor.frame_index?)?,
+    ))
 }
 
 fn schedule_frame(game: Rc<RefCell<Game>>) -> Result<(), String> {

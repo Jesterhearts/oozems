@@ -165,6 +165,15 @@ pub(super) fn select_active_buff(
     true
 }
 
+pub(super) fn active_buff_at_point(
+    game: &Game,
+    point: CanvasPoint,
+) -> bool {
+    active_buff_placements(game)
+        .into_iter()
+        .any(|placement| contains(placement, point))
+}
+
 fn toggled_buff_selection(
     current: Option<crate::game::buffs::BuffKey>,
     tapped: crate::game::buffs::BuffKey,

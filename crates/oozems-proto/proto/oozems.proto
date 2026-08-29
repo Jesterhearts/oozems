@@ -501,6 +501,12 @@ message GameGui {
   repeated AnimationFrame death_tomb_frames = 17;
   repeated AnimationFrame level_up_frames = 18;
   repeated QuestTrackerEntry quest_tracker = 19;
+  MouseCursor normal_cursor = 20;
+  MouseCursor interactive_cursor = 21;
+}
+
+message MouseCursor {
+  repeated AnimationFrame frames = 1;
 }
 
 message QuestTrackerEntry {

@@ -118,6 +118,7 @@ pub(super) fn update(
     }
     let mut pending = PendingRequests::default();
     apply_canvas_input(game, &mut pending);
+    super::synchronize_mouse_cursor(game);
     if crate::death_ui::should_dispatch_respawn(game.ui.death)
         && !pending.has_kind(requests::RequestKind::Respawn)
     {

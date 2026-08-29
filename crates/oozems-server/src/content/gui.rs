@@ -4,6 +4,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::RwLock;
 
+use oozems_proto::v1::AnimationFrame;
 use oozems_proto::v1::AssetDescriptor;
 use oozems_proto::v1::GameGui;
 use oozems_proto::v1::GuiLayout;
@@ -11,6 +12,7 @@ use oozems_proto::v1::GuiSpriteSource;
 use oozems_proto::v1::GuiWindow;
 use oozems_proto::v1::GuiWindowDefinition;
 use oozems_proto::v1::KeySlot;
+use oozems_proto::v1::MouseCursor;
 use oozems_proto::v1::NpcFrame;
 use sha2::Digest;
 use sha2::Sha256;
@@ -48,9 +50,12 @@ use layout::validate_layout;
 
 const GUI_ARCHIVE: &str = "UI.wz";
 const BASIC_IMAGE: &str = "Basic.img";
+const NORMAL_CURSOR_ID: &str = "0";
+const INTERACTIVE_CURSOR_ID: &str = "1";
 const STATUS_BAR_IMAGE: &str = "StatusBar.img";
 const CASH_SHOP_IMAGE: &str = "CashShop.img";
 const UI_WINDOW_IMAGE: &str = "UIWindow.img";
+const DEFAULT_CURSOR_FRAME_DELAY_MS: u32 = 100;
 const DEFAULT_QUEST_ICON_FRAME_DELAY_MS: u32 = 100;
 const QUEST_AVAILABLE_ICON_ID: &str = "0";
 const QUEST_READY_ICON_ID: &str = "2";
@@ -305,6 +310,12 @@ fn build_game_gui(
     definitions: &[GuiWindowDefinition],
 ) -> Result<GameGui, GuiContentError> {
     let (status_sources, mut assets) = load_status_bar_sources(content, status_bar)?;
+    let (normal_cursor, normal_cursor_assets) =
+        load_mouse_cursor(content, basic, NORMAL_CURSOR_ID)?;
+    assets.extend(normal_cursor_assets);
+    let (interactive_cursor, interactive_cursor_assets) =
+        load_mouse_cursor(content, basic, INTERACTIVE_CURSOR_ID)?;
+    assets.extend(interactive_cursor_assets);
     let mut status_bar = compose_status_bar(&status_sources)?;
     add_runtime_regions("status-bar", &mut status_bar);
     let (stat_sources, stat_assets) = load_stat_window_sources(content, ui_window)?;
@@ -380,6 +391,8 @@ fn build_game_gui(
         death_tomb_frames: Vec::new(),
         level_up_frames: Vec::new(),
         quest_tracker: Vec::new(),
+        normal_cursor,
+        interactive_cursor,
     };
     for definition in definitions {
         let (window, definition_assets) = compose_window_definition(content, root, definition)?;
@@ -1163,6 +1176,62 @@ fn load_normal_button(
     load_button_state(content, status_bar, name, path, "normal", assets)
 }
 
+fn load_mouse_cursor(
+    content: &GuiContent,
+    basic: &WzNodeArc,
+    cursor_id: &str,
+) -> Result<(Option<MouseCursor>, Vec<AssetDescriptor>), GuiContentError> {
+    let cursor_path = ["Cursor", cursor_id];
+    let Some(cursor_node) = optional_path(basic, &cursor_path)? else {
+        return Ok((None, Vec::new()));
+    };
+
+    let mut frames = Vec::new();
+    let mut assets = Vec::new();
+    for node in sorted_children(&cursor_node)? {
+        let frame_name = node_name(&node)?;
+        if frame_name.parse::<u32>().is_err() {
+            continue;
+        }
+        let path = ["Cursor", cursor_id, frame_name.as_str()];
+        let geometry = match png_geometry(&node, &path) {
+            Ok(geometry) => geometry,
+            Err(error @ GuiContentError::Invalid { .. }) => {
+                tracing::warn!(
+                    path = %format!("{BASIC_IMAGE}/{}", path.join("/")),
+                    %error,
+                    "skipping malformed optional WZ cursor frame"
+                );
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        let source_path = format!("{BASIC_IMAGE}/{}", path.join("/"));
+        let descriptor = content.register_asset(&source_path, &node)?;
+        let delay_ms = int_value(&node, "delay")?
+            .and_then(|delay| u32::try_from(delay).ok())
+            .filter(|delay| *delay > 0)
+            .unwrap_or(DEFAULT_CURSOR_FRAME_DELAY_MS);
+        frames.push(AnimationFrame {
+            asset_id: descriptor.id.clone(),
+            width: geometry.width as f32,
+            height: geometry.height as f32,
+            origin_x: geometry.origin_x as f32,
+            origin_y: geometry.origin_y as f32,
+            delay_ms,
+        });
+        assets.push(descriptor);
+    }
+    if frames.is_empty() {
+        tracing::warn!(
+            path = %format!("{BASIC_IMAGE}/{}", cursor_path.join("/")),
+            "WZ cursor has no frames; the client will use its native cursor"
+        );
+        return Ok((None, Vec::new()));
+    }
+    Ok((Some(MouseCursor { frames }), assets))
+}
+
 fn load_button_state(
     content: &GuiContent,
     status_bar: &WzNodeArc,
@@ -1217,6 +1286,20 @@ fn required_path(
         node = required_child(&node, name)?;
     }
     Ok(node)
+}
+
+fn optional_path(
+    root: &WzNodeArc,
+    path: &[&str],
+) -> Result<Option<WzNodeArc>, GuiContentError> {
+    let mut node = Arc::clone(root);
+    for name in path {
+        let Some(child) = child(&node, name)? else {
+            return Ok(None);
+        };
+        node = child;
+    }
+    Ok(Some(node))
 }
 
 fn required_child(

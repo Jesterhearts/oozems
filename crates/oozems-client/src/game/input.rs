@@ -380,6 +380,84 @@ pub(super) fn interaction_is_busy(game: &Game) -> bool {
             .is_active(requests::RequestKind::Interaction)
 }
 
+pub(super) fn pointer_is_interactive(
+    game: &Game,
+    point: CanvasPoint,
+) -> bool {
+    if crate::death_ui::is_open(game.ui.death) {
+        return crate::death_ui::respawn_button_at(&game.ui.gui, game.ui.death, point);
+    }
+    if game.ui.cash_shop.open {
+        return !matches!(
+            cash_shop_ui::action_at(
+                &game.ui.cash_shop,
+                &game.ui.gui,
+                game.surface.canvas.width() as f32,
+                game.surface.canvas.height() as f32,
+                point,
+                PointerButton::Left,
+                game.requests
+                    .admission
+                    .is_active(requests::RequestKind::CashShopCatalog),
+            ),
+            None | Some(CashShopAction::Consume)
+        );
+    }
+    if interaction_is_busy(game) {
+        return interaction_ui::is_interactive_at(
+            &game.ui.gui,
+            &game.ui.interaction,
+            game.player.state.inventory.as_ref(),
+            point,
+        );
+    }
+    if render::active_buff_at_point(game, point)
+        || game_gui::click_action(
+            *game.ui.gui_state.borrow(),
+            &game.ui.gui,
+            game.player.state.inventory.as_ref(),
+            Some(&game.player.skill_book),
+            game.surface.canvas.width() as f32,
+            game.surface.canvas.height() as f32,
+            point,
+            PointerButton::Left,
+        )
+        .is_some()
+        || game_gui::double_click_action(
+            *game.ui.gui_state.borrow(),
+            &game.ui.gui,
+            game.player.state.inventory.as_ref(),
+            game.surface.canvas.width() as f32,
+            game.surface.canvas.height() as f32,
+            point,
+        )
+        .is_some()
+    {
+        return true;
+    }
+
+    interactable_npc_at_point(game, point)
+}
+
+fn interactable_npc_at_point(
+    game: &Game,
+    point: CanvasPoint,
+) -> bool {
+    let gui = *game.ui.gui_state.borrow();
+    if super::runtime::player_is_dead(&game.player.state)
+        || game.requests.admission.player_mutation_is_active()
+        || game.ui.gui.npc_dialog_window.is_none()
+        || gui.stats_open
+        || gui.equipment_open
+        || gui.inventory_open
+        || gui.key_config_open
+        || gui.skills_open
+    {
+        return false;
+    }
+    render::npc_at_point(game, point).is_some()
+}
+
 pub(super) fn apply_canvas_input(
     game: &mut Game,
     pending: &mut PendingRequests,
@@ -391,6 +469,14 @@ pub(super) fn apply_canvas_input(
         .drain(..)
         .collect::<Vec<_>>();
     for action in actions {
+        game.surface.cursor.position = match action {
+            CanvasInputAction::Down(point)
+            | CanvasInputAction::Move(point)
+            | CanvasInputAction::Up(point)
+            | CanvasInputAction::Pointer(point, _)
+            | CanvasInputAction::DoubleClick(point) => Some(point),
+            CanvasInputAction::Leave => None,
+        };
         if crate::death_ui::is_open(game.ui.death) {
             match action {
                 CanvasInputAction::Move(point) => game.ui.pointer = Some(point),

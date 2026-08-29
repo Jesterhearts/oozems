@@ -2,6 +2,7 @@ use crate::game::Game;
 use crate::game_gui;
 
 mod cash_shop;
+mod cursor;
 mod death;
 mod hud;
 mod interaction;
@@ -36,6 +37,7 @@ pub fn draw(game: &Game) {
     }
     crate::level_up_effect::draw(game);
     death::draw(game);
+    cursor::draw(game);
 }
 
 pub(crate) fn select_active_buff(
@@ -43,6 +45,13 @@ pub(crate) fn select_active_buff(
     point: game_gui::CanvasPoint,
 ) -> bool {
     skill_info::select_active_buff(game, point)
+}
+
+pub(crate) fn active_buff_at_point(
+    game: &Game,
+    point: game_gui::CanvasPoint,
+) -> bool {
+    skill_info::active_buff_at_point(game, point)
 }
 
 #[cfg(test)]

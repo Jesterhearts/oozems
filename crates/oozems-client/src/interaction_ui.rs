@@ -203,6 +203,18 @@ pub fn click_action(
     }
 }
 
+pub fn is_interactive_at(
+    gui: &GameGui,
+    state: &InteractionState,
+    inventory: Option<&InventoryState>,
+    point: CanvasPoint,
+) -> bool {
+    !matches!(
+        click_action(gui, state, inventory, point),
+        None | Some(InteractionUiAction::Consume)
+    )
+}
+
 pub(crate) fn is_cash_point_shop(shop: &NpcShopView) -> bool {
     NpcShopCurrency::try_from(shop.currency).ok() == Some(NpcShopCurrency::CashPoints)
 }
@@ -393,6 +405,7 @@ mod tests {
     use super::click_action;
     use super::dialog_previous_region;
     use super::indexed_region_at;
+    use super::is_interactive_at;
     use super::visual_dialog_pages;
     use crate::game_gui::CanvasPoint;
 
@@ -593,6 +606,18 @@ mod tests {
             click_action(&gui, &state, None, CanvasPoint { x: 170.0, y: 120.0 }),
             Some(InteractionUiAction::Consume)
         );
+        assert!(is_interactive_at(
+            &gui,
+            &state,
+            None,
+            CanvasPoint { x: 410.0, y: 260.0 }
+        ));
+        assert!(!is_interactive_at(
+            &gui,
+            &state,
+            None,
+            CanvasPoint { x: 170.0, y: 120.0 }
+        ));
     }
 
     #[test]
