@@ -38,7 +38,7 @@ pub async fn respawn_player(
 ) -> Result<Protobuf<RespawnPlayerResponse>, ApiError> {
     let request: RespawnPlayerRequest = decode_request(&headers, body)?;
     let player_id = parse_player_id(&request.player_id)?;
-    let player_guard = lock_player(&state, &player_id).await?;
+    let player_guard = lock_player(&state, &player_id, &headers).await?;
     let now_unix_ms = unix_time_ms()?;
     let mutation = begin_player_mutation(&state, &player_guard, &player_id, now_unix_ms).await?;
     let source_map = load_map(&state, mutation.player.map_id)
@@ -54,6 +54,7 @@ pub async fn respawn_player(
     let simulation = crate::mobs::map_snapshot(&state.mobs, &target_map).await?;
     target_map.mobs = simulation.mobs;
     target_map.mob_projectiles = simulation.mob_projectiles;
+    target_map.reactors = simulation.reactors;
     target_map.simulation_sequence = simulation.sequence;
 
     let (decision, relocation) = crate::movement::relocate_player_to_position(

@@ -387,7 +387,8 @@ impl ContentCatalog {
     }
 
     pub(crate) fn quest_definitions(&self) -> impl Iterator<Item = &QuestDefinition> {
-        // QuestContent uses a BTreeMap so every consumer observes quest-ID order.
+        // QuestContent uses a BTreeMap so every consumer observes quest-ID
+        // order.
         self.quests.iter().flat_map(|quests| quests.definitions())
     }
 

@@ -12,6 +12,7 @@ type StoredLocks = Mutex<HashMap<String, Weak<AsyncMutex<()>>>>;
 #[derive(Default)]
 pub struct PlayerLocks {
     locks: Arc<StoredLocks>,
+    reconciliations: Arc<crate::player_reconciliation::PlayerReconciliations>,
 }
 
 #[derive(Clone)]
@@ -23,6 +24,7 @@ struct PlayerGuardLease {
     player_id: String,
     guard: Option<OwnedMutexGuard<()>>,
     locks: Weak<StoredLocks>,
+    reconciliations: Arc<crate::player_reconciliation::PlayerReconciliations>,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -36,6 +38,11 @@ pub enum PlayerLockError {
         held_player_id: String,
         requested_player_id: String,
     },
+    #[error(
+        "player reconciliation operation {operation_id} must be completed before another \
+         operation can run"
+    )]
+    ReconciliationRequired { operation_id: u64 },
 }
 
 pub async fn acquire_player(
@@ -54,13 +61,22 @@ pub async fn acquire_player(
         }
     };
     let guard = lock.lock_owned().await;
-    Ok(PlayerGuard {
+    let guard = PlayerGuard {
         lease: Arc::new(PlayerGuardLease {
             player_id: player_id.to_owned(),
             guard: Some(guard),
             locks: Arc::downgrade(&locks.locks),
+            reconciliations: locks.reconciliations.clone(),
         }),
-    })
+    };
+    if let Some(record) =
+        crate::player_reconciliation::reconciliation_required(&locks.reconciliations, player_id)
+    {
+        return Err(PlayerLockError::ReconciliationRequired {
+            operation_id: record.operation_id,
+        });
+    }
+    Ok(guard)
 }
 
 pub(crate) fn validate_player_guard(
@@ -91,6 +107,19 @@ impl PlayerGuard {
         player_id: &str,
     ) -> bool {
         self.lease.player_id == player_id
+    }
+
+    pub(crate) fn mark_reconciliation_required(
+        &self,
+        failure: String,
+        rollback_failures: Vec<String>,
+    ) -> crate::player_reconciliation::ReconciliationRecord {
+        crate::player_reconciliation::mark_reconciliation_required(
+            &self.lease.reconciliations,
+            &self.lease.player_id,
+            failure,
+            rollback_failures,
+        )
     }
 }
 
@@ -164,6 +193,27 @@ mod tests {
         let second = acquire_player(&locks, "second").await;
 
         assert!(second.is_ok());
+    }
+
+    #[tokio::test]
+    async fn quarantined_player_is_rejected_after_lock_acquisition() {
+        let locks = Arc::new(PlayerLocks::default());
+        let first = acquire_player(&locks, "first").await.expect("first lock");
+        first.mark_reconciliation_required(
+            "commit failed".to_owned(),
+            vec!["rollback failed".to_owned()],
+        );
+        let waiting_locks = locks.clone();
+        let waiting = tokio::spawn(async move { acquire_player(&waiting_locks, "first").await });
+
+        assert!(!waiting.is_finished());
+        drop(first);
+
+        assert!(matches!(
+            waiting.await.expect("waiting task"),
+            Err(super::PlayerLockError::ReconciliationRequired { operation_id: 1 })
+        ));
+        assert!(acquire_player(&locks, "second").await.is_ok());
     }
 
     #[tokio::test]

@@ -4,7 +4,6 @@ use oozems_proto::v1::DroppedItem;
 use oozems_proto::v1::PlayerState;
 use thiserror::Error;
 
-use crate::attacks::BasicAttackCooldowns;
 use crate::attacks::BasicAttackReservation;
 use crate::database::Database;
 use crate::database::DatabaseError;
@@ -23,7 +22,6 @@ use crate::recovery::RecoveryActivityRollback;
 use crate::recovery::RecoveryTimers;
 use crate::recovery::RecoveryToken;
 use crate::skills::SkillCooldownReservation;
-use crate::skills::SkillCooldowns;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PlayerPersistence {
@@ -40,8 +38,8 @@ pub struct PlayerTransaction {
     drops: Option<DropChange>,
     pickup: Option<PickupRollback>,
     mob: Option<MobChange>,
-    skill_cooldown: Option<SkillCooldownChange>,
-    basic_attack: Option<BasicAttackChange>,
+    skill_cooldown: Option<SkillCooldownReservation>,
+    basic_attack: Option<BasicAttackReservation>,
     recovery: Option<RecoveryChange>,
     relocation: Option<RelocationChange>,
     activity: Option<ActivityChange>,
@@ -71,16 +69,6 @@ struct MobChange {
     store: Arc<MobStore>,
     update: MobUpdate,
     committed: bool,
-}
-
-struct SkillCooldownChange {
-    store: Arc<SkillCooldowns>,
-    reservation: SkillCooldownReservation,
-}
-
-struct BasicAttackChange {
-    store: Arc<BasicAttackCooldowns>,
-    reservation: BasicAttackReservation,
 }
 
 struct RecoveryChange {
@@ -285,19 +273,16 @@ pub fn stage_mob_update(
 
 pub fn stage_skill_cooldown(
     transaction: &mut PlayerTransaction,
-    store: Arc<SkillCooldowns>,
     reservation: Option<SkillCooldownReservation>,
 ) {
-    transaction.skill_cooldown =
-        reservation.map(|reservation| SkillCooldownChange { store, reservation });
+    transaction.skill_cooldown = reservation;
 }
 
 pub fn stage_basic_attack(
     transaction: &mut PlayerTransaction,
-    store: Arc<BasicAttackCooldowns>,
     reservation: BasicAttackReservation,
 ) {
-    transaction.basic_attack = Some(BasicAttackChange { store, reservation });
+    transaction.basic_attack = Some(reservation);
 }
 
 pub fn stage_recovery(
@@ -343,16 +328,27 @@ pub async fn commit_player_transaction(
     let guard = guard.clone();
     // Retain the player lock and finish compensation if the request task is
     // cancelled after one of the stores has committed.
-    tokio::spawn(
-        async move { commit_player_transaction_inner(&database, &guard, transaction).await },
-    )
+    tokio::spawn(async move {
+        let worker_guard = guard.clone();
+        match tokio::spawn(async move {
+            commit_player_transaction_inner(&database, &worker_guard, transaction).await
+        })
+        .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                quarantine_worker_failure(&guard, &error);
+                Err(PlayerTransactionError::Worker(error))
+            }
+        }
+    })
     .await
     .map_err(PlayerTransactionError::Worker)?
 }
 
 async fn commit_player_transaction_inner(
     database: &Database,
-    _guard: &PlayerGuard,
+    guard: &PlayerGuard,
     mut transaction: PlayerTransaction,
 ) -> Result<CommittedPlayerTransaction, PlayerTransactionError> {
     if let Err(error) = validate_transaction_plan(&transaction) {
@@ -360,8 +356,10 @@ async fn commit_player_transaction_inner(
         return if rollback_failures.is_empty() {
             Err(PlayerTransactionError::Plan(error))
         } else {
+            let failure = TransactionFailure::Plan(error);
+            quarantine_player(guard, &failure, &rollback_failures);
             Err(PlayerTransactionError::Reconciliation {
-                failure: Box::new(TransactionFailure::Plan(error)),
+                failure: Box::new(failure),
                 rollback_failures,
             })
         };
@@ -373,6 +371,7 @@ async fn commit_player_transaction_inner(
                 failure: Box::new(failure),
             })
         } else {
+            quarantine_player(guard, &failure, &rollback_failures);
             Err(PlayerTransactionError::Reconciliation {
                 failure: Box::new(failure),
                 rollback_failures,
@@ -413,15 +412,41 @@ pub async fn abort_player_transaction(
     // Aborts coordinate several stores and need the same cancellation
     // shielding as commits.
     tokio::spawn(async move {
-        abort_player_transaction_inner(&database, &guard, transaction, cause).await
+        let worker_guard = guard.clone();
+        match tokio::spawn(async move {
+            abort_player_transaction_inner(&database, &worker_guard, transaction, cause).await
+        })
+        .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                quarantine_worker_failure(&guard, &error);
+                Err(PlayerTransactionError::Worker(error))
+            }
+        }
     })
     .await
     .map_err(PlayerTransactionError::Worker)?
 }
 
+fn quarantine_worker_failure(
+    guard: &PlayerGuard,
+    error: &tokio::task::JoinError,
+) {
+    let record = guard.mark_reconciliation_required(
+        format!("player transaction worker failed: {error}"),
+        vec!["transaction state could not be inspected after worker failure".to_owned()],
+    );
+    tracing::error!(
+        operation_id = record.operation_id,
+        %error,
+        "player quarantined after transaction worker failure"
+    );
+}
+
 async fn abort_player_transaction_inner(
     database: &Database,
-    _guard: &PlayerGuard,
+    guard: &PlayerGuard,
     mut transaction: PlayerTransaction,
     cause: String,
 ) -> Result<(), PlayerTransactionError> {
@@ -430,11 +455,29 @@ async fn abort_player_transaction_inner(
     if rollback_failures.is_empty() {
         Ok(())
     } else {
+        quarantine_player(guard, &failure, &rollback_failures);
         Err(PlayerTransactionError::Reconciliation {
             failure: Box::new(failure),
             rollback_failures,
         })
     }
+}
+
+fn quarantine_player(
+    guard: &PlayerGuard,
+    failure: &TransactionFailure,
+    rollback_failures: &[RollbackFailure],
+) {
+    let record = guard.mark_reconciliation_required(
+        failure.to_string(),
+        rollback_failures.iter().map(ToString::to_string).collect(),
+    );
+    tracing::error!(
+        operation_id = record.operation_id,
+        failure = %record.failure,
+        rollback_failures = ?record.rollback_failures,
+        "player quarantined after incomplete transaction compensation"
+    );
 }
 
 fn validate_transaction_plan(
@@ -521,6 +564,12 @@ async fn commit_staged_changes(
             .await
             .map_err(TransactionFailure::Mobs)?;
         change.committed = true;
+    }
+    if let Some(reservation) = transaction.skill_cooldown.as_mut() {
+        crate::skills::commit_skill_cooldown(reservation);
+    }
+    if let Some(reservation) = transaction.basic_attack.as_mut() {
+        crate::attacks::commit_basic_attack(reservation);
     }
     Ok(())
 }
@@ -657,14 +706,13 @@ fn rollback_reservations(
     transaction: &mut PlayerTransaction,
     failures: &mut Vec<RollbackFailure>,
 ) {
-    if let Some(change) = transaction.skill_cooldown.take()
-        && let Err(error) =
-            crate::skills::release_skill_cooldown(&change.store, &change.reservation)
+    if let Some(mut reservation) = transaction.skill_cooldown.take()
+        && let Err(error) = crate::skills::release_skill_cooldown(&mut reservation)
     {
         failures.push(RollbackFailure::SkillCooldown(error));
     }
-    if let Some(change) = transaction.basic_attack.take()
-        && let Err(error) = crate::attacks::release_basic_attack(&change.store, &change.reservation)
+    if let Some(mut reservation) = transaction.basic_attack.take()
+        && let Err(error) = crate::attacks::release_basic_attack(&mut reservation)
     {
         failures.push(RollbackFailure::BasicAttack(error));
     }
@@ -689,9 +737,11 @@ mod tests {
     use oozems_proto::v1::Vec2;
 
     use super::*;
+    use crate::attacks::BasicAttackCooldowns;
     use crate::database::PlayerId;
     use crate::player_lock::PlayerLocks;
     use crate::player_lock::acquire_player;
+    use crate::skills::SkillCooldowns;
 
     #[test]
     fn drop_staging_rejects_a_different_store_in_release_builds() {
@@ -725,6 +775,69 @@ mod tests {
                 PlayerTransactionPlanError::DropStoreMismatch
             ))
         ));
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_task_releases_its_staged_skill_cooldown() {
+        let player = test_player("cancelled-skill");
+        let cooldowns = Arc::new(SkillCooldowns::default());
+        let task_cooldowns = cooldowns.clone();
+        let task_player = player.clone();
+        let (staged, staged_receiver) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let reservation = crate::skills::reserve_skill_cooldown(
+                &task_cooldowns,
+                &task_player.id,
+                1_000,
+                1_000,
+                5_000,
+            )
+            .expect("reserve cooldown");
+            let mut transaction =
+                new_player_transaction(task_player.clone(), task_player, PlayerPersistence::None);
+            stage_skill_cooldown(&mut transaction, reservation);
+            staged.send(()).expect("report staged transaction");
+            std::future::pending::<()>().await;
+            drop(transaction);
+        });
+
+        staged_receiver.await.expect("transaction was staged");
+        task.abort();
+        assert!(task.await.expect_err("task cancellation").is_cancelled());
+
+        crate::skills::reserve_skill_cooldown(&cooldowns, &player.id, 1_000, 1_001, 5_000)
+            .expect("retry after request cancellation");
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_task_releases_its_staged_basic_attack() {
+        let player = test_player("cancelled-attack");
+        let cooldowns = Arc::new(BasicAttackCooldowns::default());
+        let task_cooldowns = cooldowns.clone();
+        let task_player = player.clone();
+        let (staged, staged_receiver) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let reservation = crate::attacks::reserve_basic_attack(
+                &task_cooldowns,
+                &task_player.id,
+                1_000,
+                Duration::from_secs(5),
+            )
+            .expect("reserve basic attack");
+            let mut transaction =
+                new_player_transaction(task_player.clone(), task_player, PlayerPersistence::None);
+            stage_basic_attack(&mut transaction, reservation);
+            staged.send(()).expect("report staged transaction");
+            std::future::pending::<()>().await;
+            drop(transaction);
+        });
+
+        staged_receiver.await.expect("transaction was staged");
+        task.abort();
+        assert!(task.await.expect_err("task cancellation").is_cancelled());
+
+        crate::attacks::reserve_basic_attack(&cooldowns, &player.id, 1_001, Duration::from_secs(5))
+            .expect("retry after request cancellation");
     }
 
     #[tokio::test]
@@ -921,7 +1034,7 @@ mod tests {
         let mut transaction =
             new_player_transaction(stale_original, invalid, PlayerPersistence::Full);
         stage_pickup(&mut transaction, drops.clone(), original.map_id, &picked);
-        stage_skill_cooldown(&mut transaction, cooldowns.clone(), reservation);
+        stage_skill_cooldown(&mut transaction, reservation);
 
         let error = commit_player_transaction(&database, &guard, transaction)
             .await
@@ -1008,6 +1121,88 @@ mod tests {
                 .expect("query database")
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn incomplete_compensation_quarantines_the_player() {
+        let directory = tempfile::tempdir().expect("temporary database directory");
+        let database = crate::database::open_sqlite(&directory.path().join("players.sqlite"))
+            .expect("open database");
+        let player = test_player("quarantined-player");
+        let locks = PlayerLocks::default();
+        let guard = acquire_player(&locks, &player.id)
+            .await
+            .expect("player guard");
+        let drops = Arc::new(DropStore::new(Duration::from_secs(60)));
+        let conflicting_drop = DroppedItem {
+            id: "rollback-conflict".to_owned(),
+            item_id: 2_000_000,
+            position: player.position,
+            despawn_at_unix_ms: u64::MAX,
+            quantity: 1,
+            expires_at_unix_ms: 0,
+        };
+        crate::items::restore_drop(
+            &drops,
+            player.map_id,
+            conflicting_drop.clone(),
+            Some(player.id.clone()),
+        )
+        .expect("seed conflicting drop");
+        let picked = PickedUpItem {
+            drop: conflicting_drop,
+            owner_player_id: Some(player.id.clone()),
+            player: player.clone(),
+        };
+        let source_map = test_map(player.map_id);
+        let mut target_map = test_map(200);
+        target_map.portals.push(Portal {
+            name: "target".to_owned(),
+            x: 700.0,
+            y: 20.0,
+            ..Portal::default()
+        });
+        let movement = Arc::new(MovementTracker::default());
+        crate::movement::initialize_player(
+            &movement,
+            &player,
+            &source_map,
+            movement_config(),
+            1_000,
+        )
+        .expect("initialize movement");
+        let (_, plan) = crate::movement::relocate_player(
+            &movement,
+            &player,
+            &source_map,
+            &target_map,
+            "target",
+            movement_config(),
+            1_200,
+        )
+        .expect("plan relocation");
+        let staged = crate::movement::project_relocation_player(&plan, player.clone())
+            .expect("project relocation");
+        let mut transaction =
+            new_player_transaction(player.clone(), staged, PlayerPersistence::None);
+        stage_pickup(&mut transaction, drops, player.map_id, &picked);
+        stage_relocation(&mut transaction, movement, plan);
+
+        let error = commit_player_transaction(&database, &guard, transaction)
+            .await
+            .err()
+            .expect("incomplete rollback must fail");
+        assert!(matches!(
+            error,
+            PlayerTransactionError::Reconciliation { .. }
+        ));
+        drop(guard);
+
+        assert!(matches!(
+            acquire_player(&locks, &player.id).await,
+            Err(crate::player_lock::PlayerLockError::ReconciliationRequired { .. })
+        ));
+        assert!(acquire_player(&locks, "healthy-player").await.is_ok());
     }
 
     fn test_player(player_id: &str) -> PlayerState {

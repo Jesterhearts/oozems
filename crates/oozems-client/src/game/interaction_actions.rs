@@ -156,8 +156,18 @@ fn begin_request(
                     "{context} could not finish: {error}"
                 )),
             },
-            Err(error) => {
-                super::requests::RequestStatus::error(format!("{context} failed: {error}"))
+            Err((error, relocation_outcome_unknown)) => {
+                if relocation_outcome_unknown {
+                    super::request_dispatch::require_bootstrap(game);
+                }
+                super::requests::RequestStatus::error(format!(
+                    "{context} failed: {error}{}",
+                    if relocation_outcome_unknown {
+                        " Reloading to confirm the current map."
+                    } else {
+                        ""
+                    }
+                ))
             }
         },
     );
@@ -169,6 +179,15 @@ struct InteractionUpdate {
     generation: u64,
     source_map_id: u32,
     request_started_ms: f64,
+    relocation_target_map_id: Option<u32>,
+}
+
+enum PreparedPlayerInstall {
+    Update {
+        player: oozems_proto::v1::PlayerState,
+        active_buffs: super::buffs::ValidatedState,
+    },
+    Relocation(super::responses::PreparedRelocation),
 }
 
 async fn request_and_prepare(
@@ -177,10 +196,16 @@ async fn request_and_prepare(
     source_map_id: u32,
     learned_skills: Vec<oozems_proto::v1::LearnedSkill>,
     request_started_ms: f64,
-) -> Result<InteractionUpdate, String> {
-    let response = api::interact_npc(request)
-        .await
-        .map_err(|error| error.to_string())?;
+) -> Result<InteractionUpdate, (String, bool)> {
+    let relocation_target_map_id = request.action.as_ref().and_then(|action| match action {
+        npc_interaction_request::Action::TakeTaxi(action) => Some(action.target_map_id),
+        _ => None,
+    });
+    let response = api::interact_npc(request).await.map_err(|error| {
+        let outcome_unknown =
+            relocation_target_map_id.is_some() && error.operation_outcome_unknown();
+        (error.to_string(), outcome_unknown)
+    })?;
     let skill_book = match response.player.as_ref() {
         Some(player) if player.learned_skills != learned_skills => {
             let skill_requested_at_ms = super::monotonic_time_ms();
@@ -197,10 +222,23 @@ async fn request_and_prepare(
         generation,
         source_map_id,
         request_started_ms,
+        relocation_target_map_id,
     })
 }
 
 fn install_response(
+    game: &mut Game,
+    update: InteractionUpdate,
+) -> Result<&'static str, String> {
+    let relocation_committed = update.relocation_target_map_id.is_some();
+    let result = install_prepared_response(game, update);
+    if relocation_committed && result.is_err() {
+        super::request_dispatch::require_bootstrap(game);
+    }
+    result
+}
+
+fn install_prepared_response(
     game: &mut Game,
     mut update: InteractionUpdate,
 ) -> Result<&'static str, String> {
@@ -215,8 +253,51 @@ fn install_response(
     let npc_animation = update.response.npc_animation.take();
     let context_is_current = game.ui.interaction.generation == update.generation
         && game.world.map.id == update.source_map_id;
-    let installed = super::install_full_player_update(game, player);
-    super::install_active_buffs(game, active_buffs, update.request_started_ms);
+    let prepared_install = match update.relocation_target_map_id {
+        Some(expected_map_id) => {
+            let map = api::require_data(update.response.map.take(), "taxi destination map")
+                .map_err(|error| error.to_string())?;
+            let authoritative = api::require_data(
+                update.response.authoritative.take(),
+                "taxi destination position",
+            )
+            .map_err(|error| error.to_string())?;
+            PreparedPlayerInstall::Relocation(super::responses::prepare_relocation(
+                player,
+                active_buffs,
+                map,
+                authoritative,
+                &game.player.id,
+                expected_map_id,
+            )?)
+        }
+        None => {
+            if update.response.map.is_some() || update.response.authoritative.is_some() {
+                return Err("NPC response contains an unexpected map transition".to_owned());
+            }
+            PreparedPlayerInstall::Update {
+                player,
+                active_buffs,
+            }
+        }
+    };
+    let installed = match prepared_install {
+        PreparedPlayerInstall::Relocation(prepared) => {
+            super::movement_actions::install_prepared_relocation(
+                game,
+                prepared,
+                update.request_started_ms,
+            )?
+        }
+        PreparedPlayerInstall::Update {
+            player,
+            active_buffs,
+        } => {
+            let installed = super::install_full_player_update(game, player);
+            super::install_active_buffs(game, active_buffs, update.request_started_ms);
+            installed
+        }
+    };
     if installed.domains.skills
         && let Some(((loaded, skill_requested_at_ms), skill_active_buffs)) =
             update.skill_book.take().zip(skill_active_buffs)
@@ -224,22 +305,11 @@ fn install_response(
         game.player.skill_book = loaded.skill_book;
         super::install_active_buffs(game, skill_active_buffs, skill_requested_at_ms);
     }
-    let relocation_requested =
-        update.response.map.is_some() || update.response.authoritative.is_some();
-    let relocated = match (
-        update.response.map.take(),
-        update.response.authoritative.take(),
-    ) {
-        (Some(map), Some(authoritative)) => {
-            super::movement_actions::install_relocation(game, map, authoritative)?
-        }
-        (None, None) => false,
-        _ => return Err("NPC response contains an incomplete map transition".to_owned()),
-    };
-    if (context_is_current && !relocation_requested) || relocated {
+    let relocated = update.relocation_target_map_id.is_some();
+    if (context_is_current && !relocated) || relocated {
         super::install_quest_indicators(game, &update.response.quest_indicators);
     }
-    if context_is_current && !relocation_requested {
+    if context_is_current && !relocated {
         game.ui.interaction.install(update.response.interaction);
         if let Some(event) = npc_animation
             && let Err(error) = crate::render::npc::install_event(
@@ -256,8 +326,6 @@ fn install_response(
     }
     Ok(if relocated {
         "Travel complete."
-    } else if relocation_requested {
-        "Travel response was superseded by newer movement."
     } else {
         "NPC interaction updated."
     })

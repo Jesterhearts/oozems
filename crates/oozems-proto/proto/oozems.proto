@@ -177,6 +177,12 @@ message BootstrapResponse {
   PlayerState player = 1;
   CharacterCreationOptions creation_options = 2;
   ActiveBuffState active_buffs = 3;
+  GameplaySessionGrant gameplay_session = 4;
+}
+
+message GameplaySessionGrant {
+  string player_id = 1;
+  string token = 2;
 }
 
 message GetMovementRulesRequest {}
@@ -248,6 +254,7 @@ message MovementUpdateResponse {
   ActiveBuffState active_buffs = 9;
   repeated DroppedItem dropped_items = 10;
   repeated Reactor reactors = 11;
+  Map map = 12;
 }
 
 message CreateCharacterRequest {

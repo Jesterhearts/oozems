@@ -34,6 +34,7 @@ pub(super) enum RequestKind {
     CashShopCatalog,
     CashShopPurchase,
     Interaction,
+    Taxi,
     Movement,
     Appearance,
     Morph,
@@ -46,12 +47,13 @@ impl RequestKind {
             Self::KeyBindingSave => PLAYER_MUTATION | KEY_BINDING_SAVE,
             Self::Item => PLAYER_MUTATION | ITEM,
             Self::Skill => PLAYER_MUTATION | SKILL,
-            Self::Transition => PLAYER_MUTATION | TRANSITION,
+            Self::Transition => PLAYER_MUTATION | MOVEMENT | TRANSITION,
             Self::Recovery => PLAYER_MUTATION | RECOVERY,
             Self::Respawn => PLAYER_MUTATION | MOVEMENT | RESPAWN,
             Self::CashShopCatalog => CASH_SHOP,
             Self::CashShopPurchase => PLAYER_MUTATION | CASH_SHOP | PURCHASE,
             Self::Interaction => PLAYER_MUTATION | INTERACTION,
+            Self::Taxi => PLAYER_MUTATION | MOVEMENT | INTERACTION,
             Self::Movement => MOVEMENT,
             Self::Appearance => APPEARANCE,
             Self::Morph => MORPH,
@@ -61,6 +63,10 @@ impl RequestKind {
 
     fn identity(self) -> u32 {
         self.lanes() & !PLAYER_MUTATION
+    }
+
+    pub fn requires_gameplay_session(self) -> bool {
+        !matches!(self, Self::CashShopCatalog | Self::Appearance | Self::Morph)
     }
 }
 
@@ -90,7 +96,8 @@ impl RequestAdmission {
         &self,
         kind: RequestKind,
     ) -> bool {
-        self.occupied.get() & kind.identity() != 0
+        let identity = kind.identity();
+        self.occupied.get() & identity == identity
     }
 
     pub fn player_mutation_is_active(&self) -> bool {
@@ -137,16 +144,17 @@ impl RequestStatus {
     }
 }
 
-pub(super) fn spawn_request<T, Fut, Request, Complete>(
+pub(super) fn spawn_request<T, E, Fut, Request, Complete>(
     game: Rc<RefCell<Game>>,
     permit: RequestPermit,
     request: Request,
     complete: Complete,
 ) where
     T: 'static,
-    Fut: Future<Output = Result<T, String>> + 'static,
+    E: 'static,
+    Fut: Future<Output = Result<T, E>> + 'static,
     Request: FnOnce() -> Fut + 'static,
-    Complete: FnOnce(&mut Game, Result<T, String>, f64) -> RequestStatus + 'static,
+    Complete: FnOnce(&mut Game, Result<T, E>, f64) -> RequestStatus + 'static,
 {
     spawn_local(async move {
         let request_started_ms = super::monotonic_time_ms();
@@ -179,6 +187,7 @@ mod tests {
             RequestKind::Respawn,
             RequestKind::CashShopPurchase,
             RequestKind::Interaction,
+            RequestKind::Taxi,
         ] {
             assert!(admission.admit(kind).is_none(), "{kind:?} must wait");
         }
@@ -232,5 +241,49 @@ mod tests {
         assert!(admission.admit(RequestKind::Movement).is_none());
         drop(respawn);
         assert!(admission.admit(RequestKind::Movement).is_some());
+    }
+
+    #[test]
+    fn relocations_wait_for_movement_and_block_new_snapshots() {
+        for kind in [RequestKind::Transition, RequestKind::Taxi] {
+            let admission = RequestAdmission::default();
+            let movement = admission
+                .admit(RequestKind::Movement)
+                .expect("movement permit");
+
+            assert!(admission.admit(kind).is_none(), "{kind:?} must wait");
+            assert!(!admission.is_active(kind));
+            drop(movement);
+
+            let relocation = admission.admit(kind).expect("relocation permit");
+            assert!(admission.is_active(kind));
+            assert!(admission.is_active(RequestKind::Movement));
+            assert!(admission.admit(RequestKind::Movement).is_none());
+            drop(relocation);
+            assert!(admission.admit(RequestKind::Movement).is_some());
+        }
+    }
+
+    #[test]
+    fn plain_movement_is_not_reported_as_a_relocation() {
+        let admission = RequestAdmission::default();
+        let _movement = admission
+            .admit(RequestKind::Movement)
+            .expect("movement permit");
+
+        assert!(!admission.is_active(RequestKind::Transition));
+        assert!(!admission.is_active(RequestKind::Interaction));
+        assert!(!admission.is_active(RequestKind::Respawn));
+    }
+
+    #[test]
+    fn ordinary_interactions_can_overlap_movement() {
+        let admission = RequestAdmission::default();
+        let _movement = admission
+            .admit(RequestKind::Movement)
+            .expect("movement permit");
+
+        assert!(admission.admit(RequestKind::Interaction).is_some());
+        assert!(admission.admit(RequestKind::Taxi).is_none());
     }
 }

@@ -49,9 +49,28 @@ pub(super) struct RequestState {
     pub(super) movement: movement_actions::MovementSyncState,
     pub(super) recovery: recovery_actions::RecoveryState,
     pub(super) deferred_transitions: VecDeque<PendingTransition>,
+    pub(super) deferred_taxi: Option<InteractionUiAction>,
     pub(super) appearance: AppearanceRefreshState,
     pub(super) morph: MorphRefreshState,
     pub(super) gui: GuiRefreshState,
+    pub(super) requires_bootstrap: bool,
+    pub(super) bootstrap_reload_pending: bool,
+}
+
+pub(super) fn require_bootstrap(game: &mut Game) {
+    freeze_for_bootstrap(game);
+    game.requests.bootstrap_reload_pending = true;
+}
+
+pub(super) fn require_server_restart(game: &mut Game) {
+    freeze_for_bootstrap(game);
+    game.requests.bootstrap_reload_pending = false;
+}
+
+fn freeze_for_bootstrap(game: &mut Game) {
+    game.requests.requires_bootstrap = true;
+    game.requests.deferred_transitions.clear();
+    game.requests.deferred_taxi = None;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -93,6 +112,9 @@ impl PendingRequest {
             Self::Gui(_) => requests::RequestKind::Gui,
             Self::CashShopOpen => requests::RequestKind::CashShopCatalog,
             Self::CashShopPurchase(_) => requests::RequestKind::CashShopPurchase,
+            Self::InteractionAction(InteractionUiAction::TakeTaxi { .. }) => {
+                requests::RequestKind::Taxi
+            }
             Self::InteractionOpen(_) | Self::InteractionAction(_) => {
                 requests::RequestKind::Interaction
             }
@@ -398,6 +420,9 @@ pub(super) fn dispatch_requests(
     pending: PendingRequests,
 ) {
     for request in pending.requests {
+        if game.borrow().requests.requires_bootstrap && request.kind().requires_gameplay_session() {
+            continue;
+        }
         let permit = game.borrow().requests.admission.admit(request.kind());
         let Some(permit) = permit else {
             request_not_admitted(&mut game.borrow_mut(), request);
@@ -468,6 +493,9 @@ fn request_not_admitted(
                 game.world.map.id,
             );
         }
+        PendingRequest::InteractionAction(action @ InteractionUiAction::TakeTaxi { .. }) => {
+            game.requests.deferred_taxi = Some(action);
+        }
         PendingRequest::Respawn => {}
         PendingRequest::PickUp
         | PendingRequest::Movement
@@ -506,7 +534,7 @@ fn begin_gui_refresh(
                 .await
                 .map_err(|error| error.to_string())?;
             let images = assets::prepare_assets(gui.assets.iter())?;
-            Ok((gui, images))
+            Ok::<_, String>((gui, images))
         },
         |game, result, _| {
             game.requests.gui.in_flight = None;
@@ -543,7 +571,7 @@ fn begin_appearance_refresh(
                 .await
                 .map_err(|error| error.to_string())?;
             let images = assets::prepare_assets(sprites.assets.iter())?;
-            Ok((sprites, images))
+            Ok::<_, String>((sprites, images))
         },
         move |game, result, _| {
             let Some(active) = game.requests.appearance.in_flight.take() else {
@@ -709,7 +737,7 @@ fn begin_key_binding_save(
                 .await
                 .map_err(|error| error.to_string())?;
             let update = responses::take_player_and_active_buffs(&mut response)?;
-            Ok((update, key_bindings_generation))
+            Ok::<_, String>((update, key_bindings_generation))
         },
         |game, result, request_started_ms| match result {
             Ok(((player, active_buffs), key_bindings_generation)) => {

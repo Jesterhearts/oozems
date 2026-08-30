@@ -30,6 +30,13 @@ use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen_futures::spawn_local;
 
 pub(crate) const PLAYER_ID: &str = "local-player";
+const AUTOMATIC_RELOAD_COOLDOWN_MS: f64 = 30_000.0;
+const AUTOMATIC_RELOAD_STORAGE_KEY: &str = "oozems.last-automatic-bootstrap-reload-ms";
+
+pub(crate) enum AutomaticReload {
+    Started,
+    Suppressed,
+}
 
 #[wasm_bindgen(start)]
 pub fn start() {
@@ -119,8 +126,53 @@ pub(crate) fn set_visible(
     }
 }
 
+pub(crate) fn reload_client() -> Result<AutomaticReload, String> {
+    let window = web_sys::window().ok_or("browser window is unavailable")?;
+    let storage = window
+        .session_storage()
+        .map_err(js_error)?
+        .ok_or("browser session storage is unavailable")?;
+    let now_ms = js_sys::Date::now();
+    let previous_reload_ms = storage
+        .get_item(AUTOMATIC_RELOAD_STORAGE_KEY)
+        .map_err(js_error)?
+        .and_then(|value| value.parse::<f64>().ok());
+    if !automatic_reload_allowed(now_ms, previous_reload_ms) {
+        return Ok(AutomaticReload::Suppressed);
+    }
+    storage
+        .set_item(AUTOMATIC_RELOAD_STORAGE_KEY, &now_ms.to_string())
+        .map_err(js_error)?;
+    window.location().reload().map_err(js_error)?;
+    Ok(AutomaticReload::Started)
+}
+
+fn automatic_reload_allowed(
+    now_ms: f64,
+    previous_reload_ms: Option<f64>,
+) -> bool {
+    !previous_reload_ms.is_some_and(|previous_ms| {
+        previous_ms.is_finite()
+            && now_ms >= previous_ms
+            && now_ms - previous_ms < AUTOMATIC_RELOAD_COOLDOWN_MS
+    })
+}
+
 pub(crate) fn js_error(error: JsValue) -> String {
     error
         .as_string()
         .unwrap_or_else(|| "browser operation failed".to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::automatic_reload_allowed;
+
+    #[test]
+    fn automatic_reload_is_suppressed_during_the_cooldown() {
+        assert!(automatic_reload_allowed(100_000.0, None));
+        assert!(!automatic_reload_allowed(100_000.0, Some(90_000.0)));
+        assert!(automatic_reload_allowed(100_000.0, Some(70_000.0)));
+        assert!(automatic_reload_allowed(100_000.0, Some(110_000.0)));
+    }
 }

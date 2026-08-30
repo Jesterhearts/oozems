@@ -8,15 +8,12 @@ use axum::response::Response;
 use oozems_proto::v1::AbilityStat;
 use oozems_proto::v1::AllocateAbilityPointRequest;
 use oozems_proto::v1::AllocateAbilityPointResponse;
-use oozems_proto::v1::AllocateSkillPointRequest;
-use oozems_proto::v1::AllocateSkillPointResponse;
 use oozems_proto::v1::BootstrapRequest;
 use oozems_proto::v1::BootstrapResponse;
 use oozems_proto::v1::CharacterStats;
 use oozems_proto::v1::CreateCharacterRequest;
 use oozems_proto::v1::CreateCharacterResponse;
-use oozems_proto::v1::DropItemRequest;
-use oozems_proto::v1::EquipItemRequest;
+use oozems_proto::v1::GameplaySessionGrant;
 use oozems_proto::v1::GetCharacterSpritesRequest;
 use oozems_proto::v1::GetCharacterSpritesResponse;
 use oozems_proto::v1::GetGuiRequest;
@@ -25,21 +22,12 @@ use oozems_proto::v1::GetMapRequest;
 use oozems_proto::v1::GetMapResponse;
 use oozems_proto::v1::GetMorphRequest;
 use oozems_proto::v1::GetMorphResponse;
-use oozems_proto::v1::GetSkillBookRequest;
-use oozems_proto::v1::GetSkillBookResponse;
-use oozems_proto::v1::ItemActionResponse;
-use oozems_proto::v1::ItemCategory;
-use oozems_proto::v1::PickUpItemRequest;
 use oozems_proto::v1::PlayerState;
 use oozems_proto::v1::QuestStatus;
 use oozems_proto::v1::RecoverPlayerRequest;
 use oozems_proto::v1::RecoverPlayerResponse;
 use oozems_proto::v1::SavePlayerRequest;
 use oozems_proto::v1::SavePlayerResponse;
-use oozems_proto::v1::UnequipItemRequest;
-use oozems_proto::v1::UseItemRequest;
-use oozems_proto::v1::UseSkillRequest;
-use oozems_proto::v1::UseSkillResponse;
 use oozems_proto::v1::Vec2;
 
 use crate::app::AppState;
@@ -49,10 +37,12 @@ use crate::database::PlayerId;
 pub(crate) mod cash_shop;
 pub(crate) mod combat;
 pub(crate) mod interactions;
+pub(crate) mod items;
 pub(crate) mod movement;
 mod player_mutation;
 mod protocol;
 pub(crate) mod respawn;
+pub(crate) mod skills;
 
 pub(crate) use self::player_mutation::PlayerMutation;
 use self::player_mutation::active_buff_state;
@@ -78,7 +68,7 @@ pub async fn bootstrap(
     let request: BootstrapRequest = decode_request(&headers, body)?;
     let player_id = PlayerId::parse(&request.player_id)
         .map_err(|error| ApiError::bad_request("invalid_player_id", error.to_string()))?;
-    let player_guard = lock_player(&state, &player_id).await?;
+    let player_guard = lock_player_unchecked(&state, &player_id).await?;
     let player = load_player(&state, &player_id)
         .await?
         .filter(|loaded| loaded.player.appearance.is_some());
@@ -115,10 +105,16 @@ pub async fn bootstrap(
             Ok(crate::effects::state(&effects, now_unix_ms))
         })
         .transpose()?;
+    let token =
+        crate::gameplay_session::issue_session(&state.gameplay_sessions, player_id.as_str())?;
     Ok(Protobuf(BootstrapResponse {
         player,
         creation_options: Some(state.catalog.character_creation_options()),
         active_buffs,
+        gameplay_session: Some(GameplaySessionGrant {
+            player_id: player_id.as_str().to_owned(),
+            token,
+        }),
     }))
 }
 
@@ -130,7 +126,7 @@ pub async fn create_character(
     let request: CreateCharacterRequest = decode_request(&headers, body)?;
     let player_id = PlayerId::parse(&request.player_id)
         .map_err(|error| ApiError::bad_request("invalid_player_id", error.to_string()))?;
-    let _player_guard = lock_player(&state, &player_id).await?;
+    let _player_guard = lock_player(&state, &player_id, &headers).await?;
     let name = CharacterName::parse(&request.name)
         .map_err(|error| ApiError::bad_request("invalid_character_name", error.to_string()))?;
     let appearance = request.appearance.ok_or_else(|| {
@@ -255,7 +251,7 @@ pub async fn get_map(
 ) -> Result<Protobuf<GetMapResponse>, ApiError> {
     let request: GetMapRequest = decode_request(&headers, body)?;
     let player_id = parse_player_id(&request.player_id)?;
-    let player_guard = lock_player(&state, &player_id).await?;
+    let player_guard = lock_player(&state, &player_id, &headers).await?;
     let now_unix_ms = unix_time_ms()?;
     let loaded = load_player(&state, &player_id)
         .await?
@@ -300,261 +296,6 @@ pub async fn get_map(
     Ok(Protobuf(GetMapResponse { map: Some(map) }))
 }
 
-pub async fn equip_item(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Result<Protobuf<ItemActionResponse>, ApiError> {
-    let request: EquipItemRequest = decode_request(&headers, body)?;
-    let player_id = parse_player_id(&request.player_id)?;
-    let player_guard = lock_player(&state, &player_id).await?;
-    let activity_time_ms = unix_time_ms()?;
-    let mutation =
-        begin_player_mutation(&state, &player_guard, &player_id, activity_time_ms).await?;
-    crate::items::validate_inventory_selection(
-        &mutation.player,
-        request.inventory_index,
-        request.expected_item_id,
-        request.expected_expires_at_unix_ms,
-    )
-    .map_err(item_rule_error)?;
-    let updated = crate::items::equip_inventory_item(
-        mutation.player.clone(),
-        request.inventory_index,
-        state.catalog.as_ref(),
-    )
-    .map_err(item_rule_error)?;
-    let committed =
-        persist_player_mutation(&state, &player_guard, mutation, updated, true, true).await?;
-    let player = committed.player;
-    let effects = committed
-        .effects
-        .expect("equip item transaction stages active effects");
-    let quest_indicators =
-        current_map_quest_indicators(&state, &player, &effects, activity_time_ms).await;
-
-    Ok(Protobuf(ItemActionResponse {
-        player: Some(player),
-        dropped_item: None,
-        picked_up_drop_id: String::new(),
-        active_buffs: Some(crate::effects::state(&effects, activity_time_ms)),
-        used_setup_item_id: 0,
-        quest_indicators,
-    }))
-}
-
-pub async fn unequip_item(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Result<Protobuf<ItemActionResponse>, ApiError> {
-    let request: UnequipItemRequest = decode_request(&headers, body)?;
-    let player_id = parse_player_id(&request.player_id)?;
-    let player_guard = lock_player(&state, &player_id).await?;
-    let activity_time_ms = unix_time_ms()?;
-    let mutation =
-        begin_player_mutation(&state, &player_guard, &player_id, activity_time_ms).await?;
-    let updated = crate::items::unequip_item(
-        mutation.player.clone(),
-        request.slot,
-        state.catalog.as_ref(),
-    )
-    .map_err(item_rule_error)?;
-    let committed =
-        persist_player_mutation(&state, &player_guard, mutation, updated, true, true).await?;
-    let player = committed.player;
-    let effects = committed
-        .effects
-        .expect("unequip item transaction stages active effects");
-    let quest_indicators =
-        current_map_quest_indicators(&state, &player, &effects, activity_time_ms).await;
-
-    Ok(Protobuf(ItemActionResponse {
-        player: Some(player),
-        dropped_item: None,
-        picked_up_drop_id: String::new(),
-        active_buffs: Some(crate::effects::state(&effects, activity_time_ms)),
-        used_setup_item_id: 0,
-        quest_indicators,
-    }))
-}
-
-pub async fn drop_item(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Result<Protobuf<ItemActionResponse>, ApiError> {
-    let request: DropItemRequest = decode_request(&headers, body)?;
-    let player_id = parse_player_id(&request.player_id)?;
-    let player_guard = lock_player(&state, &player_id).await?;
-    let activity_time_ms = unix_time_ms()?;
-    let mutation =
-        begin_player_mutation(&state, &player_guard, &player_id, activity_time_ms).await?;
-    crate::items::validate_inventory_selection(
-        &mutation.player,
-        request.inventory_index,
-        request.expected_item_id,
-        request.expected_expires_at_unix_ms,
-    )
-    .map_err(item_rule_error)?;
-    let removed = crate::items::remove_inventory_item(
-        mutation.player.clone(),
-        request.inventory_index,
-        state.catalog.as_ref(),
-    )
-    .map_err(item_rule_error)?;
-    let staged_drop = crate::items::stage_inventory_drop(&state.drops, &removed)?;
-    let dropped_item = staged_drop.item().clone();
-    let (mut transaction, _) =
-        prepare_player_mutation(&state, mutation, removed.player, true, true);
-    crate::player_transaction::stage_drops(&mut transaction, state.drops.clone(), [staged_drop])?;
-    let committed = crate::player_transaction::commit_player_transaction(
-        &state.database,
-        &player_guard,
-        transaction,
-    )
-    .await?;
-    let player = committed.player;
-    let effects = committed
-        .effects
-        .expect("drop item transaction stages active effects");
-    let quest_indicators =
-        current_map_quest_indicators(&state, &player, &effects, activity_time_ms).await;
-
-    Ok(Protobuf(ItemActionResponse {
-        player: Some(player),
-        dropped_item: Some(dropped_item),
-        picked_up_drop_id: String::new(),
-        active_buffs: Some(crate::effects::state(&effects, activity_time_ms)),
-        used_setup_item_id: 0,
-        quest_indicators,
-    }))
-}
-
-pub async fn use_item(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Result<Protobuf<ItemActionResponse>, ApiError> {
-    let request: UseItemRequest = decode_request(&headers, body)?;
-    let player_id = parse_player_id(&request.player_id)?;
-    let player_guard = lock_player(&state, &player_id).await?;
-    let activity_time_ms = unix_time_ms()?;
-    let mut mutation =
-        begin_player_mutation(&state, &player_guard, &player_id, activity_time_ms).await?;
-    require_living_player(&mutation.player, "use items")?;
-    crate::items::validate_inventory_selection(
-        &mutation.player,
-        request.inventory_index,
-        request.expected_item_id,
-        request.expected_expires_at_unix_ms,
-    )
-    .map_err(item_rule_error)?;
-    let used = crate::items::use_inventory_item(
-        mutation.player.clone(),
-        request.inventory_index,
-        state.catalog.as_ref(),
-    )
-    .map_err(item_rule_error)?;
-    let consumes_inventory = used.category == ItemCategory::Consume;
-    let used_setup_item_id = if used.category == ItemCategory::Install {
-        used.item_id
-    } else {
-        0
-    };
-    let updated = if used.category == ItemCategory::Consume {
-        let definition = state
-            .catalog
-            .consume_effect_definition(used.item_id)
-            .ok_or(crate::items::ItemRuleError::UnusableItem {
-                item_id: used.item_id,
-            })
-            .map_err(item_rule_error)?;
-        crate::effects::apply_consume_effect(
-            used.player,
-            &mut mutation.effects,
-            definition,
-            activity_time_ms,
-        )
-    } else {
-        used.player
-    };
-    let (transaction, _) =
-        prepare_player_mutation(&state, mutation, updated, consumes_inventory, true);
-    let committed = crate::player_transaction::commit_player_transaction(
-        &state.database,
-        &player_guard,
-        transaction,
-    )
-    .await?;
-    let player = committed.player;
-    let effects = committed
-        .effects
-        .expect("use item transaction stages active effects");
-    let quest_indicators =
-        current_map_quest_indicators(&state, &player, &effects, activity_time_ms).await;
-
-    Ok(Protobuf(ItemActionResponse {
-        player: Some(player),
-        dropped_item: None,
-        picked_up_drop_id: String::new(),
-        active_buffs: Some(crate::effects::state(&effects, activity_time_ms)),
-        used_setup_item_id,
-        quest_indicators,
-    }))
-}
-
-pub async fn pick_up_item(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Result<Protobuf<ItemActionResponse>, ApiError> {
-    let request: PickUpItemRequest = decode_request(&headers, body)?;
-    let player_id = parse_player_id(&request.player_id)?;
-    let player_guard = lock_player(&state, &player_id).await?;
-    let activity_time_ms = unix_time_ms()?;
-    let mutation =
-        begin_player_mutation(&state, &player_guard, &player_id, activity_time_ms).await?;
-    require_living_player(&mutation.player, "pick up items")?;
-    let position = mutation
-        .player
-        .position
-        .ok_or(crate::movement::MovementError::MissingPlayerPosition)?;
-    let picked = crate::items::pick_up_nearest(
-        &state.drops,
-        mutation.player.clone(),
-        position,
-        state.catalog.as_ref(),
-    )
-    .map_err(pick_up_error)?;
-    let map_id = picked.player.map_id;
-    let picked_up_drop_id = picked.drop.id.clone();
-    let (mut transaction, _) =
-        prepare_player_mutation(&state, mutation, picked.player.clone(), true, true);
-    crate::player_transaction::stage_pickup(&mut transaction, state.drops.clone(), map_id, &picked);
-    let committed = crate::player_transaction::commit_player_transaction(
-        &state.database,
-        &player_guard,
-        transaction,
-    )
-    .await?;
-    let player = committed.player;
-    let effects = committed
-        .effects
-        .expect("pick up item transaction stages active effects");
-    let quest_indicators =
-        current_map_quest_indicators(&state, &player, &effects, activity_time_ms).await;
-
-    Ok(Protobuf(ItemActionResponse {
-        player: Some(player),
-        dropped_item: None,
-        picked_up_drop_id,
-        active_buffs: Some(crate::effects::state(&effects, activity_time_ms)),
-        used_setup_item_id: 0,
-        quest_indicators,
-    }))
-}
-
 pub async fn get_gui(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -563,6 +304,7 @@ pub async fn get_gui(
     let request: GetGuiRequest = decode_request(&headers, body)?;
     let player_id = PlayerId::parse(&request.player_id)
         .map_err(|error| ApiError::bad_request("invalid_player_id", error.to_string()))?;
+    let _player_guard = lock_player(&state, &player_id, &headers).await?;
     let player = crate::database::load_player(&state.database, &player_id)
         .await?
         .ok_or_else(|| {
@@ -616,65 +358,6 @@ pub async fn get_gui(
     Ok(Protobuf(GetGuiResponse { gui: Some(gui) }))
 }
 
-pub async fn get_skill_book(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Result<Protobuf<GetSkillBookResponse>, ApiError> {
-    let request: GetSkillBookRequest = decode_request(&headers, body)?;
-    let player_id = parse_player_id(&request.player_id)?;
-    let player_guard = lock_player(&state, &player_id).await?;
-    let player = require_player(&state, &player_guard, &player_id).await?;
-    let skill_context = load_skill_book(&state, &player).await?;
-    let skill_book =
-        crate::skills::personalize_skill_book(skill_context, &player).map_err(skill_rule_error)?;
-    let now_unix_ms = unix_time_ms()?;
-    let active_buffs = active_buff_state(&state, player_id.as_str(), now_unix_ms)?;
-
-    Ok(Protobuf(GetSkillBookResponse {
-        skill_book: Some(skill_book),
-        active_buffs: Some(active_buffs),
-    }))
-}
-
-pub async fn allocate_skill_point(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Result<Protobuf<AllocateSkillPointResponse>, ApiError> {
-    let request: AllocateSkillPointRequest = decode_request(&headers, body)?;
-    let player_id = parse_player_id(&request.player_id)?;
-    let player_guard = lock_player(&state, &player_id).await?;
-    let activity_time_ms = unix_time_ms()?;
-    let mutation =
-        begin_player_mutation(&state, &player_guard, &player_id, activity_time_ms).await?;
-    let skill_context = load_skill_book(&state, &mutation.player).await?;
-    let updated = crate::skills::allocate_skill_point(
-        mutation.player.clone(),
-        &skill_context,
-        request.skill_id,
-    )
-    .map_err(skill_rule_error)?;
-    let (transaction, active_buffs) =
-        prepare_player_mutation(&state, mutation, updated, true, true);
-    let committed = crate::player_transaction::commit_player_transaction(
-        &state.database,
-        &player_guard,
-        transaction,
-    )
-    .await?;
-    let player = committed.player;
-    let skill_context = load_skill_book(&state, &player).await?;
-    let skill_book =
-        crate::skills::personalize_skill_book(skill_context, &player).map_err(skill_rule_error)?;
-
-    Ok(Protobuf(AllocateSkillPointResponse {
-        player: Some(player),
-        skill_book: Some(skill_book),
-        active_buffs: Some(active_buffs),
-    }))
-}
-
 pub async fn allocate_ability_point(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -691,7 +374,7 @@ pub async fn allocate_ability_point(
                 "the selected ability stat is invalid",
             )
         })?;
-    let player_guard = lock_player(&state, &player_id).await?;
+    let player_guard = lock_player(&state, &player_id, &headers).await?;
     let activity_time_ms = unix_time_ms()?;
     let mutation =
         begin_player_mutation(&state, &player_guard, &player_id, activity_time_ms).await?;
@@ -705,192 +388,6 @@ pub async fn allocate_ability_point(
     }))
 }
 
-pub async fn use_skill(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Result<Protobuf<UseSkillResponse>, ApiError> {
-    let request: UseSkillRequest = decode_request(&headers, body)?;
-    let player_id = parse_player_id(&request.player_id)?;
-    let player_guard = lock_player(&state, &player_id).await?;
-    let now_ms = unix_time_ms()?;
-    let mutation = begin_player_mutation(&state, &player_guard, &player_id, now_ms).await?;
-    require_living_player(&mutation.player, "use skills")?;
-    let mut effects = mutation.effects.clone();
-    let map = load_map(&state, mutation.player.map_id)
-        .await?
-        .ok_or_else(|| {
-            ApiError::not_found(
-                "map_not_found",
-                format!("map {} does not exist", mutation.player.map_id),
-            )
-        })?;
-    let synchronized = movement::submit_action_movement(
-        &state,
-        &mutation.player,
-        request.movement,
-        crate::movement::MovementModifiers {
-            speed: effects.projected().modifiers.speed,
-            jump: effects.projected().modifiers.jump,
-        },
-        &map,
-        now_ms,
-    )?;
-    let player = synchronized.player;
-    let player_layer = synchronized.platform_layer;
-    let equipment =
-        crate::items::equipment_stats(&player, state.catalog.as_ref()).map_err(item_rule_error)?;
-    let projected_effects = project_combat_effects(effects.projected(), equipment);
-    let skill_context = load_skill_book(&state, &player).await?;
-    let skill_job_id = skill_context
-        .book
-        .skills
-        .iter()
-        .filter_map(|skill| skill.definition.as_ref())
-        .find(|definition| definition.skill_id == request.skill_id)
-        .map_or_else(
-            || {
-                mutation
-                    .player
-                    .stats
-                    .as_ref()
-                    .map_or(0, |stats| stats.job_id)
-            },
-            |definition| definition.job_id,
-        );
-    let prepared = crate::skills::prepare_skill_use(
-        player,
-        &skill_context,
-        request.skill_id,
-        &state.formulas,
-        projected_effects,
-    )
-    .map_err(skill_rule_error)?;
-    if prepared.result.has_damage && effects.attacks_disabled() {
-        return Err(ApiError::bad_request(
-            "invalid_skill_action",
-            "the active morph does not allow attacks",
-        ));
-    }
-    let effect = load_skill_effect(
-        &state,
-        skill_job_id,
-        request.skill_id,
-        prepared.result.skill_level,
-    )
-    .await?;
-    let mut dropped_items = crate::items::map_drops(&state.drops, map.id)?;
-    let reservation = crate::skills::reserve_skill_cooldown(
-        &state.skill_cooldowns,
-        player_id.as_str(),
-        request.skill_id,
-        now_ms,
-        prepared.cooldown_ms,
-    )
-    .map_err(skill_rule_error)?;
-    let mut transaction = crate::player_transaction::new_player_transaction(
-        mutation.original,
-        prepared.player.clone(),
-        crate::player_transaction::PlayerPersistence::Full,
-    );
-    crate::player_transaction::stage_skill_cooldown(
-        &mut transaction,
-        state.skill_cooldowns.clone(),
-        reservation,
-    );
-    crate::effects::apply_skill_effect(&mut effects, &prepared.result, now_ms);
-    let combat_effects = project_combat_effects(effects.projected(), equipment);
-    let simulation = match crate::mobs::use_player_attack_with_effects(
-        &state.mobs,
-        &map,
-        &prepared.player,
-        player_layer,
-        crate::mobs::PlayerAttack {
-            target_mob_id: &request.target_mob_id,
-            source_skill_id: Some(prepared.result.skill_id),
-            facing_left: request.facing_left,
-            minimum_damage: prepared.result.minimum_damage,
-            maximum_damage: prepared.result.maximum_damage,
-            fixed_damage: prepared.result.fixed_damage,
-            attack_type: prepared.attack_type,
-        },
-        combat_effects,
-    )
-    .await
-    {
-        Ok(simulation) => simulation,
-        Err(error) => {
-            crate::player_transaction::abort_player_transaction(
-                &state.database,
-                &player_guard,
-                transaction,
-                error.to_string(),
-            )
-            .await?;
-            return Err(error.into());
-        }
-    };
-    let prepared_persistence = prepare_simulation_player_effects(
-        &state,
-        prepared.player,
-        &simulation,
-        effects,
-        now_ms,
-        true,
-    );
-    crate::player_transaction::replace_staged_player(
-        &mut transaction,
-        prepared_persistence.player,
-        crate::player_transaction::PlayerPersistence::Full,
-    );
-    crate::player_transaction::stage_effects(
-        &mut transaction,
-        state.active_effects.clone(),
-        mutation.original_effects,
-        prepared_persistence.effects,
-    );
-    crate::player_transaction::stage_mob_update(
-        &mut transaction,
-        state.mobs.clone(),
-        state.drops.clone(),
-        simulation,
-    )?;
-    crate::player_transaction::stage_activity(
-        &mut transaction,
-        state.recovery_timers.clone(),
-        player_id.as_str().to_owned(),
-        now_ms,
-    );
-    let committed = crate::player_transaction::commit_player_transaction(
-        &state.database,
-        &player_guard,
-        transaction,
-    )
-    .await?;
-    let player = committed.player;
-    let effects = committed.effects.expect("skill transaction stages effects");
-    merge_dropped_items(&mut dropped_items, committed.committed_drops);
-    let simulation = committed
-        .mob_update
-        .expect("skill transaction stages a mob update");
-    let active_buffs = crate::effects::state(&effects, now_ms);
-    let quest_indicators = quest_indicator_updates(&state, &map, &player, &effects, now_ms);
-
-    Ok(Protobuf(UseSkillResponse {
-        player: Some(player),
-        result: Some(prepared.result),
-        effect: Some(effect),
-        mobs: simulation.mobs,
-        mob_projectiles: simulation.mob_projectiles,
-        combat_events: simulation.combat_events,
-        simulation_sequence: simulation.sequence,
-        active_buffs: Some(active_buffs),
-        dropped_items,
-        reactors: simulation.reactors,
-        quest_indicators,
-    }))
-}
-
 pub async fn recover_player(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -898,7 +395,7 @@ pub async fn recover_player(
 ) -> Result<Protobuf<RecoverPlayerResponse>, ApiError> {
     let request: RecoverPlayerRequest = decode_request(&headers, body)?;
     let player_id = parse_player_id(&request.player_id)?;
-    let player_guard = lock_player(&state, &player_id).await?;
+    let player_guard = lock_player(&state, &player_id, &headers).await?;
     let now_ms = unix_time_ms()?;
     let mutation = begin_player_mutation(&state, &player_guard, &player_id, now_ms).await?;
     require_living_player(&mutation.player, "recover")?;
@@ -984,7 +481,7 @@ pub async fn save_player(
 
     let player_id = PlayerId::parse(&request.player_id)
         .map_err(|error| ApiError::bad_request("invalid_player_id", error.to_string()))?;
-    let player_guard = lock_player(&state, &player_id).await?;
+    let player_guard = lock_player(&state, &player_id, &headers).await?;
     let now_unix_ms = unix_time_ms()?;
     let mutation = begin_player_mutation(&state, &player_guard, &player_id, now_unix_ms).await?;
     let skill_context = load_skill_book(&state, &mutation.player).await?;
@@ -1182,19 +679,6 @@ async fn load_skill_book(
     Ok(tokio::task::spawn_blocking(move || catalog.skill_book_context(&player)).await??)
 }
 
-async fn load_skill_effect(
-    state: &AppState,
-    job_id: u32,
-    skill_id: u32,
-    level: u32,
-) -> Result<oozems_proto::v1::SkillEffect, ApiError> {
-    let catalog = state.catalog.clone();
-    Ok(
-        tokio::task::spawn_blocking(move || catalog.skill_effect(job_id, skill_id, level))
-            .await??,
-    )
-}
-
 fn parse_player_id(value: &str) -> Result<PlayerId, ApiError> {
     PlayerId::parse(value)
         .map_err(|error| ApiError::bad_request("invalid_player_id", error.to_string()))
@@ -1220,19 +704,57 @@ pub(crate) fn require_living_player(
 async fn lock_player(
     state: &AppState,
     player_id: &PlayerId,
+    headers: &HeaderMap,
+) -> Result<crate::player_lock::PlayerGuard, ApiError> {
+    let guard = lock_player_unchecked(state, player_id).await?;
+    require_current_gameplay_session(&state.gameplay_sessions, player_id.as_str(), headers)?;
+    Ok(guard)
+}
+
+async fn lock_player_unchecked(
+    state: &AppState,
+    player_id: &PlayerId,
 ) -> Result<crate::player_lock::PlayerGuard, ApiError> {
     Ok(crate::player_lock::acquire_player(&state.player_locks, player_id.as_str()).await?)
 }
 
-fn item_rule_error(error: crate::items::ItemRuleError) -> ApiError {
-    ApiError::bad_request("invalid_item_action", error.to_string())
+fn bearer_token(headers: &HeaderMap) -> Result<&str, ApiError> {
+    let authorization = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| ApiError::Client {
+            status: axum::http::StatusCode::UNAUTHORIZED,
+            code: "invalid_gameplay_session",
+            message: "the request does not contain a gameplay session".to_owned(),
+        })?;
+    authorization
+        .strip_prefix("Bearer ")
+        .filter(|token| !token.is_empty())
+        .ok_or_else(|| ApiError::Client {
+            status: axum::http::StatusCode::UNAUTHORIZED,
+            code: "invalid_gameplay_session",
+            message: "the request contains an invalid gameplay session".to_owned(),
+        })
 }
 
-fn pick_up_error(error: crate::items::PickUpError) -> ApiError {
-    match error {
-        crate::items::PickUpError::Rule(error) => item_rule_error(error),
-        crate::items::PickUpError::Store(error) => error.into(),
+fn require_current_gameplay_session(
+    sessions: &crate::gameplay_session::GameplaySessions,
+    player_id: &str,
+    headers: &HeaderMap,
+) -> Result<(), ApiError> {
+    let token = bearer_token(headers)?;
+    if crate::gameplay_session::is_current_session(sessions, player_id, token)? {
+        return Ok(());
     }
+    Err(ApiError::Client {
+        status: axum::http::StatusCode::UNAUTHORIZED,
+        code: "invalid_gameplay_session",
+        message: "the gameplay session is no longer current".to_owned(),
+    })
+}
+
+fn item_rule_error(error: crate::items::ItemRuleError) -> ApiError {
+    ApiError::bad_request("invalid_item_action", error.to_string())
 }
 
 fn skill_rule_error(error: crate::skills::SkillRuleError) -> ApiError {
@@ -1292,12 +814,69 @@ fn starter_character_stats(experience_required: u64) -> CharacterStats {
 
 #[cfg(test)]
 mod tests {
+    use axum::http::HeaderMap;
+    use axum::http::HeaderValue;
+    use axum::http::header;
     use oozems_proto::v1::Map;
     use oozems_proto::v1::Portal;
     use oozems_proto::v1::Vec2;
 
     use super::SavedMapResolution;
+    use super::bearer_token;
     use super::inspect_saved_map;
+    use super::require_current_gameplay_session;
+
+    #[test]
+    fn gameplay_session_header_requires_a_nonempty_bearer_token() {
+        let missing = HeaderMap::new();
+        assert!(matches!(
+            bearer_token(&missing),
+            Err(super::ApiError::Client { .. })
+        ));
+
+        let mut malformed = HeaderMap::new();
+        malformed.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Basic token"),
+        );
+        assert!(matches!(
+            bearer_token(&malformed),
+            Err(super::ApiError::Client { .. })
+        ));
+
+        let mut valid = HeaderMap::new();
+        valid.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer token"),
+        );
+        assert_eq!(bearer_token(&valid).expect("bearer token"), "token");
+    }
+
+    #[test]
+    fn rotating_a_gameplay_session_rejects_the_previous_bearer_token() {
+        let sessions = crate::gameplay_session::GameplaySessions::default();
+        let first = crate::gameplay_session::issue_session(&sessions, "player")
+            .expect("first gameplay session");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {first}")).expect("authorization header"),
+        );
+        require_current_gameplay_session(&sessions, "player", &headers)
+            .expect("first session is current");
+
+        crate::gameplay_session::issue_session(&sessions, "player")
+            .expect("replacement gameplay session");
+
+        assert!(matches!(
+            require_current_gameplay_session(&sessions, "player", &headers),
+            Err(super::ApiError::Client {
+                status: axum::http::StatusCode::UNAUTHORIZED,
+                code: "invalid_gameplay_session",
+                ..
+            })
+        ));
+    }
 
     #[test]
     fn missing_saved_map_requires_initial_map_repair() {

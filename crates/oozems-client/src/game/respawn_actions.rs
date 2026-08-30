@@ -15,22 +15,32 @@ pub(super) fn begin(
     super::requests::spawn_request(
         game,
         permit,
-        move || async move {
-            api::respawn_player(&player_id)
-                .await
-                .map_err(|error| error.to_string())
-        },
+        move || async move { api::respawn_player(&player_id).await },
         |game, result, request_started_ms| match result {
             Ok(response) => match install(game, response, request_started_ms) {
                 Ok(()) => super::requests::RequestStatus::silent(),
-                Err(error) => super::requests::RequestStatus::error(format!(
-                    "Respawn succeeded, but the destination could not be loaded: {error}. Reload \
-                     the game to continue."
-                )),
+                Err(error) => {
+                    super::request_dispatch::require_bootstrap(game);
+                    super::requests::RequestStatus::error(format!(
+                        "Respawn succeeded, but the destination could not be loaded: {error}. \
+                         Reloading the game to continue."
+                    ))
+                }
             },
             Err(error) => {
-                crate::death_ui::allow_retry(&mut game.ui.death);
-                super::requests::RequestStatus::error(format!("Respawn failed: {error}"))
+                if error.operation_outcome_unknown() {
+                    super::request_dispatch::require_bootstrap(game);
+                } else {
+                    crate::death_ui::allow_retry(&mut game.ui.death);
+                }
+                super::requests::RequestStatus::error(format!(
+                    "Respawn failed: {error}{}",
+                    if error.operation_outcome_unknown() {
+                        " Reloading to confirm the current map."
+                    } else {
+                        ""
+                    }
+                ))
             }
         },
     );
@@ -51,14 +61,17 @@ fn install(
         api::require_data(response.map.take(), "respawn map").map_err(|error| error.to_string())?;
     let authoritative = api::require_data(response.authoritative.take(), "respawn position")
         .map_err(|error| error.to_string())?;
-    if player.map_id != map.id || authoritative.map_id != map.id {
-        return Err("respawn response map IDs do not agree".to_owned());
-    }
-    if !super::movement_actions::install_relocation(game, map, authoritative)? {
-        return Err("respawn response was superseded by newer movement".to_owned());
-    }
-    super::install_full_player_update(game, player);
-    super::install_active_buffs(game, active_buffs, request_started_ms);
+    let player_id = game.player.id.clone();
+    let expected_map_id = map.id;
+    let prepared = super::responses::prepare_relocation(
+        player,
+        active_buffs,
+        map,
+        authoritative,
+        &player_id,
+        expected_map_id,
+    )?;
+    super::movement_actions::install_prepared_relocation(game, prepared, request_started_ms)?;
     crate::death_ui::synchronize(&mut game.ui.death, false, game.clock.now_ms);
     Ok(())
 }

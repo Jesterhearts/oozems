@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::Mutex;
 
 use oozems_proto::v1::KeyBinding;
@@ -518,7 +519,7 @@ fn formula_error(error: impl ToString) -> SkillRuleError {
 }
 
 pub fn reserve_skill_cooldown(
-    cooldowns: &SkillCooldowns,
+    cooldowns: &Arc<SkillCooldowns>,
     player_id: &str,
     skill_id: u32,
     now_ms: u64,
@@ -542,24 +543,57 @@ pub fn reserve_skill_cooldown(
     let deadline_ms = now_ms.saturating_add(cooldown_ms);
     deadlines.insert(key, deadline_ms);
     Ok(Some(SkillCooldownReservation {
+        cooldowns: cooldowns.clone(),
         player_id: player_id.to_owned(),
         skill_id,
         deadline_ms,
+        pending: true,
     }))
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SkillCooldownReservation {
+    cooldowns: Arc<SkillCooldowns>,
     player_id: String,
     skill_id: u32,
     deadline_ms: u64,
+    pending: bool,
 }
 
+impl std::fmt::Debug for SkillCooldownReservation {
+    fn fmt(
+        &self,
+        formatter: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        formatter
+            .debug_struct("SkillCooldownReservation")
+            .field("player_id", &self.player_id)
+            .field("skill_id", &self.skill_id)
+            .field("deadline_ms", &self.deadline_ms)
+            .field("pending", &self.pending)
+            .finish()
+    }
+}
+
+impl PartialEq for SkillCooldownReservation {
+    fn eq(
+        &self,
+        other: &Self,
+    ) -> bool {
+        Arc::ptr_eq(&self.cooldowns, &other.cooldowns)
+            && self.player_id == other.player_id
+            && self.skill_id == other.skill_id
+            && self.deadline_ms == other.deadline_ms
+            && self.pending == other.pending
+    }
+}
+
+impl Eq for SkillCooldownReservation {}
+
 pub fn release_skill_cooldown(
-    cooldowns: &SkillCooldowns,
-    reservation: &SkillCooldownReservation,
+    reservation: &mut SkillCooldownReservation
 ) -> Result<(), SkillRuleError> {
-    let mut deadlines = cooldowns
+    let mut deadlines = reservation
+        .cooldowns
         .deadlines
         .lock()
         .map_err(|_| SkillRuleError::CooldownStore)?;
@@ -567,7 +601,29 @@ pub fn release_skill_cooldown(
     if deadlines.get(&key) == Some(&reservation.deadline_ms) {
         deadlines.remove(&key);
     }
+    reservation.pending = false;
     Ok(())
+}
+
+pub fn commit_skill_cooldown(reservation: &mut SkillCooldownReservation) {
+    reservation.pending = false;
+}
+
+impl Drop for SkillCooldownReservation {
+    fn drop(&mut self) {
+        if !self.pending {
+            return;
+        }
+        let mut deadlines = self
+            .cooldowns
+            .deadlines
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let key = (self.player_id.clone(), self.skill_id);
+        if deadlines.get(&key) == Some(&self.deadline_ms) {
+            deadlines.remove(&key);
+        }
+    }
 }
 
 fn validate_job(
@@ -738,6 +794,8 @@ fn skill_value_number(value: &SkillValue) -> Option<f64> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use oozems_proto::v1::CharacterStats;
     use oozems_proto::v1::KeyAction;
     use oozems_proto::v1::KeyBinding;
@@ -754,11 +812,11 @@ mod tests {
     use super::SkillDuration;
     use super::SkillRuleError;
     use super::allocate_skill_point;
+    use super::commit_skill_cooldown;
     use super::periodic_hp_recovery_amount;
     use super::personalize_skill_book;
     use super::prepare_skill_use;
     use super::projected_skill_attack_bonus;
-    use super::release_skill_cooldown;
     use super::reserve_skill_cooldown;
     use super::skill_duration;
     use super::validate_bound_skills;
@@ -1119,10 +1177,12 @@ mod tests {
 
     #[test]
     fn cooldown_reservations_are_atomic_and_expire() {
-        let cooldowns = SkillCooldowns::default();
+        let cooldowns = Arc::new(SkillCooldowns::default());
 
-        reserve_skill_cooldown(&cooldowns, "player", 1_000, 1_000, 5_000)
-            .expect("first reservation");
+        let mut first = reserve_skill_cooldown(&cooldowns, "player", 1_000, 1_000, 5_000)
+            .expect("first reservation")
+            .expect("nonzero cooldown reservation");
+        commit_skill_cooldown(&mut first);
         assert_eq!(
             reserve_skill_cooldown(&cooldowns, "player", 1_000, 2_000, 5_000),
             Err(SkillRuleError::Cooldown {
@@ -1130,18 +1190,20 @@ mod tests {
                 remaining_ms: 4_000,
             })
         );
-        reserve_skill_cooldown(&cooldowns, "player", 1_000, 6_000, 5_000)
-            .expect("expired reservation");
+        let mut replacement = reserve_skill_cooldown(&cooldowns, "player", 1_000, 6_000, 5_000)
+            .expect("expired reservation")
+            .expect("nonzero replacement reservation");
+        commit_skill_cooldown(&mut replacement);
     }
 
     #[test]
-    fn a_failed_skill_transaction_can_release_its_reservation() {
-        let cooldowns = SkillCooldowns::default();
+    fn dropping_a_pending_skill_reservation_releases_it() {
+        let cooldowns = Arc::new(SkillCooldowns::default());
         let reservation = reserve_skill_cooldown(&cooldowns, "player", 1_000, 1_000, 5_000)
             .expect("reserve cooldown")
             .expect("nonzero cooldown reservation");
 
-        release_skill_cooldown(&cooldowns, &reservation).expect("release cooldown");
+        drop(reservation);
 
         reserve_skill_cooldown(&cooldowns, "player", 1_000, 1_001, 5_000)
             .expect("retry after downstream failure");
@@ -1149,14 +1211,16 @@ mod tests {
 
     #[test]
     fn a_stale_skill_reservation_cannot_release_a_new_deadline() {
-        let cooldowns = SkillCooldowns::default();
+        let cooldowns = Arc::new(SkillCooldowns::default());
         let stale = reserve_skill_cooldown(&cooldowns, "player", 1_000, 1_000, 5_000)
             .expect("first reservation")
             .expect("nonzero cooldown reservation");
-        reserve_skill_cooldown(&cooldowns, "player", 1_000, 6_000, 5_000)
-            .expect("replacement reservation");
+        let mut replacement = reserve_skill_cooldown(&cooldowns, "player", 1_000, 6_000, 5_000)
+            .expect("replacement reservation")
+            .expect("nonzero replacement reservation");
+        commit_skill_cooldown(&mut replacement);
 
-        release_skill_cooldown(&cooldowns, &stale).expect("release stale reservation");
+        drop(stale);
 
         assert_eq!(
             reserve_skill_cooldown(&cooldowns, "player", 1_000, 6_001, 5_000),

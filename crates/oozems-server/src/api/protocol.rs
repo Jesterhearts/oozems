@@ -83,6 +83,8 @@ pub enum ApiError {
     PlayerLock(#[from] crate::player_lock::PlayerLockError),
     #[error("player transaction failed")]
     PlayerTransaction(Box<crate::player_transaction::PlayerTransactionError>),
+    #[error("gameplay session operation failed")]
+    GameplaySession(#[from] crate::gameplay_session::GameplaySessionError),
     #[error("system time is earlier than the Unix epoch")]
     Clock,
 }
@@ -245,6 +247,20 @@ impl IntoResponse for ApiError {
             }
             Self::PlayerLock(error) => {
                 tracing::error!(%error, "player operation lock failed");
+                if matches!(
+                    error,
+                    crate::player_lock::PlayerLockError::ReconciliationRequired { .. }
+                ) {
+                    return (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        Protobuf(ErrorResponse {
+                            code: "player_reconciliation_required".to_owned(),
+                            message: "player state must be reconciled before another operation"
+                                .to_owned(),
+                        }),
+                    )
+                        .into_response();
+                }
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "player_lock_error",
@@ -272,6 +288,14 @@ impl IntoResponse for ApiError {
                     .to_owned(),
                 )
             }
+            Self::GameplaySession(error) => {
+                tracing::error!(%error, "gameplay session operation failed");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "gameplay_session_error",
+                    "the server could not update the gameplay session".to_owned(),
+                )
+            }
             Self::Clock => {
                 tracing::error!("system time is earlier than the Unix epoch");
                 (
@@ -296,5 +320,30 @@ impl IntoResponse for ApiError {
 impl From<crate::player_transaction::PlayerTransactionError> for ApiError {
     fn from(error: crate::player_transaction::PlayerTransactionError) -> Self {
         Self::PlayerTransaction(Box::new(error))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::body::to_bytes;
+    use axum::response::IntoResponse;
+    use oozems_proto::v1::ErrorResponse;
+    use prost::Message;
+
+    #[tokio::test]
+    async fn reconciliation_required_has_a_stable_service_unavailable_response() {
+        let response = super::ApiError::PlayerLock(
+            crate::player_lock::PlayerLockError::ReconciliationRequired { operation_id: 7 },
+        )
+        .into_response();
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::SERVICE_UNAVAILABLE
+        );
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read response body");
+        let error = ErrorResponse::decode(body).expect("decode error response");
+        assert_eq!(error.code, "player_reconciliation_required");
     }
 }

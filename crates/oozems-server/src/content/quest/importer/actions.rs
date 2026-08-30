@@ -460,8 +460,9 @@ pub(crate) fn validate_action_phase_fields(
     node: &WzNodeArc,
     authoritative_check: Option<&WzNodeArc>,
 ) -> Result<Vec<String>, QuestContentError> {
-    // Act can duplicate Check requirements with conflicting values. Validate and
-    // audit those copies here, but do not return them as gameplay requirements.
+    // Act can duplicate Check requirements with conflicting values. Validate
+    // and audit those copies here, but do not return them as gameplay
+    // requirements.
     let mut page_indexes = Vec::new();
     let mut retained_fields = Vec::new();
     for child in wz::sorted_children(node)? {

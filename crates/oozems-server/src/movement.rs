@@ -143,6 +143,11 @@ pub enum MovementError {
     MissingSession,
     #[error("player map {player_map_id} does not match supplied map {map_id}")]
     PlayerMapMismatch { player_map_id: u32, map_id: u32 },
+    #[error("player map {player_map_id} does not match movement session map {session_map_id}")]
+    PlayerSessionMapMismatch {
+        player_map_id: u32,
+        session_map_id: u32,
+    },
     #[error("the relocation plan belongs to player {expected:?}, not {actual:?}")]
     RelocationPlayerMismatch { expected: String, actual: String },
     #[error("the destination map has no usable default spawn portal")]
@@ -376,6 +381,7 @@ pub fn enter_portal_with_modifiers(
     config: MovementConfig,
     now_ms: u64,
 ) -> Result<(MovementDecision, Option<RelocationPlan>), MovementError> {
+    require_player_map(player, portal.source_map)?;
     register_map(tracker, portal.source_map)?;
     register_map(tracker, portal.target_map)?;
     let mut players = tracker.players.lock().map_err(|_| MovementError::Tracker)?;
@@ -491,6 +497,7 @@ pub fn relocate_player_to_position(
     config: MovementConfig,
     now_ms: u64,
 ) -> Result<(MovementDecision, RelocationPlan), MovementError> {
+    require_player_map(player, source_map)?;
     register_map(tracker, source_map)?;
     register_map(tracker, target_map)?;
     let position = clamp_to_movement_bounds(
@@ -637,6 +644,7 @@ fn source_session(
     now_ms: u64,
 ) -> Result<MovementSession, MovementError> {
     if let Some(session) = current {
+        require_player_session_map(player, &session)?;
         return Ok(session);
     }
     let position = player
@@ -671,6 +679,9 @@ fn ensure_session(
     now_ms: u64,
 ) -> Result<(), MovementError> {
     require_player_map(player, map)?;
+    if let Some(session) = movement.session.as_ref() {
+        require_player_session_map(player, session)?;
+    }
     if movement.session.is_none() {
         let position = player
             .position
@@ -700,6 +711,20 @@ fn require_player_map(
         Err(MovementError::PlayerMapMismatch {
             player_map_id: player.map_id,
             map_id: map.id,
+        })
+    }
+}
+
+fn require_player_session_map(
+    player: &PlayerState,
+    session: &MovementSession,
+) -> Result<(), MovementError> {
+    if player.map_id == session.map_id {
+        Ok(())
+    } else {
+        Err(MovementError::PlayerSessionMapMismatch {
+            player_map_id: player.map_id,
+            session_map_id: session.map_id,
         })
     }
 }
@@ -1308,6 +1333,7 @@ mod tests {
     use super::project_relocation_player;
     use super::register_map;
     use super::relocate_player;
+    use super::relocate_player_to_position;
     use super::restore_relocation;
     use super::submit_combat_movement_with_modifiers;
     use super::submit_movement;
@@ -2208,6 +2234,81 @@ mod tests {
         let restored = synchronize_player(&tracker, player()).expect("restored portal player");
         assert_eq!(restored.map_id, 1);
         assert_eq!(restored.position, Some(Vec2 { x: 100.0, y: 300.0 }));
+    }
+
+    #[test]
+    fn initialization_rejects_a_mismatched_map_without_registering_state() {
+        let tracker = MovementTracker::default();
+        let mut mismatched = map();
+        mismatched.id = 2;
+
+        assert!(matches!(
+            initialize_player(&tracker, &player(), &mismatched, config(), 1_000),
+            Err(super::MovementError::PlayerMapMismatch {
+                player_map_id: 1,
+                map_id: 2,
+            })
+        ));
+        assert!(tracker.maps.lock().expect("maps").is_empty());
+        assert!(tracker.players.lock().expect("players").is_empty());
+    }
+
+    #[test]
+    fn relocation_rejects_a_mismatched_source_map_without_changing_the_tracker() {
+        let tracker = initialized_tracker();
+        let mut source_map = map();
+        source_map.id = 9;
+        let mut target_map = map();
+        target_map.id = 2;
+
+        assert!(matches!(
+            relocate_player_to_position(
+                &tracker,
+                &player(),
+                &source_map,
+                &target_map,
+                Vec2 { x: 400.0, y: 300.0 },
+                config(),
+                1_200,
+            ),
+            Err(super::MovementError::PlayerMapMismatch {
+                player_map_id: 1,
+                map_id: 9,
+            })
+        ));
+        assert!(!tracker.maps.lock().expect("maps").contains_key(&9));
+        let synchronized = synchronize_player(&tracker, player()).expect("unchanged player");
+        assert_eq!(synchronized.map_id, 1);
+        assert_eq!(synchronized.position, Some(Vec2 { x: 100.0, y: 300.0 }));
+    }
+
+    #[test]
+    fn existing_session_rejects_a_mismatched_player_map_without_changing_the_session() {
+        let tracker = initialized_tracker();
+        let mut target_map = map();
+        target_map.id = 2;
+        register_map(&tracker, &target_map).expect("register target map");
+        let mut moved_player = player();
+        moved_player.map_id = 2;
+        let original = synchronize_player(&tracker, player()).expect("original session");
+
+        assert!(matches!(
+            submit_movement(
+                &tracker,
+                &moved_player,
+                submitted(1, 100.0, 300.0, MovementMode::Grounded),
+                config(),
+                1_200,
+            ),
+            Err(super::MovementError::PlayerSessionMapMismatch {
+                player_map_id: 2,
+                session_map_id: 1,
+            })
+        ));
+        assert_eq!(
+            synchronize_player(&tracker, player()).expect("unchanged session"),
+            original
+        );
     }
 
     #[test]

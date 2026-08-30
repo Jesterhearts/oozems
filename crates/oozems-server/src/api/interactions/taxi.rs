@@ -42,6 +42,7 @@ pub(super) async fn take_taxi(
     let simulation = crate::mobs::map_snapshot(&state.mobs, &target_map).await?;
     target_map.mobs = simulation.mobs;
     target_map.mob_projectiles = simulation.mob_projectiles;
+    target_map.reactors = simulation.reactors;
     target_map.simulation_sequence = simulation.sequence;
     let (decision, relocation) = crate::movement::relocate_player(
         &state.movement,

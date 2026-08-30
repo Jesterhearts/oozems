@@ -148,8 +148,8 @@ impl QuestContent {
             }
             definitions.insert(quest_id, definition);
         }
-        // Act/4960 is absent, so the raw reference scan cannot see its audited alias
-        // outputs.
+        // Act/4960 is absent, so the raw reference scan cannot see its audited
+        // alias outputs.
         if let Some(quest) = definitions.get(&4_960) {
             for actions in [&quest.start_actions, &quest.completion_actions] {
                 item_reference_ids.extend(actions.fixed_items.iter().map(|item| item.item_id));

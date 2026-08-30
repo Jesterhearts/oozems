@@ -567,9 +567,12 @@ fn build_game(
             movement: movement_actions::MovementSyncState::default(),
             recovery: recovery_actions::RecoveryState::default(),
             deferred_transitions: VecDeque::new(),
+            deferred_taxi: None,
             appearance: appearance_refresh_state,
             morph: morph_refresh_state,
             gui: GuiRefreshState::default(),
+            requires_bootstrap: false,
+            bootstrap_reload_pending: false,
         },
     }));
     crate::gui_dump::install(&game);

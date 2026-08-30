@@ -17,6 +17,7 @@ use crate::database::Database;
 use crate::effects::ActiveEffects;
 use crate::experience::ExperienceCurves;
 use crate::gameplay::GameplayConfig;
+use crate::gameplay_session::GameplaySessions;
 use crate::interactions::InteractionCatalog;
 use crate::items::DropStore;
 use crate::loot::LootCatalog;
@@ -46,6 +47,7 @@ pub struct AppState {
     pub skill_cooldowns: Arc<SkillCooldowns>,
     pub active_effects: Arc<ActiveEffects>,
     pub formulas: Arc<FormulaCatalog>,
+    pub gameplay_sessions: Arc<GameplaySessions>,
 }
 
 pub fn router(
@@ -84,6 +86,7 @@ pub fn router(
         skill_cooldowns: Arc::new(SkillCooldowns::default()),
         active_effects: Arc::new(ActiveEffects::default()),
         formulas,
+        gameplay_sessions: Arc::new(GameplaySessions::default()),
     };
     let api = Router::new()
         .route("/bootstrap", post(crate::api::bootstrap))
@@ -105,13 +108,16 @@ pub fn router(
             post(crate::api::movement::submit_movement),
         )
         .route("/movement/portal", post(crate::api::movement::enter_portal))
-        .route("/skills/book", post(crate::api::get_skill_book))
-        .route("/skills/allocate", post(crate::api::allocate_skill_point))
+        .route("/skills/book", post(crate::api::skills::get_skill_book))
+        .route(
+            "/skills/allocate",
+            post(crate::api::skills::allocate_skill_point),
+        )
         .route(
             "/abilities/allocate",
             post(crate::api::allocate_ability_point),
         )
-        .route("/skills/use", post(crate::api::use_skill))
+        .route("/skills/use", post(crate::api::skills::use_skill))
         .route(
             "/combat/basic-attack",
             post(crate::api::combat::use_basic_attack),
@@ -122,11 +128,11 @@ pub fn router(
             post(crate::api::respawn::respawn_player),
         )
         .route("/maps/get", post(crate::api::get_map))
-        .route("/items/equip", post(crate::api::equip_item))
-        .route("/items/unequip", post(crate::api::unequip_item))
-        .route("/items/drop", post(crate::api::drop_item))
-        .route("/items/use", post(crate::api::use_item))
-        .route("/items/pick-up", post(crate::api::pick_up_item))
+        .route("/items/equip", post(crate::api::items::equip_item))
+        .route("/items/unequip", post(crate::api::items::unequip_item))
+        .route("/items/drop", post(crate::api::items::drop_item))
+        .route("/items/use", post(crate::api::items::use_item))
+        .route("/items/pick-up", post(crate::api::items::pick_up_item))
         .route("/npcs/interact", post(crate::api::interactions::interact))
         .route("/players/save", post(crate::api::save_player))
         .layer(DefaultBodyLimit::max(64 * 1024));

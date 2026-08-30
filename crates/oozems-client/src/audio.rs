@@ -189,7 +189,8 @@ fn bgm_change_required(
 fn request_play(audio: &HtmlAudioElement) {
     match audio.play() {
         Ok(promise) => spawn_local(async move {
-            // Autoplay rejection is expected until the first keyboard or pointer input.
+            // Autoplay rejection is expected until the first keyboard or
+            // pointer input.
             let _ = JsFuture::from(promise).await;
         }),
         Err(error) => warn(&format!(

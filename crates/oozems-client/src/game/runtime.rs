@@ -75,6 +75,29 @@ pub(super) fn update(
     };
     game.clock.last_frame_ms = timestamp_ms;
     game.clock.now_ms = timestamp_ms;
+    match crate::api::take_recovery_requirement() {
+        Some(crate::api::ClientRecovery::Bootstrap) => {
+            super::request_dispatch::require_bootstrap(game);
+        }
+        Some(crate::api::ClientRecovery::ServerRestart) => {
+            super::request_dispatch::require_server_restart(game);
+        }
+        None => {}
+    }
+    if std::mem::take(&mut game.requests.bootstrap_reload_pending) {
+        match crate::reload_client() {
+            Ok(crate::AutomaticReload::Started) => {}
+            Ok(crate::AutomaticReload::Suppressed) => crate::show_status(
+                "Automatic recovery was paused to prevent a reload loop. Check the connection and \
+                 close other game tabs, then reload this page.",
+                true,
+            ),
+            Err(error) => crate::show_status(
+                &format!("Reload required, but automatic reload failed: {error}"),
+                true,
+            ),
+        }
+    }
     crate::item_pickup::update(&mut game.world.pickup_animations, timestamp_ms);
     level_up_effect::update(
         &mut game.ui.level_up,
@@ -118,6 +141,9 @@ pub(super) fn update(
         super::input::clear_suppressed_click(&mut game.input);
     }
     let mut pending = PendingRequests::default();
+    if let Some(action) = game.requests.deferred_taxi.take() {
+        pending.push(PendingRequest::InteractionAction(action));
+    }
     apply_canvas_input(game, &mut pending);
     super::synchronize_mouse_cursor(game);
     if crate::death_ui::should_dispatch_respawn(game.ui.death)
@@ -152,8 +178,9 @@ pub(super) fn update(
             .actions
             .retain(|action| *action == KeyAction::OpenKeyConfig);
     }
-    let interaction_busy =
-        interaction_is_busy(game) || pending.has_kind(requests::RequestKind::Interaction);
+    let interaction_busy = interaction_is_busy(game)
+        || pending.has_kind(requests::RequestKind::Interaction)
+        || pending.has_kind(requests::RequestKind::Taxi);
     let cash_shop_open =
         game.ui.cash_shop.open || pending.has_kind(requests::RequestKind::CashShopCatalog);
     if interaction_busy || cash_shop_open {
@@ -189,10 +216,11 @@ pub(super) fn update(
         game.world.active_setup_item_id = None;
     }
 
-    let transition_active = game
-        .requests
-        .admission
-        .is_active(requests::RequestKind::Transition);
+    let transition_active = game.requests.requires_bootstrap
+        || game
+            .requests
+            .admission
+            .is_active(requests::RequestKind::Transition);
     let movement = if transition_active || dead {
         PlayerMovement::default()
     } else {

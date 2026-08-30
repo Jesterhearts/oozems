@@ -435,8 +435,9 @@ fn properties_equal(
     left: &WzProperty,
     right: &WzProperty,
 ) -> bool {
-    // Archive version is validated separately, and video offsets may change during
-    // rebuild. Neither form of physical metadata belongs in the semantic view.
+    // Archive version is validated separately, and video offsets may change
+    // during rebuild. Neither form of physical metadata belongs in the
+    // semantic view.
     semantic_property(left) == semantic_property(right)
 }
 

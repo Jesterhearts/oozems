@@ -23,8 +23,8 @@ pub(crate) fn quest_expiration_deadline(
     entry: &PlayerQuest,
     quest: &QuestDefinition,
 ) -> Option<u64> {
-    // HeavenMS applies timeLimit2 after timeLimit, so it takes precedence when both
-    // exist.
+    // HeavenMS applies timeLimit2 after timeLimit, so it takes precedence when
+    // both exist.
     let duration_ms = quest.info.time_limit2_ms.or(quest.info.time_limit_ms)?;
     Some(entry.accepted_at_unix_ms.saturating_add(duration_ms))
 }

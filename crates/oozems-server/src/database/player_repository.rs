@@ -382,8 +382,9 @@ fn diff_key_bindings(
         .map(|(order, binding)| (binding.code.as_str(), (order, binding)))
         .collect::<BTreeMap<_, _>>();
 
-    // Delete changed targets and orders first so swaps cannot transiently violate
-    // the partial target indexes or the binding-order uniqueness constraint.
+    // Delete changed targets and orders first so swaps cannot transiently
+    // violate the partial target indexes or the binding-order uniqueness
+    // constraint.
     for (code, original_binding) in &original {
         if staged.get(code) == Some(original_binding) {
             continue;

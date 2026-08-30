@@ -127,59 +127,85 @@ pub(super) fn begin_portal(
     transition: MapTransition,
     permit: super::requests::RequestPermit,
 ) {
-    let request_game = game.clone();
+    let expected_map_id = transition.target_map_id;
+    let target_portal_name = transition.target_portal_name;
+    let expected_player_id = player_id.clone();
     super::requests::spawn_request(
         game,
         permit,
         move || async move {
-            request_map_transition(&request_game, &player_id, source, &transition).await
+            api::enter_portal(&player_id, source, expected_map_id, &target_portal_name).await
         },
-        |_, result, _| match result {
-            Ok(name) => super::requests::RequestStatus::success(format!("Entered {name}.")),
+        move |game, result, request_started_ms| match result {
+            Ok(response) => {
+                let committed = response.accepted;
+                match install_portal_response(
+                    game,
+                    response,
+                    &expected_player_id,
+                    expected_map_id,
+                    request_started_ms,
+                ) {
+                    Ok(name) => super::requests::RequestStatus::success(format!("Entered {name}.")),
+                    Err(error) => {
+                        if committed {
+                            super::request_dispatch::require_bootstrap(game);
+                        }
+                        super::requests::RequestStatus::error(format!(
+                            "Could not enter map: {error}"
+                        ))
+                    }
+                }
+            }
             Err(error) => {
-                super::requests::RequestStatus::error(format!("Could not enter map: {error}"))
+                if error.operation_outcome_unknown() {
+                    super::request_dispatch::require_bootstrap(game);
+                }
+                super::requests::RequestStatus::error(format!(
+                    "Could not enter map: {error}{}",
+                    if error.operation_outcome_unknown() {
+                        " Reloading to confirm the current map."
+                    } else {
+                        ""
+                    }
+                ))
             }
         },
     );
 }
 
-async fn request_map_transition(
-    game: &Rc<RefCell<Game>>,
-    player_id: &str,
-    source: MovementSnapshot,
-    transition: &MapTransition,
+fn install_portal_response(
+    game: &mut Game,
+    mut response: MovementUpdateResponse,
+    expected_player_id: &str,
+    expected_map_id: u32,
+    request_started_ms: f64,
 ) -> Result<String, String> {
-    let request_started_ms = super::monotonic_time_ms();
-    let mut response = api::enter_portal(
-        player_id,
-        source,
-        transition.target_map_id,
-        &transition.target_portal_name,
-    )
-    .await
-    .map_err(|error| error.to_string())?;
     if !response.accepted {
         let reason = response.rejection_reason.clone();
-        install_response(&mut game.borrow_mut(), response, request_started_ms)?;
+        if response.map.is_some() {
+            return Err("rejected portal response unexpectedly contains a map".to_owned());
+        }
+        install_response(game, response, request_started_ms)?;
         return Err(reason);
     }
-    let authoritative =
-        portal_authoritative(&mut game.borrow_mut(), &mut response, request_started_ms)?
-            .ok_or("portal response was superseded by a newer movement response")?;
-    let position = authoritative
-        .position
-        .ok_or("portal response did not contain a destination position")?;
-    let map = api::get_map(player_id, authoritative.map_id)
-        .await
+    let map =
+        api::require_data(response.map.take(), "portal map").map_err(|error| error.to_string())?;
+    let authoritative = api::require_data(response.authoritative.take(), "authoritative snapshot")
         .map_err(|error| error.to_string())?;
-    let name = map.name.clone();
-    let mut game = game.borrow_mut();
-    if authoritative.sequence < game.requests.movement.last_response_sequence {
-        return Err("portal response was superseded while its map was loading".to_owned());
-    }
-    install_map(&mut game, map, position)?;
-    super::play_map_sound(&game, MapSound::Portal);
-    super::install_mob_combat_events(&mut game, std::mem::take(&mut response.combat_events));
+    let (player, active_buffs) = super::responses::take_player_and_active_buffs(&mut response)?;
+    let prepared = super::responses::prepare_relocation(
+        player,
+        active_buffs,
+        map,
+        authoritative,
+        expected_player_id,
+        expected_map_id,
+    )?;
+    let name = prepared.map.name.clone();
+    install_prepared_relocation(game, prepared, request_started_ms)?;
+    super::play_map_sound(game, MapSound::Portal);
+    super::install_mob_combat_events(game, std::mem::take(&mut response.combat_events));
     Ok(name)
 }
 
@@ -188,8 +214,8 @@ fn install_map(
     map: oozems_proto::v1::Map,
     position: Vec2,
 ) -> Result<(), String> {
+    let prepared_assets = crate::assets::prepare_assets(map.assets.iter())?;
     let position = movement::constrain_position(&map, position);
-    crate::assets::insert_assets(&mut game.surface.images, map.assets.iter())?;
     let motion = movement::initial_motion_state(&map, &position);
     let world_layers = render::world_layers(&map);
     skill_effects::clear(&mut game.world.skill_effect_state);
@@ -218,26 +244,27 @@ fn install_map(
     );
     game.world.active_setup_item_id = None;
     game.world.pickup_animations.clear();
+    crate::assets::merge_assets(&mut game.surface.images, prepared_assets);
     Ok(())
 }
 
-pub(super) fn install_relocation(
+pub(super) fn install_prepared_relocation(
     game: &mut Game,
-    map: oozems_proto::v1::Map,
-    authoritative: MovementSnapshot,
-) -> Result<bool, String> {
-    if authoritative.map_id != map.id {
-        return Err("relocation response map does not match its authoritative position".to_owned());
+    prepared: super::responses::PreparedRelocation,
+    request_started_ms: f64,
+) -> Result<super::player_updates::PlayerInstallation, String> {
+    if prepared.authoritative.sequence < game.requests.movement.last_response_sequence {
+        return Err("relocation response was superseded by newer movement".to_owned());
     }
-    if authoritative.sequence < game.requests.movement.last_response_sequence {
-        return Ok(false);
-    }
-    let position = authoritative
+    let position = prepared
+        .authoritative
         .position
-        .ok_or("relocation response did not contain a destination position")?;
-    game.requests.movement.last_response_sequence = authoritative.sequence;
-    install_map(game, map, position)?;
-    Ok(true)
+        .expect("prepared relocation has an authoritative position");
+    install_map(game, prepared.map, position)?;
+    game.requests.movement.last_response_sequence = prepared.authoritative.sequence;
+    let installed = super::install_full_player_update(game, prepared.player);
+    super::install_active_buffs(game, prepared.active_buffs, request_started_ms);
+    Ok(installed)
 }
 
 fn next_movement_snapshot(game: &mut Game) -> Option<MovementSnapshot> {
@@ -318,23 +345,6 @@ fn reset_after_correction(
     state.last_observed_mode = Some(mode);
 }
 
-pub(super) fn portal_authoritative(
-    game: &mut Game,
-    response: &mut MovementUpdateResponse,
-    request_started_ms: f64,
-) -> Result<Option<MovementSnapshot>, String> {
-    let authoritative = api::require_data(response.authoritative.take(), "authoritative snapshot")
-        .map_err(|error| error.to_string())?;
-    let (player, active_buffs) = super::responses::take_player_and_active_buffs(response)?;
-    super::install_active_buffs(game, active_buffs, request_started_ms);
-    super::install_full_player_update(game, player);
-    if authoritative.sequence < game.requests.movement.last_response_sequence {
-        return Ok(None);
-    }
-    game.requests.movement.last_response_sequence = authoritative.sequence;
-    Ok(Some(authoritative))
-}
-
 pub(super) fn install_response(
     game: &mut Game,
     mut response: MovementUpdateResponse,
@@ -343,6 +353,7 @@ pub(super) fn install_response(
     let authoritative = api::require_data(response.authoritative.take(), "authoritative snapshot")
         .map_err(|error| error.to_string())?;
     let (player, active_buffs) = super::responses::take_player_and_active_buffs(&mut response)?;
+    super::responses::validate_player_authoritative_map(&player, &authoritative)?;
     super::install_active_buffs(game, active_buffs, request_started_ms);
     if authoritative.map_id == game.world.map.id
         && crate::mob_render::accept_simulation_snapshot(

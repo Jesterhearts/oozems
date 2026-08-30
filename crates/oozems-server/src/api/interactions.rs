@@ -36,7 +36,7 @@ pub async fn interact(
 ) -> Result<Protobuf<NpcInteractionResponse>, ApiError> {
     let request: NpcInteractionRequest = decode_request(&headers, body)?;
     let player_id = parse_player_id(&request.player_id)?;
-    let player_guard = lock_player(&state, &player_id).await?;
+    let player_guard = lock_player(&state, &player_id, &headers).await?;
     let now_unix_ms = unix_time_ms()?;
     let mutation = begin_player_mutation(&state, &player_guard, &player_id, now_unix_ms).await?;
     super::require_living_player(&mutation.player, "interact with NPCs")?;

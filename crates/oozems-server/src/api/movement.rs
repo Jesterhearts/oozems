@@ -80,7 +80,7 @@ pub async fn submit_movement(
 ) -> Result<Protobuf<MovementUpdateResponse>, ApiError> {
     let request: SubmitMovementRequest = decode_request(&headers, body)?;
     let player_id = parse_player_id(&request.player_id)?;
-    let player_guard = lock_player(&state, &player_id).await?;
+    let player_guard = lock_player(&state, &player_id, &headers).await?;
     let now_ms = unix_time_ms()?;
     let mutation = begin_player_mutation(&state, &player_guard, &player_id, now_ms).await?;
     let player_is_dead = mutation
@@ -201,7 +201,7 @@ pub async fn enter_portal(
 ) -> Result<Protobuf<MovementUpdateResponse>, ApiError> {
     let request: EnterPortalRequest = decode_request(&headers, body)?;
     let player_id = parse_player_id(&request.player_id)?;
-    let player_guard = lock_player(&state, &player_id).await?;
+    let player_guard = lock_player(&state, &player_id, &headers).await?;
     let now_ms = unix_time_ms()?;
     let mutation = begin_player_mutation(&state, &player_guard, &player_id, now_ms).await?;
     super::require_living_player(&mutation.player, "enter a portal")?;
@@ -341,10 +341,10 @@ async fn movement_response(
             now_unix_ms,
             persistence_required,
         );
-        Ok::<_, ApiError>((prepared, simulation, dropped_items, has_player_effects))
+        Ok::<_, ApiError>((prepared, simulation, dropped_items, has_player_effects, map))
     }
     .await;
-    let (mut transaction, (prepared, simulation, mut dropped_items, has_player_effects)) =
+    let (mut transaction, (prepared, simulation, mut dropped_items, has_player_effects, map)) =
         resolve_movement_preparation(&state.database, guard, transaction, preparation).await?;
     crate::player_transaction::replace_staged_player(
         &mut transaction,
@@ -386,6 +386,23 @@ async fn movement_response(
     let mut simulation = committed
         .mob_update
         .expect("movement transaction stages a mob update");
+    let mut relocation_map =
+        take_relocation_map(relocated, map, &mut dropped_items, &mut simulation);
+    if let Some(map) = relocation_map.as_mut() {
+        let quest_definitions = state.catalog.quest_definitions().collect::<Vec<_>>();
+        crate::quests::project_npc_quest_indicators(
+            map,
+            &updated_player,
+            &effects,
+            &quest_definitions,
+            state.catalog.item_definition_slice(),
+            &state.quest_scripts,
+            crate::quests::QuestEnvironment {
+                now_unix_ms,
+                world_id: state.gameplay.world_id,
+            },
+        );
+    }
     Ok(MovementUpdateResponse {
         authoritative: Some(decision.authoritative),
         accepted: decision.accepted,
@@ -398,7 +415,25 @@ async fn movement_response(
         active_buffs: Some(crate::effects::state(&effects, now_unix_ms)),
         dropped_items,
         reactors: simulation.reactors,
+        map: relocation_map,
     })
+}
+
+fn take_relocation_map(
+    relocated: bool,
+    mut map: oozems_proto::v1::Map,
+    dropped_items: &mut Vec<oozems_proto::v1::DroppedItem>,
+    simulation: &mut crate::mobs::MobUpdate,
+) -> Option<oozems_proto::v1::Map> {
+    if !relocated {
+        return None;
+    }
+    map.dropped_items = std::mem::take(dropped_items);
+    map.mobs = std::mem::take(&mut simulation.mobs);
+    map.mob_projectiles = std::mem::take(&mut simulation.mob_projectiles);
+    map.reactors = std::mem::take(&mut simulation.reactors);
+    map.simulation_sequence = simulation.sequence;
+    Some(map)
 }
 
 async fn resolve_movement_preparation<T>(
@@ -451,6 +486,7 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
+    use oozems_proto::v1::DroppedItem;
     use oozems_proto::v1::Map;
     use oozems_proto::v1::Platform;
     use oozems_proto::v1::PlayerState;
@@ -458,10 +494,38 @@ mod tests {
     use oozems_proto::v1::Vec2;
 
     use super::resolve_movement_preparation;
+    use super::take_relocation_map;
     use crate::database::PlayerId;
     use crate::movement::MovementTracker;
     use crate::player_lock::PlayerLocks;
     use crate::player_lock::acquire_player;
+
+    #[test]
+    fn relocation_map_contains_the_complete_live_map_state() {
+        let mut dropped_items = vec![DroppedItem::default()];
+        let mut simulation = crate::mobs::MobUpdate::default();
+        simulation.mobs.push(oozems_proto::v1::Mob::default());
+        simulation
+            .mob_projectiles
+            .push(oozems_proto::v1::MobProjectile::default());
+        simulation
+            .reactors
+            .push(oozems_proto::v1::Reactor::default());
+        simulation.sequence = 42;
+
+        let map = take_relocation_map(true, Map::default(), &mut dropped_items, &mut simulation)
+            .expect("relocation map");
+
+        assert_eq!(map.dropped_items.len(), 1);
+        assert_eq!(map.mobs.len(), 1);
+        assert_eq!(map.mob_projectiles.len(), 1);
+        assert_eq!(map.reactors.len(), 1);
+        assert_eq!(map.simulation_sequence, 42);
+        assert!(dropped_items.is_empty());
+        assert!(simulation.mobs.is_empty());
+        assert!(simulation.mob_projectiles.is_empty());
+        assert!(simulation.reactors.is_empty());
+    }
 
     #[tokio::test]
     async fn preparation_failure_leaves_a_planned_relocation_uncommitted() {

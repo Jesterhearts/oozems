@@ -291,7 +291,8 @@ impl FormulaCatalog {
     }
 
     // Summon effects are not applied yet, but the validated route is part of
-    // this configuration boundary so the later effect pipeline cannot bypass it.
+    // this configuration boundary so the later effect pipeline cannot bypass
+    // it.
     #[allow(dead_code)]
     pub fn summon_profile(
         &self,

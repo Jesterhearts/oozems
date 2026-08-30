@@ -25,7 +25,7 @@ pub async fn use_basic_attack(
 ) -> Result<Protobuf<BasicAttackResponse>, ApiError> {
     let request: BasicAttackRequest = decode_request(&headers, body)?;
     let player_id = parse_player_id(&request.player_id)?;
-    let player_guard = lock_player(&state, &player_id).await?;
+    let player_guard = lock_player(&state, &player_id, &headers).await?;
     let now_ms = unix_time_ms()?;
     let mutation = begin_player_mutation(&state, &player_guard, &player_id, now_ms).await?;
     let mut player = mutation.player.clone();
@@ -95,11 +95,7 @@ pub async fn use_basic_attack(
         player.clone(),
         crate::player_transaction::PlayerPersistence::None,
     );
-    crate::player_transaction::stage_basic_attack(
-        &mut transaction,
-        state.basic_attack_cooldowns.clone(),
-        attack_reservation,
-    );
+    crate::player_transaction::stage_basic_attack(&mut transaction, attack_reservation);
     let attack = crate::mobs::PlayerAttack {
         target_mob_id: "",
         source_skill_id: None,

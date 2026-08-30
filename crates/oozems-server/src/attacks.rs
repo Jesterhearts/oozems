@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -16,11 +17,40 @@ pub struct BasicAttackCooldowns {
     deadlines: Mutex<HashMap<String, u64>>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BasicAttackReservation {
+    cooldowns: Arc<BasicAttackCooldowns>,
     player_id: String,
     deadline_ms: u64,
+    pending: bool,
 }
+
+impl std::fmt::Debug for BasicAttackReservation {
+    fn fmt(
+        &self,
+        formatter: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        formatter
+            .debug_struct("BasicAttackReservation")
+            .field("player_id", &self.player_id)
+            .field("deadline_ms", &self.deadline_ms)
+            .field("pending", &self.pending)
+            .finish()
+    }
+}
+
+impl PartialEq for BasicAttackReservation {
+    fn eq(
+        &self,
+        other: &Self,
+    ) -> bool {
+        Arc::ptr_eq(&self.cooldowns, &other.cooldowns)
+            && self.player_id == other.player_id
+            && self.deadline_ms == other.deadline_ms
+            && self.pending == other.pending
+    }
+}
+
+impl Eq for BasicAttackReservation {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DamageRange {
@@ -120,7 +150,7 @@ pub fn basic_attack_interval(
 }
 
 pub fn reserve_basic_attack(
-    cooldowns: &BasicAttackCooldowns,
+    cooldowns: &Arc<BasicAttackCooldowns>,
     player_id: &str,
     now_ms: u64,
     interval: Duration,
@@ -141,23 +171,46 @@ pub fn reserve_basic_attack(
     let deadline_ms = now_ms.saturating_add(interval_ms);
     deadlines.insert(player_id.to_owned(), deadline_ms);
     Ok(BasicAttackReservation {
+        cooldowns: cooldowns.clone(),
         player_id: player_id.to_owned(),
         deadline_ms,
+        pending: true,
     })
 }
 
 pub fn release_basic_attack(
-    cooldowns: &BasicAttackCooldowns,
-    reservation: &BasicAttackReservation,
+    reservation: &mut BasicAttackReservation
 ) -> Result<(), AttackRuleError> {
-    let mut deadlines = cooldowns
+    let mut deadlines = reservation
+        .cooldowns
         .deadlines
         .lock()
         .map_err(|_| AttackRuleError::CooldownStore)?;
     if deadlines.get(&reservation.player_id) == Some(&reservation.deadline_ms) {
         deadlines.remove(&reservation.player_id);
     }
+    reservation.pending = false;
     Ok(())
+}
+
+pub fn commit_basic_attack(reservation: &mut BasicAttackReservation) {
+    reservation.pending = false;
+}
+
+impl Drop for BasicAttackReservation {
+    fn drop(&mut self) {
+        if !self.pending {
+            return;
+        }
+        let mut deadlines = self
+            .cooldowns
+            .deadlines
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if deadlines.get(&self.player_id) == Some(&self.deadline_ms) {
+            deadlines.remove(&self.player_id);
+        }
+    }
 }
 
 fn basic_attack_job_multiplier(job_id: u32) -> f64 {
@@ -182,6 +235,8 @@ fn formula_error(error: impl ToString) -> AttackRuleError {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use oozems_proto::v1::CharacterStats;
     use oozems_proto::v1::PlayerState;
 
@@ -192,7 +247,7 @@ mod tests {
     use super::VerticalBounds;
     use super::basic_attack_interval;
     use super::calculate_basic_attack;
-    use super::release_basic_attack;
+    use super::commit_basic_attack;
     use super::reserve_basic_attack;
     use super::vertical_attack_intersects;
 
@@ -263,7 +318,7 @@ mod tests {
 
     #[test]
     fn basic_attack_cooldown_is_atomic_and_expires() {
-        let cooldowns = BasicAttackCooldowns::default();
+        let cooldowns = Arc::new(BasicAttackCooldowns::default());
         let interval = std::time::Duration::from_millis(600);
 
         let deadline =
@@ -272,16 +327,28 @@ mod tests {
             reserve_basic_attack(&cooldowns, "player", 1_100, interval),
             Err(AttackRuleError::Cooldown { remaining_ms: 500 })
         );
-        let current_deadline =
+        let mut current_deadline =
             reserve_basic_attack(&cooldowns, "player", 1_600, interval).expect("expired cooldown");
+        commit_basic_attack(&mut current_deadline);
 
-        release_basic_attack(&cooldowns, &current_deadline).expect("release current cooldown");
-        reserve_basic_attack(&cooldowns, "player", 1_601, interval).expect("released cooldown");
-        release_basic_attack(&cooldowns, &deadline).expect("ignore stale release");
+        drop(deadline);
         assert_eq!(
-            reserve_basic_attack(&cooldowns, "player", 1_602, interval),
+            reserve_basic_attack(&cooldowns, "player", 1_601, interval),
             Err(AttackRuleError::Cooldown { remaining_ms: 599 })
         );
+    }
+
+    #[test]
+    fn dropping_a_pending_basic_attack_releases_it() {
+        let cooldowns = Arc::new(BasicAttackCooldowns::default());
+        let interval = std::time::Duration::from_millis(600);
+
+        let pending =
+            reserve_basic_attack(&cooldowns, "player", 1_000, interval).expect("first attack");
+        drop(pending);
+
+        reserve_basic_attack(&cooldowns, "player", 1_001, interval)
+            .expect("retry after cancellation");
     }
 
     #[test]

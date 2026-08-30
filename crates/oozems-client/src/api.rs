@@ -1,3 +1,6 @@
+use std::cell::Cell;
+use std::cell::RefCell;
+
 use gloo_net::http::Request;
 use js_sys::Uint8Array;
 use oozems_proto::PROTOBUF_CONTENT_TYPE;
@@ -21,6 +24,7 @@ use oozems_proto::v1::EquipItemRequest;
 use oozems_proto::v1::EquippedItem;
 use oozems_proto::v1::ErrorResponse;
 use oozems_proto::v1::GameGui;
+use oozems_proto::v1::GameplaySessionGrant;
 use oozems_proto::v1::GetCashShopRequest;
 use oozems_proto::v1::GetCashShopResponse;
 use oozems_proto::v1::GetCharacterSpritesRequest;
@@ -77,11 +81,32 @@ pub enum ClientError {
     InvalidResponse(String),
     #[error("response did not contain {0}")]
     MissingData(&'static str),
+    #[error("the gameplay session is no longer current")]
+    GameplaySessionInvalidated,
+    #[error("player state requires server reconciliation; restart the server and reload the game")]
+    PlayerReconciliationRequired,
+}
+
+impl ClientError {
+    pub(crate) fn operation_outcome_unknown(&self) -> bool {
+        matches!(self, Self::Network(_) | Self::InvalidResponse(_))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ClientRecovery {
+    Bootstrap,
+    ServerRestart,
 }
 
 pub struct LoadedSkillBook {
     pub skill_book: SkillBook,
     pub active_buffs: ActiveBuffState,
+}
+
+thread_local! {
+    static GAMEPLAY_SESSION: RefCell<Option<String>> = const { RefCell::new(None) };
+    static RECOVERY_REQUIRED: Cell<Option<ClientRecovery>> = const { Cell::new(None) };
 }
 
 pub(crate) fn require_data<T>(
@@ -92,13 +117,44 @@ pub(crate) fn require_data<T>(
 }
 
 pub async fn bootstrap(player_id: &str) -> Result<BootstrapResponse, ClientError> {
-    post_protobuf(
+    let mut response: BootstrapResponse = post_protobuf(
         "/api/v1/bootstrap",
         BootstrapRequest {
             player_id: player_id.to_owned(),
         },
     )
-    .await
+    .await?;
+    let grant = require_data(response.gameplay_session.take(), "gameplay session")?;
+    install_gameplay_session(grant, player_id)?;
+    Ok(response)
+}
+
+fn install_gameplay_session(
+    grant: GameplaySessionGrant,
+    expected_player_id: &str,
+) -> Result<(), ClientError> {
+    if grant.player_id != expected_player_id || grant.token.is_empty() {
+        return Err(ClientError::InvalidResponse(
+            "gameplay session does not match the bootstrap request".to_owned(),
+        ));
+    }
+    GAMEPLAY_SESSION.with(|current| {
+        *current.borrow_mut() = Some(format!("Bearer {}", grant.token));
+    });
+    RECOVERY_REQUIRED.with(|required| required.set(None));
+    Ok(())
+}
+
+pub(crate) fn take_recovery_requirement() -> Option<ClientRecovery> {
+    RECOVERY_REQUIRED.with(|required| required.replace(None))
+}
+
+fn require_recovery(recovery: ClientRecovery) {
+    RECOVERY_REQUIRED.with(|required| {
+        if required.get() != Some(ClientRecovery::ServerRestart) {
+            required.set(Some(recovery));
+        }
+    });
 }
 
 pub async fn create_character(
@@ -443,9 +499,13 @@ where
 {
     let encoded = input.encode_to_vec();
     let body = Uint8Array::from(encoded.as_slice());
-    let request = Request::post(url)
+    let mut request = Request::post(url)
         .header("Content-Type", PROTOBUF_CONTENT_TYPE)
-        .header("Accept", PROTOBUF_CONTENT_TYPE)
+        .header("Accept", PROTOBUF_CONTENT_TYPE);
+    if let Some(authorization) = GAMEPLAY_SESSION.with(|current| current.borrow().clone()) {
+        request = request.header("Authorization", &authorization);
+    }
+    let request = request
         .body(body)
         .map_err(|error| ClientError::Network(error.to_string()))?;
     let response = request
@@ -464,6 +524,14 @@ where
                 "HTTP {status} error was not valid protobuf: {decode_error}"
             ))
         })?;
+        if error.code == "invalid_gameplay_session" {
+            require_recovery(ClientRecovery::Bootstrap);
+            return Err(ClientError::GameplaySessionInvalidated);
+        }
+        if error.code == "player_reconciliation_required" {
+            require_recovery(ClientRecovery::ServerRestart);
+            return Err(ClientError::PlayerReconciliationRequired);
+        }
         return Err(ClientError::Server {
             status,
             code: error.code,
@@ -472,4 +540,27 @@ where
     }
 
     O::decode(bytes.as_slice()).map_err(|error| ClientError::InvalidResponse(error.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ClientRecovery;
+    use super::RECOVERY_REQUIRED;
+    use super::require_recovery;
+    use super::take_recovery_requirement;
+
+    #[test]
+    fn server_restart_recovery_takes_precedence_over_bootstrap() {
+        RECOVERY_REQUIRED.with(|required| required.set(None));
+
+        require_recovery(ClientRecovery::Bootstrap);
+        require_recovery(ClientRecovery::ServerRestart);
+        require_recovery(ClientRecovery::Bootstrap);
+
+        assert_eq!(
+            take_recovery_requirement(),
+            Some(ClientRecovery::ServerRestart)
+        );
+        assert_eq!(take_recovery_requirement(), None);
+    }
 }
