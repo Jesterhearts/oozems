@@ -287,7 +287,10 @@ fn install_combat_update(
             reactors,
             game.clock.now_ms,
         );
-        game.world.map.dropped_items = dropped_items;
+        game.world.map.dropped_items = crate::item_pickup::reconcile_snapshot(
+            dropped_items,
+            &mut game.world.pickup_animations,
+        );
     }
     super::install_mob_combat_events(game, combat_events);
     Ok(outcome)

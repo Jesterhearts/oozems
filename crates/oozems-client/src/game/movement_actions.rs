@@ -217,6 +217,7 @@ fn install_map(
         game.clock.now_ms,
     );
     game.world.active_setup_item_id = None;
+    game.world.pickup_animations.clear();
     Ok(())
 }
 
@@ -369,7 +370,10 @@ pub(super) fn install_response(
             std::mem::take(&mut response.reactors),
             game.clock.now_ms,
         );
-        game.world.map.dropped_items = std::mem::take(&mut response.dropped_items);
+        game.world.map.dropped_items = crate::item_pickup::reconcile_snapshot(
+            std::mem::take(&mut response.dropped_items),
+            &mut game.world.pickup_animations,
+        );
         super::install_mob_combat_events(game, std::mem::take(&mut response.combat_events));
     }
     super::install_full_player_update(game, player);

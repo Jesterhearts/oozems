@@ -108,10 +108,12 @@ pub(super) fn begin_pick_up(
                         if player_map_id == game.world.map.id {
                             super::install_quest_indicators(game, &quest_indicators);
                         }
-                        game.world
-                            .map
-                            .dropped_items
-                            .retain(|drop| drop.id != drop_id);
+                        crate::item_pickup::start(
+                            &mut game.world.map.dropped_items,
+                            &mut game.world.pickup_animations,
+                            &drop_id,
+                            game.clock.now_ms,
+                        );
                         super::play_map_sound(game, MapSound::PickUpItem);
                         super::requests::RequestStatus::success("Item picked up.")
                     }

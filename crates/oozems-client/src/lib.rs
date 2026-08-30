@@ -13,6 +13,7 @@ mod game_gui;
 mod gui_dump;
 mod hit_test;
 mod interaction_ui;
+mod item_pickup;
 mod keymap;
 mod level_up_effect;
 mod mob_render;

@@ -75,6 +75,7 @@ pub(super) fn update(
     };
     game.clock.last_frame_ms = timestamp_ms;
     game.clock.now_ms = timestamp_ms;
+    crate::item_pickup::update(&mut game.world.pickup_animations, timestamp_ms);
     level_up_effect::update(
         &mut game.ui.level_up,
         &game.ui.gui.level_up_frames,
