@@ -157,7 +157,6 @@ impl eframe::App for EditorApp {
         ui: &mut egui::Ui,
         _frame: &mut eframe::Frame,
     ) {
-        handle_shortcuts(ui.ctx(), self);
         egui::Panel::top("editor-toolbar").show(ui, |ui| {
             draw_toolbar(ui, self);
         });
@@ -175,6 +174,7 @@ impl eframe::App for EditorApp {
             .size_range(210.0..=360.0)
             .show(ui, |ui| draw_inspector(ui, self));
         egui::CentralPanel::default().show(ui, |ui| draw_canvas(ui, self));
+        handle_shortcuts(ui.ctx(), self);
     }
 }
 
@@ -1008,6 +1008,107 @@ fn constrained_extent(
     value.clamp(1.0, (container_extent - offset).max(1.0))
 }
 
+fn nudge_selected_element(
+    document: &mut LayoutDocument,
+    selection: Selection,
+    delta: Vec2,
+) -> bool {
+    let layout_size = layout_size(document);
+    match selection {
+        Selection::Background => {
+            if document.definition.name != "status-bar" {
+                return false;
+            }
+            let Some(background) = document.definition.background.as_ref() else {
+                return false;
+            };
+            let Some(texture) = document.textures.get(&background.wz_path) else {
+                return false;
+            };
+            let next_y = constrained_offset(background.y + delta.y, texture.size.y, layout_size.y);
+            let changed = next_y != background.y;
+            let background = document
+                .definition
+                .background
+                .as_mut()
+                .expect("background checked above");
+            background.y = next_y;
+            changed
+        }
+        Selection::Sprite(index) => {
+            let Some(sprite) = document.definition.sprites.get(index) else {
+                return false;
+            };
+            let Some(texture) = document.textures.get(&sprite.wz_path) else {
+                return false;
+            };
+            let next_x = if sprite.pin_right {
+                constrained_offset(sprite.right - delta.x, texture.size.x, layout_size.x)
+            } else {
+                constrained_offset(sprite.x + delta.x, texture.size.x, layout_size.x)
+            };
+            let next_y = if sprite.pin_bottom {
+                constrained_offset(sprite.bottom - delta.y, texture.size.y, layout_size.y)
+            } else {
+                constrained_offset(sprite.y + delta.y, texture.size.y, layout_size.y)
+            };
+            let current = if sprite.pin_right {
+                sprite.right
+            } else {
+                sprite.x
+            };
+            let current_y = if sprite.pin_bottom {
+                sprite.bottom
+            } else {
+                sprite.y
+            };
+            let changed = (next_x, next_y) != (current, current_y);
+            let sprite = &mut document.definition.sprites[index];
+            if sprite.pin_right {
+                sprite.right = next_x;
+            } else {
+                sprite.x = next_x;
+            }
+            if sprite.pin_bottom {
+                sprite.bottom = next_y;
+            } else {
+                sprite.y = next_y;
+            }
+            changed
+        }
+        Selection::Template(index) => {
+            let Some(template) = document.definition.sprite_templates.get(index) else {
+                return false;
+            };
+            if !is_skill_point_template(&template.name) {
+                return false;
+            }
+            let current = egui::vec2(template.offset_x, template.offset_y);
+            let Some(instances) = preview::skill_point_instances(document) else {
+                return false;
+            };
+            let next =
+                constrained_repeated_template_offset(instances, current + delta, layout_size);
+            let changed = next != current;
+            if changed {
+                set_template_offset(document, index, next.x, next.y);
+            }
+            changed
+        }
+        Selection::Region(index) => {
+            let Some(region) = document.definition.regions.get_mut(index) else {
+                return false;
+            };
+            let next_x = constrained_offset(region.x + delta.x, region.width, layout_size.x);
+            let next_y = constrained_offset(region.y + delta.y, region.height, layout_size.y);
+            let changed = (next_x, next_y) != (region.x, region.y);
+            region.x = next_x;
+            region.y = next_y;
+            changed
+        }
+    }
+}
+
 fn layout_size(document: &LayoutDocument) -> Vec2 {
     if document.definition.width > 0.0 && document.definition.height > 0.0 {
         return egui::vec2(document.definition.width, document.definition.height);
@@ -1155,6 +1256,47 @@ fn handle_shortcuts(
     if context.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::S)) {
         save_active(app);
     }
+    let Some(selection) = app.selection else {
+        return;
+    };
+    let delta = consume_nudge_delta(context);
+    if delta != Vec2::ZERO {
+        let document = active_document_mut(app);
+        document.dirty |= nudge_selected_element(document, selection, delta);
+    }
+}
+
+fn consume_nudge_delta(context: &egui::Context) -> Vec2 {
+    if context.egui_wants_keyboard_input() {
+        return Vec2::ZERO;
+    }
+    context.input_mut(|input| {
+        let mut delta = Vec2::ZERO;
+        input.events.retain(|event| {
+            let egui::Event::Key {
+                key,
+                pressed: true,
+                modifiers,
+                ..
+            } = event
+            else {
+                return true;
+            };
+            if modifiers.alt || modifiers.ctrl || modifiers.command || modifiers.mac_cmd {
+                return true;
+            }
+            let direction = match key {
+                egui::Key::ArrowLeft => egui::vec2(-1.0, 0.0),
+                egui::Key::ArrowRight => egui::vec2(1.0, 0.0),
+                egui::Key::ArrowUp => egui::vec2(0.0, -1.0),
+                egui::Key::ArrowDown => egui::vec2(0.0, 1.0),
+                _ => return true,
+            };
+            delta += direction * if modifiers.shift { 10.0 } else { 1.0 };
+            false
+        });
+        delta
+    })
 }
 
 fn active_document(app: &EditorApp) -> &LayoutDocument {
@@ -1172,13 +1314,17 @@ mod tests {
 
     use eframe::egui;
     use oozems_proto::v1::GuiRegion;
+    use oozems_proto::v1::GuiSpriteSource;
     use oozems_proto::v1::GuiSpriteTemplateSource;
     use oozems_proto::v1::GuiWindowDefinition;
 
     use super::LayoutDocument;
+    use super::Selection;
     use super::constrained_extent;
     use super::constrained_offset;
     use super::constrained_repeated_template_offset;
+    use super::consume_nudge_delta;
+    use super::nudge_selected_element;
     use super::set_template_offset;
     use super::snap_region;
 
@@ -1206,6 +1352,124 @@ mod tests {
     #[test]
     fn region_outside_container_resizes_to_minimum_extent() {
         assert_eq!(constrained_extent(20.0, 120.0, 100.0), 1.0);
+    }
+
+    #[test]
+    fn selected_region_nudges_by_one_and_ten_pixels() {
+        let mut document = LayoutDocument {
+            path: PathBuf::new(),
+            definition: GuiWindowDefinition {
+                width: 100.0,
+                height: 100.0,
+                regions: vec![GuiRegion {
+                    x: 20.0,
+                    y: 30.0,
+                    width: 10.0,
+                    height: 10.0,
+                    ..GuiRegion::default()
+                }],
+                ..GuiWindowDefinition::default()
+            },
+            textures: HashMap::new(),
+            dirty: false,
+            persisted: false,
+        };
+
+        assert!(nudge_selected_element(
+            &mut document,
+            Selection::Region(0),
+            egui::vec2(1.0, -1.0),
+        ));
+        assert!(nudge_selected_element(
+            &mut document,
+            Selection::Region(0),
+            egui::vec2(-10.0, 10.0),
+        ));
+
+        let region = &document.definition.regions[0];
+        assert_eq!((region.x, region.y), (11.0, 39.0));
+    }
+
+    #[test]
+    fn ordinary_background_cannot_be_nudged_from_the_window_origin() {
+        let mut document = LayoutDocument {
+            path: PathBuf::new(),
+            definition: GuiWindowDefinition {
+                name: "inventory".to_owned(),
+                width: 200.0,
+                height: 200.0,
+                background: Some(GuiSpriteSource::default()),
+                ..GuiWindowDefinition::default()
+            },
+            textures: HashMap::new(),
+            dirty: false,
+            persisted: false,
+        };
+
+        assert!(!nudge_selected_element(
+            &mut document,
+            Selection::Background,
+            egui::vec2(10.0, 10.0),
+        ));
+
+        let background = document.definition.background.unwrap();
+        assert_eq!((background.x, background.y), (0.0, 0.0));
+    }
+
+    #[test]
+    fn arrows_produce_one_or_ten_pixel_nudges() {
+        assert_eq!(
+            nudge_delta(egui::Key::ArrowLeft, egui::Modifiers::NONE),
+            egui::vec2(-1.0, 0.0),
+        );
+        assert_eq!(
+            nudge_delta(egui::Key::ArrowDown, egui::Modifiers::SHIFT),
+            egui::vec2(0.0, 10.0),
+        );
+        assert_eq!(
+            nudge_delta(egui::Key::ArrowRight, egui::Modifiers::ALT),
+            egui::Vec2::ZERO,
+        );
+    }
+
+    #[test]
+    fn focused_widget_keeps_arrow_input() {
+        assert_eq!(
+            nudge_delta_with_focus(egui::Key::ArrowRight, egui::Modifiers::NONE, true),
+            egui::Vec2::ZERO,
+        );
+    }
+
+    fn nudge_delta(
+        key: egui::Key,
+        modifiers: egui::Modifiers,
+    ) -> egui::Vec2 {
+        nudge_delta_with_focus(key, modifiers, false)
+    }
+
+    fn nudge_delta_with_focus(
+        key: egui::Key,
+        modifiers: egui::Modifiers,
+        focused: bool,
+    ) -> egui::Vec2 {
+        let context = egui::Context::default();
+        context.begin_pass(egui::RawInput {
+            events: vec![egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers,
+            }],
+            ..egui::RawInput::default()
+        });
+        if focused {
+            context.memory_mut(|memory| memory.request_focus(egui::Id::new("numeric-input")));
+        }
+        let delta = consume_nudge_delta(&context);
+        let mut output = context.end_pass();
+        output.textures_delta.clear();
+        delta
     }
 
     #[test]
