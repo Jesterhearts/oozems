@@ -1,6 +1,7 @@
 use crate::game::Game;
 use crate::game_gui;
 
+mod background;
 mod cash_shop;
 mod cursor;
 mod death;

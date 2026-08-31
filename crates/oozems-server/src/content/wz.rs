@@ -22,6 +22,7 @@ use wz_reader::util::node_util::parse_node;
 
 mod archive;
 mod asset;
+mod background;
 mod features;
 mod foothold;
 mod mob;
@@ -382,6 +383,7 @@ fn build_map(
     let metadata = read_map_metadata(node, map_id)?;
     let raw_platforms = read_platforms(node)?;
     let mut raw_decorations = read_decorations(&source.root, node, map_id)?;
+    let raw_backgrounds = background::read_backgrounds(&source.root, node, map_id)?;
     let raw_ladders = features::read_ladders(node)?;
     let raw_portals = features::read_portals(&source.root, node)?;
     let raw_mob_spawns = mob::read_spawn_points(node)?;
@@ -425,6 +427,13 @@ fn build_map(
             &mut asset_ids,
         )?);
     }
+    let backgrounds = background::build_backgrounds(
+        source,
+        raw_backgrounds,
+        bounds,
+        &mut assets,
+        &mut asset_ids,
+    )?;
     let ladders = features::build_ladders(raw_ladders, bounds);
     let portals = features::build_portals(
         source,
@@ -490,6 +499,7 @@ fn build_map(
         reactor_definitions,
         reactors: Vec::new(),
         audio,
+        backgrounds,
     })
 }
 

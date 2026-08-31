@@ -154,11 +154,12 @@ The map response contains footholds and references to only the sprite assets
 used by that map. It also contains typed ladder, rope, and portal data. Visible
 portals use the animation frames under `MapHelper.img`. When an animated
 placement enters the viewport, the client requests all its frames together and
-keeps displaying a ready frame while the others load. Each sprite stays
-compressed in `Map.wz` until the browser requests its opaque `/wz-assets/...`
-URL. The server then decodes that sprite, returns a normal PNG, and caches it
-for later requests. WZ files and extracted assets are not added to the client
-bundle.
+keeps displaying a ready frame while the others load. WZ backgrounds preserve
+their animation, opacity, flip, front or back placement, tiling, automatic
+movement, and camera parallax. Each sprite stays compressed in `Map.wz` until
+the browser requests its opaque `/wz-assets/...` URL. The server then decodes
+that sprite, returns a normal PNG, and caches it for later requests. WZ files
+and extracted assets are not added to the client bundle.
 
 ### Mobs and combat
 

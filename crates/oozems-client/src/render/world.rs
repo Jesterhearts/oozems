@@ -58,7 +58,15 @@ pub(super) fn draw(game: &Game) {
     let camera_x = camera_x(player_x, viewport_width, f64::from(game.world.map.width));
     let camera_y = camera_y(player_y, viewport_height, f64::from(game.world.map.height));
 
-    draw_background(game, viewport_width, viewport_height, camera_x);
+    draw_backdrop(game, viewport_width, viewport_height, camera_x);
+    super::background::draw(
+        game,
+        false,
+        viewport_width,
+        viewport_height,
+        camera_x,
+        camera_y,
+    );
     for layer in &game.world.world_layers {
         for pass in layer_passes(*layer == game.world.motion.platform_layer) {
             match pass {
@@ -75,6 +83,14 @@ pub(super) fn draw(game: &Game) {
             }
         }
     }
+    super::background::draw(
+        game,
+        true,
+        viewport_width,
+        viewport_height,
+        camera_x,
+        camera_y,
+    );
     super::mob::draw_combat_texts(game, camera_x, camera_y);
     draw_pickup_animations(game, camera_x, camera_y);
 }
@@ -173,7 +189,7 @@ fn camera_y(
     (player_y - viewport_height * 0.55).clamp(0.0, (map_height - viewport_height).max(0.0))
 }
 
-fn draw_background(
+fn draw_backdrop(
     game: &Game,
     viewport_width: f64,
     viewport_height: f64,
@@ -182,6 +198,10 @@ fn draw_background(
     let context = &game.surface.context;
     context.set_fill_style_str("#87c9c0");
     context.fill_rect(0.0, 0.0, viewport_width, viewport_height);
+
+    if !game.world.map.backgrounds.is_empty() {
+        return;
+    }
 
     context.set_fill_style_str("#6da78b");
     context.begin_path();

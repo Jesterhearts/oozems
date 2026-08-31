@@ -1100,6 +1100,40 @@ message Map {
   repeated ReactorDefinition reactor_definitions = 21;
   repeated Reactor reactors = 22;
   MapAudio audio = 23;
+  repeated MapBackground backgrounds = 24;
+}
+
+message MapBackground {
+  repeated MapBackgroundFrame frames = 1;
+  int32 horizontal_rate = 2;
+  int32 vertical_rate = 3;
+  uint32 repeat_x = 4;
+  uint32 repeat_y = 5;
+  uint32 alpha = 6;
+  MapBackgroundMode mode = 7;
+  bool front = 8;
+  bool flip_x = 9;
+}
+
+message MapBackgroundFrame {
+  string asset_id = 1;
+  float x = 2;
+  float y = 3;
+  float width = 4;
+  float height = 5;
+  uint32 delay_ms = 6;
+}
+
+enum MapBackgroundMode {
+  MAP_BACKGROUND_MODE_UNSPECIFIED = 0;
+  MAP_BACKGROUND_MODE_REGULAR = 1;
+  MAP_BACKGROUND_MODE_HORIZONTAL_TILING = 2;
+  MAP_BACKGROUND_MODE_VERTICAL_TILING = 3;
+  MAP_BACKGROUND_MODE_HORIZONTAL_AND_VERTICAL_TILING = 4;
+  MAP_BACKGROUND_MODE_HORIZONTAL_MOVING = 5;
+  MAP_BACKGROUND_MODE_VERTICAL_MOVING = 6;
+  MAP_BACKGROUND_MODE_HORIZONTAL_MOVING_WITH_TILING = 7;
+  MAP_BACKGROUND_MODE_VERTICAL_MOVING_WITH_TILING = 8;
 }
 
 message MapAudio {
