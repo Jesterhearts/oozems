@@ -26,16 +26,6 @@ sprites: [{
   wz_path: "UIWindow.img/Stat/BtDetail/disabled/0"
   x: 113.0
   y: 324.0
-}, {
-  name: "stat-hp-up-disabled"
-  wz_path: "UIWindow.img/Stat/BtApUp/disabled/0"
-  x: 153.0
-  y: 116.0
-}, {
-  name: "stat-mp-up-disabled"
-  wz_path: "UIWindow.img/Stat/BtApUp/disabled/0"
-  x: 153.0
-  y: 134.0
 }]
 sprite_templates: [{
   name: "stat-ability-up"
@@ -45,6 +35,18 @@ sprite_templates: [{
   wz_path: "UIWindow.img/Stat/BtApUp/disabled/0"
 }]
 regions: [{
+  name: "stat-hp-up"
+  x: 153.0
+  y: 116.0
+  width: 12.0
+  height: 12.0
+}, {
+  name: "stat-mp-up"
+  x: 153.0
+  y: 134.0
+  width: 12.0
+  height: 12.0
+}, {
   name: "stat-strength-up"
   x: 153.0
   y: 246.0

@@ -71,6 +71,20 @@ primary_stat     = "Dexterity"
 secondary_stat   = "Strength"
 primary_modifier = 3.6
 
+[weapon_profiles.wand_basic]
+minimum          = "(PrimaryStat * 0.9 * Mastery + SecondaryStat) * WeaponAttack / 100"
+maximum          = "(PrimaryStat + SecondaryStat) * WeaponAttack / 100"
+primary_stat     = "Strength"
+secondary_stat   = "Dexterity"
+primary_modifier = 3.6
+
+[weapon_profiles.staff_basic]
+minimum          = "(PrimaryStat * 0.9 * Mastery + SecondaryStat) * WeaponAttack / 100"
+maximum          = "(PrimaryStat + SecondaryStat) * WeaponAttack / 100"
+primary_stat     = "Strength"
+secondary_stat   = "Dexterity"
+primary_modifier = 3.6
+
 [weapon_profiles.spell]
 minimum = "((Magic ^ 2 / 1000 + Magic * Mastery * 0.9) / 30 + Intelligence / 200) * SpellAttack"
 maximum = "((Magic ^ 2 / 1000 + Magic) / 30 + Intelligence / 200) * SpellAttack"
@@ -81,7 +95,7 @@ maximum = "(Luck + Strength + Dexterity) * WeaponAttack / 150"
 
 [weapon_profiles.bare_hands]
 attack  = "min(floor((2 * CharacterLevel + 31) / 3), 31)"
-minimum = "(Strength * JobMultiplier * 0.1 * 0.9 + Dexterity) * WeaponAttack / 100"
+minimum = "(Strength * JobMultiplier * Mastery * 0.9 + Dexterity) * WeaponAttack / 100"
 maximum = "(Strength * JobMultiplier + Dexterity) * WeaponAttack / 100"
 
 [weapons.one_handed_sword]
@@ -116,6 +130,12 @@ profile = "spell"
 
 [weapons.staff]
 profile = "spell"
+
+[weapons.wand_basic]
+profile = "wand_basic"
+
+[weapons.staff_basic]
+profile = "staff_basic"
 
 [weapons.claw]
 profile = "claw"

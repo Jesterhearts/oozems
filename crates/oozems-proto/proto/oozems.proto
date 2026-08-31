@@ -327,6 +327,8 @@ enum AbilityStat {
   ABILITY_STAT_DEXTERITY = 2;
   ABILITY_STAT_INTELLIGENCE = 3;
   ABILITY_STAT_LUCK = 4;
+  ABILITY_STAT_MAX_HP = 5;
+  ABILITY_STAT_MAX_MP = 6;
 }
 
 message UseSkillRequest {
@@ -383,6 +385,10 @@ message ActiveBuffState {
   sint32 jump = 11;
   uint32 morph_id = 12;
   bool attacks_disabled = 13;
+  uint32 critical_chance = 14;
+  uint32 critical_damage = 15;
+  uint32 combo_count = 16;
+  uint64 combo_expires_at_unix_ms = 17;
 }
 
 message ActiveBuff {
@@ -403,6 +409,13 @@ message ActiveBuff {
   sint32 avoidability = 13;
   uint32 morph_id = 14;
   bool permanent = 15;
+  uint32 critical_chance = 16;
+  uint32 critical_damage = 17;
+  uint32 hp_recovery_per_five_seconds = 18;
+  uint32 outgoing_damage_percent = 19;
+  sint32 enemy_speed_penalty = 20;
+  uint64 enemy_slow_duration_ms = 21;
+  uint32 enemy_slow_chance = 22;
 }
 
 message RecoverPlayerRequest {
@@ -449,6 +462,14 @@ message SkillUseResult {
   sint32 accuracy_bonus = 18;
   sint32 avoidability_bonus = 19;
   bool permanent_buff = 20;
+  uint32 critical_chance_bonus = 21;
+  uint32 critical_damage_bonus = 22;
+  sint32 strength_bonus = 23;
+  uint32 hp_recovery_per_five_seconds = 24;
+  uint32 outgoing_damage_percent = 25;
+  sint32 enemy_speed_penalty = 26;
+  uint64 enemy_slow_duration_ms = 27;
+  uint32 enemy_slow_chance = 28;
 }
 
 message SkillEffect {
@@ -580,6 +601,14 @@ message SkillDefinition {
   repeated SkillProperty common_properties = 11;
   repeated SkillProperty metadata = 12;
   repeated SkillRequirement requirements = 13;
+  SkillActivation activation = 14;
+}
+
+enum SkillActivation {
+  SKILL_ACTIVATION_UNSPECIFIED = 0;
+  SKILL_ACTIVATION_ACTIVE = 1;
+  SKILL_ACTIVATION_PASSIVE = 2;
+  SKILL_ACTIVATION_REACTIVE = 3;
 }
 
 message SkillLevelDefinition {
@@ -636,6 +665,21 @@ message SkillStats {
   SkillValue y = 25;
   SkillValue z = 26;
   SkillValue hp_recovery_per_five_seconds = 27;
+  SkillValue max_hp_per_level = 28;
+  SkillValue max_hp_per_ability_point = 29;
+  SkillValue max_mp_per_level = 30;
+  SkillValue max_mp_per_ability_point = 31;
+  SkillValue throwing_star_capacity = 32;
+  SkillValue bullet_capacity = 33;
+  SkillValue critical_chance = 34;
+  SkillValue max_hp_consumption_percent = 35;
+  SkillValue hp_to_mp_conversion_percent = 36;
+  SkillValue combo_stat_increment = 37;
+  SkillValue weapon_attack_per_combo_threshold = 38;
+  SkillValue defense_per_combo_threshold = 39;
+  SkillValue enemy_speed_penalty = 40;
+  SkillValue enemy_slow_duration = 41;
+  SkillValue outgoing_damage_percent = 42;
 }
 
 message KeyActionDefinition {

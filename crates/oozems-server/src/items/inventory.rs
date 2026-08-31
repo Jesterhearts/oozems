@@ -114,6 +114,69 @@ pub trait ItemDefinitionLookup {
     ) -> Option<crate::content::MonsterBookCardDefinition> {
         None
     }
+
+    fn effective_stack_max(
+        &self,
+        item_id: u32,
+    ) -> Result<u32, ItemRuleError> {
+        let definition = self
+            .item_definition(item_id)?
+            .ok_or(ItemRuleError::UnknownItem { item_id })?;
+        definition_stack_max(definition)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StackCapacityBonuses {
+    pub throwing_stars: u32,
+    pub bullets: u32,
+}
+
+pub struct StackCapacityLookup<'a, T: ?Sized> {
+    definitions: &'a T,
+    bonuses: StackCapacityBonuses,
+}
+
+impl<'a, T: ?Sized> StackCapacityLookup<'a, T> {
+    pub fn new(
+        definitions: &'a T,
+        bonuses: StackCapacityBonuses,
+    ) -> Self {
+        Self {
+            definitions,
+            bonuses,
+        }
+    }
+}
+
+impl<T: ItemDefinitionLookup + ?Sized> ItemDefinitionLookup for StackCapacityLookup<'_, T> {
+    fn item_definition(
+        &self,
+        item_id: u32,
+    ) -> Result<Option<&ItemDefinition>, ItemRuleError> {
+        self.definitions.item_definition(item_id)
+    }
+
+    fn monster_book_card(
+        &self,
+        item_id: u32,
+    ) -> Option<crate::content::MonsterBookCardDefinition> {
+        self.definitions.monster_book_card(item_id)
+    }
+
+    fn effective_stack_max(
+        &self,
+        item_id: u32,
+    ) -> Result<u32, ItemRuleError> {
+        let base = self.definitions.effective_stack_max(item_id)?;
+        let bonus = match item_id / 10_000 {
+            207 => self.bonuses.throwing_stars,
+            233 => self.bonuses.bullets,
+            _ => 0,
+        };
+        base.checked_add(bonus)
+            .ok_or(ItemRuleError::QuantityOverflow { item_id })
+    }
 }
 
 impl ItemDefinitionLookup for [ItemDefinition] {
@@ -240,6 +303,16 @@ pub fn equipment_stats(
         })
 }
 
+pub fn equipped_weapon_type(player: &PlayerState) -> Option<crate::jobs::WeaponType> {
+    player
+        .inventory
+        .as_ref()?
+        .equipment
+        .iter()
+        .find(|item| item.slot == EquipmentSlot::Weapon as i32)
+        .and_then(|item| crate::jobs::weapon_type(item.item_id))
+}
+
 pub fn count_item_quantity(
     stacks: &[InventoryItemStack],
     item_id: u32,
@@ -262,8 +335,8 @@ pub fn count_inventory_item(
     definitions: &(impl ItemDefinitionLookup + ?Sized),
     item_id: u32,
 ) -> Result<u64, ItemRuleError> {
-    let stacks = canonical_stacks(inventory, definitions)?;
-    count_item_quantity(&stacks, item_id)
+    find_definition(definitions, item_id)?;
+    count_item_quantity(&inventory.stacks, item_id)
 }
 
 pub fn prune_expired_inventory(
@@ -282,7 +355,8 @@ pub fn prune_expired_inventory(
         || inventory.equipment.len() != original_equipment_len
 }
 
-pub fn prune_and_validate_inventory(
+#[cfg(test)]
+fn prune_and_validate_inventory(
     inventory: &mut InventoryState,
     definitions: &(impl ItemDefinitionLookup + ?Sized),
     now_unix_ms: u64,
@@ -290,6 +364,24 @@ pub fn prune_and_validate_inventory(
     let pruned = prune_expired_inventory(inventory, now_unix_ms);
     validate_inventory(inventory, definitions)?;
     Ok(pruned)
+}
+
+pub fn prune_and_migrate_inventory(
+    inventory: &mut InventoryState,
+    base_definitions: &(impl ItemDefinitionLookup + ?Sized),
+    effective_definitions: &(impl ItemDefinitionLookup + ?Sized),
+    now_unix_ms: u64,
+) -> Result<bool, ItemRuleError> {
+    let pruned = prune_expired_inventory(inventory, now_unix_ms);
+    match validate_inventory(inventory, effective_definitions) {
+        Ok(()) => Ok(pruned),
+        Err(ItemRuleError::NonCanonicalInventory) => {
+            validate_inventory(inventory, base_definitions)?;
+            canonicalize_inventory(inventory, effective_definitions)?;
+            Ok(true)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 pub fn preflight_item_grant(
@@ -302,8 +394,7 @@ pub fn preflight_item_grant(
     if quantity == 0 {
         return Err(ItemRuleError::InvalidQuantity { item_id });
     }
-    let definition = find_definition(definitions, item_id)?;
-    let stack_max = definition_stack_max(definition)?;
+    let stack_max = definitions.effective_stack_max(item_id)?;
     let mut stacks = canonical_stacks(inventory, definitions)?;
     add_to_stacks(
         &mut stacks,
@@ -678,8 +769,7 @@ fn canonical_stacks(
                 item_id: stack.item_id,
             });
         }
-        let definition = find_definition(definitions, stack.item_id)?;
-        let stack_max = definition_stack_max(definition)?;
+        let stack_max = definitions.effective_stack_max(stack.item_id)?;
         add_to_stacks(
             &mut stacks,
             inventory.capacity,
@@ -704,8 +794,7 @@ fn inventory_after_delta(
     if delta == i64::MIN {
         return Err(ItemRuleError::QuantityOverflow { item_id });
     }
-    let definition = find_definition(definitions, item_id)?;
-    let stack_max = definition_stack_max(definition)?;
+    let stack_max = definitions.effective_stack_max(item_id)?;
     let mut stacks = canonical_stacks(inventory, definitions)?;
     if delta > 0 {
         add_to_stacks(
@@ -898,6 +987,8 @@ mod tests {
     use super::STARTING_SHOES_IDS;
     use super::STARTING_TOP_IDS;
     use super::STARTING_WEAPON_IDS;
+    use super::StackCapacityBonuses;
+    use super::StackCapacityLookup;
     use super::apply_item_delta;
     use super::apply_item_grant;
     use super::buy_shop_item;
@@ -905,6 +996,7 @@ mod tests {
     use super::count_item_quantity;
     use super::equip_inventory_item;
     use super::equipment_stats;
+    use super::prune_and_migrate_inventory;
     use super::prune_and_validate_inventory;
     use super::prune_expired_inventory;
     use super::remove_inventory_item;
@@ -1010,6 +1102,94 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn ammunition_capacity_bonuses_apply_only_to_their_item_families() {
+        let definitions = vec![
+            ItemDefinition {
+                item_id: 2_070_000,
+                stack_max: 500,
+                ..ItemDefinition::default()
+            },
+            ItemDefinition {
+                item_id: 2_330_000,
+                stack_max: 800,
+                ..ItemDefinition::default()
+            },
+            ItemDefinition {
+                item_id: 2_060_000,
+                stack_max: 500,
+                ..ItemDefinition::default()
+            },
+        ];
+        let effective = StackCapacityLookup::new(
+            &definitions,
+            StackCapacityBonuses {
+                throwing_stars: 100,
+                bullets: 200,
+            },
+        );
+        let mut inventory = InventoryState {
+            capacity: 10,
+            ..InventoryState::default()
+        };
+
+        apply_item_grant(&mut inventory, &effective, 2_070_000, 601, 0)
+            .expect("grant throwing stars");
+        apply_item_grant(&mut inventory, &effective, 2_330_000, 1_001, 0).expect("grant bullets");
+        apply_item_grant(&mut inventory, &effective, 2_060_000, 501, 0).expect("grant arrows");
+
+        let quantities = |item_id| {
+            inventory
+                .stacks
+                .iter()
+                .filter(|stack| stack.item_id == item_id)
+                .map(|stack| stack.quantity)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(quantities(2_070_000), vec![600, 1]);
+        assert_eq!(quantities(2_330_000), vec![1_000, 1]);
+        assert_eq!(quantities(2_060_000), vec![500, 1]);
+    }
+
+    #[test]
+    fn base_canonical_ammunition_migrates_to_the_learned_capacity() {
+        let definitions = vec![ItemDefinition {
+            item_id: 2_070_000,
+            stack_max: 500,
+            ..ItemDefinition::default()
+        }];
+        let effective = StackCapacityLookup::new(
+            &definitions,
+            StackCapacityBonuses {
+                throwing_stars: 100,
+                bullets: 0,
+            },
+        );
+        let mut inventory = InventoryState {
+            capacity: 2,
+            stacks: vec![
+                InventoryItemStack {
+                    item_id: 2_070_000,
+                    quantity: 500,
+                    expires_at_unix_ms: 0,
+                },
+                InventoryItemStack {
+                    item_id: 2_070_000,
+                    quantity: 100,
+                    expires_at_unix_ms: 0,
+                },
+            ],
+            ..InventoryState::default()
+        };
+
+        assert!(
+            prune_and_migrate_inventory(&mut inventory, &definitions, &effective, 1_000)
+                .expect("migrate inventory")
+        );
+        assert_eq!(inventory.stacks.len(), 1);
+        assert_eq!(inventory.stacks[0].quantity, 600);
     }
 
     #[test]

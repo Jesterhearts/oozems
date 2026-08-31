@@ -177,6 +177,8 @@ pub(super) fn window_action(
     }
     if button == PointerButton::Left && state.stats_open && frontmost == Some(WindowKind::Stats) {
         for (name, stat) in [
+            ("stat-hp-up", AbilityStat::MaxHp),
+            ("stat-mp-up", AbilityStat::MaxMp),
             ("stat-strength-up", AbilityStat::Strength),
             ("stat-dexterity-up", AbilityStat::Dexterity),
             ("stat-intelligence-up", AbilityStat::Intelligence),

@@ -172,8 +172,6 @@ fn stats<E>(
             113.0,
             324.0,
         ),
-        source("stat-hp-up-disabled", disabled_path, 153.0, 117.0),
-        source("stat-mp-up-disabled", disabled_path, 153.0, 135.0),
     ]);
     definition.sprite_templates.extend([
         template("stat-ability-up", ability_path),
@@ -181,6 +179,8 @@ fn stats<E>(
     ]);
     definition.regions.extend(
         [
+            ("stat-hp-up", 116.0),
+            ("stat-mp-up", 134.0),
             ("stat-strength-up", 246.0),
             ("stat-dexterity-up", 264.0),
             ("stat-intelligence-up", 282.0),

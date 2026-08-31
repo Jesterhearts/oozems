@@ -11,6 +11,7 @@ use super::invalid;
 use crate::api::ApiError;
 use crate::api::PlayerMutation;
 use crate::api::item_rule_error;
+use crate::api::player_item_definitions;
 use crate::api::prepare_player_mutation;
 use crate::app::AppState;
 use crate::interactions::ShopCurrency;
@@ -33,12 +34,13 @@ pub(super) async fn buy_item(
         .iter()
         .find(|offer| offer.item_id == item_id)
         .ok_or_else(|| invalid("the selected item is not sold by this shop"))?;
+    let definitions = player_item_definitions(state, &mutation.player).await?;
     let player = crate::items::buy_shop_item(
         mutation.player.clone(),
         item_id,
         offer.buy_price,
         shop.currency,
-        state.catalog.as_ref(),
+        &definitions,
     )
     .map_err(|error| shop_item_rule_error(error, shop, state.cash_shop.currency_name()))?;
     let (transaction, _) = prepare_player_mutation(state, mutation, player, true, true);
@@ -64,6 +66,7 @@ pub(super) async fn sell_item(
         .shop(map_id, npc.spawn_id)
         .ok_or_else(|| invalid("this NPC does not operate a shop"))?;
     validate_shop_sale(shop)?;
+    let definitions = player_item_definitions(state, &mutation.player).await?;
     crate::items::validate_inventory_selection(
         &mutation.player,
         inventory_index,
@@ -71,12 +74,9 @@ pub(super) async fn sell_item(
         expected_expires_at_unix_ms,
     )
     .map_err(item_rule_error)?;
-    let player = crate::items::sell_inventory_item(
-        mutation.player.clone(),
-        inventory_index,
-        state.catalog.as_ref(),
-    )
-    .map_err(item_rule_error)?;
+    let player =
+        crate::items::sell_inventory_item(mutation.player.clone(), inventory_index, &definitions)
+            .map_err(item_rule_error)?;
     let (transaction, _) = prepare_player_mutation(state, mutation, player, true, true);
     let player =
         crate::player_transaction::commit_player_transaction(&state.database, guard, transaction)

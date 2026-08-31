@@ -66,6 +66,7 @@ fn environment(now_unix_ms: u64) -> crate::quests::QuestEnvironment {
     crate::quests::QuestEnvironment {
         now_unix_ms,
         world_id: 0,
+        learned_skill_modifiers: crate::skills::LearnedSkillModifiers::default(),
     }
 }
 
@@ -373,10 +374,15 @@ async fn failed_restoration_persistence_keeps_the_saved_inventory_unchanged() {
     let saved = crate::database::create_player(&database, &original)
         .await
         .expect("create original player");
-    let mut restored =
-        crate::quests::restore_lost_quest_items(saved.clone(), &quest, &definitions, 200)
-            .expect("stage completed restoration")
-            .player;
+    let mut restored = crate::quests::restore_lost_quest_items(
+        saved.clone(),
+        &quest,
+        &definitions,
+        200,
+        crate::skills::LearnedSkillModifiers::default(),
+    )
+    .expect("stage completed restoration")
+    .player;
     restored.revision = i64::MAX as u64;
 
     assert!(

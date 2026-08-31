@@ -130,6 +130,7 @@ pub(crate) fn restore_lost_quest_items(
     quest: &QuestDefinition,
     item_definitions: &[ItemDefinition],
     now_unix_ms: u64,
+    learned: crate::skills::LearnedSkillModifiers,
 ) -> Result<QuestSelection, QuestRuleError> {
     let lost = quest
         .dialogue
@@ -148,10 +149,17 @@ pub(crate) fn restore_lost_quest_items(
     }
 
     let mut restored_inventory = inventory.clone();
+    let item_definitions = crate::items::StackCapacityLookup::new(
+        item_definitions,
+        crate::items::StackCapacityBonuses {
+            throwing_stars: learned.throwing_star_capacity,
+            bullets: learned.bullet_capacity,
+        },
+    );
     for (item_id, quantity, expires_at_unix_ms) in grants {
         crate::items::apply_item_grant(
             &mut restored_inventory,
-            item_definitions,
+            &item_definitions,
             item_id,
             quantity,
             expires_at_unix_ms,

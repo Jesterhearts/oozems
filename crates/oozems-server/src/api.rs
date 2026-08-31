@@ -100,6 +100,7 @@ pub async fn bootstrap(
     let active_buffs = player
         .as_ref()
         .map(|player| -> Result<_, ApiError> {
+            crate::effects::reset_stored_combo(&state.active_effects, &player.id)?;
             let now_unix_ms = unix_time_ms()?;
             let effects = crate::effects::snapshot(&state.active_effects, &player.id, now_unix_ms)?;
             Ok(crate::effects::state(&effects, now_unix_ms))
@@ -276,6 +277,7 @@ pub async fn get_map(
     let environment = crate::quests::QuestEnvironment {
         now_unix_ms,
         world_id: state.gameplay.world_id,
+        learned_skill_modifiers: crate::skills::LearnedSkillModifiers::default(),
     };
     crate::quests::project_npc_quest_indicators(
         &mut map,
@@ -343,6 +345,21 @@ pub async fn get_gui(
         .collect();
     let mob_definitions = state.catalog.mob_definitions(&mob_ids);
     let mut gui = state.catalog.game_gui(&item_ids)?;
+    let skill_context = load_skill_book(&state, &player).await?;
+    let learned = crate::skills::learned_skill_modifiers(&skill_context, &player)
+        .map_err(skill_rule_error)?;
+    let definitions = crate::items::StackCapacityLookup::new(
+        state.catalog.as_ref(),
+        crate::items::StackCapacityBonuses {
+            throwing_stars: learned.throwing_star_capacity,
+            bullets: learned.bullet_capacity,
+        },
+    );
+    for item in &mut gui.items {
+        item.stack_max =
+            crate::items::ItemDefinitionLookup::effective_stack_max(&definitions, item.item_id)
+                .map_err(item_rule_error)?;
+    }
     gui.quest_tracker = crate::quests::quest_tracker(
         &player,
         &effects,
@@ -353,6 +370,7 @@ pub async fn get_gui(
         crate::quests::QuestEnvironment {
             now_unix_ms,
             world_id: state.gameplay.world_id,
+            learned_skill_modifiers: learned,
         },
     );
     Ok(Protobuf(GetGuiResponse { gui: Some(gui) }))
@@ -378,7 +396,10 @@ pub async fn allocate_ability_point(
     let activity_time_ms = unix_time_ms()?;
     let mutation =
         begin_player_mutation(&state, &player_guard, &player_id, activity_time_ms).await?;
-    let updated = crate::abilities::allocate_ability_point(mutation.player.clone(), stat)
+    let skill_context = load_skill_book(&state, &mutation.player).await?;
+    let learned = crate::skills::learned_skill_modifiers(&skill_context, &mutation.player)
+        .map_err(skill_rule_error)?;
+    let updated = crate::abilities::allocate_ability_point(mutation.player.clone(), stat, learned)
         .map_err(ability_rule_error)?;
     let committed =
         persist_player_mutation(&state, &player_guard, mutation, updated, true, true).await?;
@@ -408,7 +429,11 @@ pub async fn recover_player(
             let active_buffs = crate::effects::state(&mutation.effects, now_ms);
             return Ok(Protobuf(RecoverPlayerResponse {
                 player: Some(mutation.player),
-                retry_after_ms: remaining_ms,
+                retry_after_ms: crate::effects::next_periodic_recovery_ms(
+                    &mutation.effects,
+                    now_ms,
+                )
+                .map_or(remaining_ms, |periodic| periodic.min(remaining_ms)),
                 active_buffs: Some(active_buffs),
                 ..RecoverPlayerResponse::default()
             }));
@@ -447,6 +472,10 @@ pub async fn recover_player(
             crate::player_transaction::PlayerPersistence::Full
         },
     );
+    let retry_after_ms = crate::effects::next_periodic_recovery_ms(&mutation.effects, now_ms)
+        .map_or(crate::recovery::RECOVERY_INTERVAL_MS, |periodic| {
+            periodic.min(crate::recovery::RECOVERY_INTERVAL_MS)
+        });
     crate::player_transaction::stage_effects(
         &mut transaction,
         state.active_effects.clone(),
@@ -465,7 +494,7 @@ pub async fn recover_player(
         player: Some(player),
         hp_restored: prepared.hp_restored,
         mp_restored: prepared.mp_restored,
-        retry_after_ms: crate::recovery::RECOVERY_INTERVAL_MS,
+        retry_after_ms,
         active_buffs: Some(active_buff_state(&state, player_id.as_str(), now_ms)?),
     }))
 }
@@ -666,6 +695,7 @@ fn quest_indicator_updates(
         crate::quests::QuestEnvironment {
             now_unix_ms,
             world_id: state.gameplay.world_id,
+            learned_skill_modifiers: crate::skills::LearnedSkillModifiers::default(),
         },
     )
 }
@@ -677,6 +707,22 @@ async fn load_skill_book(
     let catalog = state.catalog.clone();
     let player = player.clone();
     Ok(tokio::task::spawn_blocking(move || catalog.skill_book_context(&player)).await??)
+}
+
+pub(crate) async fn player_item_definitions<'a>(
+    state: &'a AppState,
+    player: &PlayerState,
+) -> Result<crate::items::StackCapacityLookup<'a, crate::content::ContentCatalog>, ApiError> {
+    let context = load_skill_book(state, player).await?;
+    let learned =
+        crate::skills::learned_skill_modifiers(&context, player).map_err(skill_rule_error)?;
+    Ok(crate::items::StackCapacityLookup::new(
+        state.catalog.as_ref(),
+        crate::items::StackCapacityBonuses {
+            throwing_stars: learned.throwing_star_capacity,
+            bullets: learned.bullet_capacity,
+        },
+    ))
 }
 
 fn parse_player_id(value: &str) -> Result<PlayerId, ApiError> {

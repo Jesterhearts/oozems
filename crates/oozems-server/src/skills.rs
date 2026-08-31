@@ -5,8 +5,10 @@ use std::sync::Mutex;
 use oozems_proto::v1::KeyBinding;
 use oozems_proto::v1::LearnedSkill;
 use oozems_proto::v1::PlayerState;
+use oozems_proto::v1::SkillActivation;
 use oozems_proto::v1::SkillBook;
 use oozems_proto::v1::SkillDefinition;
+use oozems_proto::v1::SkillStats;
 use oozems_proto::v1::SkillUseResult;
 use oozems_proto::v1::SkillValue;
 use oozems_proto::v1::skill_value;
@@ -14,8 +16,10 @@ use thiserror::Error;
 
 use crate::content::AuthoritativeSkillDefinition;
 use crate::content::SkillBookContext;
+use crate::effects::EffectModifiers;
 use crate::effects::ProjectedEffects;
 use crate::jobs::SkillAttackType;
+use crate::jobs::WeaponFamily;
 use crate::jobs::skill_attack_type;
 use crate::skill_formula::FormulaCatalog;
 use crate::skill_formula::evaluate_damage_profile;
@@ -33,6 +37,54 @@ pub struct PreparedSkillUse {
     pub result: SkillUseResult,
     pub cooldown_ms: u64,
     pub attack_type: SkillAttackType,
+    pub consumes_combo: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LearnedSkillModifiers {
+    pub combat: EffectModifiers,
+    pub strength: i32,
+    pub weapons: [WeaponSkillModifiers; WeaponFamily::COUNT],
+    pub max_hp_per_level: u32,
+    pub max_hp_per_ability_point: u32,
+    pub max_mp_per_level: u32,
+    pub max_mp_per_ability_point: u32,
+    pub throwing_star_capacity: u32,
+    pub bullet_capacity: u32,
+    pub combo_ability: ComboAbilityModifiers,
+    pub combo_critical: ComboCriticalModifiers,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ComboAbilityModifiers {
+    pub maximum_tiers: u32,
+    pub weapon_attack_per_tier: u32,
+    pub defense_per_tier: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ComboCriticalModifiers {
+    pub maximum_tiers: u32,
+    pub critical_chance_per_tier: u32,
+    pub critical_damage_per_tier: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WeaponSkillModifiers {
+    pub weapon_attack: i32,
+    pub accuracy: i32,
+    pub mastery: u32,
+}
+
+impl LearnedSkillModifiers {
+    pub fn weapon(
+        self,
+        family: Option<WeaponFamily>,
+    ) -> WeaponSkillModifiers {
+        family.map_or_else(WeaponSkillModifiers::default, |family| {
+            self.weapons[family.index()]
+        })
+    }
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -74,6 +126,8 @@ pub enum SkillRuleError {
     },
     #[error("skill {skill_id} has not been learned")]
     NotLearned { skill_id: u32 },
+    #[error("skill {skill_id} is not an activatable skill")]
+    NotActive { skill_id: u32 },
     #[error("skill {skill_id} does not define learned level {level}")]
     MissingLevel { skill_id: u32, level: u32 },
     #[error("skill {skill_id} property {property:?} is not a supported numeric value")]
@@ -95,6 +149,12 @@ pub enum SkillRuleError {
     },
     #[error("skill {skill_id} is on cooldown for another {remaining_ms} ms")]
     Cooldown { skill_id: u32, remaining_ms: u64 },
+    #[error("skill {skill_id} requires {required} combo, but only {available} is available")]
+    InsufficientCombo {
+        skill_id: u32,
+        required: u32,
+        available: u32,
+    },
     #[error("the skill cooldown store is unavailable")]
     CooldownStore,
     #[error("a configured formula failed: {message}")]
@@ -145,12 +205,275 @@ pub fn validate_bound_skills(
         if learned_skills
             .get(&skill_id)
             .is_none_or(|(level, _)| *level == 0)
-            || skill_definition(&context.book, skill_id).is_err()
+            || skill_definition(&context.book, skill_id)
+                .map_or(true, |definition| !is_active_skill(definition))
         {
             return Err(SkillRuleError::NotLearned { skill_id });
         }
     }
     Ok(())
+}
+
+pub fn prune_non_active_skill_bindings(
+    bindings: &mut Vec<KeyBinding>,
+    context: &SkillBookContext,
+) -> bool {
+    let previous = bindings.len();
+    bindings.retain(|binding| {
+        binding.skill_id == 0
+            || skill_definition(&context.book, binding.skill_id)
+                .map(is_active_skill)
+                .unwrap_or(true)
+    });
+    bindings.len() != previous
+}
+
+pub fn learned_skill_modifiers(
+    context: &SkillBookContext,
+    player: &PlayerState,
+) -> Result<LearnedSkillModifiers, SkillRuleError> {
+    validate_job(&context.book, player)?;
+    let levels = validate_learned_skills(
+        context.book.job_id,
+        &context.authoritative_skills,
+        &player.learned_skills,
+    )?;
+    let definitions = context
+        .authoritative_skills
+        .iter()
+        .map(|skill| (skill.definition.skill_id, &skill.definition))
+        .collect::<HashMap<_, _>>();
+    let mut modifiers = LearnedSkillModifiers::default();
+    for (skill_id, (level, _)) in levels {
+        if level == 0 {
+            continue;
+        }
+        let definition = definitions[&skill_id];
+        let activation = skill_activation(definition);
+        if matches!(
+            activation,
+            SkillActivation::Active | SkillActivation::Unspecified
+        ) {
+            continue;
+        }
+        let level_stats = definition
+            .levels
+            .iter()
+            .find(|entry| entry.level == level)
+            .and_then(|entry| entry.stats.as_ref())
+            .ok_or(SkillRuleError::MissingLevel { skill_id, level })?;
+        match activation {
+            SkillActivation::Passive => add_passive_stats(
+                &mut modifiers,
+                skill_id,
+                level_stats,
+                definition.common_stats.as_ref(),
+            )?,
+            SkillActivation::Reactive => add_reactive_stats(
+                &mut modifiers,
+                skill_id,
+                level_stats,
+                definition.common_stats.as_ref(),
+            )?,
+            SkillActivation::Active | SkillActivation::Unspecified => unreachable!(),
+        }
+    }
+    Ok(modifiers)
+}
+
+fn add_reactive_stats(
+    modifiers: &mut LearnedSkillModifiers,
+    skill_id: u32,
+    level: &SkillStats,
+    common: Option<&SkillStats>,
+) -> Result<(), SkillRuleError> {
+    let number = |property, level, common| numeric_stat(skill_id, property, level, common);
+    match skill_id {
+        21_000_000 => {
+            modifiers.combo_ability.maximum_tiers = number(
+                "combo_stat_increment",
+                level.combo_stat_increment.as_ref(),
+                common.and_then(|stats| stats.combo_stat_increment.as_ref()),
+            )?;
+            modifiers.combo_ability.weapon_attack_per_tier = number(
+                "weapon_attack_per_combo_threshold",
+                level.weapon_attack_per_combo_threshold.as_ref(),
+                common.and_then(|stats| stats.weapon_attack_per_combo_threshold.as_ref()),
+            )?;
+            modifiers.combo_ability.defense_per_tier = number(
+                "defense_per_combo_threshold",
+                level.defense_per_combo_threshold.as_ref(),
+                common.and_then(|stats| stats.defense_per_combo_threshold.as_ref()),
+            )?;
+        }
+        21_110_000 => {
+            modifiers.combo_critical.maximum_tiers = number(
+                "combo_stat_increment",
+                level.combo_stat_increment.as_ref(),
+                common.and_then(|stats| stats.combo_stat_increment.as_ref()),
+            )?;
+            modifiers.combo_critical.critical_chance_per_tier = number(
+                "critical_chance",
+                level.critical_chance.as_ref(),
+                common.and_then(|stats| stats.critical_chance.as_ref()),
+            )?;
+            modifiers.combo_critical.critical_damage_per_tier = number(
+                "critical_damage",
+                level.critical_damage.as_ref(),
+                common.and_then(|stats| stats.critical_damage.as_ref()),
+            )?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn add_passive_stats(
+    modifiers: &mut LearnedSkillModifiers,
+    skill_id: u32,
+    level: &SkillStats,
+    common: Option<&SkillStats>,
+) -> Result<(), SkillRuleError> {
+    let weapon_family = passive_weapon_family(skill_id);
+    macro_rules! add_signed {
+        ($field:ident, $property:literal, $destination:expr) => {
+            *$destination = (*$destination).saturating_add(signed_numeric_stat(
+                skill_id,
+                $property,
+                level.$field.as_ref(),
+                common.and_then(|stats| stats.$field.as_ref()),
+            )?);
+        };
+    }
+    macro_rules! add_unsigned {
+        ($field:ident, $property:literal, $destination:expr) => {
+            *$destination = (*$destination).saturating_add(numeric_stat(
+                skill_id,
+                $property,
+                level.$field.as_ref(),
+                common.and_then(|stats| stats.$field.as_ref()),
+            )?);
+        };
+    }
+
+    if let Some(family) = weapon_family {
+        add_signed!(
+            weapon_attack,
+            "weapon_attack",
+            &mut modifiers.weapons[family.index()].weapon_attack
+        );
+    } else {
+        add_signed!(
+            weapon_attack,
+            "weapon_attack",
+            &mut modifiers.combat.weapon_attack
+        );
+    }
+    add_signed!(
+        magic_attack,
+        "magic_attack",
+        &mut modifiers.combat.magic_attack
+    );
+    if let Some(family) = weapon_family {
+        add_signed!(
+            accuracy,
+            "accuracy",
+            &mut modifiers.weapons[family.index()].accuracy
+        );
+    } else {
+        add_signed!(accuracy, "accuracy", &mut modifiers.combat.accuracy);
+    }
+    add_signed!(
+        avoidability,
+        "avoidability",
+        &mut modifiers.combat.avoidability
+    );
+    add_signed!(
+        weapon_defense,
+        "weapon_defense",
+        &mut modifiers.combat.weapon_defense
+    );
+    add_signed!(
+        magic_defense,
+        "magic_defense",
+        &mut modifiers.combat.magic_defense
+    );
+    add_signed!(speed, "speed", &mut modifiers.combat.speed);
+    add_signed!(jump, "jump", &mut modifiers.combat.jump);
+    add_signed!(strength, "strength", &mut modifiers.strength);
+    add_unsigned!(
+        max_hp_per_level,
+        "max_hp_per_level",
+        &mut modifiers.max_hp_per_level
+    );
+    add_unsigned!(
+        max_hp_per_ability_point,
+        "max_hp_per_ability_point",
+        &mut modifiers.max_hp_per_ability_point
+    );
+    add_unsigned!(
+        max_mp_per_level,
+        "max_mp_per_level",
+        &mut modifiers.max_mp_per_level
+    );
+    add_unsigned!(
+        max_mp_per_ability_point,
+        "max_mp_per_ability_point",
+        &mut modifiers.max_mp_per_ability_point
+    );
+    add_unsigned!(
+        throwing_star_capacity,
+        "throwing_star_capacity",
+        &mut modifiers.throwing_star_capacity
+    );
+    add_unsigned!(
+        bullet_capacity,
+        "bullet_capacity",
+        &mut modifiers.bullet_capacity
+    );
+    let mastery = numeric_stat(
+        skill_id,
+        "mastery",
+        level.mastery.as_ref(),
+        common.and_then(|stats| stats.mastery.as_ref()),
+    )?;
+    if let Some(family) = weapon_family {
+        modifiers.weapons[family.index()].mastery =
+            modifiers.weapons[family.index()].mastery.max(mastery);
+    }
+    Ok(())
+}
+
+pub fn weapon_mastery(
+    modifiers: LearnedSkillModifiers,
+    family: Option<WeaponFamily>,
+) -> f64 {
+    mastery_ratio(modifiers.weapon(family).mastery)
+}
+
+fn passive_weapon_family(skill_id: u32) -> Option<WeaponFamily> {
+    match skill_id {
+        1_100_000 | 1_200_000 | 11_100_000 => Some(WeaponFamily::Sword),
+        1_100_001 => Some(WeaponFamily::Axe),
+        1_200_001 => Some(WeaponFamily::BluntWeapon),
+        1_300_000 => Some(WeaponFamily::Spear),
+        1_300_001 | 21_100_000 | 21_120_001 => Some(WeaponFamily::Polearm),
+        3_100_000 | 3_120_005 | 13_100_000 | 13_110_003 => Some(WeaponFamily::Bow),
+        3_200_000 | 3_220_004 => Some(WeaponFamily::Crossbow),
+        4_100_000 | 14_100_000 => Some(WeaponFamily::Claw),
+        4_200_000 => Some(WeaponFamily::Dagger),
+        5_100_001 | 15_100_001 => Some(WeaponFamily::Knuckle),
+        5_200_000 => Some(WeaponFamily::Gun),
+        _ => None,
+    }
+}
+
+fn mastery_ratio(mastery: u32) -> f64 {
+    if mastery == 0 {
+        0.1
+    } else {
+        (0.1 + f64::from(mastery) * 0.05).min(1.0)
+    }
 }
 
 pub fn allocate_skill_point(
@@ -233,6 +556,17 @@ pub fn prepare_skill_use(
         .filter(|level| *level > 0)
         .ok_or(SkillRuleError::NotLearned { skill_id })?;
     let definition = skill_definition(&context.book, skill_id)?;
+    if !is_active_skill(definition) {
+        return Err(SkillRuleError::NotActive { skill_id });
+    }
+    let required_combo = combo_requirement(skill_id);
+    if effects.combo_count < required_combo {
+        return Err(SkillRuleError::InsufficientCombo {
+            skill_id,
+            required: required_combo,
+            available: effects.combo_count,
+        });
+    }
     let level_stats = definition
         .levels
         .iter()
@@ -253,13 +587,13 @@ pub fn prepare_skill_use(
         level_stats.mp_cost.as_ref(),
         common_stats.and_then(|stats| stats.mp_cost.as_ref()),
     )?;
-    let mut hp_recovery = numeric_stat(
+    let hp_recovery = numeric_stat(
         skill_id,
         "hp",
         level_stats.hp.as_ref(),
         common_stats.and_then(|stats| stats.hp.as_ref()),
     )?;
-    let mp_recovery = numeric_stat(
+    let mut mp_recovery = numeric_stat(
         skill_id,
         "mp",
         level_stats.mp.as_ref(),
@@ -325,6 +659,48 @@ pub fn prepare_skill_use(
         level_stats.avoidability.as_ref(),
         common_stats.and_then(|stats| stats.avoidability.as_ref()),
     )?;
+    let strength_bonus = signed_numeric_stat(
+        skill_id,
+        "str",
+        level_stats.strength.as_ref(),
+        common_stats.and_then(|stats| stats.strength.as_ref()),
+    )?;
+    let critical_chance_bonus = numeric_stat(
+        skill_id,
+        "critical_chance",
+        level_stats.critical_chance.as_ref(),
+        common_stats.and_then(|stats| stats.critical_chance.as_ref()),
+    )?;
+    let critical_damage_bonus = numeric_stat(
+        skill_id,
+        "critical_damage",
+        level_stats.critical_damage.as_ref(),
+        common_stats.and_then(|stats| stats.critical_damage.as_ref()),
+    )?;
+    let outgoing_damage_percent = numeric_stat(
+        skill_id,
+        "outgoing_damage_percent",
+        level_stats.outgoing_damage_percent.as_ref(),
+        common_stats.and_then(|stats| stats.outgoing_damage_percent.as_ref()),
+    )?;
+    let enemy_speed_penalty = signed_numeric_stat(
+        skill_id,
+        "enemy_speed_penalty",
+        level_stats.enemy_speed_penalty.as_ref(),
+        common_stats.and_then(|stats| stats.enemy_speed_penalty.as_ref()),
+    )?;
+    let enemy_slow_duration = numeric_stat(
+        skill_id,
+        "enemy_slow_duration",
+        level_stats.enemy_slow_duration.as_ref(),
+        common_stats.and_then(|stats| stats.enemy_slow_duration.as_ref()),
+    )?;
+    let enemy_slow_chance = numeric_stat(
+        skill_id,
+        "success_probability",
+        level_stats.success_probability.as_ref(),
+        common_stats.and_then(|stats| stats.success_probability.as_ref()),
+    )?;
     let duration = skill_duration(
         skill_id,
         "time",
@@ -341,14 +717,12 @@ pub fn prepare_skill_use(
         level_stats.hp_recovery_per_five_seconds.as_ref(),
         common_stats.and_then(|stats| stats.hp_recovery_per_five_seconds.as_ref()),
     )?;
-    if periodic_hp_recovery > 0 && duration == SkillDuration::Permanent {
+    if periodic_hp_recovery > 0 && !matches!(duration, SkillDuration::Timed(seconds) if seconds > 0)
+    {
         return Err(SkillRuleError::InvalidProperty {
             skill_id,
             property: "time",
         });
-    }
-    if hp_recovery == 0 {
-        hp_recovery = periodic_hp_recovery_amount(periodic_hp_recovery, duration_seconds);
     }
     let cooldown_seconds = numeric_stat(
         skill_id,
@@ -363,6 +737,21 @@ pub fn prepare_skill_use(
         None
     };
     let stats = player.stats.as_mut().ok_or(SkillRuleError::MissingStats)?;
+    let hp_conversion_percent = numeric_stat(
+        skill_id,
+        "max_hp_consumption_percent",
+        level_stats.max_hp_consumption_percent.as_ref(),
+        common_stats.and_then(|stats| stats.max_hp_consumption_percent.as_ref()),
+    )?;
+    let hp_to_mp_percent = numeric_stat(
+        skill_id,
+        "hp_to_mp_conversion_percent",
+        level_stats.hp_to_mp_conversion_percent.as_ref(),
+        common_stats.and_then(|stats| stats.hp_to_mp_conversion_percent.as_ref()),
+    )?;
+    let converted_hp = percent_of(stats.max_hp, hp_conversion_percent);
+    let hp_spent = hp_spent.saturating_add(converted_hp);
+    mp_recovery = mp_recovery.saturating_add(percent_of(converted_hp, hp_to_mp_percent));
     let spendable_hp = stats.hp.saturating_sub(1);
     if hp_spent > spendable_hp {
         return Err(SkillRuleError::InsufficientHealth {
@@ -417,17 +806,39 @@ pub fn prepare_skill_use(
             accuracy_bonus,
             avoidability_bonus,
             permanent_buff: duration == SkillDuration::Permanent,
+            critical_chance_bonus,
+            critical_damage_bonus,
+            strength_bonus,
+            hp_recovery_per_five_seconds: periodic_hp_recovery,
+            outgoing_damage_percent,
+            enemy_speed_penalty,
+            enemy_slow_duration_ms: u64::from(enemy_slow_duration).saturating_mul(1_000),
+            enemy_slow_chance,
         },
         cooldown_ms: u64::from(cooldown_seconds).saturating_mul(1_000),
         attack_type,
+        consumes_combo: required_combo > 0,
     })
 }
 
-fn periodic_hp_recovery_amount(
-    recovery_per_tick: u32,
-    duration_seconds: u32,
+fn combo_requirement(skill_id: u32) -> u32 {
+    match skill_id {
+        21_100_004 | 21_100_005 => 30,
+        21_110_004 => 100,
+        21_120_006 | 21_120_007 => 200,
+        _ => 0,
+    }
+}
+
+fn percent_of(
+    amount: u32,
+    percent: u32,
 ) -> u32 {
-    recovery_per_tick.saturating_mul((duration_seconds / 5).max(1))
+    u64::from(amount)
+        .saturating_mul(u64::from(percent))
+        .checked_div(100)
+        .unwrap_or_default()
+        .min(u64::from(u32::MAX)) as u32
 }
 
 fn calculate_formula_damage(
@@ -469,7 +880,10 @@ fn calculate_formula_damage(
     let mut variables = vec![
         ("CharacterLevel", f64::from(player.level)),
         ("PlayerLevel", f64::from(player.level)),
-        ("Strength", f64::from(stats.strength)),
+        (
+            "Strength",
+            f64::from(stats.strength) + f64::from(effects.modifiers.strength),
+        ),
         ("Dexterity", f64::from(stats.dexterity)),
         ("Intelligence", f64::from(stats.intelligence)),
         ("Luck", f64::from(stats.luck)),
@@ -478,13 +892,14 @@ fn calculate_formula_damage(
         ("WeaponAttack", outgoing_attack),
         ("SpellAttack", outgoing_attack),
         ("Magic", f64::from(stats.intelligence)),
-        ("Mastery", 0.1),
+        ("Mastery", mastery_ratio(effects.modifiers.mastery)),
     ];
     if (500..600).contains(&stats.job_id) {
         variables.push(("JobMultiplier", if stats.job_id == 500 { 3.0 } else { 4.2 }));
     }
     let range = evaluate_damage_profile(profile, &variables).map_err(formula_error)?;
-    let modifier = f64::from(skill_damage) / 100.0;
+    let modifier = f64::from(skill_damage) / 100.0
+        * (1.0 + f64::from(effects.modifiers.outgoing_damage_percent) / 100.0);
     let minimum = final_damage(range.minimum * modifier);
     let maximum = final_damage(range.maximum * modifier);
     if minimum > maximum {
@@ -712,6 +1127,17 @@ fn skill_definition(
         })
 }
 
+fn skill_activation(definition: &SkillDefinition) -> SkillActivation {
+    SkillActivation::try_from(definition.activation)
+        .ok()
+        .filter(|activation| *activation != SkillActivation::Unspecified)
+        .unwrap_or(SkillActivation::Active)
+}
+
+fn is_active_skill(definition: &SkillDefinition) -> bool {
+    skill_activation(definition) == SkillActivation::Active
+}
+
 fn numeric_stat(
     skill_id: u32,
     property: &'static str,
@@ -801,6 +1227,7 @@ mod tests {
     use oozems_proto::v1::KeyBinding;
     use oozems_proto::v1::PlayerSkill;
     use oozems_proto::v1::PlayerState;
+    use oozems_proto::v1::SkillActivation as ProtoSkillActivation;
     use oozems_proto::v1::SkillBook;
     use oozems_proto::v1::SkillDefinition;
     use oozems_proto::v1::SkillLevelDefinition;
@@ -812,11 +1239,13 @@ mod tests {
     use super::SkillDuration;
     use super::SkillRuleError;
     use super::allocate_skill_point;
+    use super::combo_requirement;
     use super::commit_skill_cooldown;
-    use super::periodic_hp_recovery_amount;
+    use super::learned_skill_modifiers;
     use super::personalize_skill_book;
     use super::prepare_skill_use;
     use super::projected_skill_attack_bonus;
+    use super::prune_non_active_skill_bindings;
     use super::reserve_skill_cooldown;
     use super::skill_duration;
     use super::validate_bound_skills;
@@ -849,6 +1278,78 @@ mod tests {
                 property: "time",
             })
         );
+    }
+
+    #[test]
+    fn combo_consumers_require_and_reset_their_authored_thresholds() {
+        assert_eq!(combo_requirement(21_100_004), 30);
+        assert_eq!(combo_requirement(21_100_005), 30);
+        assert_eq!(combo_requirement(21_110_004), 100);
+        assert_eq!(combo_requirement(21_120_006), 200);
+        assert_eq!(combo_requirement(21_120_007), 200);
+
+        let skill_id = 21_100_004;
+        let book = SkillBook {
+            job_id: 0,
+            skills: vec![PlayerSkill {
+                definition: Some(SkillDefinition {
+                    skill_id,
+                    job_id: 0,
+                    max_level: 1,
+                    levels: vec![SkillLevelDefinition {
+                        level: 1,
+                        stats: Some(SkillStats {
+                            fixed_damage: Some(integer(10)),
+                            ..SkillStats::default()
+                        }),
+                        ..SkillLevelDefinition::default()
+                    }],
+                    ..SkillDefinition::default()
+                }),
+                level: 0,
+                master_level: 0,
+            }],
+            ..SkillBook::default()
+        };
+        let mut player = player(0, 5);
+        player.learned_skills.push(oozems_proto::v1::LearnedSkill {
+            skill_id,
+            level: 1,
+            master_level: 0,
+        });
+        let effects = ProjectedEffects {
+            combo_count: 29,
+            ..ProjectedEffects::default()
+        };
+        assert_eq!(
+            prepare_skill_use(
+                player.clone(),
+                &context(book.clone()),
+                skill_id,
+                &formulas(),
+                effects,
+            )
+            .err()
+            .expect("insufficient combo"),
+            SkillRuleError::InsufficientCombo {
+                skill_id,
+                required: 30,
+                available: 29,
+            }
+        );
+
+        let prepared = prepare_skill_use(
+            player,
+            &context(book),
+            skill_id,
+            &formulas(),
+            ProjectedEffects {
+                combo_count: 30,
+                ..ProjectedEffects::default()
+            },
+        )
+        .expect("sufficient combo");
+        assert!(prepared.consumes_combo);
     }
 
     #[test]
@@ -939,6 +1440,10 @@ mod tests {
         let personal = personalize_skill_book(context.clone(), &player).expect("marker record");
         assert!(personal.skills.is_empty());
         assert_eq!(
+            learned_skill_modifiers(&context, &player).expect("marker modifiers"),
+            super::LearnedSkillModifiers::default()
+        );
+        assert_eq!(
             allocate_skill_point(player.clone(), &context, 9_999),
             Err(SkillRuleError::UnknownSkill {
                 skill_id: 9_999,
@@ -954,6 +1459,56 @@ mod tests {
             validate_bound_skills(&binding, &player, &context),
             Err(SkillRuleError::NotLearned { skill_id: 9_999 })
         );
+    }
+
+    #[test]
+    fn legacy_passive_bindings_are_pruned_before_strict_validation() {
+        let skill_id = 1_000;
+        let definition = SkillDefinition {
+            skill_id,
+            job_id: 0,
+            max_level: 1,
+            activation: ProtoSkillActivation::Passive as i32,
+            levels: vec![SkillLevelDefinition {
+                level: 1,
+                stats: Some(SkillStats::default()),
+                ..SkillLevelDefinition::default()
+            }],
+            ..SkillDefinition::default()
+        };
+        let context = crate::content::SkillBookContext {
+            book: SkillBook {
+                job_id: 0,
+                skills: vec![PlayerSkill {
+                    definition: Some(definition.clone()),
+                    level: 0,
+                    master_level: 0,
+                }],
+                ..SkillBook::default()
+            },
+            authoritative_skills: vec![crate::content::AuthoritativeSkillDefinition {
+                definition,
+                invisible: false,
+            }],
+        };
+        let mut player = player(3, 5);
+        player.learned_skills.push(oozems_proto::v1::LearnedSkill {
+            skill_id,
+            level: 1,
+            master_level: 0,
+        });
+        player.key_bindings = vec![KeyBinding {
+            code: "KeyA".to_owned(),
+            action: KeyAction::Unspecified as i32,
+            skill_id,
+        }];
+
+        assert!(prune_non_active_skill_bindings(
+            &mut player.key_bindings,
+            &context
+        ));
+        assert!(player.key_bindings.is_empty());
+        validate_bound_skills(&player.key_bindings, &player, &context).expect("migrated bindings");
     }
 
     #[test]
@@ -984,7 +1539,7 @@ mod tests {
     }
 
     #[test]
-    fn typed_periodic_hp_recovery_does_not_depend_on_the_skill_id() {
+    fn typed_periodic_hp_recovery_creates_a_timed_effect_without_healing_immediately() {
         let mut player = player(0, 5);
         player.stats.as_mut().expect("stats").hp = 1;
         player.learned_skills.push(oozems_proto::v1::LearnedSkill {
@@ -1013,8 +1568,9 @@ mod tests {
         )
         .expect("use periodic recovery skill");
 
-        assert_eq!(prepared.result.hp_restored, 24);
-        assert_eq!(prepared.player.stats.expect("stats").hp, 25);
+        assert_eq!(prepared.result.hp_restored, 0);
+        assert_eq!(prepared.result.hp_recovery_per_five_seconds, 4);
+        assert_eq!(prepared.player.stats.expect("stats").hp, 1);
     }
 
     #[test]
@@ -1229,12 +1785,6 @@ mod tests {
                 remaining_ms: 4_999,
             })
         );
-    }
-
-    #[test]
-    fn periodic_hp_recovery_converts_five_second_ticks_to_the_total() {
-        assert_eq!(periodic_hp_recovery_amount(4, 30), 24);
-        assert_eq!(periodic_hp_recovery_amount(8, 30), 48);
     }
 
     #[test]

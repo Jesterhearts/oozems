@@ -103,6 +103,7 @@ pub(super) fn environment(now_unix_ms: u64) -> super::QuestEnvironment {
     super::QuestEnvironment {
         now_unix_ms,
         world_id: 0,
+        learned_skill_modifiers: crate::skills::LearnedSkillModifiers::default(),
     }
 }
 

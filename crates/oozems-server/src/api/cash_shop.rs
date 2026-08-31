@@ -14,6 +14,7 @@ use super::current_map_quest_indicators;
 use super::decode_request;
 use super::lock_player;
 use super::parse_player_id;
+use super::player_item_definitions;
 use super::prepare_player_mutation;
 use super::unix_time_ms;
 use crate::app::AppState;
@@ -42,17 +43,14 @@ pub async fn purchase(
     let player_guard = lock_player(&state, &player_id, &headers).await?;
     let now_unix_ms = unix_time_ms()?;
     let mutation = begin_player_mutation(&state, &player_guard, &player_id, now_unix_ms).await?;
+    let definitions = player_item_definitions(&state, &mutation.player).await?;
     let offer = state
         .cash_shop
         .offer(request.offer_id)
         .ok_or_else(|| invalid("the selected cash-shop offer does not exist"))?;
-    let result = crate::cash_shop::purchase(
-        mutation.player.clone(),
-        offer,
-        state.catalog.as_ref(),
-        now_unix_ms,
-    )
-    .map_err(|error| purchase_error(error, state.cash_shop.currency_name()))?;
+    let result =
+        crate::cash_shop::purchase(mutation.player.clone(), offer, &definitions, now_unix_ms)
+            .map_err(|error| purchase_error(error, state.cash_shop.currency_name()))?;
     let (transaction, _) = prepare_player_mutation(&state, mutation, result.player, true, true);
     let committed = crate::player_transaction::commit_player_transaction(
         &state.database,

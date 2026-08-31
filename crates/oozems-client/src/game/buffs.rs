@@ -15,6 +15,25 @@ pub(crate) struct TrackedBuff {
 }
 
 #[derive(Clone, Copy)]
+pub(crate) struct TrackedCombo {
+    count: u32,
+    expires_at_local_ms: f64,
+}
+
+impl TrackedCombo {
+    pub fn count(self) -> u32 {
+        self.count
+    }
+
+    pub fn remaining_ms(
+        self,
+        now_local_ms: f64,
+    ) -> u64 {
+        (self.expires_at_local_ms - now_local_ms).max(0.0) as u64
+    }
+}
+
+#[derive(Clone, Copy)]
 enum BuffLifetime {
     Timed { expires_at_local_ms: f64 },
     Permanent,
@@ -59,6 +78,7 @@ pub(crate) enum BuffKey {
 #[derive(Default)]
 pub(crate) struct TrackedBuffs {
     pub buffs: Vec<TrackedBuff>,
+    pub combo: Option<TrackedCombo>,
     pub weapon_attack: i32,
     pub magic_attack: i32,
     pub weapon_defense: i32,
@@ -74,11 +94,22 @@ pub(crate) struct TrackedBuffs {
     installed: bool,
 }
 
+impl TrackedBuffs {
+    pub fn has_periodic_hp_recovery(&self) -> bool {
+        self.buffs
+            .iter()
+            .any(|buff| buff.hp_recovery_per_five_seconds > 0)
+    }
+}
+
 pub(super) struct ValidatedState(ActiveBuffState);
 
 pub(super) fn validate_state(state: ActiveBuffState) -> Result<ValidatedState, String> {
     for buff in &state.buffs {
         source_key(buff)?;
+    }
+    if (state.combo_count > 0) != (state.combo_expires_at_unix_ms > 0) {
+        return Err("active combo must contain both a count and an expiration".to_owned());
     }
     Ok(ValidatedState(state))
 }
@@ -114,6 +145,19 @@ pub(super) fn install(
     let response_transit_ms = response_transit_ms.max(0.0).ceil() as u64;
     let projected_morph_id = (received.morph_id > 0).then_some(received.morph_id);
     let attacks_disabled = received.attacks_disabled;
+    let combo = (received.combo_count > 0)
+        .then(|| {
+            let remaining_ms = effect_remaining_ms(
+                received.combo_expires_at_unix_ms,
+                observed_at_unix_ms,
+                response_transit_ms,
+            );
+            (remaining_ms > 0).then_some(TrackedCombo {
+                count: received.combo_count,
+                expires_at_local_ms: now_local_ms + remaining_ms as f64,
+            })
+        })
+        .flatten();
     let mut buffs = received
         .buffs
         .into_iter()
@@ -142,6 +186,7 @@ pub(super) fn install(
         .collect::<Vec<_>>();
     buffs.sort_by_key(TrackedBuff::key);
     current.buffs = buffs;
+    current.combo = combo;
     current.revision = received.revision;
     current.observed_at_unix_ms = observed_at_unix_ms;
     current.installed = true;
@@ -169,6 +214,12 @@ pub(super) fn apply(
         } => expires_at_local_ms > now_local_ms,
         BuffLifetime::Permanent => true,
     });
+    if active
+        .combo
+        .is_some_and(|combo| combo.expires_at_local_ms <= now_local_ms)
+    {
+        active.combo = None;
+    }
     project(active);
     input.speed_bonus = active.speed;
     input.jump_bonus = active.jump;
@@ -373,6 +424,77 @@ mod tests {
         );
 
         assert_eq!(active.buffs[0].remaining_ms(140.0), Some(200));
+    }
+
+    #[test]
+    fn combo_uses_the_authoritative_count_and_local_expiration() {
+        let mut active = from_state(
+            ActiveBuffState {
+                combo_count: 12,
+                combo_expires_at_unix_ms: 4_000,
+                revision: 1,
+                observed_at_unix_ms: 1_000,
+                ..ActiveBuffState::default()
+            },
+            100.0,
+            250.0,
+        )
+        .expect("combo state");
+        let combo = active.combo.expect("tracked combo");
+        assert_eq!(combo.count(), 12);
+        assert_eq!(combo.remaining_ms(100.0), 2_750);
+
+        let mut input = PlayerInput::default();
+        apply(&mut active, &mut input, 2_849.0);
+        assert!(active.combo.is_some());
+        apply(&mut active, &mut input, 2_850.0);
+        assert!(active.combo.is_none());
+    }
+
+    #[test]
+    fn newer_zero_combo_clears_and_stale_snapshots_cannot_restore_it() {
+        let combo = ActiveBuffState {
+            combo_count: 12,
+            combo_expires_at_unix_ms: 4_000,
+            revision: 1,
+            observed_at_unix_ms: 1_000,
+            ..ActiveBuffState::default()
+        };
+        let mut active = from_state(combo.clone(), 100.0, 0.0).expect("combo state");
+        install(
+            &mut active,
+            validate_state(ActiveBuffState {
+                revision: 2,
+                observed_at_unix_ms: 1_500,
+                ..ActiveBuffState::default()
+            })
+            .expect("cleared combo state"),
+            200.0,
+            0.0,
+        );
+        assert!(active.combo.is_none());
+
+        install(
+            &mut active,
+            validate_state(combo).expect("stale combo state"),
+            300.0,
+            0.0,
+        );
+        assert!(active.combo.is_none());
+    }
+
+    #[test]
+    fn combo_requires_a_count_and_expiration_together() {
+        let error = validate_state(ActiveBuffState {
+            combo_count: 1,
+            ..ActiveBuffState::default()
+        })
+        .err()
+        .expect("inconsistent combo must fail");
+        assert_eq!(
+            error,
+            "active combo must contain both a count and an expiration"
+        );
     }
 
     #[test]

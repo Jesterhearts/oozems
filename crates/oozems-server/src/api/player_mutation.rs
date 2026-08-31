@@ -30,19 +30,63 @@ pub(crate) struct PlayerMutation {
 pub(crate) fn project_combat_effects(
     mut effects: ProjectedEffects,
     equipment: EquipmentStats,
+    learned: crate::skills::LearnedSkillModifiers,
+    weapon_family: Option<crate::jobs::WeaponFamily>,
 ) -> ProjectedEffects {
+    let weapon = learned.weapon(weapon_family);
+    let combo_tiers = (effects.combo_count / 10).min(learned.combo_ability.maximum_tiers);
+    let critical_tiers = (effects.combo_count / 10).min(learned.combo_critical.maximum_tiers);
     effects.modifiers.weapon_attack = effects
         .modifiers
         .weapon_attack
-        .saturating_add(equipment.weapon_attack);
+        .saturating_add(equipment.weapon_attack)
+        .saturating_add(learned.combat.weapon_attack)
+        .saturating_add(weapon.weapon_attack)
+        .saturating_add(
+            i32::try_from(combo_tiers.saturating_mul(learned.combo_ability.weapon_attack_per_tier))
+                .unwrap_or(i32::MAX),
+        );
+    effects.modifiers.magic_attack = effects
+        .modifiers
+        .magic_attack
+        .saturating_add(learned.combat.magic_attack);
     effects.modifiers.weapon_defense = effects
         .modifiers
         .weapon_defense
-        .saturating_add(equipment.weapon_defense);
+        .saturating_add(equipment.weapon_defense)
+        .saturating_add(learned.combat.weapon_defense)
+        .saturating_add(
+            i32::try_from(combo_tiers.saturating_mul(learned.combo_ability.defense_per_tier))
+                .unwrap_or(i32::MAX),
+        );
     effects.modifiers.magic_defense = effects
         .modifiers
         .magic_defense
-        .saturating_add(equipment.magic_defense);
+        .saturating_add(equipment.magic_defense)
+        .saturating_add(learned.combat.magic_defense)
+        .saturating_add(
+            i32::try_from(combo_tiers.saturating_mul(learned.combo_ability.defense_per_tier))
+                .unwrap_or(i32::MAX),
+        );
+    effects.modifiers.accuracy = effects
+        .modifiers
+        .accuracy
+        .saturating_add(learned.combat.accuracy)
+        .saturating_add(weapon.accuracy);
+    effects.modifiers.avoidability = effects
+        .modifiers
+        .avoidability
+        .saturating_add(learned.combat.avoidability);
+    effects.modifiers.speed = effects.modifiers.speed.saturating_add(learned.combat.speed);
+    effects.modifiers.jump = effects.modifiers.jump.saturating_add(learned.combat.jump);
+    effects.modifiers.strength = effects.modifiers.strength.saturating_add(learned.strength);
+    effects.modifiers.mastery = effects.modifiers.mastery.max(weapon.mastery);
+    effects.modifiers.critical_chance = effects.modifiers.critical_chance.saturating_add(
+        critical_tiers.saturating_mul(learned.combo_critical.critical_chance_per_tier),
+    );
+    effects.modifiers.critical_damage = effects.modifiers.critical_damage.saturating_add(
+        critical_tiers.saturating_mul(learned.combo_critical.critical_damage_per_tier),
+    );
     effects
 }
 
@@ -70,7 +114,7 @@ pub(crate) async fn begin_player_mutation(
         Some(map)
     };
     let original_effects =
-        crate::effects::snapshot(&state.active_effects, &loaded.player.id, now_unix_ms)?;
+        crate::effects::snapshot_unpruned(&state.active_effects, &loaded.player.id)?;
     let advanced = advance_automatic_player(
         state,
         loaded.player.clone(),
@@ -108,7 +152,8 @@ async fn persist_player_baseline(
     advanced: crate::quests::AutomaticQuestAdvance,
     now_unix_ms: u64,
 ) -> Result<PlayerMutation, ApiError> {
-    if !loaded.changed && !advanced.changed {
+    let player_changed = loaded.changed || advanced.player != loaded.player;
+    if !player_changed && !advanced.changed {
         return Ok(PlayerMutation {
             original: loaded.original,
             player: advanced.player,
@@ -121,7 +166,11 @@ async fn persist_player_baseline(
     let mut transaction = crate::player_transaction::new_player_transaction(
         loaded.original,
         advanced.player,
-        crate::player_transaction::PlayerPersistence::Full,
+        if player_changed {
+            crate::player_transaction::PlayerPersistence::Full
+        } else {
+            crate::player_transaction::PlayerPersistence::None
+        },
     );
     crate::player_transaction::stage_effects(
         &mut transaction,
@@ -150,9 +199,23 @@ pub(crate) fn advance_automatic_player(
     effects: PlayerEffects,
     now_unix_ms: u64,
 ) -> crate::quests::AutomaticQuestAdvance {
+    let (player, effects, periodic_changed) =
+        crate::effects::advance_player_effects(player, effects, now_unix_ms);
+    let learned_skill_modifiers = match state.catalog.skill_book_context(&player) {
+        Ok(context) => crate::skills::learned_skill_modifiers(&context, &player).unwrap_or_else(
+            |error| {
+                tracing::error!(player_id = %player.id, %error, "could not project learned skills for automatic quest actions");
+                crate::skills::LearnedSkillModifiers::default()
+            },
+        ),
+        Err(error) => {
+            tracing::error!(player_id = %player.id, %error, "could not load skills for automatic quest actions");
+            crate::skills::LearnedSkillModifiers::default()
+        }
+    };
     let definitions = state.catalog.quest_definitions().collect::<Vec<_>>();
     let consume_effects = state.catalog.consume_effect_definitions();
-    let advanced = crate::quests::advance_automatic_quests(
+    let mut advanced = crate::quests::advance_automatic_quests(
         player,
         effects,
         definitions,
@@ -163,8 +226,10 @@ pub(crate) fn advance_automatic_player(
         crate::quests::QuestEnvironment {
             now_unix_ms,
             world_id: state.gameplay.world_id,
+            learned_skill_modifiers,
         },
     );
+    advanced.changed |= periodic_changed;
     if !advanced.failures.is_empty() {
         tracing::warn!(
             player_id = %advanced.player.id,
@@ -183,17 +248,6 @@ pub(super) async fn load_player(
         return Ok(None);
     };
     let original = player.clone();
-    let inventory = player
-        .inventory
-        .as_mut()
-        .ok_or(crate::items::ItemRuleError::MissingInventory)
-        .map_err(super::item_rule_error)?;
-    let inventory_pruned = crate::items::prune_and_validate_inventory(
-        inventory,
-        state.catalog.as_ref(),
-        super::unix_time_ms()?,
-    )
-    .map_err(|error| ApiError::PlayerData(error.to_string()))?;
     let appearance = player
         .appearance
         .as_ref()
@@ -204,6 +258,29 @@ pub(super) async fn load_player(
         ));
     }
     let skill_context = super::load_skill_book(state, &player).await?;
+    let learned = crate::skills::learned_skill_modifiers(&skill_context, &player)
+        .map_err(|error| ApiError::PlayerData(error.to_string()))?;
+    let definitions = crate::items::StackCapacityLookup::new(
+        state.catalog.as_ref(),
+        crate::items::StackCapacityBonuses {
+            throwing_stars: learned.throwing_star_capacity,
+            bullets: learned.bullet_capacity,
+        },
+    );
+    let inventory = player
+        .inventory
+        .as_mut()
+        .ok_or(crate::items::ItemRuleError::MissingInventory)
+        .map_err(super::item_rule_error)?;
+    let inventory_pruned = crate::items::prune_and_migrate_inventory(
+        inventory,
+        state.catalog.as_ref(),
+        &definitions,
+        super::unix_time_ms()?,
+    )
+    .map_err(|error| ApiError::PlayerData(error.to_string()))?;
+    let bindings_pruned =
+        crate::skills::prune_non_active_skill_bindings(&mut player.key_bindings, &skill_context);
     crate::skills::validate_bound_skills(&player.key_bindings, &player, &skill_context)
         .map_err(|error| ApiError::PlayerData(error.to_string()))?;
     let known_card_ids = state.catalog.monster_book_card_ids();
@@ -226,7 +303,7 @@ pub(super) async fn load_player(
     Ok(Some(LoadedPlayer {
         original,
         player,
-        changed: inventory_pruned,
+        changed: inventory_pruned || bindings_pruned,
     }))
 }
 
@@ -256,7 +333,7 @@ pub(super) async fn process_automatic_quests(
     now_unix_ms: u64,
 ) -> Result<PlayerState, ApiError> {
     crate::player_lock::validate_player_guard(&state.player_locks, guard, &loaded.player.id)?;
-    let effects = crate::effects::snapshot(&state.active_effects, &loaded.player.id, now_unix_ms)?;
+    let effects = crate::effects::snapshot_unpruned(&state.active_effects, &loaded.player.id)?;
     let advanced =
         advance_automatic_player(state, loaded.player.clone(), effects.clone(), now_unix_ms);
     Ok(persist_player_baseline(
@@ -335,6 +412,7 @@ pub(crate) fn prepare_simulation_player_effects(
     simulation: &crate::mobs::MobUpdate,
     mut effects: PlayerEffects,
     now_unix_ms: u64,
+    gain_combo_on_hit: bool,
     persistence_required: bool,
 ) -> PreparedSimulationPersistence {
     let player_damage = simulation.player_damage();
@@ -347,6 +425,18 @@ pub(crate) fn prepare_simulation_player_effects(
             state.catalog.morph_definition(morph_id)
         });
     }
+    let successful_hit = simulation.combat_events.iter().any(|event| {
+        oozems_proto::v1::CombatEventKind::try_from(event.kind)
+            == Ok(oozems_proto::v1::CombatEventKind::PlayerHitMob)
+            && event.damage > 0
+    });
+    update_combo_after_hit(
+        &player,
+        &mut effects,
+        successful_hit,
+        gain_combo_on_hit,
+        now_unix_ms,
+    );
     let mob_kills = simulation
         .mob_deaths
         .iter()
@@ -363,6 +453,27 @@ pub(crate) fn prepare_simulation_player_effects(
         player: advanced.player,
         effects: advanced.effects,
         should_save,
+    }
+}
+
+fn update_combo_after_hit(
+    player: &PlayerState,
+    effects: &mut PlayerEffects,
+    successful_hit: bool,
+    gain_combo_on_hit: bool,
+    now_unix_ms: u64,
+) {
+    let living = player.stats.as_ref().is_some_and(|stats| stats.hp > 0);
+    if !living {
+        crate::effects::reset_combo(effects);
+    } else if successful_hit
+        && gain_combo_on_hit
+        && player
+            .learned_skills
+            .iter()
+            .any(|skill| skill.skill_id == 21_000_000 && skill.level > 0)
+    {
+        crate::effects::gain_combo(effects, now_unix_ms);
     }
 }
 
@@ -405,6 +516,7 @@ mod tests {
     use super::LoadedPlayer;
     use super::persist_player_baseline;
     use super::project_combat_effects;
+    use super::update_combo_after_hit;
     use crate::database::PlayerId;
     use crate::player_lock::PlayerLocks;
     use crate::player_lock::acquire_player;
@@ -427,11 +539,184 @@ mod tests {
                 weapon_defense: 8,
                 magic_defense: 5,
             },
+            crate::skills::LearnedSkillModifiers::default(),
+            None,
         );
 
         assert_eq!(projected.modifiers.weapon_defense, 12);
         assert_eq!(projected.modifiers.magic_defense, 11);
         assert_eq!(projected.modifiers.weapon_attack, 20);
+    }
+
+    #[test]
+    fn combo_tiers_apply_independent_caps_to_combat_stats() {
+        let effects = crate::effects::ProjectedEffects {
+            combo_count: 35,
+            ..crate::effects::ProjectedEffects::default()
+        };
+        let learned = crate::skills::LearnedSkillModifiers {
+            combo_ability: crate::skills::ComboAbilityModifiers {
+                maximum_tiers: 2,
+                weapon_attack_per_tier: 5,
+                defense_per_tier: 3,
+            },
+            combo_critical: crate::skills::ComboCriticalModifiers {
+                maximum_tiers: 3,
+                critical_chance_per_tier: 2,
+                critical_damage_per_tier: 4,
+            },
+            ..crate::skills::LearnedSkillModifiers::default()
+        };
+
+        let projected = project_combat_effects(
+            effects,
+            crate::items::EquipmentStats::default(),
+            learned,
+            Some(crate::jobs::WeaponFamily::Polearm),
+        );
+
+        assert_eq!(projected.modifiers.weapon_attack, 10);
+        assert_eq!(projected.modifiers.weapon_defense, 6);
+        assert_eq!(projected.modifiers.magic_defense, 6);
+        assert_eq!(projected.modifiers.critical_chance, 6);
+        assert_eq!(projected.modifiers.critical_damage, 12);
+    }
+
+    #[test]
+    fn weapon_passives_do_not_apply_to_other_weapon_families() {
+        let mut learned = crate::skills::LearnedSkillModifiers::default();
+        learned.weapons[crate::jobs::WeaponFamily::Sword.index()] =
+            crate::skills::WeaponSkillModifiers {
+                weapon_attack: 7,
+                accuracy: 9,
+                mastery: 10,
+            };
+
+        let sword = project_combat_effects(
+            crate::effects::ProjectedEffects::default(),
+            crate::items::EquipmentStats::default(),
+            learned,
+            Some(crate::jobs::WeaponFamily::Sword),
+        );
+        let axe = project_combat_effects(
+            crate::effects::ProjectedEffects::default(),
+            crate::items::EquipmentStats::default(),
+            learned,
+            Some(crate::jobs::WeaponFamily::Axe),
+        );
+
+        assert_eq!(sword.modifiers.weapon_attack, 7);
+        assert_eq!(sword.modifiers.accuracy, 9);
+        assert_eq!(sword.modifiers.mastery, 10);
+        assert_eq!(axe.modifiers.weapon_attack, 0);
+        assert_eq!(axe.modifiers.accuracy, 0);
+        assert_eq!(axe.modifiers.mastery, 0);
+    }
+
+    #[test]
+    fn combo_consuming_hits_do_not_regain_combo() {
+        let player = oozems_proto::v1::PlayerState {
+            stats: Some(oozems_proto::v1::CharacterStats {
+                hp: 1,
+                ..oozems_proto::v1::CharacterStats::default()
+            }),
+            learned_skills: vec![oozems_proto::v1::LearnedSkill {
+                skill_id: 21_000_000,
+                level: 1,
+                master_level: 0,
+            }],
+            ..oozems_proto::v1::PlayerState::default()
+        };
+        let mut consumed = crate::effects::PlayerEffects::default();
+        update_combo_after_hit(&player, &mut consumed, true, false, 1_000);
+        assert_eq!(consumed.projected().combo_count, 0);
+
+        let mut ordinary = crate::effects::PlayerEffects::default();
+        update_combo_after_hit(&player, &mut ordinary, true, true, 1_000);
+        assert_eq!(ordinary.projected().combo_count, 1);
+    }
+
+    #[tokio::test]
+    async fn effect_only_baselines_do_not_write_the_durable_player() {
+        let directory = tempfile::tempdir().expect("temporary database directory");
+        let database = crate::database::open_sqlite(&directory.path().join("players.sqlite"))
+            .expect("open database");
+        let player_id = PlayerId::parse("effect-only-baseline").expect("player ID");
+        let locks = PlayerLocks::default();
+        let guard = acquire_player(&locks, player_id.as_str())
+            .await
+            .expect("player guard");
+        let player = crate::database::create_player(
+            &database,
+            &oozems_proto::v1::PlayerState {
+                id: player_id.as_str().to_owned(),
+                name: "Mina".to_owned(),
+                level: 1,
+                map_id: 100,
+                appearance: Some(CharacterAppearance {
+                    gender: CharacterGender::Female as i32,
+                    skin_id: 2_000,
+                    face_id: 21_000,
+                    hair_id: 31_000,
+                }),
+                stats: Some(oozems_proto::v1::CharacterStats {
+                    hp: 50,
+                    max_hp: 50,
+                    mp: 5,
+                    max_mp: 5,
+                    experience_required: 15,
+                    ..oozems_proto::v1::CharacterStats::default()
+                }),
+                inventory: Some(crate::items::starter_inventory()),
+                ..oozems_proto::v1::PlayerState::default()
+            },
+        )
+        .await
+        .expect("create player");
+        let effects = Arc::new(crate::effects::ActiveEffects::default());
+        let original_effects = crate::effects::snapshot_unpruned(&effects, player_id.as_str())
+            .expect("effect snapshot");
+        let mut advanced_effects = original_effects.clone();
+        crate::effects::gain_combo(&mut advanced_effects, 1_000);
+        let (_, advanced_effects, changed) =
+            crate::effects::advance_player_effects(player.clone(), advanced_effects, 4_000);
+        assert!(changed);
+
+        persist_player_baseline(
+            &database,
+            effects.clone(),
+            &guard,
+            LoadedPlayer {
+                original: player.clone(),
+                player: player.clone(),
+                changed: false,
+            },
+            original_effects,
+            crate::quests::AutomaticQuestAdvance {
+                player: player.clone(),
+                effects: advanced_effects,
+                changed: true,
+                started_quest_ids: Vec::new(),
+                completed_quest_ids: Vec::new(),
+                expired_quest_ids: Vec::new(),
+                failures: Vec::new(),
+            },
+            4_000,
+        )
+        .await
+        .expect("persist effect-only baseline");
+
+        let durable = crate::database::load_player(&database, &player_id)
+            .await
+            .expect("load durable player")
+            .expect("durable player");
+        assert_eq!(durable.revision, player.revision);
+        assert_eq!(
+            crate::effects::snapshot_unpruned(&effects, player_id.as_str())
+                .expect("committed effects")
+                .revision(),
+            2
+        );
     }
 
     #[tokio::test]

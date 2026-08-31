@@ -9,6 +9,7 @@ use std::sync::RwLock;
 use oozems_proto::v1::AssetDescriptor;
 use oozems_proto::v1::LearnedSkill;
 use oozems_proto::v1::PlayerSkill;
+use oozems_proto::v1::SkillActivation as ProtoSkillActivation;
 use oozems_proto::v1::SkillBook;
 use oozems_proto::v1::SkillDefinition;
 use oozems_proto::v1::SkillEffect;
@@ -21,6 +22,7 @@ use oozems_proto::v1::Vec2;
 use oozems_proto::v1::skill_value;
 use oozems_skill_semantics::NormalizedSkillStat;
 use oozems_skill_semantics::OverloadedSkillProperty;
+use oozems_skill_semantics::SkillActivation;
 use oozems_skill_semantics::SkillArchiveFacts;
 use oozems_skill_semantics::SkillPropertyScope;
 use oozems_skill_semantics::SkillSemanticCatalog;
@@ -226,6 +228,14 @@ impl SkillContent {
                             learned.skill_id
                         ),
                     })?;
+            let eligible = crate::jobs::is_job_ancestor(indexed.job_id, job_id)
+                || is_beginner_family_skill(learned.skill_id);
+            if !eligible {
+                return invalid(format!(
+                    "learned skill {} belongs to unrelated job {} instead of job {job_id}",
+                    learned.skill_id, indexed.job_id
+                ));
+            }
             let cached = self.cached_definition(learned.skill_id)?;
             authoritative.insert(
                 learned.skill_id,
@@ -235,7 +245,6 @@ impl SkillContent {
                 },
             );
             let unlocked = learned.level > 0 || learned.master_level > 0;
-            let eligible = indexed.job_id == job_id || is_beginner_family_skill(learned.skill_id);
             if unlocked
                 && eligible
                 && cached.definition.max_level > 0
@@ -497,7 +506,7 @@ fn build_skill_book(
     let mut skill_ids = content
         .skills
         .iter()
-        .filter(|(_, skill)| skill.job_id == job_id && !skill.invisible)
+        .filter(|(_, skill)| crate::jobs::is_job_ancestor(skill.job_id, job_id) && !skill.invisible)
         .map(|(skill_id, _)| *skill_id)
         .collect::<Vec<_>>();
     skill_ids.sort_unstable();
@@ -587,6 +596,7 @@ fn build_skill_definition(
             common_properties,
             metadata,
             requirements,
+            activation: proto_skill_activation(content.semantics.skill_activation(skill_id)) as i32,
         },
         asset,
     ))
@@ -810,9 +820,34 @@ fn set_normalized_stat(
         NormalizedSkillStat::Range => &mut stats.range,
         NormalizedSkillStat::SuccessProbability => &mut stats.success_probability,
         NormalizedSkillStat::HpRecoveryPerFiveSeconds => &mut stats.hp_recovery_per_five_seconds,
+        NormalizedSkillStat::MaxHpPerLevel => &mut stats.max_hp_per_level,
+        NormalizedSkillStat::MaxHpPerAbilityPoint => &mut stats.max_hp_per_ability_point,
+        NormalizedSkillStat::MaxMpPerLevel => &mut stats.max_mp_per_level,
+        NormalizedSkillStat::MaxMpPerAbilityPoint => &mut stats.max_mp_per_ability_point,
+        NormalizedSkillStat::ThrowingStarCapacity => &mut stats.throwing_star_capacity,
+        NormalizedSkillStat::BulletCapacity => &mut stats.bullet_capacity,
+        NormalizedSkillStat::CriticalChance => &mut stats.critical_chance,
+        NormalizedSkillStat::MaxHpConsumptionPercent => &mut stats.max_hp_consumption_percent,
+        NormalizedSkillStat::HpToMpConversionPercent => &mut stats.hp_to_mp_conversion_percent,
+        NormalizedSkillStat::ComboStatIncrement => &mut stats.combo_stat_increment,
+        NormalizedSkillStat::WeaponAttackPerComboThreshold => {
+            &mut stats.weapon_attack_per_combo_threshold
+        }
+        NormalizedSkillStat::DefensePerComboThreshold => &mut stats.defense_per_combo_threshold,
+        NormalizedSkillStat::EnemySpeedPenalty => &mut stats.enemy_speed_penalty,
+        NormalizedSkillStat::EnemySlowDuration => &mut stats.enemy_slow_duration,
+        NormalizedSkillStat::OutgoingDamagePercent => &mut stats.outgoing_damage_percent,
     };
     if destination.is_none() {
         *destination = Some(value);
+    }
+}
+
+fn proto_skill_activation(activation: Option<SkillActivation>) -> ProtoSkillActivation {
+    match activation.unwrap_or(SkillActivation::Active) {
+        SkillActivation::Active => ProtoSkillActivation::Active,
+        SkillActivation::Passive => ProtoSkillActivation::Passive,
+        SkillActivation::Reactive => ProtoSkillActivation::Reactive,
     }
 }
 

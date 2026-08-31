@@ -17,8 +17,17 @@ pub enum SkillPropertyScope {
     Level,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillActivation {
+    Active,
+    Passive,
+    Reactive,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum OverloadedSkillProperty {
+    Damage,
     X,
     Y,
     Z,
@@ -27,6 +36,7 @@ pub enum OverloadedSkillProperty {
 impl OverloadedSkillProperty {
     pub fn name(self) -> &'static str {
         match self {
+            Self::Damage => "damage",
             Self::X => "x",
             Self::Y => "y",
             Self::Z => "z",
@@ -35,6 +45,7 @@ impl OverloadedSkillProperty {
 
     pub fn from_name(name: &str) -> Option<Self> {
         match name {
+            "damage" => Some(Self::Damage),
             "x" => Some(Self::X),
             "y" => Some(Self::Y),
             "z" => Some(Self::Z),
@@ -70,6 +81,21 @@ pub enum NormalizedSkillStat {
     Range,
     SuccessProbability,
     HpRecoveryPerFiveSeconds,
+    MaxHpPerLevel,
+    MaxHpPerAbilityPoint,
+    MaxMpPerLevel,
+    MaxMpPerAbilityPoint,
+    ThrowingStarCapacity,
+    BulletCapacity,
+    CriticalChance,
+    MaxHpConsumptionPercent,
+    HpToMpConversionPercent,
+    ComboStatIncrement,
+    WeaponAttackPerComboThreshold,
+    DefensePerComboThreshold,
+    EnemySpeedPenalty,
+    EnemySlowDuration,
+    OutgoingDamagePercent,
 }
 
 impl NormalizedSkillStat {
@@ -89,7 +115,10 @@ impl NormalizedSkillStat {
             | Self::MagicDefense
             | Self::Speed
             | Self::Jump
-            | Self::Strength => value >= f64::from(i32::MIN) && value <= f64::from(i32::MAX),
+            | Self::Strength
+            | Self::EnemySpeedPenalty => {
+                value >= f64::from(i32::MIN) && value <= f64::from(i32::MAX)
+            }
             Self::Duration => value == -1.0 || (value >= 0.0 && value <= f64::from(u32::MAX)),
             Self::HpCost
             | Self::MpCost
@@ -104,7 +133,21 @@ impl NormalizedSkillStat {
             | Self::Cooldown
             | Self::Range
             | Self::SuccessProbability
-            | Self::HpRecoveryPerFiveSeconds => value >= 0.0 && value <= f64::from(u32::MAX),
+            | Self::HpRecoveryPerFiveSeconds
+            | Self::MaxHpPerLevel
+            | Self::MaxHpPerAbilityPoint
+            | Self::MaxMpPerLevel
+            | Self::MaxMpPerAbilityPoint
+            | Self::ThrowingStarCapacity
+            | Self::BulletCapacity
+            | Self::ComboStatIncrement
+            | Self::WeaponAttackPerComboThreshold
+            | Self::DefensePerComboThreshold
+            | Self::EnemySlowDuration
+            | Self::OutgoingDamagePercent => value >= 0.0 && value <= f64::from(u32::MAX),
+            Self::CriticalChance
+            | Self::MaxHpConsumptionPercent
+            | Self::HpToMpConversionPercent => (0.0..=100.0).contains(&value),
         }
     }
 }
@@ -139,6 +182,7 @@ impl<'a> SkillPropertySemantic<'a> {
 #[derive(Clone, Debug, Default)]
 pub struct SkillSemanticCatalog {
     level_properties: BTreeMap<(u32, OverloadedSkillProperty), SkillSemanticDefinition>,
+    activations: BTreeMap<u32, SkillActivation>,
 }
 
 #[derive(Clone, Debug)]
@@ -161,6 +205,19 @@ impl SkillSemanticCatalog {
         &self
     ) -> impl Iterator<Item = (u32, OverloadedSkillProperty)> + '_ {
         self.level_properties.keys().copied()
+    }
+
+    pub fn configured_activations(&self) -> impl Iterator<Item = (u32, SkillActivation)> + '_ {
+        self.activations
+            .iter()
+            .map(|(skill_id, activation)| (*skill_id, *activation))
+    }
+
+    pub fn skill_activation(
+        &self,
+        skill_id: u32,
+    ) -> Option<SkillActivation> {
+        self.activations.get(&skill_id).copied()
     }
 
     pub fn property_semantic(
@@ -243,7 +300,16 @@ pub enum SkillSemanticError {
 struct SkillSemanticFile {
     schema_version: u32,
     #[serde(default)]
+    skills: Vec<SkillFile>,
+    #[serde(default)]
     level_properties: Vec<LevelPropertyFile>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SkillFile {
+    skill_ids: Vec<u32>,
+    activation: SkillActivation,
 }
 
 #[derive(Debug, Deserialize)]
@@ -260,6 +326,7 @@ struct LevelPropertyFile {
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum OverloadedPropertyFile {
+    Damage,
     X,
     Y,
     Z,
@@ -268,6 +335,7 @@ enum OverloadedPropertyFile {
 impl From<OverloadedPropertyFile> for OverloadedSkillProperty {
     fn from(value: OverloadedPropertyFile) -> Self {
         match value {
+            OverloadedPropertyFile::Damage => Self::Damage,
             OverloadedPropertyFile::X => Self::X,
             OverloadedPropertyFile::Y => Self::Y,
             OverloadedPropertyFile::Z => Self::Z,
@@ -317,6 +385,13 @@ pub fn validate_archive(
     catalog: &SkillSemanticCatalog,
     facts: &SkillArchiveFacts,
 ) -> Result<(), SkillSemanticError> {
+    for (skill_id, _) in catalog.configured_activations() {
+        if !facts.skill_ids.contains(&skill_id) {
+            return Err(SkillSemanticError::ArchiveMismatch {
+                message: format!("configured skill {skill_id} does not exist"),
+            });
+        }
+    }
     for (skill_id, property) in catalog.configured_properties() {
         if !facts.skill_ids.contains(&skill_id) {
             return Err(SkillSemanticError::ArchiveMismatch {
@@ -353,6 +428,32 @@ fn compile(file: SkillSemanticFile) -> Result<SkillSemanticCatalog, SkillSemanti
             file.schema_version
         ));
     }
+    let mut activations = BTreeMap::new();
+    for (index, rule) in file.skills.into_iter().enumerate() {
+        let rule_number = index + 1;
+        if rule.skill_ids.is_empty() {
+            return invalid(format!("skills entry {rule_number} has no skill_ids"));
+        }
+        let mut skill_ids = BTreeSet::new();
+        for skill_id in rule.skill_ids {
+            if skill_id == 0 {
+                return invalid(format!("skills entry {rule_number} contains skill ID zero"));
+            }
+            if !skill_ids.insert(skill_id) {
+                return invalid(format!(
+                    "skills entry {rule_number} repeats skill {skill_id}"
+                ));
+            }
+        }
+        for skill_id in skill_ids {
+            if activations.insert(skill_id, rule.activation).is_some() {
+                return invalid(format!(
+                    "skill {skill_id} activation is configured more than once"
+                ));
+            }
+        }
+    }
+
     let mut level_properties = BTreeMap::new();
     for (index, rule) in file.level_properties.into_iter().enumerate() {
         let rule_number = index + 1;
@@ -427,7 +528,10 @@ fn compile(file: SkillSemanticFile) -> Result<SkillSemanticCatalog, SkillSemanti
             }
         }
     }
-    Ok(SkillSemanticCatalog { level_properties })
+    Ok(SkillSemanticCatalog {
+        level_properties,
+        activations,
+    })
 }
 
 fn conventional_property_semantic(property_name: &str) -> Option<SkillPropertySemantic<'static>> {

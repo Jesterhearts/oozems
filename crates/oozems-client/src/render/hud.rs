@@ -834,6 +834,8 @@ fn draw_stat_ability_buttons(
         return;
     };
     for name in [
+        "stat-hp-up",
+        "stat-mp-up",
         "stat-strength-up",
         "stat-dexterity-up",
         "stat-intelligence-up",

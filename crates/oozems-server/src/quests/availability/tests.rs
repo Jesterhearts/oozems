@@ -127,6 +127,7 @@ fn world_availability_uses_inclusive_configured_bounds_for_manual_and_automatic_
                 super::QuestEnvironment {
                     now_unix_ms: 1_000,
                     world_id,
+                    learned_skill_modifiers: crate::skills::LearnedSkillModifiers::default(),
                 },
             ),
             expected,
@@ -146,6 +147,7 @@ fn world_availability_uses_inclusive_configured_bounds_for_manual_and_automatic_
         super::QuestEnvironment {
             now_unix_ms: 1_000,
             world_id: 2,
+            learned_skill_modifiers: crate::skills::LearnedSkillModifiers::default(),
         },
     );
     assert!(blocked.started_quest_ids.is_empty());
@@ -158,6 +160,7 @@ fn world_availability_uses_inclusive_configured_bounds_for_manual_and_automatic_
         super::QuestEnvironment {
             now_unix_ms: 1_000,
             world_id: 3,
+            learned_skill_modifiers: crate::skills::LearnedSkillModifiers::default(),
         },
     );
     assert_eq!(exact.started_quest_ids, vec![quest.id]);

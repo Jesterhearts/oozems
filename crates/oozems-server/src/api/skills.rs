@@ -62,12 +62,22 @@ pub async fn allocate_skill_point(
     let mutation =
         begin_player_mutation(&state, &player_guard, &player_id, activity_time_ms).await?;
     let skill_context = load_skill_book(&state, &mutation.player).await?;
-    let updated = crate::skills::allocate_skill_point(
+    let mut updated = crate::skills::allocate_skill_point(
         mutation.player.clone(),
         &skill_context,
         request.skill_id,
     )
     .map_err(skill_rule_error)?;
+    let definitions = super::player_item_definitions(&state, &updated).await?;
+    crate::items::canonicalize_inventory(
+        updated
+            .inventory
+            .as_mut()
+            .ok_or(crate::items::ItemRuleError::MissingInventory)
+            .map_err(item_rule_error)?,
+        &definitions,
+    )
+    .map_err(item_rule_error)?;
     let (transaction, active_buffs) =
         prepare_player_mutation(&state, mutation, updated, true, true);
     let committed = crate::player_transaction::commit_player_transaction(
@@ -123,8 +133,12 @@ pub async fn use_skill(
     let player_layer = synchronized.platform_layer;
     let equipment =
         crate::items::equipment_stats(&player, state.catalog.as_ref()).map_err(item_rule_error)?;
-    let projected_effects = project_combat_effects(effects.projected(), equipment);
     let skill_context = load_skill_book(&state, &player).await?;
+    let learned = crate::skills::learned_skill_modifiers(&skill_context, &player)
+        .map_err(skill_rule_error)?;
+    let weapon_family = crate::items::equipped_weapon_type(&player).map(|weapon| weapon.family);
+    let projected_effects =
+        project_combat_effects(effects.projected(), equipment, learned, weapon_family);
     let skill_job_id = skill_context
         .book
         .skills
@@ -178,25 +192,40 @@ pub async fn use_skill(
     );
     crate::player_transaction::stage_skill_cooldown(&mut transaction, reservation);
     crate::effects::apply_skill_effect(&mut effects, &prepared.result, now_ms);
-    let combat_effects = project_combat_effects(effects.projected(), equipment);
-    let simulation = match crate::mobs::use_player_attack_with_effects(
-        &state.mobs,
-        &map,
-        &prepared.player,
-        player_layer,
-        crate::mobs::PlayerAttack {
-            target_mob_id: &request.target_mob_id,
-            source_skill_id: Some(prepared.result.skill_id),
-            facing_left: request.facing_left,
-            minimum_damage: prepared.result.minimum_damage,
-            maximum_damage: prepared.result.maximum_damage,
-            fixed_damage: prepared.result.fixed_damage,
-            attack_type: prepared.attack_type,
-        },
-        combat_effects,
-    )
-    .await
-    {
+    if prepared.consumes_combo {
+        crate::effects::reset_combo(&mut effects);
+    }
+    let combat_effects =
+        project_combat_effects(effects.projected(), equipment, learned, weapon_family);
+    let simulation_result = if prepared.result.has_damage {
+        crate::mobs::use_player_attack_with_effects(
+            &state.mobs,
+            &map,
+            &prepared.player,
+            player_layer,
+            crate::mobs::PlayerAttack {
+                target_mob_id: &request.target_mob_id,
+                source_skill_id: Some(prepared.result.skill_id),
+                facing_left: request.facing_left,
+                minimum_damage: prepared.result.minimum_damage,
+                maximum_damage: prepared.result.maximum_damage,
+                fixed_damage: prepared.result.fixed_damage,
+                attack_type: prepared.attack_type,
+            },
+            combat_effects,
+        )
+        .await
+    } else {
+        crate::mobs::observe_player_with_effects(
+            &state.mobs,
+            &map,
+            &prepared.player,
+            player_layer,
+            combat_effects,
+        )
+        .await
+    };
+    let simulation = match simulation_result {
         Ok(simulation) => simulation,
         Err(error) => {
             crate::player_transaction::abort_player_transaction(
@@ -215,6 +244,7 @@ pub async fn use_skill(
         &simulation,
         effects,
         now_ms,
+        !prepared.consumes_combo,
         true,
     );
     crate::player_transaction::replace_staged_player(

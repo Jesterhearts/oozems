@@ -322,13 +322,22 @@ async fn movement_response(
         let equipment =
             crate::items::equipment_stats(&authoritative_player, state.catalog.as_ref())
                 .map_err(super::item_rule_error)?;
+        let skill_context = super::load_skill_book(state, &authoritative_player).await?;
+        let learned = crate::skills::learned_skill_modifiers(&skill_context, &authoritative_player)
+            .map_err(super::skill_rule_error)?;
         let dropped_items = crate::items::map_drops(&state.drops, map_id)?;
         let simulation = crate::mobs::observe_player_with_effects(
             &state.mobs,
             &map,
             &authoritative_player,
             authoritative.platform_layer,
-            super::project_combat_effects(effects.projected(), equipment),
+            super::project_combat_effects(
+                effects.projected(),
+                equipment,
+                learned,
+                crate::items::equipped_weapon_type(&authoritative_player)
+                    .map(|weapon| weapon.family),
+            ),
         )
         .await?;
         let has_player_effects =
@@ -339,6 +348,7 @@ async fn movement_response(
             &simulation,
             effects.clone(),
             now_unix_ms,
+            true,
             persistence_required,
         );
         Ok::<_, ApiError>((prepared, simulation, dropped_items, has_player_effects, map))
@@ -400,6 +410,7 @@ async fn movement_response(
             crate::quests::QuestEnvironment {
                 now_unix_ms,
                 world_id: state.gameplay.world_id,
+                learned_skill_modifiers: crate::skills::LearnedSkillModifiers::default(),
             },
         );
     }

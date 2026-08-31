@@ -47,6 +47,7 @@ pub(crate) fn start_quest(
         item_definitions,
         consume_effects,
         effects,
+        environment.learned_skill_modifiers,
     )?;
     let entry = PlayerQuest {
         quest_id: quest.id,
@@ -164,6 +165,7 @@ pub(crate) fn complete_quest(
         item_definitions,
         consume_effects,
         effects,
+        environment.learned_skill_modifiers,
     )?;
     let entry = player
         .quests
@@ -289,6 +291,7 @@ pub(crate) fn apply_actions(
     item_definitions: &[ItemDefinition],
     consume_effects: &[ConsumeEffectDefinition],
     effects: &mut PlayerEffects,
+    learned: crate::skills::LearnedSkillModifiers,
 ) -> Result<PlayerState, QuestRuleError> {
     let action_effects = actions
         .buff_item_ids
@@ -374,6 +377,13 @@ pub(crate) fn apply_actions(
             })?;
     }
     if !removals.is_empty() || !grants.is_empty() {
+        let item_definitions = crate::items::StackCapacityLookup::new(
+            item_definitions,
+            crate::items::StackCapacityBonuses {
+                throwing_stars: learned.throwing_star_capacity,
+                bullets: learned.bullet_capacity,
+            },
+        );
         let inventory = player
             .inventory
             .as_mut()
@@ -381,12 +391,12 @@ pub(crate) fn apply_actions(
         for (item_id, quantity) in removals {
             let quantity =
                 i64::try_from(quantity).map_err(|_| ItemRuleError::QuantityOverflow { item_id })?;
-            crate::items::apply_item_delta(inventory, item_definitions, item_id, -quantity)?;
+            crate::items::apply_item_delta(inventory, &item_definitions, item_id, -quantity)?;
         }
         for ((item_id, expires_at_unix_ms), quantity) in grants {
             crate::items::apply_item_grant(
                 inventory,
-                item_definitions,
+                &item_definitions,
                 item_id,
                 quantity,
                 expires_at_unix_ms,
@@ -408,7 +418,7 @@ pub(crate) fn apply_actions(
             .ok_or(QuestRuleError::FameOverflow { player_id })?;
     }
     if actions.experience != 0 {
-        player = crate::experience::grant_experience(player, actions.experience, curve)?;
+        player = crate::experience::grant_experience(player, actions.experience, curve, learned)?;
     }
     for write in &actions.record_writes {
         crate::quest_records::set(

@@ -294,13 +294,18 @@ pub(super) fn update(
         timestamp_ms,
         movement_observation,
     );
-    let needs_recovery = !dead
-        && game
-            .player
+    let periodic_recovery = game.player.active_buffs.has_periodic_hp_recovery();
+    let (needs_recovery, needs_periodic_recovery) =
+        game.player
             .state
             .stats
             .as_ref()
-            .is_some_and(|stats| stats.hp < stats.max_hp || stats.mp < stats.max_mp);
+            .map_or((false, false), |stats| {
+                (
+                    !dead && (stats.hp < stats.max_hp || stats.mp < stats.max_mp),
+                    !dead && periodic_recovery && stats.hp < stats.max_hp,
+                )
+            });
     let can_poll_recovery = matches!(
         game.world.character_animation.animation,
         CharacterAnimation::Idle | CharacterAnimation::Sit
@@ -320,6 +325,11 @@ pub(super) fn update(
             .admission
             .is_active(requests::RequestKind::Recovery),
         timestamp_ms,
+        if needs_periodic_recovery {
+            recovery_actions::PERIODIC_RECOVERY_INTERVAL_MS
+        } else {
+            10_000.0
+        },
     );
     let save = save_key_bindings_if_due(
         &mut game.key_binding_save,

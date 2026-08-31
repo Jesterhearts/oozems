@@ -33,6 +33,18 @@ pub struct EffectModifiers {
     pub avoidability: i32,
     pub speed: i32,
     pub jump: i32,
+    pub strength: i32,
+    pub mastery: u32,
+    pub critical_chance: u32,
+    pub critical_damage: u32,
+    pub outgoing_damage_percent: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EnemySlowEffect {
+    pub speed_penalty: i32,
+    pub duration_ms: u64,
+    pub chance: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -42,8 +54,16 @@ pub struct ActiveEffect {
     pub modifiers: EffectModifiers,
     pub morph_id: Option<u32>,
     pub attacks_disabled: bool,
+    pub periodic_hp_recovery: Option<PeriodicHpRecovery>,
+    pub enemy_slow: Option<EnemySlowEffect>,
     pub activated_at_unix_ms: u64,
     pub lifetime: EffectLifetime,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PeriodicHpRecovery {
+    pub amount_per_tick: u32,
+    pub ticks_applied: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,7 +75,14 @@ pub enum EffectLifetime {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PlayerEffects {
     holders: BTreeMap<EffectSource, ActiveEffect>,
+    combo: Option<ComboState>,
     revision: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ComboState {
+    pub count: u32,
+    pub expires_at_unix_ms: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -63,6 +90,8 @@ pub struct ProjectedEffects {
     pub modifiers: EffectModifiers,
     pub morph_id: Option<u32>,
     pub attacks_disabled: bool,
+    pub enemy_slow: Option<EnemySlowEffect>,
+    pub combo_count: u32,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -92,7 +121,10 @@ impl PlayerEffects {
     }
 
     pub fn projected(&self) -> ProjectedEffects {
-        project_effects(self.holders.values())
+        project_effects(
+            self.holders.values(),
+            self.combo.map_or(0, |combo| combo.count),
+        )
     }
 
     pub fn attacks_disabled(&self) -> bool {
@@ -105,13 +137,24 @@ pub fn snapshot(
     player_id: &str,
     now_unix_ms: u64,
 ) -> Result<PlayerEffects, EffectStoreError> {
-    let mut players = effects
+    let players = effects
         .players
         .lock()
         .map_err(|_| EffectStoreError::Store)?;
-    let player = players.entry(player_id.to_owned()).or_default();
-    prune(player, now_unix_ms);
-    Ok(player.clone())
+    let mut player = players.get(player_id).cloned().unwrap_or_default();
+    prune(&mut player, now_unix_ms);
+    Ok(player)
+}
+
+pub fn snapshot_unpruned(
+    effects: &ActiveEffects,
+    player_id: &str,
+) -> Result<PlayerEffects, EffectStoreError> {
+    effects
+        .players
+        .lock()
+        .map_err(|_| EffectStoreError::Store)
+        .map(|players| players.get(player_id).cloned().unwrap_or_default())
 }
 
 #[cfg(test)]
@@ -212,9 +255,28 @@ pub fn apply_skill_effect(
                 avoidability: result.avoidability_bonus,
                 speed: result.speed_bonus,
                 jump: result.jump_bonus,
+                strength: result.strength_bonus,
+                mastery: 0,
+                critical_chance: result.critical_chance_bonus,
+                critical_damage: result.critical_damage_bonus,
+                outgoing_damage_percent: result.outgoing_damage_percent,
             },
             morph_id: None,
             attacks_disabled: false,
+            periodic_hp_recovery: (result.hp_recovery_per_five_seconds > 0).then_some(
+                PeriodicHpRecovery {
+                    amount_per_tick: result.hp_recovery_per_five_seconds,
+                    ticks_applied: 0,
+                },
+            ),
+            enemy_slow: (result.enemy_slow_duration_ms > 0
+                && result.enemy_speed_penalty != 0
+                && result.enemy_slow_chance > 0)
+                .then_some(EnemySlowEffect {
+                    speed_penalty: result.enemy_speed_penalty,
+                    duration_ms: result.enemy_slow_duration_ms,
+                    chance: result.enemy_slow_chance.min(100),
+                }),
             activated_at_unix_ms: now_unix_ms,
             lifetime,
         },
@@ -248,9 +310,16 @@ pub fn apply_consume_effect(
                 avoidability: definition.avoidability,
                 speed: definition.speed,
                 jump: definition.jump,
+                strength: 0,
+                mastery: 0,
+                critical_chance: 0,
+                critical_damage: 0,
+                outgoing_damage_percent: 0,
             },
             morph_id: definition.morph_id,
             attacks_disabled: definition.morph_id.is_some_and(|morph_id| morph_id < 100),
+            periodic_hp_recovery: None,
+            enemy_slow: None,
             activated_at_unix_ms: now_unix_ms,
             lifetime: EffectLifetime::Timed {
                 expires_at_unix_ms: now_unix_ms.saturating_add(definition.duration_ms),
@@ -293,6 +362,10 @@ pub fn state(
         avoidability: projection.modifiers.avoidability,
         speed: projection.modifiers.speed,
         jump: projection.modifiers.jump,
+        critical_chance: projection.modifiers.critical_chance,
+        critical_damage: projection.modifiers.critical_damage,
+        combo_count: effects.combo.map_or(0, |combo| combo.count),
+        combo_expires_at_unix_ms: effects.combo.map_or(0, |combo| combo.expires_at_unix_ms),
         morph_id: projection.morph_id.unwrap_or_default(),
         attacks_disabled: projection.attacks_disabled,
     }
@@ -319,19 +392,144 @@ pub fn prune(
     effects: &mut PlayerEffects,
     now_unix_ms: u64,
 ) -> bool {
+    let combo_expired = effects
+        .combo
+        .is_some_and(|combo| combo.expires_at_unix_ms <= now_unix_ms);
+    if combo_expired {
+        effects.combo = None;
+    }
     let previous = effects.holders.len();
     effects.holders.retain(|_, effect| match effect.lifetime {
         EffectLifetime::Timed { expires_at_unix_ms } => expires_at_unix_ms > now_unix_ms,
         EffectLifetime::Permanent => true,
     });
-    let changed = previous != effects.holders.len();
+    let changed = combo_expired || previous != effects.holders.len();
     if changed {
         effects.revision = effects.revision.saturating_add(1);
     }
     changed
 }
 
-fn project_effects<'a>(holders: impl IntoIterator<Item = &'a ActiveEffect>) -> ProjectedEffects {
+pub fn advance_player_effects(
+    mut player: PlayerState,
+    mut effects: PlayerEffects,
+    now_unix_ms: u64,
+) -> (PlayerState, PlayerEffects, bool) {
+    const INTERVAL_MS: u64 = 5_000;
+
+    let mut changed = false;
+    if effects
+        .combo
+        .is_some_and(|combo| combo.expires_at_unix_ms <= now_unix_ms)
+    {
+        effects.combo = None;
+        changed = true;
+    }
+    for effect in effects.holders.values_mut() {
+        let Some(periodic) = effect.periodic_hp_recovery.as_mut() else {
+            continue;
+        };
+        let EffectLifetime::Timed { expires_at_unix_ms } = effect.lifetime else {
+            continue;
+        };
+        let evaluated_at = now_unix_ms.min(expires_at_unix_ms);
+        let total_ticks = evaluated_at
+            .saturating_sub(effect.activated_at_unix_ms)
+            .checked_div(INTERVAL_MS)
+            .unwrap_or_default()
+            .min(u64::from(u32::MAX)) as u32;
+        let due = total_ticks.saturating_sub(periodic.ticks_applied);
+        if due == 0 {
+            continue;
+        }
+        periodic.ticks_applied = total_ticks;
+        changed = true;
+        let Some(stats) = player.stats.as_mut() else {
+            continue;
+        };
+        if stats.hp == 0 {
+            continue;
+        }
+        stats.hp = stats
+            .hp
+            .saturating_add(periodic.amount_per_tick.saturating_mul(due))
+            .min(stats.max_hp);
+    }
+    let previous = effects.holders.len();
+    effects.holders.retain(|_, effect| match effect.lifetime {
+        EffectLifetime::Timed { expires_at_unix_ms } => expires_at_unix_ms > now_unix_ms,
+        EffectLifetime::Permanent => true,
+    });
+    changed |= previous != effects.holders.len();
+    if changed {
+        effects.revision = effects.revision.saturating_add(1);
+    }
+    (player, effects, changed)
+}
+
+pub fn gain_combo(
+    effects: &mut PlayerEffects,
+    now_unix_ms: u64,
+) {
+    let count = effects
+        .combo
+        .filter(|combo| combo.expires_at_unix_ms > now_unix_ms)
+        .map_or(0, |combo| combo.count)
+        .saturating_add(1)
+        .min(30_000);
+    effects.combo = Some(ComboState {
+        count,
+        expires_at_unix_ms: now_unix_ms.saturating_add(3_000),
+    });
+    effects.revision = effects.revision.saturating_add(1);
+}
+
+pub fn reset_combo(effects: &mut PlayerEffects) -> bool {
+    let changed = effects.combo.take().is_some();
+    if changed {
+        effects.revision = effects.revision.saturating_add(1);
+    }
+    changed
+}
+
+pub fn reset_stored_combo(
+    effects: &ActiveEffects,
+    player_id: &str,
+) -> Result<bool, EffectStoreError> {
+    let mut players = effects
+        .players
+        .lock()
+        .map_err(|_| EffectStoreError::Store)?;
+    Ok(players.get_mut(player_id).is_some_and(reset_combo))
+}
+
+pub fn next_periodic_recovery_ms(
+    effects: &PlayerEffects,
+    now_unix_ms: u64,
+) -> Option<u64> {
+    const INTERVAL_MS: u64 = 5_000;
+
+    effects
+        .holders
+        .values()
+        .filter_map(|effect| {
+            let periodic = effect.periodic_hp_recovery?;
+            let EffectLifetime::Timed { expires_at_unix_ms } = effect.lifetime else {
+                return None;
+            };
+            let next_tick = effect.activated_at_unix_ms.saturating_add(
+                u64::from(periodic.ticks_applied.saturating_add(1)).saturating_mul(INTERVAL_MS),
+            );
+            (next_tick <= expires_at_unix_ms)
+                .then_some(next_tick.saturating_sub(now_unix_ms).max(1))
+        })
+        .min()
+}
+
+fn project_effects<'a>(
+    holders: impl IntoIterator<Item = &'a ActiveEffect>,
+    combo_count: u32,
+) -> ProjectedEffects {
     let holders = holders.into_iter().collect::<Vec<_>>();
     let strongest = |select: fn(&EffectModifiers) -> i32| {
         holders
@@ -351,9 +549,35 @@ fn project_effects<'a>(holders: impl IntoIterator<Item = &'a ActiveEffect>) -> P
             avoidability: strongest(|modifiers| modifiers.avoidability),
             speed: strongest(|modifiers| modifiers.speed),
             jump: strongest(|modifiers| modifiers.jump),
+            strength: strongest(|modifiers| modifiers.strength),
+            mastery: holders
+                .iter()
+                .map(|holder| holder.modifiers.mastery)
+                .max()
+                .unwrap_or_default(),
+            critical_chance: holders
+                .iter()
+                .map(|holder| holder.modifiers.critical_chance)
+                .max()
+                .unwrap_or_default(),
+            critical_damage: holders
+                .iter()
+                .map(|holder| holder.modifiers.critical_damage)
+                .max()
+                .unwrap_or_default(),
+            outgoing_damage_percent: holders
+                .iter()
+                .map(|holder| holder.modifiers.outgoing_damage_percent)
+                .max()
+                .unwrap_or_default(),
         },
         morph_id: holders.iter().find_map(|holder| holder.morph_id),
         attacks_disabled: holders.iter().any(|holder| holder.attacks_disabled),
+        enemy_slow: holders
+            .iter()
+            .filter_map(|holder| holder.enemy_slow)
+            .min_by_key(|slow| slow.speed_penalty),
+        combo_count,
     }
 }
 
@@ -381,6 +605,15 @@ fn to_proto(effect: &ActiveEffect) -> ActiveBuff {
         avoidability: effect.modifiers.avoidability,
         morph_id: effect.morph_id.unwrap_or_default(),
         permanent,
+        critical_chance: effect.modifiers.critical_chance,
+        critical_damage: effect.modifiers.critical_damage,
+        hp_recovery_per_five_seconds: effect
+            .periodic_hp_recovery
+            .map_or(0, |periodic| periodic.amount_per_tick),
+        outgoing_damage_percent: effect.modifiers.outgoing_damage_percent,
+        enemy_speed_penalty: effect.enemy_slow.map_or(0, |slow| slow.speed_penalty),
+        enemy_slow_duration_ms: effect.enemy_slow.map_or(0, |slow| slow.duration_ms),
+        enemy_slow_chance: effect.enemy_slow.map_or(0, |slow| slow.chance),
     }
 }
 
@@ -406,6 +639,8 @@ mod tests {
             },
             morph_id,
             attacks_disabled: morph_id.is_some_and(|morph_id| morph_id < 100),
+            periodic_hp_recovery: None,
+            enemy_slow: None,
             activated_at_unix_ms: activated,
             lifetime: EffectLifetime::Timed {
                 expires_at_unix_ms: expires,
@@ -650,5 +885,111 @@ mod tests {
         }));
         assert_eq!(preserved.holders().count(), 1);
         assert_eq!(preserved.revision(), before_revision);
+    }
+
+    #[test]
+    fn periodic_recovery_ticks_once_per_interval_and_applies_the_expiration_tick() {
+        let mut effects = PlayerEffects::default();
+        apply_skill_effect(
+            &mut effects,
+            &SkillUseResult {
+                skill_id: 1_001,
+                duration_ms: 30_000,
+                hp_recovery_per_five_seconds: 4,
+                ..SkillUseResult::default()
+            },
+            1_000,
+        );
+        let player = PlayerState {
+            stats: Some(CharacterStats {
+                hp: 1,
+                max_hp: 100,
+                ..CharacterStats::default()
+            }),
+            ..PlayerState::default()
+        };
+
+        let (player, effects, changed) = advance_player_effects(player, effects, 6_000);
+        assert!(changed);
+        assert_eq!(player.stats.as_ref().expect("stats").hp, 5);
+        let (player, effects, changed) = advance_player_effects(player, effects, 6_000);
+        assert!(!changed);
+        assert_eq!(player.stats.as_ref().expect("stats").hp, 5);
+        let (player, effects, changed) = advance_player_effects(player, effects, 31_000);
+        assert!(changed);
+        assert_eq!(player.stats.expect("stats").hp, 25);
+        assert_eq!(effects.holders().count(), 0);
+    }
+
+    #[test]
+    fn periodic_recovery_consumes_full_and_dead_ticks_without_replay() {
+        let mut effects = PlayerEffects::default();
+        apply_skill_effect(
+            &mut effects,
+            &SkillUseResult {
+                skill_id: 1_001,
+                duration_ms: 30_000,
+                hp_recovery_per_five_seconds: 4,
+                ..SkillUseResult::default()
+            },
+            1_000,
+        );
+        let full = PlayerState {
+            stats: Some(CharacterStats {
+                hp: 100,
+                max_hp: 100,
+                ..CharacterStats::default()
+            }),
+            ..PlayerState::default()
+        };
+        let (mut full, effects, _) = advance_player_effects(full, effects, 6_000);
+        full.stats.as_mut().expect("stats").hp = 50;
+        let (full, _, _) = advance_player_effects(full, effects, 11_000);
+        assert_eq!(full.stats.expect("stats").hp, 54);
+
+        let mut dead_effects = PlayerEffects::default();
+        apply_skill_effect(
+            &mut dead_effects,
+            &SkillUseResult {
+                skill_id: 1_001,
+                duration_ms: 30_000,
+                hp_recovery_per_five_seconds: 4,
+                ..SkillUseResult::default()
+            },
+            1_000,
+        );
+        let dead = PlayerState {
+            stats: Some(CharacterStats {
+                hp: 0,
+                max_hp: 100,
+                ..CharacterStats::default()
+            }),
+            ..PlayerState::default()
+        };
+        let (dead, _, _) = advance_player_effects(dead, dead_effects, 6_000);
+        assert_eq!(dead.stats.expect("stats").hp, 0);
+    }
+
+    #[test]
+    fn combo_gains_refresh_the_deadline_and_expire_without_replay() {
+        let mut effects = PlayerEffects::default();
+        gain_combo(&mut effects, 1_000);
+        gain_combo(&mut effects, 2_000);
+        assert_eq!(effects.projected().combo_count, 2);
+        assert_eq!(state(&effects, 2_000).combo_expires_at_unix_ms, 5_000);
+
+        let (_, effects, changed) = advance_player_effects(PlayerState::default(), effects, 5_000);
+        assert!(changed);
+        assert_eq!(effects.projected().combo_count, 0);
+        let expired = state(&effects, 5_000);
+        assert_eq!(expired.combo_count, 0);
+        assert_eq!(expired.combo_expires_at_unix_ms, 0);
+
+        let mut effects = effects;
+        gain_combo(&mut effects, 6_000);
+        assert!(reset_combo(&mut effects));
+        let reset = state(&effects, 6_000);
+        assert_eq!(reset.combo_count, 0);
+        assert_eq!(reset.combo_expires_at_unix_ms, 0);
     }
 }

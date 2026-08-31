@@ -40,7 +40,9 @@ pub async fn respawn_player(
     let player_id = parse_player_id(&request.player_id)?;
     let player_guard = lock_player(&state, &player_id, &headers).await?;
     let now_unix_ms = unix_time_ms()?;
-    let mutation = begin_player_mutation(&state, &player_guard, &player_id, now_unix_ms).await?;
+    let mut mutation =
+        begin_player_mutation(&state, &player_guard, &player_id, now_unix_ms).await?;
+    crate::effects::reset_combo(&mut mutation.effects);
     let source_map = load_map(&state, mutation.player.map_id)
         .await?
         .ok_or_else(|| ApiError::not_found("map_not_found", "the player's map does not exist"))?;
@@ -94,6 +96,7 @@ pub async fn respawn_player(
         crate::quests::QuestEnvironment {
             now_unix_ms,
             world_id: state.gameplay.world_id,
+            learned_skill_modifiers: crate::skills::LearnedSkillModifiers::default(),
         },
     );
 

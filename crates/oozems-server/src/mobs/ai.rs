@@ -57,6 +57,12 @@ fn advance_mob(
     now_ms: u64,
     elapsed_seconds: f32,
 ) {
+    if motion.slow_expires_at_ms <= now_ms {
+        motion.speed_penalty = 0;
+        motion.slow_expires_at_ms = 0;
+    }
+    motion.move_speed =
+        super::spawn::movement_speed(motion.base_wz_speed.saturating_add(motion.speed_penalty));
     if combat.current_hp == 0 {
         motion.mode = MobMovementMode::Idle;
         return;
@@ -347,6 +353,9 @@ pub(super) fn reset_mob(
     motion.support = motion.spawn_support;
     motion.velocity_y = 0.0;
     motion.decision_seconds = 0.0;
+    motion.speed_penalty = 0;
+    motion.slow_expires_at_ms = 0;
+    motion.move_speed = super::spawn::movement_speed(motion.base_wz_speed);
     set_direction(motion, 0);
     motion.mode = MobMovementMode::Idle;
 }

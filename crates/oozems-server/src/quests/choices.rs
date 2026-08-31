@@ -199,7 +199,13 @@ pub fn select_choice(
         })
     {
         require_npc(quest.completion.npc_id, npc_id)?;
-        return restore_lost_quest_items(player, quest, item_definitions, environment.now_unix_ms);
+        return restore_lost_quest_items(
+            player,
+            quest,
+            item_definitions,
+            environment.now_unix_ms,
+            environment.learned_skill_modifiers,
+        );
     }
     match progress(&player, quest.id) {
         QuestProgress::Started => select_active_choice(
@@ -411,7 +417,13 @@ pub(crate) fn select_active_choice(
 ) -> Result<QuestSelection, QuestRuleError> {
     require_npc(quest.completion.npc_id, npc_id)?;
     if choice_id == RESTORE_ITEMS_CHOICE_ID {
-        return restore_lost_quest_items(player, quest, item_definitions, environment.now_unix_ms);
+        return restore_lost_quest_items(
+            player,
+            quest,
+            item_definitions,
+            environment.now_unix_ms,
+            environment.learned_skill_modifiers,
+        );
     }
     if let Some(question) = &quest.dialogue.question {
         require_completion_ready(

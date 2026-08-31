@@ -141,6 +141,8 @@ struct PlayerAttackMobState {
     attack_until_ms: u64,
     movement_resume_ms: u64,
     movement_resume_mode: Option<MobMovementMode>,
+    speed_penalty: i32,
+    slow_expires_at_ms: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -499,6 +501,12 @@ fn apply_rollback_player_attack(
             }
             if combat.movement_resume_mode == after.movement_resume_mode {
                 combat.movement_resume_mode = before.movement_resume_mode;
+            }
+            if motion.speed_penalty == after.speed_penalty {
+                motion.speed_penalty = before.speed_penalty;
+            }
+            if motion.slow_expires_at_ms == after.slow_expires_at_ms {
+                motion.slow_expires_at_ms = before.slow_expires_at_ms;
             }
             combat.player_attack_transaction = None;
         }
@@ -870,6 +878,9 @@ fn sync_player(
         presence.intelligence = stats.intelligence;
         presence.luck = stats.luck;
         presence.avoidability = avoidability;
+        presence.critical_chance = effects.modifiers.critical_chance;
+        presence.critical_damage = effects.modifiers.critical_damage;
+        presence.enemy_slow = effects.enemy_slow;
         presence.last_seen_ms = state.clock_ms;
         return Ok(());
     }
@@ -886,6 +897,9 @@ fn sync_player(
             intelligence: stats.intelligence,
             luck: stats.luck,
             avoidability,
+            critical_chance: effects.modifiers.critical_chance,
+            critical_damage: effects.modifiers.critical_damage,
+            enemy_slow: effects.enemy_slow,
             last_seen_ms: state.clock_ms,
             invulnerable_until_ms: 0,
             contact_attempt_after_ms: 0,
@@ -1050,6 +1064,8 @@ fn prepare_player_attack(
             attack_until_ms: combat.attack_until_ms,
             movement_resume_ms: combat.movement_resume_ms,
             movement_resume_mode: combat.movement_resume_mode,
+            speed_penalty: motion.speed_penalty,
+            slow_expires_at_ms: motion.slow_expires_at_ms,
         };
         let hit = combat::player_attack_hits(
             formulas,
@@ -1083,6 +1099,8 @@ fn prepare_player_attack(
                 attack.minimum_damage,
                 attack.maximum_damage,
                 attack.fixed_damage,
+                player_presence.critical_chance,
+                player_presence.critical_damage,
                 &mut motion.random_state,
             )
             .map_err(|error| MobStoreError::Formula {
@@ -1117,6 +1135,15 @@ fn prepare_player_attack(
         if hit {
             combat.current_hp = combat.current_hp.saturating_sub(damage);
         }
+        if damage > 0
+            && !died
+            && let Some(slow) = player_presence.enemy_slow
+            && let Some((speed_penalty, expires_at_ms)) =
+                roll_enemy_slow(&mut motion.random_state, slow, state.clock_ms)
+        {
+            motion.speed_penalty = speed_penalty;
+            motion.slow_expires_at_ms = expires_at_ms;
+        }
         combat.aggro_target = Some(player_id.to_owned());
         if combat.current_hp == 0 {
             combat.dead_until_ms = Some(state.clock_ms.saturating_add(combat.respawn_delay_ms));
@@ -1142,6 +1169,8 @@ fn prepare_player_attack(
             attack_until_ms: combat.attack_until_ms,
             movement_resume_ms: combat.movement_resume_ms,
             movement_resume_mode: combat.movement_resume_mode,
+            speed_penalty: motion.speed_penalty,
+            slow_expires_at_ms: motion.slow_expires_at_ms,
         };
         (
             **position,
@@ -1213,6 +1242,21 @@ fn prepare_player_attack(
         generated_mob_deaths,
         generated_staged_drops,
     }))
+}
+
+fn roll_enemy_slow(
+    random_state: &mut u64,
+    slow: crate::effects::EnemySlowEffect,
+    now_ms: u64,
+) -> Option<(i32, u64)> {
+    if slow.duration_ms == 0
+        || slow.speed_penalty == 0
+        || slow.chance == 0
+        || crate::random::next_u64(random_state) % 100 >= u64::from(slow.chance.min(100))
+    {
+        return None;
+    }
+    Some((slow.speed_penalty, now_ms.saturating_add(slow.duration_ms)))
 }
 
 fn prepare_reactor_attack(
@@ -1414,6 +1458,23 @@ mod tests {
     use super::mailbox::expire_pending_updates;
     use super::mailbox::map_contains_player;
     use super::mailbox::signal_next_player_enqueue;
+    use super::roll_enemy_slow;
+
+    #[test]
+    fn enemy_slow_roll_applies_penalty_and_exact_deadline() {
+        let mut random_state = 1;
+
+        let slow = roll_enemy_slow(
+            &mut random_state,
+            crate::effects::EnemySlowEffect {
+                speed_penalty: -40,
+                duration_ms: 20_000,
+                chance: 100,
+            },
+            5_000,
+        );
+        assert_eq!(slow, Some((-40, 25_000)));
+    }
     use super::mailbox::worker_index_for_map;
     use super::map_snapshot as mailbox_map_snapshot;
     use super::observe_player_at;

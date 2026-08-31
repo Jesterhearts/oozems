@@ -58,8 +58,9 @@ struct WzTextFragment {
 }
 
 pub(super) fn draw_active_buffs(game: &Game) -> Option<f64> {
+    let buff_count = game.player.active_buffs.buffs.len();
     let placements = buff_placements(
-        game.player.active_buffs.buffs.len(),
+        buff_count + usize::from(game.player.active_buffs.combo.is_some()),
         game.surface.canvas.width() as f32,
         game.surface.canvas.client_width() as f32,
     );
@@ -68,7 +69,7 @@ pub(super) fn draw_active_buffs(game: &Game) -> Option<f64> {
         .map(|placement| f64::from(placement.y + placement.height))
         .max_by(f64::total_cmp);
     let now_ms = game.clock.now_ms;
-    for placement in placements {
+    for placement in placements.iter().copied().take(buff_count) {
         let buff = &game.player.active_buffs.buffs[placement.index];
         draw_buff_background(game, placement);
         match buff.source {
@@ -91,6 +92,12 @@ pub(super) fn draw_active_buffs(game: &Game) -> Option<f64> {
             None => {}
         }
         draw_buff_time(game, buff, placement, now_ms);
+    }
+    if let (Some(combo), Some(placement)) = (
+        game.player.active_buffs.combo,
+        placements.get(buff_count).copied(),
+    ) {
+        draw_combo(game, combo.count(), combo.remaining_ms(now_ms), placement);
     }
     bottom
 }
@@ -259,18 +266,67 @@ fn draw_buff_time(
     now_ms: f64,
 ) {
     let label = buff_time_label(buff.remaining_ms(now_ms));
+    draw_indicator_time(game, &label, placement);
+}
+
+fn draw_indicator_time(
+    game: &Game,
+    label: &str,
+    placement: BuffPlacement,
+) {
     game.surface.context.set_fill_style_str("#ffffff");
     game.surface
         .context
         .set_font(&format!("bold {}px Arial", placement.timer_font_size));
     game.surface.context.set_text_align("center");
     let _ = game.surface.context.fill_text_with_max_width(
-        &label,
+        label,
         f64::from(placement.x + placement.width / 2.0),
         f64::from(placement.y + placement.height - 3.0),
         f64::from(placement.width - 2.0),
     );
     game.surface.context.set_text_align("left");
+}
+
+fn draw_combo(
+    game: &Game,
+    count: u32,
+    remaining_ms: u64,
+    placement: BuffPlacement,
+) {
+    let (count_label, time_label) = combo_labels(count, remaining_ms);
+    draw_buff_background(game, placement);
+    game.surface.context.set_text_align("center");
+    game.surface.context.set_fill_style_str("#f4ca64");
+    game.surface
+        .context
+        .set_font(&format!("bold {}px Arial", placement.timer_font_size));
+    let center_x = f64::from(placement.x + placement.width / 2.0);
+    let _ = game.surface.context.fill_text_with_max_width(
+        "COMBO",
+        center_x,
+        f64::from(placement.y + placement.icon_size * 0.42),
+        f64::from(placement.width - 4.0),
+    );
+    game.surface.context.set_fill_style_str("#ffffff");
+    game.surface
+        .context
+        .set_font(&format!("bold {}px Arial", placement.timer_font_size * 1.4));
+    let _ = game.surface.context.fill_text_with_max_width(
+        &count_label,
+        center_x,
+        f64::from(placement.y + placement.icon_size * 0.82),
+        f64::from(placement.width - 4.0),
+    );
+    game.surface.context.set_text_align("left");
+    draw_indicator_time(game, &time_label, placement);
+}
+
+fn combo_labels(
+    count: u32,
+    remaining_ms: u64,
+) -> (String, String) {
+    (format!("x{count}"), format_short_duration(remaining_ms))
 }
 
 fn buff_time_label(remaining_ms: Option<u64>) -> String {
@@ -464,7 +520,11 @@ fn build_item_info(
 ) -> SkillInfo {
     SkillInfo {
         title: definition.name.clone(),
-        level: format!("Quantity: {quantity}"),
+        level: if definition.stack_max > 0 {
+            format!("Quantity: {quantity}/{}", definition.stack_max)
+        } else {
+            format!("Quantity: {quantity}")
+        },
         description: nonempty(definition.description.clone()),
         current: (definition.sale_price > 0)
             .then(|| format!("Sale price: {} mesos", definition.sale_price)),
@@ -927,6 +987,19 @@ mod tests {
         assert_eq!(placements[0].x, 756.0);
         assert_eq!(placements[1].x, 716.0);
         assert!(contains(placements[0], CanvasPoint { x: 760.0, y: 20.0 }));
+    }
+
+    #[test]
+    fn combo_indicator_appends_without_changing_buff_placements() {
+        let buffs = buff_placements(2, 800.0, 800.0);
+        let with_combo = buff_placements(3, 800.0, 800.0);
+
+        assert_eq!(&with_combo[..2], buffs);
+        assert_eq!(with_combo[2].index, 2);
+        assert_eq!(
+            combo_labels(30_000, 2_001),
+            ("x30000".to_owned(), "3s".to_owned())
+        );
     }
 
     #[test]

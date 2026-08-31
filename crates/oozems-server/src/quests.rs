@@ -80,6 +80,7 @@ const SELECTABLE_REWARD_CHOICE_OFFSET: u32 = 0x8000_0000;
 pub struct QuestEnvironment {
     pub now_unix_ms: u64,
     pub world_id: u32,
+    pub learned_skill_modifiers: crate::skills::LearnedSkillModifiers,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

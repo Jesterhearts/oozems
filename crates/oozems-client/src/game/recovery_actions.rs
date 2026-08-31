@@ -7,6 +7,7 @@ use super::Game;
 use crate::api;
 
 const RECOVERY_INTERVAL_MS: f64 = 10_000.0;
+pub(super) const PERIODIC_RECOVERY_INTERVAL_MS: f64 = 5_000.0;
 
 #[derive(Default)]
 pub(super) struct RecoveryState {
@@ -19,18 +20,21 @@ pub(super) fn update(
     can_poll: bool,
     in_flight: bool,
     timestamp_ms: f64,
+    interval_ms: f64,
 ) -> bool {
     if !needs_recovery {
         state.next_attempt_ms = None;
         return false;
     }
-    let deadline_ms = state
-        .next_attempt_ms
-        .get_or_insert(timestamp_ms + RECOVERY_INTERVAL_MS);
+    let next_interval_deadline = timestamp_ms + interval_ms;
+    let deadline_ms = state.next_attempt_ms.get_or_insert(next_interval_deadline);
+    if *deadline_ms > next_interval_deadline {
+        *deadline_ms = next_interval_deadline;
+    }
     if timestamp_ms < *deadline_ms || !can_poll || in_flight {
         return false;
     }
-    state.next_attempt_ms = Some(timestamp_ms + RECOVERY_INTERVAL_MS);
+    state.next_attempt_ms = Some(timestamp_ms + interval_ms);
     true
 }
 
@@ -92,27 +96,37 @@ mod tests {
     fn recovery_poll_becomes_due_after_ten_seconds() {
         let mut state = RecoveryState::default();
 
-        assert!(!update(&mut state, true, true, false, 1_000.0));
         assert!(!update(
             &mut state,
             true,
             true,
             false,
-            1_000.0 + RECOVERY_INTERVAL_MS - 1.0
+            1_000.0,
+            RECOVERY_INTERVAL_MS
+        ));
+        assert!(!update(
+            &mut state,
+            true,
+            true,
+            false,
+            1_000.0 + RECOVERY_INTERVAL_MS - 1.0,
+            RECOVERY_INTERVAL_MS
         ));
         assert!(update(
             &mut state,
             true,
             true,
             false,
-            1_000.0 + RECOVERY_INTERVAL_MS
+            1_000.0 + RECOVERY_INTERVAL_MS,
+            RECOVERY_INTERVAL_MS
         ));
         assert!(!update(
             &mut state,
             true,
             true,
             false,
-            1_000.0 + RECOVERY_INTERVAL_MS + 1.0
+            1_000.0 + RECOVERY_INTERVAL_MS + 1.0,
+            RECOVERY_INTERVAL_MS
         ));
     }
 
@@ -120,19 +134,75 @@ mod tests {
     fn full_stats_suspend_the_recovery_poll() {
         let mut state = RecoveryState::default();
 
-        assert!(!update(&mut state, true, true, false, 1_000.0));
-        assert!(!update(&mut state, false, true, false, 9_000.0));
-        assert!(!update(&mut state, true, true, false, 10_000.0));
-        assert!(!update(&mut state, true, true, false, 19_999.0));
-        assert!(update(&mut state, true, true, false, 20_000.0));
+        assert!(!update(
+            &mut state,
+            true,
+            true,
+            false,
+            1_000.0,
+            RECOVERY_INTERVAL_MS
+        ));
+        assert!(!update(
+            &mut state,
+            false,
+            true,
+            false,
+            9_000.0,
+            RECOVERY_INTERVAL_MS
+        ));
+        assert!(!update(
+            &mut state,
+            true,
+            true,
+            false,
+            10_000.0,
+            RECOVERY_INTERVAL_MS
+        ));
+        assert!(!update(
+            &mut state,
+            true,
+            true,
+            false,
+            19_999.0,
+            RECOVERY_INTERVAL_MS
+        ));
+        assert!(update(
+            &mut state,
+            true,
+            true,
+            false,
+            20_000.0,
+            RECOVERY_INTERVAL_MS
+        ));
     }
 
     #[test]
     fn busy_client_does_not_discard_an_overdue_poll() {
         let mut state = RecoveryState::default();
 
-        assert!(!update(&mut state, true, true, false, 1_000.0));
-        assert!(!update(&mut state, true, false, false, 11_000.0));
-        assert!(update(&mut state, true, true, false, 11_001.0));
+        assert!(!update(
+            &mut state,
+            true,
+            true,
+            false,
+            1_000.0,
+            RECOVERY_INTERVAL_MS
+        ));
+        assert!(!update(
+            &mut state,
+            true,
+            false,
+            false,
+            11_000.0,
+            RECOVERY_INTERVAL_MS
+        ));
+        assert!(update(
+            &mut state,
+            true,
+            true,
+            false,
+            11_001.0,
+            RECOVERY_INTERVAL_MS
+        ));
     }
 }

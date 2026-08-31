@@ -289,6 +289,7 @@ fn quest_buff_actions_apply_hp_and_effects_only_after_other_actions_succeed() {
         &definitions,
         &[definition],
         &mut effects,
+        crate::skills::LearnedSkillModifiers::default(),
     )
     .expect_err("missing inventory must reject all actions");
     assert!(matches!(
@@ -312,6 +313,7 @@ fn quest_buff_actions_apply_hp_and_effects_only_after_other_actions_succeed() {
         &definitions,
         &[definition],
         &mut effects,
+        crate::skills::LearnedSkillModifiers::default(),
     )
     .expect("valid actions");
 

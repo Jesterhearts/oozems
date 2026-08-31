@@ -46,6 +46,7 @@ pub(super) async fn select_choice(
     let mut effects = mutation.effects;
     let consume_effects = state.catalog.consume_effect_definitions();
     validate_quest_npc_animation(&current, quest, npc)?;
+    let environment = quest_environment(state, &current, now_unix_ms)?;
     let selection = crate::quests::select_choice(
         current,
         &mut effects,
@@ -57,7 +58,7 @@ pub(super) async fn select_choice(
         state.catalog.item_definition_slice(),
         &consume_effects,
         &state.quest_scripts,
-        quest_environment(state, now_unix_ms),
+        environment,
     )
     .map_err(quest_rule_error)?;
     let is_restoration = choice_id == crate::quests::RESTORE_ITEMS_CHOICE_ID;
@@ -277,7 +278,7 @@ pub(super) async fn open_interaction(
     now_unix_ms: u64,
 ) -> Result<NpcInteractionResponse, ApiError> {
     let mut player = mutation.player.clone();
-    let environment = quest_environment(state, now_unix_ms);
+    let environment = quest_environment(state, &player, now_unix_ms)?;
     let effects = mutation.effects.clone();
     let quests = state.catalog.quests_for_npc(npc.npc_id);
     if let Some(quest) = player.quests.iter().find_map(|entry| {
@@ -716,12 +717,17 @@ pub(super) fn completed_restoration_for_npc<'a>(
 
 fn quest_environment(
     state: &AppState,
+    player: &PlayerState,
     now_unix_ms: u64,
-) -> crate::quests::QuestEnvironment {
-    crate::quests::QuestEnvironment {
+) -> Result<crate::quests::QuestEnvironment, ApiError> {
+    let context = state.catalog.skill_book_context(player)?;
+    let learned_skill_modifiers = crate::skills::learned_skill_modifiers(&context, player)
+        .map_err(crate::api::skill_rule_error)?;
+    Ok(crate::quests::QuestEnvironment {
         now_unix_ms,
         world_id: state.gameplay.world_id,
-    }
+        learned_skill_modifiers,
+    })
 }
 
 async fn persist_dialog_selection(

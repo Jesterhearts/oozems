@@ -106,31 +106,54 @@ pub fn calculate_basic_attack(
     player: &PlayerState,
     formulas: &FormulaCatalog,
     weapon_attack_bonus: i32,
+    strength_bonus: i32,
+    mastery: f64,
+    weapon: Option<crate::jobs::WeaponType>,
+    outgoing_damage_percent: u32,
 ) -> Result<DamageRange, AttackRuleError> {
     let stats = player.stats.as_ref().ok_or(AttackRuleError::MissingStats)?;
+    let profile_name = weapon.map_or("bare_hands", |weapon| weapon.profile_name);
     let profile = formulas
-        .weapon_profile("bare_hands")
-        .expect("bare-hands weapon profile is validated during startup");
-    let weapon_attack = evaluate_profile_property(
+        .weapon_profile(profile_name)
+        .expect("weapon profiles are validated during startup");
+    let weapon_attack = if weapon.is_none() {
+        evaluate_profile_property(
+            profile,
+            "attack",
+            &[("CharacterLevel", f64::from(player.level))],
+        )
+        .map_err(formula_error)?
+            + f64::from(weapon_attack_bonus)
+    } else {
+        f64::from(weapon_attack_bonus)
+    };
+    let (primary_stat, secondary_stat) = weapon_formula_stats(
         profile,
-        "attack",
-        &[("CharacterLevel", f64::from(player.level))],
-    )
-    .map_err(formula_error)?
-        + f64::from(weapon_attack_bonus);
+        weapon.map(|weapon| weapon.family),
+        stats.strength.saturating_add_signed(strength_bonus),
+        stats.dexterity,
+        stats.luck,
+    )?;
     let variables = [
         ("CharacterLevel", f64::from(player.level)),
         ("PlayerLevel", f64::from(player.level)),
-        ("Strength", f64::from(stats.strength)),
+        (
+            "Strength",
+            f64::from(stats.strength) + f64::from(strength_bonus),
+        ),
         ("Dexterity", f64::from(stats.dexterity)),
         ("Intelligence", f64::from(stats.intelligence)),
         ("Luck", f64::from(stats.luck)),
         ("WeaponAttack", weapon_attack),
         ("JobMultiplier", basic_attack_job_multiplier(stats.job_id)),
+        ("Mastery", mastery),
+        ("PrimaryStat", primary_stat),
+        ("SecondaryStat", secondary_stat),
     ];
     let range = evaluate_damage_profile(profile, &variables).map_err(formula_error)?;
-    let minimum = final_damage(range.minimum);
-    let maximum = final_damage(range.maximum);
+    let outgoing_multiplier = 1.0 + f64::from(outgoing_damage_percent) / 100.0;
+    let minimum = final_damage(range.minimum * outgoing_multiplier);
+    let maximum = final_damage(range.maximum * outgoing_multiplier);
     if minimum > maximum {
         return Err(AttackRuleError::Formula {
             message: format!(
@@ -140,6 +163,42 @@ pub fn calculate_basic_attack(
         });
     }
     Ok(DamageRange { minimum, maximum })
+}
+
+fn weapon_formula_stats(
+    profile: &crate::skill_formula::FormulaProfile,
+    family: Option<crate::jobs::WeaponFamily>,
+    strength: u32,
+    dexterity: u32,
+    luck: u32,
+) -> Result<(f64, f64), AttackRuleError> {
+    use crate::jobs::WeaponFamily;
+
+    let Some(family) = family else {
+        return Ok((0.0, 0.0));
+    };
+    let (primary, secondary) = match family {
+        WeaponFamily::Sword
+        | WeaponFamily::Axe
+        | WeaponFamily::BluntWeapon
+        | WeaponFamily::Wand
+        | WeaponFamily::Staff => (f64::from(strength), f64::from(dexterity)),
+        WeaponFamily::Spear | WeaponFamily::Polearm => (f64::from(strength), f64::from(dexterity)),
+        WeaponFamily::Dagger => (
+            f64::from(luck),
+            f64::from(strength.saturating_add(dexterity)),
+        ),
+        WeaponFamily::Bow | WeaponFamily::Crossbow | WeaponFamily::Gun => {
+            (f64::from(dexterity), f64::from(strength))
+        }
+        WeaponFamily::Knuckle => (f64::from(strength), f64::from(dexterity)),
+        WeaponFamily::Claw => return Ok((0.0, 0.0)),
+    };
+    // Character content renders basic weapon attacks with swingO1.
+    let modifier = evaluate_profile_property(profile, "primary_modifier", &[])
+        .or_else(|_| evaluate_profile_property(profile, "swing_modifier", &[]))
+        .map_err(formula_error)?;
+    Ok((primary * modifier, secondary))
 }
 
 pub fn basic_attack_interval(
@@ -267,7 +326,8 @@ mod tests {
         };
 
         assert_eq!(
-            calculate_basic_attack(&player, &formulas(), 0).expect("basic attack damage"),
+            calculate_basic_attack(&player, &formulas(), 0, 0, 0.1, None, 0)
+                .expect("basic attack damage"),
             DamageRange {
                 minimum: 1,
                 maximum: 5,
@@ -291,11 +351,47 @@ mod tests {
         };
         let formulas = formulas();
 
-        let bare_hands = calculate_basic_attack(&player, &formulas, 0).expect("bare-hands damage");
-        let weapon = calculate_basic_attack(&player, &formulas, 17).expect("weapon damage");
+        let bare_hands = calculate_basic_attack(&player, &formulas, 0, 0, 0.1, None, 0)
+            .expect("bare-hands damage");
+        let weapon = calculate_basic_attack(
+            &player,
+            &formulas,
+            17,
+            0,
+            0.1,
+            crate::jobs::weapon_type(1_302_000),
+            0,
+        )
+        .expect("weapon damage");
 
-        assert!(weapon.minimum > bare_hands.minimum);
+        assert!(weapon.minimum >= bare_hands.minimum);
         assert!(weapon.maximum > bare_hands.maximum);
+    }
+
+    #[test]
+    fn every_supported_weapon_family_has_a_usable_basic_attack_profile() {
+        let player = PlayerState {
+            level: 30,
+            stats: Some(CharacterStats {
+                strength: 40,
+                dexterity: 40,
+                intelligence: 40,
+                luck: 40,
+                ..CharacterStats::default()
+            }),
+            ..PlayerState::default()
+        };
+        let formulas = formulas();
+
+        for item_id in [
+            1_302_000, 1_312_000, 1_322_000, 1_332_000, 1_372_000, 1_382_000, 1_402_000, 1_412_000,
+            1_422_000, 1_432_000, 1_442_000, 1_452_000, 1_462_000, 1_472_000, 1_482_000, 1_492_000,
+        ] {
+            let weapon = crate::jobs::weapon_type(item_id).expect("supported weapon type");
+            let damage = calculate_basic_attack(&player, &formulas, 20, 0, 0.1, Some(weapon), 0)
+                .unwrap_or_else(|error| panic!("weapon {item_id} has no usable profile: {error}"));
+            assert!(damage.maximum > 1, "weapon {item_id} has trivial damage");
+        }
     }
 
     #[test]

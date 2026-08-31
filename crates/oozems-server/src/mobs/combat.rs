@@ -609,6 +609,8 @@ pub(super) fn calculate_player_damage(
     minimum_damage: u32,
     maximum_damage: u32,
     fixed_damage: bool,
+    critical_chance: u32,
+    critical_damage: u32,
     random_state: &mut u64,
 ) -> Result<u64, FormulaEvaluationError> {
     let (minimum, maximum) = if fixed_damage {
@@ -654,7 +656,16 @@ pub(super) fn calculate_player_damage(
     };
     let maximum = maximum.max(minimum);
     let width = maximum.saturating_sub(minimum).saturating_add(1);
-    Ok(minimum.saturating_add(next_u64(random_state) % width))
+    let damage = minimum.saturating_add(next_u64(random_state) % width);
+    if critical_chance == 0 || next_u64(random_state) % 100 >= u64::from(critical_chance.min(100)) {
+        return Ok(damage);
+    }
+    Ok(damage.saturating_add(
+        damage
+            .saturating_mul(u64::from(critical_damage))
+            .checked_div(100)
+            .unwrap_or_default(),
+    ))
 }
 
 fn final_damage(value: f64) -> u64 {
@@ -770,6 +781,8 @@ mod tests {
             20,
             20,
             false,
+            0,
+            0,
             &mut random_state,
         )
         .expect("player damage");
@@ -792,6 +805,8 @@ mod tests {
             10,
             10,
             true,
+            0,
+            0,
             &mut random_state,
         )
         .expect("fixed damage");

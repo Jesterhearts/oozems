@@ -121,6 +121,7 @@ pub async fn interact(
     let environment = crate::quests::QuestEnvironment {
         now_unix_ms,
         world_id: state.gameplay.world_id,
+        learned_skill_modifiers: crate::skills::LearnedSkillModifiers::default(),
     };
     let indicator_map = response.map.as_mut().unwrap_or(&mut map);
     response.quest_indicators = crate::quests::project_npc_quest_indicators(

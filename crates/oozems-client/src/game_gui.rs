@@ -592,9 +592,11 @@ fn skill_action_at(
         });
     }
     let icon_slot = repeated_skill_region(placement, row, "skill-row-action")?;
-    (skill.level > 0 && rect_contains(icon_slot, point)).then_some(GuiAction::UseSkill {
-        skill_id: definition.skill_id,
-    })
+    (skill.level > 0 && is_active_skill(definition) && rect_contains(icon_slot, point)).then_some(
+        GuiAction::UseSkill {
+            skill_id: definition.skill_id,
+        },
+    )
 }
 
 fn skill_at_point(
@@ -614,14 +616,24 @@ fn skill_at_point(
         viewport_height,
     )?;
     let icon_slot = repeated_skill_region(placement, row, "skill-row-action")?;
-    (skill.level > 0 && rect_contains(icon_slot, point))
-        .then(|| {
-            skill
-                .definition
-                .as_ref()
-                .map(|definition| definition.skill_id)
-        })
-        .flatten()
+    (skill.level > 0
+        && skill.definition.as_ref().is_some_and(is_active_skill)
+        && rect_contains(icon_slot, point))
+    .then(|| {
+        skill
+            .definition
+            .as_ref()
+            .map(|definition| definition.skill_id)
+    })
+    .flatten()
+}
+
+fn is_active_skill(definition: &oozems_proto::v1::SkillDefinition) -> bool {
+    matches!(
+        oozems_proto::v1::SkillActivation::try_from(definition.activation),
+        Ok(oozems_proto::v1::SkillActivation::Unspecified
+            | oozems_proto::v1::SkillActivation::Active)
+    )
 }
 
 pub fn hovered_skill<'a>(

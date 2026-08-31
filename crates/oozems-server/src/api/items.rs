@@ -18,6 +18,7 @@ use super::item_rule_error;
 use super::lock_player;
 use super::parse_player_id;
 use super::persist_player_mutation;
+use super::player_item_definitions;
 use super::prepare_player_mutation;
 use super::require_living_player;
 use super::unix_time_ms;
@@ -34,6 +35,7 @@ pub async fn equip_item(
     let activity_time_ms = unix_time_ms()?;
     let mutation =
         begin_player_mutation(&state, &player_guard, &player_id, activity_time_ms).await?;
+    let definitions = player_item_definitions(&state, &mutation.player).await?;
     crate::items::validate_inventory_selection(
         &mutation.player,
         request.inventory_index,
@@ -44,7 +46,7 @@ pub async fn equip_item(
     let updated = crate::items::equip_inventory_item(
         mutation.player.clone(),
         request.inventory_index,
-        state.catalog.as_ref(),
+        &definitions,
     )
     .map_err(item_rule_error)?;
     let committed =
@@ -77,12 +79,9 @@ pub async fn unequip_item(
     let activity_time_ms = unix_time_ms()?;
     let mutation =
         begin_player_mutation(&state, &player_guard, &player_id, activity_time_ms).await?;
-    let updated = crate::items::unequip_item(
-        mutation.player.clone(),
-        request.slot,
-        state.catalog.as_ref(),
-    )
-    .map_err(item_rule_error)?;
+    let definitions = player_item_definitions(&state, &mutation.player).await?;
+    let updated = crate::items::unequip_item(mutation.player.clone(), request.slot, &definitions)
+        .map_err(item_rule_error)?;
     let committed =
         persist_player_mutation(&state, &player_guard, mutation, updated, true, true).await?;
     let player = committed.player;
@@ -113,6 +112,7 @@ pub async fn drop_item(
     let activity_time_ms = unix_time_ms()?;
     let mutation =
         begin_player_mutation(&state, &player_guard, &player_id, activity_time_ms).await?;
+    let definitions = player_item_definitions(&state, &mutation.player).await?;
     crate::items::validate_inventory_selection(
         &mutation.player,
         request.inventory_index,
@@ -123,7 +123,7 @@ pub async fn drop_item(
     let removed = crate::items::remove_inventory_item(
         mutation.player.clone(),
         request.inventory_index,
-        state.catalog.as_ref(),
+        &definitions,
     )
     .map_err(item_rule_error)?;
     let staged_drop = crate::items::stage_inventory_drop(&state.drops, &removed)?;
@@ -165,6 +165,7 @@ pub async fn use_item(
     let activity_time_ms = unix_time_ms()?;
     let mut mutation =
         begin_player_mutation(&state, &player_guard, &player_id, activity_time_ms).await?;
+    let definitions = player_item_definitions(&state, &mutation.player).await?;
     require_living_player(&mutation.player, "use items")?;
     crate::items::validate_inventory_selection(
         &mutation.player,
@@ -176,7 +177,7 @@ pub async fn use_item(
     let used = crate::items::use_inventory_item(
         mutation.player.clone(),
         request.inventory_index,
-        state.catalog.as_ref(),
+        &definitions,
     )
     .map_err(item_rule_error)?;
     let consumes_inventory = used.category == ItemCategory::Consume;
@@ -238,6 +239,7 @@ pub async fn pick_up_item(
     let activity_time_ms = unix_time_ms()?;
     let mutation =
         begin_player_mutation(&state, &player_guard, &player_id, activity_time_ms).await?;
+    let definitions = player_item_definitions(&state, &mutation.player).await?;
     require_living_player(&mutation.player, "pick up items")?;
     let position = mutation
         .player
@@ -247,7 +249,7 @@ pub async fn pick_up_item(
         &state.drops,
         mutation.player.clone(),
         position,
-        state.catalog.as_ref(),
+        &definitions,
     )
     .map_err(pick_up_error)?;
     let map_id = picked.player.map_id;

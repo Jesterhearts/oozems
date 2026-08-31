@@ -88,6 +88,9 @@ fn spawn_mob(
             roam_left,
             roam_right,
             move_speed: movement_speed(definition.speed),
+            base_wz_speed: definition.speed,
+            speed_penalty: 0,
+            slow_expires_at_ms: 0,
             can_move,
             can_jump: definition.can_jump,
             flies,
@@ -189,7 +192,7 @@ fn roam_bounds(
     (left.clamp(0.0, map_right), right.clamp(0.0, map_right))
 }
 
-fn movement_speed(wz_speed: i32) -> f32 {
+pub(super) fn movement_speed(wz_speed: i32) -> f32 {
     let percentage = (100_i64 + i64::from(wz_speed)).clamp(0, 200) as f32;
     BASE_MOVE_SPEED * percentage / 100.0
 }

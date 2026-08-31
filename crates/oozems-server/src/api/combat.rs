@@ -58,6 +58,13 @@ pub async fn use_basic_attack(
     let player_layer = synchronized.platform_layer;
     let equipment = crate::items::equipment_stats(&player, state.catalog.as_ref())
         .map_err(super::item_rule_error)?;
+    let skill_context = super::load_skill_book(&state, &player).await?;
+    let learned = crate::skills::learned_skill_modifiers(&skill_context, &player)
+        .map_err(super::skill_rule_error)?;
+    let weapon = crate::items::equipped_weapon_type(&player);
+    let weapon_family = weapon.map(|weapon| weapon.family);
+    let combat_effects =
+        project_combat_effects(effects.projected(), equipment, learned, weapon_family);
     let attack_reach = player
         .inventory
         .as_ref()
@@ -75,11 +82,11 @@ pub async fn use_basic_attack(
     let damage = crate::attacks::calculate_basic_attack(
         &player,
         &state.formulas,
-        effects
-            .projected()
-            .modifiers
-            .weapon_attack
-            .saturating_add(equipment.weapon_attack),
+        combat_effects.modifiers.weapon_attack,
+        combat_effects.modifiers.strength,
+        crate::skills::weapon_mastery(learned, weapon_family),
+        weapon,
+        combat_effects.modifiers.outgoing_damage_percent,
     )
     .map_err(attack_rule_error)?;
     let mut dropped_items = crate::items::map_drops(&state.drops, map.id)?;
@@ -105,7 +112,6 @@ pub async fn use_basic_attack(
         fixed_damage: false,
         attack_type: crate::jobs::SkillAttackType::Physical,
     };
-    let combat_effects = project_combat_effects(effects.projected(), equipment);
     let simulation_result = match attack_reach {
         Some(reach) => {
             crate::mobs::use_player_attack_with_reach(
@@ -144,8 +150,15 @@ pub async fn use_basic_attack(
             return Err(error.into());
         }
     };
-    let prepared =
-        prepare_simulation_player_effects(&state, player, &simulation, effects, now_ms, false);
+    let prepared = prepare_simulation_player_effects(
+        &state,
+        player,
+        &simulation,
+        effects,
+        now_ms,
+        true,
+        false,
+    );
     crate::player_transaction::replace_staged_player(
         &mut transaction,
         prepared.player,

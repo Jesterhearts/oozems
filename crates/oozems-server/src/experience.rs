@@ -8,6 +8,7 @@ use std::path::PathBuf;
 
 use oozems_proto::v1::PlayerState;
 use serde::Deserialize;
+use sha2::Digest;
 use thiserror::Error;
 
 use crate::formula_parser::BinaryOperator;
@@ -16,6 +17,8 @@ use crate::formula_parser::Parser;
 
 const MAX_CONFIGURED_LEVEL: u32 = 10_000;
 const ABILITY_POINTS_PER_LEVEL: u32 = 5;
+const SKILL_POINTS_PER_LEVEL: u32 = 3;
+const MAX_RESOURCE: u32 = 30_000;
 
 #[derive(Clone, Debug)]
 pub struct ExperienceCurves {
@@ -165,9 +168,11 @@ pub fn grant_experience(
     mut player: PlayerState,
     amount: u64,
     curve: &ExperienceCurve,
+    learned: crate::skills::LearnedSkillModifiers,
 ) -> Result<PlayerState, ExperienceRuleError> {
     let player_id = player.id.clone();
     let mut level = player.level;
+    let mut skill_points = player.skill_points;
     let stats = player
         .stats
         .as_mut()
@@ -191,10 +196,67 @@ pub fn grant_experience(
             .ok_or_else(|| ExperienceRuleError::Overflow {
                 player_id: player_id.clone(),
             })?;
+        if !crate::jobs::is_beginner_job(stats.job_id) {
+            skill_points = skill_points
+                .checked_add(SKILL_POINTS_PER_LEVEL)
+                .ok_or_else(|| ExperienceRuleError::Overflow {
+                    player_id: player_id.clone(),
+                })?;
+        }
+        let (base_hp, base_mp) = level_resource_growth(&player_id, level, stats.job_id);
+        let hp_growth = base_hp.saturating_add(learned.max_hp_per_level);
+        let mp_growth = base_mp
+            .saturating_add(stats.intelligence / 10)
+            .saturating_add(learned.max_mp_per_level);
+        stats.max_hp = stats.max_hp.saturating_add(hp_growth).min(MAX_RESOURCE);
+        stats.max_mp = stats.max_mp.saturating_add(mp_growth).min(MAX_RESOURCE);
+        stats.hp = stats.max_hp;
+        stats.mp = stats.max_mp;
         stats.experience_required = required_for_level(curve, level)?;
     }
     player.level = level;
+    player.skill_points = skill_points;
     Ok(player)
+}
+
+fn level_resource_growth(
+    player_id: &str,
+    target_level: u32,
+    job_id: u32,
+) -> (u32, u32) {
+    use crate::jobs::GrowthFamily;
+
+    let (hp, mp) = match crate::jobs::growth_family(job_id) {
+        GrowthFamily::Beginner => ((12, 16), (10, 12)),
+        GrowthFamily::Warrior => ((24, 28), (4, 6)),
+        GrowthFamily::Magician => ((10, 14), (22, 24)),
+        GrowthFamily::Bowman | GrowthFamily::Thief => ((20, 24), (14, 16)),
+        GrowthFamily::Pirate => ((22, 28), (18, 23)),
+        GrowthFamily::Aran => ((44, 48), (4, 8)),
+    };
+    (
+        stable_growth_roll(player_id, target_level, b"level-hp", hp.0, hp.1),
+        stable_growth_roll(player_id, target_level, b"level-mp", mp.0, mp.1),
+    )
+}
+
+pub(crate) fn stable_growth_roll(
+    player_id: &str,
+    sequence: u32,
+    domain: &[u8],
+    minimum: u32,
+    maximum: u32,
+) -> u32 {
+    let mut digest = sha2::Sha256::new();
+    digest.update(b"oozems-v83-growth\0");
+    digest.update(domain);
+    digest.update(b"\0");
+    digest.update(player_id.as_bytes());
+    digest.update(sequence.to_le_bytes());
+    let bytes = digest.finalize();
+    let sample = u64::from_le_bytes(bytes[..8].try_into().expect("SHA-256 prefix"));
+    let width = u64::from(maximum - minimum + 1);
+    minimum + u32::try_from(sample % width).expect("growth range fits u32")
 }
 
 fn compile_curves(raw: CurveFile) -> Result<ExperienceCurves, String> {
@@ -671,13 +733,67 @@ formula = "10"
             ..PlayerState::default()
         };
 
-        let rewarded = grant_experience(player, 25, config.default_curve()).expect("reward XP");
+        let rewarded = grant_experience(
+            player,
+            25,
+            config.default_curve(),
+            crate::skills::LearnedSkillModifiers::default(),
+        )
+        .expect("reward XP");
         let stats = rewarded.stats.expect("rewarded stats");
 
         assert_eq!(rewarded.level, 3);
         assert_eq!(stats.experience, 5);
         assert_eq!(stats.experience_required, 10);
         assert_eq!(stats.ability_points, 10);
+    }
+
+    #[test]
+    fn level_up_applies_job_growth_passives_caps_and_full_recovery() {
+        let config = curves(
+            r#"
+default_curve = "growth"
+
+[[curves]]
+name = "growth"
+
+[[curves.ranges]]
+start = 1
+end = 2
+formula = "10"
+"#,
+        )
+        .expect("growth curve");
+        let player = PlayerState {
+            id: "warrior-growth".to_owned(),
+            level: 1,
+            skill_points: 1,
+            stats: Some(CharacterStats {
+                job_id: 100,
+                hp: 1,
+                max_hp: 100,
+                mp: 1,
+                max_mp: 50,
+                intelligence: 20,
+                ..CharacterStats::default()
+            }),
+            ..PlayerState::default()
+        };
+        let learned = crate::skills::LearnedSkillModifiers {
+            max_hp_per_level: 40,
+            ..crate::skills::LearnedSkillModifiers::default()
+        };
+
+        let player = grant_experience(player, 10, config.default_curve(), learned)
+            .expect("grant level-up experience");
+        let stats = player.stats.expect("stats");
+
+        assert_eq!(player.level, 2);
+        assert_eq!(player.skill_points, 4);
+        assert!((164..=168).contains(&stats.max_hp));
+        assert!((56..=58).contains(&stats.max_mp));
+        assert_eq!(stats.hp, stats.max_hp);
+        assert_eq!(stats.mp, stats.max_mp);
     }
 
     #[test]
