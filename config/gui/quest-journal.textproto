@@ -8,7 +8,7 @@ background {
 sprites: [{
   name: "quest-journal-detail-background"
   wz_path: "UIWindow.img/Quest/backgrnd2"
-  x: 245.0
+  x: 241.0
 }, {
   name: "quest-journal-close"
   wz_path: "UIWindow.img/BtUIClose/normal/0"
@@ -44,63 +44,63 @@ sprite_templates: [{
 regions: [{
   name: "quest-journal-tab-available"
   x: 12.0
-  y: 30.0
+  y: 23.0
   width: 66.0
   height: 22.0
 }, {
   name: "quest-journal-tab-in-progress"
   x: 82.0
-  y: 30.0
+  y: 23.0
   width: 72.0
   height: 22.0
 }, {
   name: "quest-journal-tab-completed"
   x: 158.0
-  y: 30.0
+  y: 23.0
   width: 66.0
   height: 22.0
 }, {
   name: "quest-journal-list"
-  x: 13.0
-  y: 59.0
-  width: 219.0
-  height: 286.0
+  x: 11.0
+  y: 45.0
+  width: 223.0
+  height: 302.0
 }, {
   name: "quest-journal-page-previous"
   x: 62.0
-  y: 353.0
+  y: 347.0
   width: 28.0
   height: 24.0
 }, {
   name: "quest-journal-page-label"
   x: 94.0
-  y: 353.0
+  y: 346.0
   width: 55.0
   height: 24.0
 }, {
   name: "quest-journal-page-next"
   x: 153.0
-  y: 353.0
+  y: 346.0
   width: 28.0
   height: 24.0
 }, {
   name: "quest-journal-detail-title"
-  x: 265.0
-  y: 35.0
-  width: 266.0
+  x: 275.0
+  y: 36.0
+  width: 257.0
   height: 22.0
 }, {
   name: "quest-journal-detail-summary"
-  x: 265.0
-  y: 68.0
-  width: 266.0
-  height: 105.0
+  x: 269.0
+  y: 62.0
+  width: 258.0
+  height: 50.0
 }, {
   name: "quest-journal-detail-objectives"
-  x: 265.0
-  y: 188.0
-  width: 266.0
-  height: 166.0
+  x: 263.0
+  y: 121.0
+  width: 272.0
+  height: 246.0
 }, {
   name: "window-drag-handle"
   width: 550.0
