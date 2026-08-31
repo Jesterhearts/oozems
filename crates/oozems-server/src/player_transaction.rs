@@ -730,11 +730,13 @@ mod tests {
     use oozems_proto::v1::CharacterAppearance;
     use oozems_proto::v1::CharacterGender;
     use oozems_proto::v1::CharacterStats;
+    use oozems_proto::v1::DroppedInventoryItem;
     use oozems_proto::v1::InventoryState;
     use oozems_proto::v1::Map;
     use oozems_proto::v1::Platform;
     use oozems_proto::v1::Portal;
     use oozems_proto::v1::Vec2;
+    use oozems_proto::v1::dropped_item;
 
     use super::*;
     use crate::attacks::BasicAttackCooldowns;
@@ -997,17 +999,12 @@ mod tests {
             .await
             .expect("create player");
         let drops = Arc::new(DropStore::new(Duration::from_secs(60)));
-        let dropped = DroppedItem {
-            id: "pickup-rollback".to_owned(),
-            item_id: 2_380_000,
-            position: Some(Vec2 { x: 10.0, y: 20.0 }),
-            despawn_at_unix_ms: u64::MAX,
-            quantity: 1,
-            expires_at_unix_ms: 0,
-        };
+        let item_id = 2_380_000;
+        let dropped =
+            dropped_inventory_item("pickup-rollback", item_id, Some(Vec2 { x: 10.0, y: 20.0 }));
         crate::items::restore_drop(&drops, 100, dropped.clone(), None).expect("seed drop");
         let definitions = [oozems_proto::v1::ItemDefinition {
-            item_id: dropped.item_id,
+            item_id,
             name: "Card".to_owned(),
             stack_max: 100,
             ..oozems_proto::v1::ItemDefinition::default()
@@ -1134,14 +1131,8 @@ mod tests {
             .await
             .expect("player guard");
         let drops = Arc::new(DropStore::new(Duration::from_secs(60)));
-        let conflicting_drop = DroppedItem {
-            id: "rollback-conflict".to_owned(),
-            item_id: 2_000_000,
-            position: player.position,
-            despawn_at_unix_ms: u64::MAX,
-            quantity: 1,
-            expires_at_unix_ms: 0,
-        };
+        let conflicting_drop =
+            dropped_inventory_item("rollback-conflict", 2_000_000, player.position);
         crate::items::restore_drop(
             &drops,
             player.map_id,
@@ -1231,6 +1222,23 @@ mod tests {
                 ..InventoryState::default()
             }),
             ..PlayerState::default()
+        }
+    }
+
+    fn dropped_inventory_item(
+        id: &str,
+        item_id: u32,
+        position: Option<Vec2>,
+    ) -> DroppedItem {
+        DroppedItem {
+            id: id.to_owned(),
+            position,
+            despawn_at_unix_ms: u64::MAX,
+            content: Some(dropped_item::Content::Item(DroppedInventoryItem {
+                item_id,
+                quantity: 1,
+                expires_at_unix_ms: 0,
+            })),
         }
     }
 

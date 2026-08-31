@@ -2,6 +2,7 @@ use oozems_proto::v1::Decoration;
 use oozems_proto::v1::DecorationFrame;
 use oozems_proto::v1::Map;
 use oozems_proto::v1::PortalFrame;
+use oozems_proto::v1::dropped_item;
 
 use crate::assets;
 use crate::assets::ready_image;
@@ -394,29 +395,35 @@ fn draw_dropped_items(
 ) {
     let now_ms = js_sys::Date::now().max(0.0) as u64;
     for drop in &game.world.map.dropped_items {
-        if drop.despawn_at_unix_ms <= now_ms
-            || (drop.expires_at_unix_ms != 0 && drop.expires_at_unix_ms <= now_ms)
-        {
+        if !crate::item_pickup::is_active(drop, now_ms) {
             continue;
         }
         let Some(position) = &drop.position else {
             continue;
         };
-        let Some(definition) = super::item_definition(game, drop.item_id) else {
-            continue;
-        };
-        draw_sprite(
-            game,
-            &definition.icon_asset_id,
-            position.x - definition.icon_width / 2.0,
-            position.y - definition.icon_height - 3.0
-                + crate::item_pickup::idle_offset(game.clock.now_ms),
-            definition.icon_width,
-            definition.icon_height,
-            false,
-            camera_x,
-            camera_y,
-        );
+        let idle_y = position.y + crate::item_pickup::idle_offset(game.clock.now_ms);
+        match drop.content.as_ref() {
+            Some(dropped_item::Content::Item(item)) => {
+                let Some(definition) = super::item_definition(game, item.item_id) else {
+                    continue;
+                };
+                draw_sprite(
+                    game,
+                    &definition.icon_asset_id,
+                    position.x - definition.icon_width / 2.0,
+                    idle_y - definition.icon_height - 3.0,
+                    definition.icon_width,
+                    definition.icon_height,
+                    false,
+                    camera_x,
+                    camera_y,
+                );
+            }
+            Some(dropped_item::Content::Mesos(_)) => {
+                draw_meso_coin(game, position.x, idle_y, camera_x, camera_y);
+            }
+            None => {}
+        }
     }
 }
 
@@ -429,26 +436,53 @@ fn draw_pickup_animations(
         return;
     };
     for animation in &game.world.pickup_animations {
-        let Some(definition) = super::item_definition(game, animation.item_id) else {
-            continue;
-        };
         let Some(position) =
             crate::item_pickup::flight_position(animation, target, game.clock.now_ms)
         else {
             continue;
         };
-        draw_sprite(
-            game,
-            &definition.icon_asset_id,
-            position.x - definition.icon_width / 2.0,
-            position.y - definition.icon_height - 3.0,
-            definition.icon_width,
-            definition.icon_height,
-            false,
-            camera_x,
-            camera_y,
-        );
+        match animation.content {
+            Some(crate::item_pickup::PickupContent::Item(item_id)) => {
+                let Some(definition) = super::item_definition(game, item_id) else {
+                    continue;
+                };
+                draw_sprite(
+                    game,
+                    &definition.icon_asset_id,
+                    position.x - definition.icon_width / 2.0,
+                    position.y - definition.icon_height - 3.0,
+                    definition.icon_width,
+                    definition.icon_height,
+                    false,
+                    camera_x,
+                    camera_y,
+                );
+            }
+            Some(crate::item_pickup::PickupContent::Mesos) => {
+                draw_meso_coin(game, position.x, position.y, camera_x, camera_y);
+            }
+            None => {}
+        }
     }
+}
+
+fn draw_meso_coin(
+    game: &Game,
+    world_x: f32,
+    world_y: f32,
+    camera_x: f64,
+    camera_y: f64,
+) {
+    let x = f64::from(world_x) - camera_x;
+    let y = f64::from(world_y) - camera_y - 9.0;
+    let context = &game.surface.context;
+    context.begin_path();
+    context.set_fill_style_str("#f7d34a");
+    context.set_stroke_style_str("#9f641d");
+    context.set_line_width(2.0);
+    let _ = context.arc(x, y, 6.0, 0.0, std::f64::consts::TAU);
+    context.fill();
+    context.stroke();
 }
 
 pub(super) fn portal_frame_index(

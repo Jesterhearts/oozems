@@ -184,10 +184,10 @@ struct InteractionUpdate {
 
 enum PreparedPlayerInstall {
     Update {
-        player: oozems_proto::v1::PlayerState,
+        player: Box<oozems_proto::v1::PlayerState>,
         active_buffs: super::buffs::ValidatedState,
     },
-    Relocation(super::responses::PreparedRelocation),
+    Relocation(Box<super::responses::PreparedRelocation>),
 }
 
 async fn request_and_prepare(
@@ -262,21 +262,21 @@ fn install_prepared_response(
                 "taxi destination position",
             )
             .map_err(|error| error.to_string())?;
-            PreparedPlayerInstall::Relocation(super::responses::prepare_relocation(
+            PreparedPlayerInstall::Relocation(Box::new(super::responses::prepare_relocation(
                 player,
                 active_buffs,
                 map,
                 authoritative,
                 &game.player.id,
                 expected_map_id,
-            )?)
+            )?))
         }
         None => {
             if update.response.map.is_some() || update.response.authoritative.is_some() {
                 return Err("NPC response contains an unexpected map transition".to_owned());
             }
             PreparedPlayerInstall::Update {
-                player,
+                player: Box::new(player),
                 active_buffs,
             }
         }
@@ -285,7 +285,7 @@ fn install_prepared_response(
         PreparedPlayerInstall::Relocation(prepared) => {
             super::movement_actions::install_prepared_relocation(
                 game,
-                prepared,
+                *prepared,
                 update.request_started_ms,
             )?
         }
@@ -293,7 +293,7 @@ fn install_prepared_response(
             player,
             active_buffs,
         } => {
-            let installed = super::install_full_player_update(game, player);
+            let installed = super::install_full_player_update(game, *player);
             super::install_active_buffs(game, active_buffs, update.request_started_ms);
             installed
         }

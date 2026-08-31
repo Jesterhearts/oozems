@@ -10,6 +10,7 @@ use clap::error::ErrorKind;
 use oozems_wz::OpenOptions;
 use oozems_wz::Region;
 use oozems_wz::archive_info;
+use oozems_wz::generate_loot;
 use oozems_wz::get;
 use oozems_wz::list;
 use oozems_wz::open_archive;
@@ -94,6 +95,21 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+
+    /// Generate independent loot definitions from local WZ facts and a policy.
+    GenerateLoot {
+        /// Directory containing the matching WZ archives used by the policy.
+        wz_data_directory: PathBuf,
+        /// Oozems-authored rates, formulas, and quantity policy.
+        #[arg(long)]
+        policy: PathBuf,
+        /// Destination loot TOML file.
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Atomically replace an existing destination file.
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -164,6 +180,19 @@ fn run(cli: Cli) -> Result<Value> {
             serde_json::to_value(set_value(&archive, &output, &path, value, options, force)?)
                 .context("failed to encode edit report")
         }
+        Command::GenerateLoot {
+            wz_data_directory,
+            policy,
+            output,
+            force,
+        } => serde_json::to_value(generate_loot(
+            &wz_data_directory,
+            &policy,
+            &output,
+            options,
+            force,
+        )?)
+        .context("failed to encode loot generation report"),
     }
 }
 
@@ -196,5 +225,35 @@ mod tests {
     #[test]
     fn command_definition_is_valid() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn generate_loot_requires_policy_and_output() {
+        let missing_policy = Cli::try_parse_from([
+            "oozems-wz",
+            "generate-loot",
+            "data",
+            "--output",
+            "loot.toml",
+        ])
+        .expect_err("policy is required");
+        assert_eq!(missing_policy.kind(), ErrorKind::MissingRequiredArgument);
+
+        let parsed = Cli::try_parse_from([
+            "oozems-wz",
+            "--region",
+            "gms",
+            "--wz-version",
+            "83",
+            "generate-loot",
+            "data",
+            "--policy",
+            "config/loot-policy.toml",
+            "--output",
+            "loot.toml",
+            "--force",
+        ])
+        .expect("complete generator command");
+        assert!(matches!(parsed.command, Command::GenerateLoot { .. }));
     }
 }

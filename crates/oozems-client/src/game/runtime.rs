@@ -116,10 +116,10 @@ pub(super) fn update(
         );
     }
     let now_ms = js_sys::Date::now().max(0.0) as u64;
-    game.world.map.dropped_items.retain(|drop| {
-        drop.despawn_at_unix_ms > now_ms
-            && (drop.expires_at_unix_ms == 0 || drop.expires_at_unix_ms > now_ms)
-    });
+    game.world
+        .map
+        .dropped_items
+        .retain(|drop| crate::item_pickup::is_active(drop, now_ms));
 
     let dead = player_is_dead(&game.player.state);
     let death_started = dead && !crate::death_ui::is_open(game.ui.death);

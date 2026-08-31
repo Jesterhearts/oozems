@@ -1,0 +1,189 @@
+# Oozems-authored 1x policy. WZ archives provide facts, not these rates.
+# Formula tables use: base + level * per_level + isqrt(exp) * per_experience_sqrt,
+# capped at maximum. All chances are per million and all ranges are inclusive.
+
+schema_version = 1
+policy_name    = "Oozems v83-inspired 1x"
+
+[item_class_ppm]
+equipment           = 1100
+recovery            = 16000
+mobility            = 4500
+scroll              = 650
+cure                = 8000
+ammo                = 14000
+rechargeable        = 450
+common_mob_material = 200000
+ore_crafting        = 5000
+miscellaneous       = 2500
+quest               = 220000
+
+[boss_multipliers.item]
+numerator   = 2
+denominator = 1
+
+[boss_multipliers.card]
+numerator   = 3
+denominator = 2
+
+[boss_multipliers.meso_chance]
+numerator   = 6
+denominator = 5
+
+[boss_multipliers.meso_value]
+numerator   = 3
+denominator = 1
+
+[card_chance]
+base                = 8000
+per_level           = 40
+per_experience_sqrt = 10
+maximum             = 25000
+
+[meso_chance]
+base                = 550000
+per_level           = 1800
+per_experience_sqrt = 100
+maximum             = 850000
+
+[meso_expected_value]
+base                = 4
+per_level           = 2
+per_experience_sqrt = 1
+maximum             = 250000
+
+[meso_range]
+spread_per_thousand = 500
+minimum             = 1
+
+[quantities.consumable]
+minimum_base             = 1
+minimum_levels_per_extra = 40
+maximum_base             = 1
+maximum_levels_per_extra = 20
+maximum                  = 6
+
+[quantities.material]
+minimum_base             = 1
+minimum_levels_per_extra = 80
+maximum_base             = 1
+maximum_levels_per_extra = 35
+maximum                  = 5
+
+[quantities.ammo]
+minimum_base             = 5
+minimum_levels_per_extra = 10
+maximum_base             = 10
+maximum_levels_per_extra = 5
+maximum                  = 100
+
+[quantities.single]
+minimum_base             = 1
+minimum_levels_per_extra = 10000
+maximum_base             = 1
+maximum_levels_per_extra = 10000
+maximum                  = 1
+
+# Quest.wz/Check.img/1035/1 requires one Tutorial Jr. Sentinel kill and one
+# Jr. Sentinel Shellpiece. QuestInfo.img/1035/1 explicitly links the shellpiece
+# collection to that hunt. The tutorial cannot progress without this row.
+[[mob_drops]]
+mob_id             = 9300018
+item_id            = 4031802
+quest_id           = 1035
+chance_per_million = 1000000
+minimum_quantity   = 1
+maximum_quantity   = 1
+
+# The classic second-job advancement tests are NPC-scripted rather than formal
+# Quest.wz quests. Map.wz provides dedicated maps with unique test mobs, while
+# String.wz identifies item 4031013 as the Dark Marble. All eight mobs below
+# supply the 30 marbles required by the warrior, magician, bowman, and thief
+# tests. source_map_id makes the generator verify each local WZ map relationship.
+[[mob_drops]]
+mob_id             = 9000001
+item_id            = 4031013
+source_map_id      = 108000200
+chance_per_million = 1000000
+minimum_quantity   = 1
+maximum_quantity   = 1
+
+[[mob_drops]]
+mob_id             = 9000002
+item_id            = 4031013
+source_map_id      = 108000200
+chance_per_million = 1000000
+minimum_quantity   = 1
+maximum_quantity   = 1
+
+[[mob_drops]]
+mob_id             = 9000100
+item_id            = 4031013
+source_map_id      = 108000300
+chance_per_million = 1000000
+minimum_quantity   = 1
+maximum_quantity   = 1
+
+[[mob_drops]]
+mob_id             = 9000101
+item_id            = 4031013
+source_map_id      = 108000300
+chance_per_million = 1000000
+minimum_quantity   = 1
+maximum_quantity   = 1
+
+[[mob_drops]]
+mob_id             = 9000200
+item_id            = 4031013
+source_map_id      = 108000100
+chance_per_million = 1000000
+minimum_quantity   = 1
+maximum_quantity   = 1
+
+[[mob_drops]]
+mob_id             = 9000201
+item_id            = 4031013
+source_map_id      = 108000100
+chance_per_million = 1000000
+minimum_quantity   = 1
+maximum_quantity   = 1
+
+[[mob_drops]]
+mob_id             = 9000300
+item_id            = 4031013
+source_map_id      = 108000400
+chance_per_million = 1000000
+minimum_quantity   = 1
+maximum_quantity   = 1
+
+[[mob_drops]]
+mob_id             = 9000301
+item_id            = 4031013
+source_map_id      = 108000400
+chance_per_million = 1000000
+minimum_quantity   = 1
+maximum_quantity   = 1
+
+# The pirate test uses one dedicated OctoPirate map. Its two advancement paths
+# require different killing skills and crystals: Flash Fist yields Potent Power
+# Crystals, while Double Shot yields Potent Wind Crystals.
+[[mob_drops]]
+mob_id             = 9001005
+item_id            = 4031856
+source_map_id      = 108000500
+required_skill_id  = 5001001
+chance_per_million = 1000000
+minimum_quantity   = 1
+maximum_quantity   = 1
+
+[[mob_drops]]
+mob_id             = 9001005
+item_id            = 4031857
+source_map_id      = 108000500
+required_skill_id  = 5001003
+chance_per_million = 1000000
+minimum_quantity   = 1
+maximum_quantity   = 1
+
+# No global rows are included intentionally. WZ does not establish global item
+# relationships. Users may add explicit [[global_drops]] item or meso rows.

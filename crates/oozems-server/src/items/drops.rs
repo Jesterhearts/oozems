@@ -12,9 +12,11 @@ use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
 use crossbeam_skiplist::SkipMap;
+use oozems_proto::v1::DroppedInventoryItem;
 use oozems_proto::v1::DroppedItem;
 use oozems_proto::v1::PlayerState;
 use oozems_proto::v1::Vec2;
+use oozems_proto::v1::dropped_item;
 use thiserror::Error;
 
 use super::inventory::ItemDefinitionLookup;
@@ -147,7 +149,7 @@ pub fn stage_inventory_drop(
     let despawn_at_unix_ms = drop_expiry(store, now_ms)?;
     Ok(StagedDropGrant {
         map_id: removed.map_id,
-        item: new_drop(
+        item: new_item_drop(
             store,
             removed.item_id,
             removed.quantity,
@@ -167,7 +169,7 @@ fn create_drop_at(
     now_ms: u64,
 ) -> Result<DroppedItem, DropStoreError> {
     let despawn_at_unix_ms = drop_expiry(store, now_ms)?;
-    let item = new_drop(
+    let item = new_item_drop(
         store,
         removed.item_id,
         removed.quantity,
@@ -189,7 +191,14 @@ pub fn create_mob_drops(
     item_ids: &[u32],
     owner_player_id: &str,
 ) -> Result<Vec<DroppedItem>, DropStoreError> {
-    let staged = stage_combat_drops(store, map_id, position, item_ids, owner_player_id)?;
+    let loot = item_ids
+        .iter()
+        .map(|item_id| crate::loot::RolledLoot::Item {
+            item_id: *item_id,
+            quantity: 1,
+        })
+        .collect::<Vec<_>>();
+    let staged = stage_combat_drops(store, map_id, position, &loot, owner_player_id)?;
     let items = staged.iter().map(|grant| grant.item.clone()).collect();
     commit_staged_drops(store, &staged)?;
     Ok(items)
@@ -199,17 +208,17 @@ pub fn stage_combat_drops(
     store: &DropStore,
     map_id: u32,
     position: Vec2,
-    item_ids: &[u32],
+    loot: &[crate::loot::RolledLoot],
     owner_player_id: &str,
 ) -> Result<Vec<StagedDropGrant>, DropStoreError> {
-    if item_ids.is_empty() {
+    if loot.is_empty() {
         return Ok(Vec::new());
     }
     stage_combat_drops_at(
         store,
         map_id,
         position,
-        item_ids,
+        loot,
         owner_player_id,
         unix_time_ms()?,
     )
@@ -219,26 +228,36 @@ fn stage_combat_drops_at(
     store: &DropStore,
     map_id: u32,
     position: Vec2,
-    item_ids: &[u32],
+    loot: &[crate::loot::RolledLoot],
     owner_player_id: &str,
     now_ms: u64,
 ) -> Result<Vec<StagedDropGrant>, DropStoreError> {
     let despawn_at_unix_ms = drop_expiry(store, now_ms)?;
     let owner_player_id = owner_player_id.to_owned();
-    Ok(item_ids
+    let count = loot.len();
+    Ok(loot
         .iter()
         .enumerate()
-        .map(|(index, item_id)| StagedDropGrant {
+        .map(|(index, loot)| StagedDropGrant {
             map_id,
-            item: new_drop(
-                store,
-                *item_id,
-                1,
-                0,
-                spread_position(position, index, item_ids.len()),
-                now_ms,
-                despawn_at_unix_ms,
-            ),
+            item: match loot {
+                crate::loot::RolledLoot::Item { item_id, quantity } => new_item_drop(
+                    store,
+                    *item_id,
+                    *quantity,
+                    0,
+                    spread_position(position, index, count),
+                    now_ms,
+                    despawn_at_unix_ms,
+                ),
+                crate::loot::RolledLoot::Mesos { amount } => new_meso_drop(
+                    store,
+                    *amount,
+                    spread_position(position, index, count),
+                    now_ms,
+                    despawn_at_unix_ms,
+                ),
+            },
             owner_player_id: Some(owner_player_id.clone()),
         })
         .collect())
@@ -370,7 +389,7 @@ fn drop_expiry(
         .ok_or(DropStoreError::ExpiryOverflow)
 }
 
-fn new_drop(
+fn new_item_drop(
     store: &DropStore,
     item_id: u32,
     quantity: u32,
@@ -379,14 +398,48 @@ fn new_drop(
     now_ms: u64,
     despawn_at_unix_ms: u64,
 ) -> DroppedItem {
+    new_drop(
+        store,
+        dropped_item::Content::Item(DroppedInventoryItem {
+            item_id,
+            quantity,
+            expires_at_unix_ms,
+        }),
+        position,
+        now_ms,
+        despawn_at_unix_ms,
+    )
+}
+
+fn new_meso_drop(
+    store: &DropStore,
+    amount: u64,
+    position: Vec2,
+    now_ms: u64,
+    despawn_at_unix_ms: u64,
+) -> DroppedItem {
+    new_drop(
+        store,
+        dropped_item::Content::Mesos(amount),
+        position,
+        now_ms,
+        despawn_at_unix_ms,
+    )
+}
+
+fn new_drop(
+    store: &DropStore,
+    content: dropped_item::Content,
+    position: Vec2,
+    now_ms: u64,
+    despawn_at_unix_ms: u64,
+) -> DroppedItem {
     let sequence = store.next_id.fetch_add(1, Ordering::Relaxed);
     DroppedItem {
         id: format!("drop-{now_ms:x}-{sequence:x}"),
-        item_id,
         position: Some(position),
         despawn_at_unix_ms,
-        quantity,
-        expires_at_unix_ms,
+        content: Some(content),
     }
 }
 
@@ -865,28 +918,52 @@ fn apply_picked_up_item(
     position: Vec2,
     definitions: &(impl ItemDefinitionLookup + ?Sized),
 ) -> Result<PlayerState, ItemRuleError> {
-    let item_id = selected.item.item_id;
-    let quantity = selected.item.quantity;
-    if quantity == 0 {
-        return Err(ItemRuleError::InvalidQuantity { item_id });
-    }
-    if let Some(card) = definitions.monster_book_card(item_id) {
-        debug_assert_eq!(card.item_id, item_id);
-        debug_assert_eq!(card.max_count, crate::monster_book::MAX_CARD_COUNT);
-        crate::monster_book::add_card(&mut player.monster_book_cards, item_id);
-    } else {
-        let inventory = player
-            .inventory
-            .as_mut()
-            .ok_or(ItemRuleError::MissingInventory)?;
-        canonicalize_inventory(inventory, definitions)?;
-        apply_item_grant(
-            inventory,
-            definitions,
-            item_id,
-            u64::from(quantity),
-            selected.item.expires_at_unix_ms,
-        )?;
+    match selected
+        .item
+        .content
+        .as_ref()
+        .ok_or(ItemRuleError::MissingDropContent)?
+    {
+        dropped_item::Content::Item(item) => {
+            if item.quantity == 0 {
+                return Err(ItemRuleError::InvalidQuantity {
+                    item_id: item.item_id,
+                });
+            }
+            if let Some(card) = definitions.monster_book_card(item.item_id) {
+                debug_assert_eq!(card.item_id, item.item_id);
+                debug_assert_eq!(card.max_count, crate::monster_book::MAX_CARD_COUNT);
+                crate::monster_book::add_cards(
+                    &mut player.monster_book_cards,
+                    item.item_id,
+                    item.quantity,
+                );
+            } else {
+                let inventory = player
+                    .inventory
+                    .as_mut()
+                    .ok_or(ItemRuleError::MissingInventory)?;
+                canonicalize_inventory(inventory, definitions)?;
+                apply_item_grant(
+                    inventory,
+                    definitions,
+                    item.item_id,
+                    u64::from(item.quantity),
+                    item.expires_at_unix_ms,
+                )?;
+            }
+        }
+        dropped_item::Content::Mesos(amount) => {
+            if *amount == 0 {
+                return Err(ItemRuleError::InvalidMesoAmount);
+            }
+            let mesos = player
+                .mesos
+                .checked_add(*amount)
+                .filter(|mesos| *mesos <= i64::MAX as u64)
+                .ok_or(ItemRuleError::MesosOverflow)?;
+            player.mesos = mesos;
+        }
     }
     player.position = Some(position);
     Ok(player)
@@ -902,10 +979,11 @@ fn squared_distance(
 }
 
 fn drop_deadline(item: &DroppedItem) -> u64 {
-    if item.expires_at_unix_ms == 0 {
-        item.despawn_at_unix_ms
-    } else {
-        item.despawn_at_unix_ms.min(item.expires_at_unix_ms)
+    match item.content.as_ref() {
+        Some(dropped_item::Content::Item(content)) if content.expires_at_unix_ms != 0 => {
+            item.despawn_at_unix_ms.min(content.expires_at_unix_ms)
+        }
+        _ => item.despawn_at_unix_ms,
     }
 }
 
@@ -924,6 +1002,7 @@ mod tests {
     use std::sync::mpsc;
     use std::time::Duration;
 
+    use oozems_proto::v1::DroppedInventoryItem;
     use oozems_proto::v1::DroppedItem;
     use oozems_proto::v1::EquipmentSlot;
     use oozems_proto::v1::InventoryItemStack;
@@ -931,6 +1010,7 @@ mod tests {
     use oozems_proto::v1::ItemDefinition;
     use oozems_proto::v1::PlayerState;
     use oozems_proto::v1::Vec2;
+    use oozems_proto::v1::dropped_item;
 
     use super::DropStore;
     use super::DropStoreError;
@@ -946,6 +1026,7 @@ mod tests {
     use super::pick_up_nearest;
     use super::restore_drop;
     use super::rollback_staged_drops;
+    use super::stage_combat_drops;
     use crate::items::ItemDefinitionLookup;
     use crate::items::ItemRuleError;
     use crate::items::SPARE_BOTTOM_ID;
@@ -964,14 +1045,7 @@ mod tests {
     ) -> StagedDropGrant {
         StagedDropGrant {
             map_id,
-            item: DroppedItem {
-                id: id.to_owned(),
-                item_id: STACKABLE_ITEM_ID,
-                position: Some(Vec2 { x: 10.0, y: 20.0 }),
-                despawn_at_unix_ms: u64::MAX,
-                quantity: 1,
-                expires_at_unix_ms: 0,
-            },
+            item: item_drop(id, STACKABLE_ITEM_ID, 1, 0, Vec2 { x: 10.0, y: 20.0 }),
             owner_player_id: None,
         }
     }
@@ -1185,8 +1259,8 @@ mod tests {
 
         let drop = create_drop(&store, &removed).expect("create drop");
 
-        assert_eq!(drop.quantity, 1);
-        assert_eq!(drop.expires_at_unix_ms, 0);
+        assert_eq!(inventory_item(&drop).quantity, 1);
+        assert_eq!(inventory_item(&drop).expires_at_unix_ms, 0);
         assert_eq!(map_drops(&store, 100).expect("map drops"), vec![drop]);
         assert!(map_drops(&store, 101).expect("other map drops").is_empty());
     }
@@ -1249,14 +1323,13 @@ mod tests {
     fn pickup_rejects_zero_quantity_without_consuming_the_drop() {
         let definitions = vec![stackable_definition()];
         let store = DropStore::new(Duration::from_secs(600));
-        let drop = DroppedItem {
-            id: "zero-quantity-drop".to_owned(),
-            item_id: STACKABLE_ITEM_ID,
-            position: Some(Vec2 { x: 20.0, y: 30.0 }),
-            despawn_at_unix_ms: u64::MAX,
-            quantity: 0,
-            expires_at_unix_ms: 0,
-        };
+        let drop = item_drop(
+            "zero-quantity-drop",
+            STACKABLE_ITEM_ID,
+            0,
+            0,
+            Vec2 { x: 20.0, y: 30.0 },
+        );
         restore_drop(&store, 100, drop.clone(), None).expect("restore drop");
         let position = drop.position.expect("drop position");
 
@@ -1283,14 +1356,13 @@ mod tests {
             ..InventoryState::default()
         });
         let store = DropStore::new(Duration::from_secs(600));
-        let drop = DroppedItem {
-            id: "quantity-drop".to_owned(),
-            item_id: STACKABLE_ITEM_ID,
-            position: Some(Vec2 { x: 20.0, y: 30.0 }),
-            despawn_at_unix_ms: u64::MAX,
-            quantity: 6,
-            expires_at_unix_ms: 0,
-        };
+        let drop = item_drop(
+            "quantity-drop",
+            STACKABLE_ITEM_ID,
+            6,
+            0,
+            Vec2 { x: 20.0, y: 30.0 },
+        );
         restore_drop(&store, 100, drop, None).expect("restore drop");
 
         let picked = pick_up_nearest(&store, player, Vec2 { x: 20.0, y: 30.0 }, &definitions)
@@ -1300,6 +1372,87 @@ mod tests {
             picked.player.inventory.expect("inventory").stacks[0].quantity,
             10
         );
+    }
+
+    #[test]
+    fn combat_loot_stages_item_quantities_and_mesos_as_typed_drops() {
+        let store = DropStore::new(Duration::from_secs(600));
+        let staged = stage_combat_drops(
+            &store,
+            100,
+            Vec2 { x: 20.0, y: 30.0 },
+            &[
+                crate::loot::RolledLoot::Item {
+                    item_id: STACKABLE_ITEM_ID,
+                    quantity: 3,
+                },
+                crate::loot::RolledLoot::Mesos { amount: 25 },
+            ],
+            "owner",
+        )
+        .expect("stage combat loot");
+
+        assert_eq!(inventory_item(staged[0].item()).quantity, 3);
+        assert!(matches!(
+            staged[1].item().content,
+            Some(dropped_item::Content::Mesos(25))
+        ));
+    }
+
+    #[test]
+    fn pickup_credits_mesos_without_requiring_inventory() {
+        let store = DropStore::new(Duration::from_secs(600));
+        let position = Vec2 { x: 20.0, y: 30.0 };
+        let mut player = player();
+        player.inventory = None;
+        player.mesos = 75;
+        restore_drop(&store, 100, meso_drop("mesos", 25, position), None)
+            .expect("restore meso drop");
+
+        let picked = pick_up_nearest(&store, player, position, &[]).expect("pick up mesos");
+
+        assert_eq!(picked.player.mesos, 100);
+        assert!(map_drops(&store, 100).expect("map drops").is_empty());
+    }
+
+    #[test]
+    fn pickup_rejects_invalid_meso_content_without_consuming_the_drop() {
+        let position = Vec2 { x: 20.0, y: 30.0 };
+        for (amount, starting_mesos, expected_error) in [
+            (0, 0, ItemRuleError::InvalidMesoAmount),
+            (1, i64::MAX as u64, ItemRuleError::MesosOverflow),
+        ] {
+            let store = DropStore::new(Duration::from_secs(600));
+            let drop = meso_drop("invalid-mesos", amount, position);
+            restore_drop(&store, 100, drop.clone(), None).expect("restore meso drop");
+            let mut player = player();
+            player.mesos = starting_mesos;
+
+            assert!(matches!(
+                pick_up_nearest(&store, player, position, &[]),
+                Err(PickUpError::Rule(error)) if error == expected_error
+            ));
+            assert_eq!(map_drops(&store, 100).expect("map drops"), vec![drop]);
+        }
+    }
+
+    #[test]
+    fn pickup_rejects_missing_content_without_consuming_the_drop() {
+        let store = DropStore::new(Duration::from_secs(600));
+        let position = Vec2 { x: 20.0, y: 30.0 };
+        let drop = DroppedItem {
+            id: "missing-content".to_owned(),
+            position: Some(position),
+            despawn_at_unix_ms: u64::MAX,
+            content: None,
+        };
+        restore_drop(&store, 100, drop.clone(), None).expect("restore malformed drop");
+
+        assert!(matches!(
+            pick_up_nearest(&store, player(), position, &[]),
+            Err(PickUpError::Rule(ItemRuleError::MissingDropContent))
+        ));
+        assert_eq!(map_drops(&store, 100).expect("map drops"), vec![drop]);
     }
 
     #[test]
@@ -1402,8 +1555,11 @@ mod tests {
         let store = DropStore::new(Duration::from_secs(600));
 
         let drop = create_drop(&store, &removed).expect("create expiring drop");
-        assert_eq!(drop.expires_at_unix_ms, u64::MAX);
-        assert_ne!(drop.despawn_at_unix_ms, drop.expires_at_unix_ms);
+        assert_eq!(inventory_item(&drop).expires_at_unix_ms, u64::MAX);
+        assert_ne!(
+            drop.despawn_at_unix_ms,
+            inventory_item(&drop).expires_at_unix_ms
+        );
         let picked = pick_up_nearest(
             &store,
             removed.player,
@@ -1422,14 +1578,13 @@ mod tests {
     fn item_expiration_removes_a_drop_before_its_normal_despawn() {
         let definitions = vec![stackable_definition()];
         let store = DropStore::new(Duration::from_secs(600));
-        let drop = DroppedItem {
-            id: "expired-item-drop".to_owned(),
-            item_id: STACKABLE_ITEM_ID,
-            position: Some(Vec2 { x: 20.0, y: 30.0 }),
-            despawn_at_unix_ms: u64::MAX,
-            quantity: 1,
-            expires_at_unix_ms: 1,
-        };
+        let drop = item_drop(
+            "expired-item-drop",
+            STACKABLE_ITEM_ID,
+            1,
+            1,
+            Vec2 { x: 20.0, y: 30.0 },
+        );
         restore_drop(&store, 100, drop, None).expect("restore expired drop");
         let mut player = player();
         player.inventory = Some(InventoryState {
@@ -1458,14 +1613,13 @@ mod tests {
             ..InventoryState::default()
         });
         let store = DropStore::new(Duration::from_secs(600));
-        let drop = DroppedItem {
-            id: "full-inventory-drop".to_owned(),
-            item_id: STACKABLE_ITEM_ID,
-            position: Some(Vec2 { x: 20.0, y: 30.0 }),
-            despawn_at_unix_ms: u64::MAX,
-            quantity: 3,
-            expires_at_unix_ms: 0,
-        };
+        let drop = item_drop(
+            "full-inventory-drop",
+            STACKABLE_ITEM_ID,
+            3,
+            0,
+            Vec2 { x: 20.0, y: 30.0 },
+        );
         restore_drop(&store, 100, drop.clone(), Some("local".to_owned())).expect("restore drop");
 
         assert!(matches!(
@@ -1512,7 +1666,7 @@ mod tests {
         owner.id = "owner".to_owned();
         let picked = pick_up_nearest(&store, owner, position, &definitions).expect("owner pickup");
 
-        assert_eq!(drops[0].quantity, 1);
+        assert_eq!(inventory_item(&drops[0]).quantity, 1);
         assert_eq!(picked.drop.id, drops[0].id);
         assert_eq!(picked.owner_player_id.as_deref(), Some("owner"));
     }
@@ -1575,13 +1729,45 @@ mod tests {
         id: &str,
         position: Vec2,
     ) -> DroppedItem {
+        item_drop(id, CARD_ITEM_ID, 1, 0, position)
+    }
+
+    fn item_drop(
+        id: &str,
+        item_id: u32,
+        quantity: u32,
+        expires_at_unix_ms: u64,
+        position: Vec2,
+    ) -> DroppedItem {
         DroppedItem {
             id: id.to_owned(),
-            item_id: CARD_ITEM_ID,
             position: Some(position),
             despawn_at_unix_ms: u64::MAX,
-            quantity: 1,
-            expires_at_unix_ms: 0,
+            content: Some(dropped_item::Content::Item(DroppedInventoryItem {
+                item_id,
+                quantity,
+                expires_at_unix_ms,
+            })),
+        }
+    }
+
+    fn meso_drop(
+        id: &str,
+        amount: u64,
+        position: Vec2,
+    ) -> DroppedItem {
+        DroppedItem {
+            id: id.to_owned(),
+            position: Some(position),
+            despawn_at_unix_ms: u64::MAX,
+            content: Some(dropped_item::Content::Mesos(amount)),
+        }
+    }
+
+    fn inventory_item(drop: &DroppedItem) -> &DroppedInventoryItem {
+        match drop.content.as_ref() {
+            Some(dropped_item::Content::Item(item)) => item,
+            Some(dropped_item::Content::Mesos(_)) | None => panic!("expected inventory item drop"),
         }
     }
 }

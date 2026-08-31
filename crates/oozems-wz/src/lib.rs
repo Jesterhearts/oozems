@@ -1,6 +1,7 @@
 mod archive;
 mod edit;
 mod inspect;
+mod loot;
 mod verify;
 
 pub use archive::Archive;
@@ -22,3 +23,5 @@ pub use inspect::archive_info;
 pub use inspect::get;
 pub use inspect::list;
 pub use inspect::tree;
+pub use loot::GenerationReport;
+pub use loot::generate_loot;

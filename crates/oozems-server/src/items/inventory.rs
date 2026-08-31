@@ -96,6 +96,10 @@ pub enum ItemRuleError {
     UnsellableItem { item_id: u32 },
     #[error("the mesos balance exceeds the supported range")]
     MesosOverflow,
+    #[error("the dropped item has no content")]
+    MissingDropContent,
+    #[error("the dropped meso amount must be greater than zero")]
+    InvalidMesoAmount,
     #[error("the player does not have a valid map position")]
     MissingPosition,
     #[error("there is no dropped item close enough to pick up")]

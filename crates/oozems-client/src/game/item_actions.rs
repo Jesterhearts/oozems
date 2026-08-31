@@ -218,8 +218,7 @@ fn install_item_action_update(
         && player_map_id == game.world.map.id
         && {
             let now_ms = js_sys::Date::now().max(0.0) as u64;
-            drop.despawn_at_unix_ms > now_ms
-                && (drop.expires_at_unix_ms == 0 || drop.expires_at_unix_ms > now_ms)
+            crate::item_pickup::is_active(&drop, now_ms)
         }
     {
         game.world.map.dropped_items.push(drop);

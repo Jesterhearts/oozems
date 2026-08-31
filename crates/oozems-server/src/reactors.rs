@@ -46,7 +46,7 @@ pub(super) struct ReactorAttackResult {
     pub(super) before: ReactorAttackState,
     pub(super) after: ReactorAttackState,
     pub(super) destroyed: bool,
-    pub(super) item_ids: Vec<u32>,
+    pub(super) loot: Vec<crate::loot::RolledLoot>,
 }
 
 #[derive(Clone, Debug)]
@@ -189,8 +189,8 @@ pub(super) fn prepare_attack(
             .respawn_delay_ms
             .map(|delay| now_ms.saturating_add(delay));
     }
-    let item_ids = if destroyed {
-        crate::loot::roll_reactor_items(
+    let loot = if destroyed {
+        crate::loot::roll_reactor_loot(
             loot,
             reactor.definition_id,
             player,
@@ -208,7 +208,7 @@ pub(super) fn prepare_attack(
         before,
         after: attack_state(reactor),
         destroyed,
-        item_ids,
+        loot,
     })
 }
 

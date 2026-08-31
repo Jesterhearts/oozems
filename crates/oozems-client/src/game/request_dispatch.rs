@@ -373,7 +373,13 @@ pub(super) fn collect_refresh_requests(
                 .map(|stack| stack.item_id)
                 .chain(inventory.equipment.iter().map(|equipped| equipped.item_id))
         })
-        .chain(game.world.map.dropped_items.iter().map(|drop| drop.item_id))
+        .chain(
+            game.world
+                .map
+                .dropped_items
+                .iter()
+                .filter_map(crate::item_pickup::item_id),
+        )
         .chain(super::buffs::item_source_ids(&game.player.active_buffs))
         .collect::<Vec<_>>();
     if crate::quest_tracker::needs_refresh(&game.ui.gui, &game.player.state) {

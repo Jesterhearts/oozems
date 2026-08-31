@@ -1,5 +1,6 @@
 use oozems_proto::v1::DroppedItem;
 use oozems_proto::v1::Vec2;
+use oozems_proto::v1::dropped_item;
 
 const DROPPED_ITEM_BOB_HEIGHT: f64 = 4.0;
 const DROPPED_ITEM_BOB_PERIOD_MS: f64 = 1_400.0;
@@ -10,10 +11,46 @@ const PICKUP_TARGET_HEIGHT: f32 = 28.0;
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct PickupAnimation {
     drop_id: String,
-    pub(crate) item_id: u32,
+    pub(crate) content: Option<PickupContent>,
     pub(crate) start: Option<Vec2>,
     started_ms: f64,
     reconciled: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PickupContent {
+    Item(u32),
+    Mesos,
+}
+
+pub(crate) fn content(drop: &DroppedItem) -> Option<PickupContent> {
+    match drop.content.as_ref()? {
+        dropped_item::Content::Item(item) => Some(PickupContent::Item(item.item_id)),
+        dropped_item::Content::Mesos(_) => Some(PickupContent::Mesos),
+    }
+}
+
+pub(crate) fn item_id(drop: &DroppedItem) -> Option<u32> {
+    match content(drop) {
+        Some(PickupContent::Item(item_id)) => Some(item_id),
+        Some(PickupContent::Mesos) | None => None,
+    }
+}
+
+pub(crate) fn is_active(
+    drop: &DroppedItem,
+    now_ms: u64,
+) -> bool {
+    if drop.despawn_at_unix_ms <= now_ms {
+        return false;
+    }
+    match drop.content.as_ref() {
+        Some(dropped_item::Content::Item(item)) => {
+            item.expires_at_unix_ms == 0 || item.expires_at_unix_ms > now_ms
+        }
+        Some(dropped_item::Content::Mesos(amount)) => *amount > 0,
+        None => false,
+    }
 }
 
 pub(crate) fn start(
@@ -26,7 +63,7 @@ pub(crate) fn start(
         .iter()
         .position(|drop| drop.id == drop_id)
         .map(|index| dropped_items.remove(index));
-    let item_id = drop.as_ref().map_or(0, |drop| drop.item_id);
+    let content = drop.as_ref().and_then(content);
     let start = drop.and_then(|drop| drop.position).map(|mut position| {
         position.y += idle_offset(timestamp_ms);
         position
@@ -34,7 +71,7 @@ pub(crate) fn start(
     animations.retain(|animation| animation.drop_id != drop_id);
     animations.push(PickupAnimation {
         drop_id: drop_id.to_owned(),
-        item_id,
+        content,
         start,
         started_ms: timestamp_ms,
         reconciled: false,
@@ -101,13 +138,19 @@ fn elapsed_ms(
 
 #[cfg(test)]
 mod tests {
+    use oozems_proto::v1::DroppedInventoryItem;
     use oozems_proto::v1::DroppedItem;
     use oozems_proto::v1::Vec2;
+    use oozems_proto::v1::dropped_item;
 
     use super::PICKUP_FLIGHT_DURATION_MS;
     use super::PickupAnimation;
+    use super::PickupContent;
+    use super::content;
     use super::flight_position;
     use super::idle_offset;
+    use super::is_active;
+    use super::item_id;
     use super::reconcile_snapshot;
     use super::start;
     use super::update;
@@ -115,18 +158,8 @@ mod tests {
     #[test]
     fn pickup_moves_the_confirmed_drop_into_animation_state() {
         let mut dropped_items = vec![
-            DroppedItem {
-                id: "other".to_owned(),
-                item_id: 1,
-                position: Some(Vec2 { x: 10.0, y: 20.0 }),
-                ..DroppedItem::default()
-            },
-            DroppedItem {
-                id: "picked".to_owned(),
-                item_id: 2,
-                position: Some(Vec2 { x: 30.0, y: 40.0 }),
-                ..DroppedItem::default()
-            },
+            item_drop("other", 1, Vec2 { x: 10.0, y: 20.0 }),
+            item_drop("picked", 2, Vec2 { x: 30.0, y: 40.0 }),
         ];
         let mut animations = Vec::new();
 
@@ -138,7 +171,7 @@ mod tests {
             animations,
             vec![PickupAnimation {
                 drop_id: "picked".to_owned(),
-                item_id: 2,
+                content: Some(PickupContent::Item(2)),
                 start: Some(Vec2 { x: 30.0, y: 40.0 }),
                 started_ms: 0.0,
                 reconciled: false,
@@ -147,13 +180,38 @@ mod tests {
     }
 
     #[test]
+    fn typed_drop_content_controls_identity_and_activity() {
+        let position = Vec2 { x: 10.0, y: 20.0 };
+        let item = item_drop("item", 2, position);
+        let mesos = meso_drop("mesos", 25, position);
+        let zero_mesos = meso_drop("zero-mesos", 0, position);
+        let missing = DroppedItem {
+            id: "missing".to_owned(),
+            position: Some(position),
+            despawn_at_unix_ms: u64::MAX,
+            content: None,
+        };
+
+        assert_eq!(content(&item), Some(PickupContent::Item(2)));
+        assert_eq!(item_id(&item), Some(2));
+        assert_eq!(content(&mesos), Some(PickupContent::Mesos));
+        assert_eq!(item_id(&mesos), None);
+        assert!(is_active(&item, 100));
+        assert!(is_active(&mesos, 100));
+        assert!(!is_active(&zero_mesos, 100));
+        assert!(!is_active(&missing, 100));
+
+        let mut expired_item = item;
+        let Some(dropped_item::Content::Item(item)) = expired_item.content.as_mut() else {
+            panic!("expected inventory item drop");
+        };
+        item.expires_at_unix_ms = 100;
+        assert!(!is_active(&expired_item, 100));
+    }
+
+    #[test]
     fn pickup_flight_starts_at_the_items_current_bob_height() {
-        let mut dropped_items = vec![DroppedItem {
-            id: "picked".to_owned(),
-            item_id: 2,
-            position: Some(Vec2 { x: 30.0, y: 40.0 }),
-            ..DroppedItem::default()
-        }];
+        let mut dropped_items = vec![item_drop("picked", 2, Vec2 { x: 30.0, y: 40.0 })];
         let mut animations = Vec::new();
 
         start(&mut dropped_items, &mut animations, "picked", 700.0);
@@ -165,7 +223,7 @@ mod tests {
     fn pickup_flies_up_then_down_to_the_character() {
         let animation = PickupAnimation {
             drop_id: "picked".to_owned(),
-            item_id: 2,
+            content: Some(PickupContent::Item(2)),
             start: Some(Vec2 { x: 0.0, y: 100.0 }),
             started_ms: 100.0,
             reconciled: false,
@@ -187,7 +245,7 @@ mod tests {
     fn stale_snapshots_cannot_restore_a_confirmed_pickup() {
         let mut animations = vec![PickupAnimation {
             drop_id: "picked".to_owned(),
-            item_id: 2,
+            content: Some(PickupContent::Item(2)),
             start: Some(Vec2::default()),
             started_ms: 100.0,
             reconciled: false,
@@ -208,7 +266,7 @@ mod tests {
     fn pickup_state_expires_after_the_flight_and_snapshot_reconciliation() {
         let animation = PickupAnimation {
             drop_id: "picked".to_owned(),
-            item_id: 2,
+            content: Some(PickupContent::Item(2)),
             start: Some(Vec2::default()),
             started_ms: 100.0,
             reconciled: false,
@@ -230,5 +288,35 @@ mod tests {
         assert_eq!(idle_offset(700.0), -4.0);
         assert_eq!(idle_offset(1_050.0), -2.0);
         assert_eq!(idle_offset(1_400.0), 0.0);
+    }
+
+    fn item_drop(
+        id: &str,
+        item_id: u32,
+        position: Vec2,
+    ) -> DroppedItem {
+        DroppedItem {
+            id: id.to_owned(),
+            position: Some(position),
+            despawn_at_unix_ms: u64::MAX,
+            content: Some(dropped_item::Content::Item(DroppedInventoryItem {
+                item_id,
+                quantity: 1,
+                expires_at_unix_ms: 0,
+            })),
+        }
+    }
+
+    fn meso_drop(
+        id: &str,
+        amount: u64,
+        position: Vec2,
+    ) -> DroppedItem {
+        DroppedItem {
+            id: id.to_owned(),
+            position: Some(position),
+            despawn_at_unix_ms: u64::MAX,
+            content: Some(dropped_item::Content::Mesos(amount)),
+        }
     }
 }

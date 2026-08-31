@@ -193,7 +193,7 @@ mod tests {
                 super::buffs::validate_state(ActiveBuffState::default())
                     .expect("empty buffs are valid"),
                 map.clone(),
-                authoritative.clone(),
+                authoritative,
                 "player",
                 200,
             )

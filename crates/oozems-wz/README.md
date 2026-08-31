@@ -2,7 +2,8 @@
 
 Use `oozems-wz` to inspect WZ archives from a terminal or script. You can show
 archive information, list nodes, and get one node. You can also change one
-existing scalar or vector property in a new archive.
+existing scalar or vector property in a new archive or generate an independent
+loot catalog from local WZ facts and an Oozems-authored policy.
 
 The tool produces deterministic JSON for scripts and other tools.
 
@@ -46,6 +47,166 @@ Build it once when running several commands:
 cargo build --release --package oozems-wz
 target/release/oozems-wz info data/Quest.wz
 ```
+
+## Generate loot
+
+Run the generator against one directory containing matching WZ archives:
+
+```sh
+cargo run --package oozems-wz -- \
+  --region gms --wz-version 83 \
+  generate-loot /srv/maplestory/wz \
+  --policy config/loot-policy.toml \
+  --output data/loot.toml
+```
+
+`generate-loot` requires `String.wz`, `Item.wz`, `Mob.wz`, and `Quest.wz`.
+Policy rows with `source_map_id` or `required_skill_id` also require matching
+`Map.wz` or `Skill.wz`. Add the matching `Character.wz` to validate equipment
+rewards. Without it, the generator reports and omits equipment associations.
+`--region` and `--wz-version` are the same global options used by the inspection
+commands. The generator does not read `Reactor.wz` or emit reactor tables
+because WZ does not establish reactor-to-item relationships.
+
+The destination is written atomically. An existing file is refused unless you
+pass `--force`. On success, standard output contains a JSON generation report
+with each detected archive version, row and source counts, categorized
+omissions, warnings, and the output path. The generated TOML starts with a
+provenance header.
+
+### Separate facts from policy
+
+The generator reads only these relationship and metadata facts:
+
+- `String.wz/MonsterBook.img` supplies explicit mob-to-item associations.
+- `String.wz/Mob.img` supplies optional display names.
+- `Item.wz/Consume/0238.img` supplies exact Monster Book card-to-mob mappings.
+- `Mob.wz` supplies level, EXP, and boss metadata.
+- `Quest.wz/Check.img` supplies positive completion item and mob requirements.
+- `Map.wz` validates explicitly authored source-map mob relationships.
+- `Skill.wz` validates explicitly authored killing-skill requirements.
+- `Item.wz` and `Character.wz` validate item sources and available `slotMax`.
+
+It does not read another server's loot tables, global relationships, or rates.
+`config/loot-policy.toml` owns every probability, boss multiplier, quantity
+formula, card formula coefficient, meso formula coefficient, and explicit mob
+drop selection. The tracked policy is an independently chosen 1x, v83-inspired
+Oozems model. It is not a copy of Cosmic, HeavenMS, or another private-server
+rate table.
+
+The item rate classes are equipment, recovery, mobility, scroll, cure, ammo,
+rechargeable, common mob material, ore/crafting, miscellaneous, and quest.
+Consumable, material, and ammo quantities increase with mob level and are
+clamped to a positive WZ `slotMax` when one is present. Equipment, scrolls,
+rechargeables, and cards use the policy's single-item quantity rule.
+
+Card chance, meso chance, and meso expected value use this deterministic integer
+formula:
+
+```text
+min(maximum, base + level * per_level + isqrt(exp) * per_experience_sqrt)
+```
+
+Boss ratios are then applied with integer arithmetic. The meso policy converts
+expected value to an inclusive minimum and maximum using
+`spread_per_thousand`. These formulas are monotonic in level and EXP. Every mob
+retained from the WZ associations or a validated card mapping receives one meso
+row.
+
+### Understand generated rows
+
+Mob and item rows are sorted by mob ID, item ID, quest ID, and required skill
+ID. Duplicate Monster Book associations collapse into one row. A validated card
+mapping adds the source mob's card even when the Monster Book reward list omits
+it. Any card in that reward list is replaced by the policy card chance.
+
+Items in group `403` are emitted only when both conditions hold: the item has
+an explicit Monster Book mob association, and at least one quest requires a
+positive quantity at completion. One row is emitted for each requiring quest.
+Unresolved quest items are omitted. Install, cash, pet, malformed, and missing
+item or mob sources are also omitted and reported.
+
+Tutorial and other progression relationships absent from Monster Book may be
+authored as `[[mob_drops]]` policy rows. Each row states a mob, item, chance,
+inclusive quantity range, and its WZ evidence. A formal `quest_id` requires
+`Quest.wz/Check.img` to positively require both that mob and item. A
+`source_map_id` requires `Map.wz` to contain the mob in that map. At least one of
+these evidence fields is required. The quantity range must also fit the item's
+WZ `slotMax` when one is present.
+
+An optional `required_skill_id` restricts a row to kills made with that
+`Skill.wz` skill. This supports the pirate second-job test, where Flash Fist and
+Double Shot produce different crystals from the same OctoPirate. Policy-only
+mobs do not receive automatic meso rows.
+
+```toml
+[[mob_drops]]
+mob_id = 9300018
+item_id = 4031802
+quest_id = 1035
+chance_per_million = 1000000
+minimum_quantity = 1
+maximum_quantity = 1
+
+[[mob_drops]]
+mob_id = 9001005
+item_id = 4031856
+source_map_id = 108000500
+required_skill_id = 5001001
+chance_per_million = 1000000
+minimum_quantity = 1
+maximum_quantity = 1
+```
+
+This is a conservative starting catalog, not a replacement for independently
+authored source relationships that are absent from WZ. Replacing an existing
+catalog can remove reactor tables and quest-item sources that WZ cannot prove.
+Review the JSON report and record independently researched, WZ-verifiable quest
+mob rows in the policy before generation.
+
+The output uses item and meso rows accepted by the runtime:
+
+```toml
+[[mobs]]
+mob_id = 100100
+
+[[mobs.drops]]
+item_id = 4000000
+chance_per_million = 200000
+minimum_quantity = 1
+maximum_quantity = 2
+
+[[mobs.drops]]
+chance_per_million = 600000
+minimum_mesos = 4
+maximum_mesos = 12
+```
+
+All ranges are inclusive. An item row may have a `quest_id` or
+`required_skill_id`. A meso row cannot.
+
+### Author global drops
+
+The tracked policy intentionally has no global rows because WZ does not prove a
+global item relationship. A server owner can add explicit item and meso globals
+to the policy:
+
+```toml
+[[global_drops]]
+item_id = 4000000
+chance_per_million = 500
+minimum_quantity = 1
+maximum_quantity = 1
+
+[[global_drops]]
+chance_per_million = 10000
+minimum_mesos = 1
+maximum_mesos = 5
+```
+
+Global item rows may also include `quest_id`. Unknown fields, invalid chances,
+partial or inverted ranges, duplicate rows, and unavailable local item sources
+are rejected or reported rather than guessed.
 
 ## Read command output
 

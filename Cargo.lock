@@ -2802,6 +2802,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "toml",
  "wz_reader",
  "wzlib-rs",
 ]

@@ -440,6 +440,30 @@ associations, but they do not provide ordinary drop probabilities. The
 configured rates are therefore project-authored. A rate is expressed per
 million, and `1000000` is guaranteed.
 
+Generate a version-specific starting catalog only from your local WZ facts and
+the tracked Oozems policy:
+
+```sh
+cargo run --package oozems-wz -- \
+  --region gms --wz-version 83 \
+  generate-loot data \
+  --policy config/loot-policy.toml \
+  --output data/loot.toml
+```
+
+The command refuses to replace an existing catalog unless you add `--force`.
+The default policy intentionally defines no global drops because WZ does not
+establish global item relationships. See
+[`crates/oozems-wz/README.md`](crates/oozems-wz/README.md#generate-loot) for the
+fact sources, formulas, exclusions, global-row syntax, and JSON report.
+
+The generator emits mob and policy-authored global rows only. It does not emit
+reactor tables because WZ has no reactor-to-item relationships. Quest rows come
+from Monster Book plus quest completion data, or from explicit policy rows that
+validate both requirements against `Quest.wz`. Replacing a manually maintained
+catalog can therefore remove reactor or unaudited quest-item sources. Review the
+report and record independently researched rows in the policy before generation.
+
 A drop can include an optional `quest_id`. Quest drops roll only while that
 quest is started. If the quest has a completion requirement for the item, the
 drop stops rolling once the character owns the required quantity. Referenced

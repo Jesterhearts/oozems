@@ -1111,17 +1111,18 @@ fn prepare_player_attack(
         };
         let died = damage >= combat.current_hp;
         let staged_drops = if hit && died {
-            let item_ids = crate::loot::roll_mob_items(
+            let rolled_loot = crate::loot::roll_mob_loot(
                 loot,
                 identity.definition_id,
                 player,
+                attack.source_skill_id,
                 &mut motion.random_state,
             );
             crate::items::stage_combat_drops(
                 drops,
                 map_id,
                 position.vector(),
-                &item_ids,
+                &rolled_loot,
                 player_id,
             )?
         } else {
@@ -1284,7 +1285,7 @@ fn prepare_reactor_attack(
         drops,
         map_id,
         result.position,
-        &result.item_ids,
+        &result.loot,
         player_id,
     ) {
         Ok(staged_drops) => staged_drops,
@@ -1419,6 +1420,7 @@ mod tests {
 
     use oozems_proto::v1::CharacterStats;
     use oozems_proto::v1::CombatEventKind;
+    use oozems_proto::v1::DroppedItem;
     use oozems_proto::v1::ItemDefinition;
     use oozems_proto::v1::Map;
     use oozems_proto::v1::MobAnimation;
@@ -1435,6 +1437,7 @@ mod tests {
     use oozems_proto::v1::ReactorSpawnPoint;
     use oozems_proto::v1::ReactorStateDefinition;
     use oozems_proto::v1::Vec2;
+    use oozems_proto::v1::dropped_item;
     use shipyard::IntoIter;
     use shipyard::View;
 
@@ -1931,7 +1934,7 @@ mod tests {
         let original_item_ids = abandoned
             .staged_drops
             .iter()
-            .map(|grant| grant.item().item_id)
+            .map(|grant| dropped_item_id(grant.item()))
             .collect::<Vec<_>>();
         assert_eq!(original_item_ids, vec![SPARE_TOP_ID, SPARE_BOTTOM_ID]);
         assert!(abandoned.combat_events.iter().any(|event| {
@@ -1953,7 +1956,7 @@ mod tests {
         let retried_item_ids = retried
             .staged_drops
             .iter()
-            .map(|grant| grant.item().item_id)
+            .map(|grant| dropped_item_id(grant.item()))
             .collect::<Vec<_>>();
         assert_eq!(retried_item_ids, original_item_ids);
         assert!(
@@ -2516,7 +2519,7 @@ mod tests {
         let original_item_ids = destroyed
             .staged_drops
             .iter()
-            .map(|grant| grant.item().item_id)
+            .map(|grant| dropped_item_id(grant.item()))
             .collect::<Vec<_>>();
         assert_eq!(original_item_ids, vec![SPARE_TOP_ID, SPARE_BOTTOM_ID]);
         assert!(
@@ -2551,7 +2554,7 @@ mod tests {
         let retried_item_ids = retried
             .staged_drops
             .iter()
-            .map(|grant| grant.item().item_id)
+            .map(|grant| dropped_item_id(grant.item()))
             .collect::<Vec<_>>();
         assert_eq!(retried_item_ids, original_item_ids);
         crate::items::commit_staged_drops(&store.drops, &retried.staged_drops)
@@ -2560,8 +2563,8 @@ mod tests {
             .expect("idempotent reactor drop commit");
         let drops = map_drops(&store.drops, map.id).expect("reactor drops");
         assert_eq!(drops.len(), 2);
-        assert_eq!(drops[0].item_id, SPARE_TOP_ID);
-        assert_eq!(drops[1].item_id, SPARE_BOTTOM_ID);
+        assert_eq!(dropped_item_id(&drops[0]), SPARE_TOP_ID);
+        assert_eq!(dropped_item_id(&drops[1]), SPARE_BOTTOM_ID);
     }
 
     #[test]
@@ -2624,7 +2627,10 @@ mod tests {
         )
         .expect("active quest mob kill");
         assert_eq!(active_kill.staged_drops.len(), 1);
-        assert_eq!(active_kill.staged_drops[0].item().item_id, SPARE_TOP_ID);
+        assert_eq!(
+            dropped_item_id(active_kill.staged_drops[0].item()),
+            SPARE_TOP_ID
+        );
 
         let mut active_reactor_store = store();
         active_reactor_store.loot = loot;
@@ -2649,9 +2655,61 @@ mod tests {
                 assert!(update.staged_drops.is_empty());
             } else {
                 assert_eq!(update.staged_drops.len(), 1);
-                assert_eq!(update.staged_drops[0].item().item_id, SPARE_TOP_ID);
+                assert_eq!(dropped_item_id(update.staged_drops[0].item()), SPARE_TOP_ID);
             }
         }
+    }
+
+    #[test]
+    fn skill_gated_loot_uses_the_killing_attack_skill() {
+        let loot = format!(
+            "[[mobs]]\nmob_id = 100\n[[mobs.drops]]\nitem_id = {SPARE_TOP_ID}\nchance_per_million \
+             = 1000000\nrequired_skill_id = 5001001\n"
+        );
+        let player = player(90.0, 100.0);
+        let now = Instant::now();
+
+        let mut wrong_skill_store = store_with_loot(&loot);
+        let wrong_skill_kill = use_player_attack_at(
+            &mut wrong_skill_store,
+            &map(),
+            &player,
+            PlayerAttack {
+                target_mob_id: "1:1:0",
+                source_skill_id: Some(5_001_003),
+                facing_left: false,
+                minimum_damage: 100,
+                maximum_damage: 100,
+                fixed_damage: true,
+                attack_type: SkillAttackType::Physical,
+            },
+            now,
+        )
+        .expect("wrong-skill mob kill");
+        assert!(wrong_skill_kill.staged_drops.is_empty());
+
+        let mut required_skill_store = store_with_loot(&loot);
+        let required_skill_kill = use_player_attack_at(
+            &mut required_skill_store,
+            &map(),
+            &player,
+            PlayerAttack {
+                target_mob_id: "1:1:0",
+                source_skill_id: Some(5_001_001),
+                facing_left: false,
+                minimum_damage: 100,
+                maximum_damage: 100,
+                fixed_damage: true,
+                attack_type: SkillAttackType::Physical,
+            },
+            now,
+        )
+        .expect("required-skill mob kill");
+        assert_eq!(required_skill_kill.staged_drops.len(), 1);
+        assert_eq!(
+            dropped_item_id(required_skill_kill.staged_drops[0].item()),
+            SPARE_TOP_ID
+        );
     }
 
     #[test]
@@ -3427,7 +3485,7 @@ mod tests {
             .expect("idempotent staged drop commit");
         let drops = map_drops(&store.drops, map.id).expect("map drops");
         assert_eq!(drops.len(), 1);
-        assert_eq!(drops[0].item_id, SPARE_TOP_ID);
+        assert_eq!(dropped_item_id(&drops[0]), SPARE_TOP_ID);
     }
 
     async fn mailbox_attack(
@@ -3558,6 +3616,13 @@ mod tests {
 
     fn test_loot(source: &str) -> Arc<LootCatalog> {
         test_loot_with_quests(source, &[])
+    }
+
+    fn dropped_item_id(drop: &DroppedItem) -> u32 {
+        match drop.content.as_ref() {
+            Some(dropped_item::Content::Item(item)) => item.item_id,
+            Some(dropped_item::Content::Mesos(_)) | None => panic!("expected inventory item drop"),
+        }
     }
 
     fn test_loot_with_quests(

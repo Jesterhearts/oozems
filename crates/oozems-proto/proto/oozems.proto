@@ -1292,15 +1292,24 @@ enum MobMovementMode {
   MOB_MOVEMENT_MODE_ATTACKING = 4;
 }
 
+message DroppedInventoryItem {
+  uint32 item_id = 1;
+  uint32 quantity = 2;
+  // Zero means that the item itself is permanent. The drop is active only
+  // while both this deadline and the containing drop deadline permit it.
+  uint64 expires_at_unix_ms = 3;
+}
+
 message DroppedItem {
   string id = 1;
-  uint32 item_id = 2;
+  reserved 2;
   Vec2 position = 3;
   uint64 despawn_at_unix_ms = 4;
-  uint32 quantity = 5;
-  // Zero means that the item itself is permanent. The drop is active only
-  // while both this deadline and despawn_at_unix_ms permit it.
-  uint64 expires_at_unix_ms = 6;
+  reserved 5, 6;
+  oneof content {
+    DroppedInventoryItem item = 7;
+    uint64 mesos = 8;
+  }
 }
 
 message Platform {

@@ -37,21 +37,26 @@ pub fn canonicalize(
     Ok(cards)
 }
 
-pub fn add_card(
+pub fn add_cards(
     cards: &mut Vec<MonsterBookCard>,
     card_item_id: u32,
+    quantity: u32,
 ) {
     match cards.binary_search_by_key(&card_item_id, |card| card.card_item_id) {
         Ok(index) => {
-            cards[index].count = cards[index].count.saturating_add(1).min(MAX_CARD_COUNT);
+            cards[index].count = cards[index]
+                .count
+                .saturating_add(quantity)
+                .min(MAX_CARD_COUNT);
         }
-        Err(index) => cards.insert(
+        Err(index) if quantity > 0 => cards.insert(
             index,
             MonsterBookCard {
                 card_item_id,
-                count: 1,
+                count: quantity.min(MAX_CARD_COUNT),
             },
         ),
+        Err(_) => {}
     }
 }
 
@@ -120,10 +125,10 @@ mod tests {
             card_item_id: 2_380_001,
             count: 5,
         }];
-        super::add_card(&mut cards, 2_380_000);
-        super::add_card(&mut cards, 2_380_001);
+        super::add_cards(&mut cards, 2_380_000, 4);
+        super::add_cards(&mut cards, 2_380_001, 2);
 
-        assert_eq!(super::count(&cards, 2_380_000), 1);
+        assert_eq!(super::count(&cards, 2_380_000), 4);
         assert_eq!(super::count(&cards, 2_380_001), 5);
     }
 }
