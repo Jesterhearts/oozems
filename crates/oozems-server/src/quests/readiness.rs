@@ -487,6 +487,78 @@ pub fn quest_tracker(
         .collect()
 }
 
+pub fn quest_journal(
+    player: &PlayerState,
+    effects: &PlayerEffects,
+    quest_definitions: &[&QuestDefinition],
+    item_definitions: &[ItemDefinition],
+    scripts: &QuestScriptCatalog,
+    environment: QuestEnvironment,
+) -> QuestJournal {
+    let available_quests = quest_definitions
+        .iter()
+        .copied()
+        .filter(|quest| {
+            is_available(
+                player,
+                effects,
+                quest,
+                item_definitions,
+                scripts,
+                environment,
+            )
+        })
+        .map(|quest| journal_entry(quest, false))
+        .collect();
+    let completed_quests = player
+        .quests
+        .iter()
+        .filter(|entry| QuestStatus::try_from(entry.status) == Ok(QuestStatus::Completed))
+        .map(|entry| {
+            quest_definitions
+                .iter()
+                .copied()
+                .find(|quest| quest.id == entry.quest_id)
+                .map_or_else(
+                    || QuestTrackerEntry {
+                        quest_id: entry.quest_id,
+                        title: format!("Quest {}", entry.quest_id),
+                        summary: "Quest data is unavailable.".to_owned(),
+                        objectives: Vec::new(),
+                        ready: true,
+                    },
+                    |quest| journal_entry(quest, true),
+                )
+        })
+        .collect();
+    QuestJournal {
+        available_quests,
+        completed_quests,
+    }
+}
+
+fn journal_entry(
+    quest: &QuestDefinition,
+    completed: bool,
+) -> QuestTrackerEntry {
+    let summary = if completed {
+        quest
+            .info
+            .reward_summary
+            .as_ref()
+            .or(quest.info.summary.as_ref())
+    } else {
+        quest.info.summary.as_ref()
+    };
+    QuestTrackerEntry {
+        quest_id: quest.id,
+        title: quest.name.clone(),
+        summary: summary.cloned().unwrap_or_default(),
+        objectives: Vec::new(),
+        ready: completed,
+    }
+}
+
 fn required_quest_status(state: RequiredQuestState) -> QuestStatus {
     match state {
         RequiredQuestState::NotStarted => QuestStatus::Unspecified,

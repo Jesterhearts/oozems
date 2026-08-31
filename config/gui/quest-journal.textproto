@@ -1,0 +1,110 @@
+name: "quest-journal"
+x: 125.0
+y: 80.0
+background {
+  name: "quest-journal-list-background"
+  wz_path: "UIWindow.img/Quest/backgrnd"
+}
+sprites: [{
+  name: "quest-journal-detail-background"
+  wz_path: "UIWindow.img/Quest/backgrnd2"
+  x: 245.0
+}, {
+  name: "quest-journal-close"
+  wz_path: "UIWindow.img/BtUIClose/normal/0"
+  y: 5.0
+  pin_right: true
+  right: 5.0
+}]
+sprite_templates: [{
+  name: "quest-journal-tab-available-active"
+  wz_path: "UIWindow.img/Quest/Tab/enabled/0"
+}, {
+  name: "quest-journal-tab-available-inactive"
+  wz_path: "UIWindow.img/Quest/Tab/disabled/0"
+}, {
+  name: "quest-journal-tab-in-progress-active"
+  wz_path: "UIWindow.img/Quest/Tab/enabled/1"
+}, {
+  name: "quest-journal-tab-in-progress-inactive"
+  wz_path: "UIWindow.img/Quest/Tab/disabled/1"
+}, {
+  name: "quest-journal-tab-completed-active"
+  wz_path: "UIWindow.img/Quest/Tab/enabled/2"
+}, {
+  name: "quest-journal-tab-completed-inactive"
+  wz_path: "UIWindow.img/Quest/Tab/disabled/2"
+}, {
+  name: "quest-journal-entry"
+  wz_path: "UIWindow.img/Quest/icon0"
+}, {
+  name: "quest-journal-entry-selected"
+  wz_path: "UIWindow.img/Quest/icon1"
+}]
+regions: [{
+  name: "quest-journal-tab-available"
+  x: 12.0
+  y: 30.0
+  width: 66.0
+  height: 22.0
+}, {
+  name: "quest-journal-tab-in-progress"
+  x: 82.0
+  y: 30.0
+  width: 72.0
+  height: 22.0
+}, {
+  name: "quest-journal-tab-completed"
+  x: 158.0
+  y: 30.0
+  width: 66.0
+  height: 22.0
+}, {
+  name: "quest-journal-list"
+  x: 13.0
+  y: 59.0
+  width: 219.0
+  height: 286.0
+}, {
+  name: "quest-journal-page-previous"
+  x: 62.0
+  y: 353.0
+  width: 28.0
+  height: 24.0
+}, {
+  name: "quest-journal-page-label"
+  x: 94.0
+  y: 353.0
+  width: 55.0
+  height: 24.0
+}, {
+  name: "quest-journal-page-next"
+  x: 153.0
+  y: 353.0
+  width: 28.0
+  height: 24.0
+}, {
+  name: "quest-journal-detail-title"
+  x: 265.0
+  y: 35.0
+  width: 266.0
+  height: 22.0
+}, {
+  name: "quest-journal-detail-summary"
+  x: 265.0
+  y: 68.0
+  width: 266.0
+  height: 105.0
+}, {
+  name: "quest-journal-detail-objectives"
+  x: 265.0
+  y: 188.0
+  width: 266.0
+  height: 166.0
+}, {
+  name: "window-drag-handle"
+  width: 550.0
+  height: 20.0
+}]
+width: 550.0
+height: 396.0

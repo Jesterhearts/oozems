@@ -33,12 +33,13 @@ mod player_repository;
 mod tests;
 
 const APPLICATION_ID: i32 = 1_330_596_421;
-const SCHEMA_VERSION: i32 = 1;
+const SCHEMA_VERSION: i32 = 2;
 const MINIMUM_SQLITE_VERSION: i32 = 3_051_003;
 const READ_WORKER_COUNT: usize = 4;
 const COMMAND_QUEUE_CAPACITY: usize = 64;
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const MIGRATION_V1: &str = include_str!("../migrations/0001_normalized_players.sql");
+const MIGRATION_V2: &str = include_str!("../migrations/0002_quest_journal_key_action.sql");
 
 type WorkerJob = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
 
@@ -494,7 +495,9 @@ fn install_schema(connection: &Connection) -> Result<(), DatabaseError> {
                     message: format!("could not install schema v1: {error}"),
                 });
             }
+            apply_migration_v2(connection)?;
         }
+        (APPLICATION_ID, 1) => apply_migration_v2(connection)?,
         (APPLICATION_ID, SCHEMA_VERSION) => {}
         (APPLICATION_ID, version) => {
             return Err(DatabaseError::Schema {
@@ -511,6 +514,16 @@ fn install_schema(connection: &Connection) -> Result<(), DatabaseError> {
         }
     }
     verify_schema_identity(connection)
+}
+
+fn apply_migration_v2(connection: &Connection) -> Result<(), DatabaseError> {
+    if let Err(error) = connection.execute_batch(MIGRATION_V2) {
+        let _ = connection.execute_batch("ROLLBACK");
+        return Err(DatabaseError::Schema {
+            message: format!("could not install schema v2: {error}"),
+        });
+    }
+    Ok(())
 }
 
 fn verify_schema_identity(connection: &Connection) -> Result<(), DatabaseError> {

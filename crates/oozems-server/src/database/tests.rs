@@ -25,6 +25,7 @@ use rusqlite::TransactionBehavior;
 
 use super::APPLICATION_ID;
 use super::DatabaseError;
+use super::MIGRATION_V1;
 use super::PlayerId;
 use super::SCHEMA_VERSION;
 use super::create_player;
@@ -107,6 +108,94 @@ async fn schema_and_worker_pragmas_are_installed_before_use() {
     .await
     .expect_err("closed database must reject commands");
     assert!(matches!(error, DatabaseError::Worker { .. }));
+}
+
+#[tokio::test]
+async fn version_one_databases_migrate_to_the_quest_journal_key_action() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let path = directory.path().join("players.sqlite");
+    let mut connection = rusqlite::Connection::open(&path).expect("open version one database");
+    connection
+        .execute_batch(MIGRATION_V1)
+        .expect("install version one schema");
+    let mut legacy_player = comprehensive_player("legacy-quest-key-migration");
+    legacy_player
+        .key_bindings
+        .retain(|binding| binding.action != KeyAction::OpenQuestJournal as i32);
+    let legacy_durable = super::player_record::durable_from_player(&legacy_player, 1)
+        .expect("normalize version one player");
+    super::player_repository::create_player(&mut connection, &legacy_durable)
+        .expect("persist version one player");
+    let mut customized_player = comprehensive_player("customized-quest-key-migration");
+    customized_player
+        .key_bindings
+        .retain(|binding| binding.action != KeyAction::OpenQuestJournal as i32);
+    customized_player.key_bindings.push(KeyBinding {
+        code: "KeyQ".to_owned(),
+        action: KeyAction::Unspecified as i32,
+        skill_id: 2_000,
+    });
+    let customized_durable = super::player_record::durable_from_player(&customized_player, 1)
+        .expect("normalize customized version one player");
+    super::player_repository::create_player(&mut connection, &customized_durable)
+        .expect("persist customized version one player");
+    drop(connection);
+
+    let database = open_sqlite(&path).expect("migrate SQLite database");
+    let legacy_loaded = load_player(
+        &database,
+        &PlayerId::parse(&legacy_player.id).expect("legacy player ID"),
+    )
+    .await
+    .expect("load migrated legacy player")
+    .expect("legacy player exists");
+    assert_eq!(
+        legacy_loaded.key_bindings.len(),
+        legacy_durable.data.key_bindings.len() + 1
+    );
+    assert!(legacy_durable.data.key_bindings.iter().all(|expected| {
+        legacy_loaded
+            .key_bindings
+            .iter()
+            .any(|actual| actual == expected)
+    }));
+    assert!(legacy_loaded.key_bindings.iter().any(|binding| {
+        binding.code == "KeyQ" && binding.action == KeyAction::OpenQuestJournal as i32
+    }));
+    let customized_loaded = load_player(
+        &database,
+        &PlayerId::parse(&customized_player.id).expect("customized player ID"),
+    )
+    .await
+    .expect("load customized legacy player")
+    .expect("customized player exists");
+    assert!(customized_loaded.key_bindings.iter().any(|binding| {
+        binding.code == "KeyQ"
+            && binding.action == KeyAction::Unspecified as i32
+            && binding.skill_id == 2_000
+    }));
+    assert!(
+        !customized_loaded
+            .key_bindings
+            .iter()
+            .any(|binding| binding.action == KeyAction::OpenQuestJournal as i32)
+    );
+
+    let new_player = comprehensive_player("new-quest-key-migration");
+    create_player(&database, &new_player)
+        .await
+        .expect("persist player with quest journal binding");
+    let new_loaded = load_player(
+        &database,
+        &PlayerId::parse(&new_player.id).expect("new player ID"),
+    )
+    .await
+    .expect("load new player")
+    .expect("player exists");
+
+    assert!(new_loaded.key_bindings.iter().any(|binding| {
+        binding.code == "KeyQ" && binding.action == KeyAction::OpenQuestJournal as i32
+    }));
 }
 
 #[test]

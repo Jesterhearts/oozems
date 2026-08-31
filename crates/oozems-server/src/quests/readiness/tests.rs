@@ -662,3 +662,45 @@ fn quest_tracker_keeps_unknown_active_quests_in_the_projection() {
     assert_eq!(tracker[0].summary, "Quest data is unavailable.");
     assert!(!tracker[0].ready);
 }
+
+#[test]
+fn quest_journal_classifies_available_and_completed_quests() {
+    let available = quest(100);
+    let started = quest(200);
+    let mut completed = quest(300);
+    completed.info.reward_summary = Some("The town is safe again.".to_owned());
+    let player = PlayerState {
+        level: 1,
+        quests: vec![
+            player_quest(started.id, QuestStatus::Started),
+            player_quest(completed.id, QuestStatus::Completed),
+        ],
+        ..PlayerState::default()
+    };
+    let definitions = [&available, &started, &completed];
+
+    let journal = super::quest_journal(
+        &player,
+        &PlayerEffects::default(),
+        &definitions,
+        &[],
+        scripts(),
+        environment(0),
+    );
+
+    assert_eq!(
+        journal
+            .available_quests
+            .iter()
+            .map(|entry| entry.quest_id)
+            .collect::<Vec<_>>(),
+        vec![available.id]
+    );
+    assert_eq!(journal.completed_quests.len(), 1);
+    assert_eq!(journal.completed_quests[0].quest_id, completed.id);
+    assert_eq!(
+        journal.completed_quests[0].summary,
+        "The town is safe again."
+    );
+    assert!(journal.completed_quests[0].ready);
+}

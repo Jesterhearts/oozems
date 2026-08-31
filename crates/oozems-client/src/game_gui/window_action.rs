@@ -13,6 +13,8 @@ use super::equipped_item_at;
 use super::frontmost_window_at_point;
 use super::inventory_item_at;
 use super::inventory_tab_at;
+use super::quest_journal_entry_at;
+use super::quest_journal_tab_at;
 use super::rect_contains;
 use super::skill_action_at;
 use super::window_close_rect;
@@ -45,6 +47,59 @@ pub(super) fn window_action(
             return Some(GuiAction::CloseKeyConfig);
         }
         return None;
+    }
+    if button == PointerButton::Left
+        && state.quest_journal_open
+        && frontmost == Some(WindowKind::QuestJournal)
+    {
+        if window_close_rect(
+            state,
+            gui,
+            WindowKind::QuestJournal,
+            viewport_width,
+            viewport_height,
+            "quest-journal-close",
+        )
+        .is_some_and(|rect| rect_contains(rect, point))
+        {
+            return Some(GuiAction::CloseQuestJournal);
+        }
+        if let Some(tab) = quest_journal_tab_at(state, gui, viewport_width, viewport_height, point)
+        {
+            return Some(GuiAction::SelectQuestJournalTab { tab });
+        }
+        if let Some(index) =
+            quest_journal_entry_at(state, gui, viewport_width, viewport_height, point)
+        {
+            return Some(GuiAction::SelectQuestJournalEntry { index });
+        }
+        if state.quest_journal_page > 0
+            && window_region_rect(
+                state,
+                gui,
+                WindowKind::QuestJournal,
+                viewport_width,
+                viewport_height,
+                "quest-journal-page-previous",
+            )
+            .is_some_and(|rect| rect_contains(rect, point))
+        {
+            return Some(GuiAction::PreviousQuestJournalPage);
+        }
+        let count = crate::quest_journal::entry_count(state.quest_journal_tab, gui);
+        if (state.quest_journal_page + 1) * crate::quest_journal::QUESTS_PER_PAGE < count
+            && window_region_rect(
+                state,
+                gui,
+                WindowKind::QuestJournal,
+                viewport_width,
+                viewport_height,
+                "quest-journal-page-next",
+            )
+            .is_some_and(|rect| rect_contains(rect, point))
+        {
+            return Some(GuiAction::NextQuestJournalPage);
+        }
     }
     if state.inventory_open && frontmost == Some(WindowKind::Inventory) {
         if window_close_rect(

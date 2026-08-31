@@ -18,6 +18,7 @@ pub enum WindowKind {
     Inventory,
     Skills,
     KeyConfig,
+    QuestJournal,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -27,6 +28,7 @@ pub struct WindowPlacements {
     inventory: CanvasPoint,
     skills: CanvasPoint,
     key_config: CanvasPoint,
+    quest_journal: CanvasPoint,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -133,6 +135,7 @@ pub fn close_topmost_window(state: &mut GuiState) -> bool {
         WindowKind::Inventory => state.inventory_open = false,
         WindowKind::Skills => state.skills_open = false,
         WindowKind::KeyConfig => state.key_config_open = false,
+        WindowKind::QuestJournal => state.quest_journal_open = false,
     }
     true
 }
@@ -263,6 +266,7 @@ fn window_offset(
         WindowKind::Inventory => placements.inventory,
         WindowKind::Skills => placements.skills,
         WindowKind::KeyConfig => placements.key_config,
+        WindowKind::QuestJournal => placements.quest_journal,
     }
 }
 
@@ -276,6 +280,7 @@ fn offset_for_kind(
         WindowKind::Inventory => &mut placements.inventory,
         WindowKind::Skills => &mut placements.skills,
         WindowKind::KeyConfig => &mut placements.key_config,
+        WindowKind::QuestJournal => &mut placements.quest_journal,
     }
 }
 
@@ -289,12 +294,14 @@ fn window_for_kind(
         WindowKind::Inventory => gui.inventory_window.as_ref(),
         WindowKind::Skills => gui.skill_window.as_ref(),
         WindowKind::KeyConfig => gui.key_config_window.as_ref(),
+        WindowKind::QuestJournal => gui.quest_journal_window.as_ref(),
     }
 }
 
 fn visible_windows_front_to_back(state: GuiState) -> impl Iterator<Item = WindowKind> {
     [
         (state.key_config_open, WindowKind::KeyConfig),
+        (state.quest_journal_open, WindowKind::QuestJournal),
         (state.skills_open, WindowKind::Skills),
         (state.inventory_open, WindowKind::Inventory),
         (state.equipment_open, WindowKind::Equipment),
@@ -475,11 +482,13 @@ mod tests {
             inventory_open: true,
             key_config_open: true,
             skills_open: true,
+            quest_journal_open: true,
             ..GuiState::default()
         };
 
         for kind in [
             WindowKind::KeyConfig,
+            WindowKind::QuestJournal,
             WindowKind::Skills,
             WindowKind::Inventory,
             WindowKind::Equipment,
@@ -501,6 +510,7 @@ mod tests {
             WindowKind::Inventory => state.inventory_open,
             WindowKind::Skills => state.skills_open,
             WindowKind::KeyConfig => state.key_config_open,
+            WindowKind::QuestJournal => state.quest_journal_open,
         }
     }
 

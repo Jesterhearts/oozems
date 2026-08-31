@@ -47,6 +47,26 @@ pub enum InventoryTab {
     Cash,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum QuestJournalTab {
+    #[default]
+    Available,
+    InProgress,
+    Completed,
+}
+
+impl QuestJournalTab {
+    pub(crate) const ALL: [Self; 3] = [Self::Available, Self::InProgress, Self::Completed];
+
+    pub(crate) fn key(self) -> &'static str {
+        match self {
+            Self::Available => "available",
+            Self::InProgress => "in-progress",
+            Self::Completed => "completed",
+        }
+    }
+}
+
 impl InventoryTab {
     pub(crate) const ALL: [Self; 5] = [
         Self::Equipment,
@@ -76,6 +96,10 @@ pub struct GuiState {
     pub key_config_open: bool,
     pub skill_page: usize,
     pub skills_open: bool,
+    pub quest_journal_open: bool,
+    pub quest_journal_tab: QuestJournalTab,
+    pub quest_journal_page: usize,
+    pub quest_journal_selection: usize,
     pub window_placements: WindowPlacements,
 }
 
@@ -121,6 +145,7 @@ pub enum GuiAction {
     ToggleInventory,
     ToggleKeyConfig,
     ToggleSkills,
+    ToggleQuestJournal,
     PreviousSkillPage,
     NextSkillPage,
     CloseStats,
@@ -129,6 +154,11 @@ pub enum GuiAction {
     SelectInventoryTab { tab: InventoryTab },
     CloseKeyConfig,
     CloseSkills,
+    CloseQuestJournal,
+    SelectQuestJournalTab { tab: QuestJournalTab },
+    PreviousQuestJournalPage,
+    NextQuestJournalPage,
+    SelectQuestJournalEntry { index: usize },
     Equip { inventory_index: u32 },
     Unequip { slot: i32 },
     Drop { inventory_index: u32 },
@@ -235,11 +265,13 @@ pub fn apply_local_action(
             state.stats_open = !state.stats_open;
             state.equipment_open = false;
             state.skills_open = false;
+            state.quest_journal_open = false;
         }
         GuiAction::ToggleEquipment => {
             state.equipment_open = !state.equipment_open;
             state.stats_open = false;
             state.skills_open = false;
+            state.quest_journal_open = false;
         }
         GuiAction::ToggleInventory => state.inventory_open = !state.inventory_open,
         GuiAction::ToggleSkills => {
@@ -250,6 +282,13 @@ pub fn apply_local_action(
             }
             state.stats_open = false;
             state.equipment_open = false;
+            state.quest_journal_open = false;
+        }
+        GuiAction::ToggleQuestJournal => {
+            state.quest_journal_open = !state.quest_journal_open;
+            state.stats_open = false;
+            state.equipment_open = false;
+            state.skills_open = false;
         }
         GuiAction::PreviousSkillPage => {
             state.skill_page = state.skill_page.saturating_sub(1);
@@ -264,6 +303,7 @@ pub fn apply_local_action(
                 state.equipment_open = false;
                 state.inventory_open = false;
                 state.skills_open = false;
+                state.quest_journal_open = false;
             }
         }
         GuiAction::CloseStats => state.stats_open = false,
@@ -272,6 +312,25 @@ pub fn apply_local_action(
         GuiAction::SelectInventoryTab { tab } => state.inventory_tab = tab,
         GuiAction::CloseKeyConfig => state.key_config_open = false,
         GuiAction::CloseSkills => state.skills_open = false,
+        GuiAction::CloseQuestJournal => state.quest_journal_open = false,
+        GuiAction::SelectQuestJournalTab { tab } => {
+            state.quest_journal_tab = tab;
+            state.quest_journal_page = 0;
+            state.quest_journal_selection = 0;
+        }
+        GuiAction::PreviousQuestJournalPage => {
+            state.quest_journal_page = state.quest_journal_page.saturating_sub(1);
+            state.quest_journal_selection =
+                state.quest_journal_page * crate::quest_journal::QUESTS_PER_PAGE;
+        }
+        GuiAction::NextQuestJournalPage => {
+            state.quest_journal_page = state.quest_journal_page.saturating_add(1);
+            state.quest_journal_selection =
+                state.quest_journal_page * crate::quest_journal::QUESTS_PER_PAGE;
+        }
+        GuiAction::SelectQuestJournalEntry { index } => {
+            state.quest_journal_selection = index;
+        }
         GuiAction::Equip { .. }
         | GuiAction::Unequip { .. }
         | GuiAction::Drop { .. }
@@ -879,6 +938,50 @@ fn inventory_tab_at(
     })
 }
 
+fn quest_journal_tab_at(
+    state: GuiState,
+    gui: &GameGui,
+    viewport_width: f32,
+    viewport_height: f32,
+    point: CanvasPoint,
+) -> Option<QuestJournalTab> {
+    QuestJournalTab::ALL.into_iter().find(|tab| {
+        window_region_rect(
+            state,
+            gui,
+            WindowKind::QuestJournal,
+            viewport_width,
+            viewport_height,
+            &format!("quest-journal-tab-{}", tab.key()),
+        )
+        .is_some_and(|rect| rect_contains(rect, point))
+    })
+}
+
+fn quest_journal_entry_at(
+    state: GuiState,
+    gui: &GameGui,
+    viewport_width: f32,
+    viewport_height: f32,
+    point: CanvasPoint,
+) -> Option<usize> {
+    let list = window_region_rect(
+        state,
+        gui,
+        WindowKind::QuestJournal,
+        viewport_width,
+        viewport_height,
+        "quest-journal-list",
+    )?;
+    if !rect_contains(list, point) {
+        return None;
+    }
+    let row_height = list.height / crate::quest_journal::QUESTS_PER_PAGE as f32;
+    let row = ((point.y - list.y) / row_height).floor() as usize;
+    let index = state.quest_journal_page * crate::quest_journal::QUESTS_PER_PAGE + row;
+    (index < crate::quest_journal::entry_count(state.quest_journal_tab, gui)).then_some(index)
+}
+
 fn item_category_tab(category: i32) -> Option<InventoryTab> {
     match ItemCategory::try_from(category).ok()? {
         ItemCategory::Equipment => Some(InventoryTab::Equipment),
@@ -1050,6 +1153,8 @@ mod tests {
     use oozems_proto::v1::ItemCategory;
     use oozems_proto::v1::ItemDefinition;
     use oozems_proto::v1::PlayerSkill;
+    use oozems_proto::v1::QuestJournal;
+    use oozems_proto::v1::QuestTrackerEntry;
     use oozems_proto::v1::SkillBook;
     use oozems_proto::v1::SkillDefinition;
 
@@ -1058,6 +1163,7 @@ mod tests {
     use super::GuiState;
     use super::InventoryTab;
     use super::PointerButton;
+    use super::QuestJournalTab;
     use super::WindowKind;
     use super::apply_local_action;
     use super::can_allocate_ability;
@@ -1119,6 +1225,100 @@ mod tests {
         .expect("close action");
         assert!(apply_local_action(&mut state, action));
         assert!(!state.stats_open);
+    }
+
+    #[test]
+    fn journal_tabs_and_pages_reset_the_visible_selection() {
+        let mut state = GuiState {
+            quest_journal_open: true,
+            quest_journal_page: 2,
+            quest_journal_selection: 30,
+            ..GuiState::default()
+        };
+
+        assert!(apply_local_action(
+            &mut state,
+            GuiAction::SelectQuestJournalTab {
+                tab: QuestJournalTab::Completed,
+            },
+        ));
+        assert_eq!(state.quest_journal_tab, QuestJournalTab::Completed);
+        assert_eq!(state.quest_journal_page, 0);
+        assert_eq!(state.quest_journal_selection, 0);
+
+        assert!(apply_local_action(
+            &mut state,
+            GuiAction::NextQuestJournalPage,
+        ));
+        assert_eq!(state.quest_journal_page, 1);
+        assert_eq!(
+            state.quest_journal_selection,
+            crate::quest_journal::QUESTS_PER_PAGE
+        );
+    }
+
+    #[test]
+    fn quest_journal_regions_select_rows_tabs_pages_and_close() {
+        let gui = gui_fixture();
+        let state = GuiState {
+            quest_journal_open: true,
+            ..GuiState::default()
+        };
+
+        assert_eq!(
+            click_action(
+                state,
+                &gui,
+                None,
+                None,
+                960.0,
+                600.0,
+                CanvasPoint { x: 139.0, y: 162.0 },
+                PointerButton::Left,
+            ),
+            Some(GuiAction::SelectQuestJournalEntry { index: 1 })
+        );
+        assert_eq!(
+            click_action(
+                state,
+                &gui,
+                None,
+                None,
+                960.0,
+                600.0,
+                CanvasPoint { x: 284.0, y: 111.0 },
+                PointerButton::Left,
+            ),
+            Some(GuiAction::SelectQuestJournalTab {
+                tab: QuestJournalTab::Completed,
+            })
+        );
+        assert_eq!(
+            click_action(
+                state,
+                &gui,
+                None,
+                None,
+                960.0,
+                600.0,
+                CanvasPoint { x: 279.0, y: 434.0 },
+                PointerButton::Left,
+            ),
+            Some(GuiAction::NextQuestJournalPage)
+        );
+        assert_eq!(
+            click_action(
+                state,
+                &gui,
+                None,
+                None,
+                960.0,
+                600.0,
+                CanvasPoint { x: 660.0, y: 90.0 },
+                PointerButton::Left,
+            ),
+            Some(GuiAction::CloseQuestJournal)
+        );
     }
 
     #[test]
@@ -2092,6 +2292,29 @@ mod tests {
                     sprites: vec![sprite("key-config-close", 612.0, 6.0, 12.0, 12.0)],
                     ..GuiLayout::default()
                 }),
+            }),
+            quest_journal_window: Some(GuiWindow {
+                x: 125.0,
+                y: 80.0,
+                layout: Some(GuiLayout {
+                    width: 550.0,
+                    height: 396.0,
+                    background: Some(sprite("quest-journal-background", 0.0, 0.0, 550.0, 396.0)),
+                    sprites: vec![sprite("quest-journal-close", 530.0, 5.0, 15.0, 15.0)],
+                    regions: vec![
+                        region("quest-journal-tab-available", 12.0, 30.0, 66.0, 22.0),
+                        region("quest-journal-tab-in-progress", 82.0, 30.0, 72.0, 22.0),
+                        region("quest-journal-tab-completed", 158.0, 30.0, 66.0, 22.0),
+                        region("quest-journal-list", 13.0, 59.0, 219.0, 286.0),
+                        region("quest-journal-page-previous", 62.0, 353.0, 28.0, 24.0),
+                        region("quest-journal-page-next", 153.0, 353.0, 28.0, 24.0),
+                    ],
+                    ..GuiLayout::default()
+                }),
+            }),
+            quest_journal: Some(QuestJournal {
+                available_quests: vec![QuestTrackerEntry::default(); 14],
+                completed_quests: vec![QuestTrackerEntry::default(); 14],
             }),
             items: vec![item_definition(1_040_003, ItemCategory::Equipment)],
             ..GameGui::default()

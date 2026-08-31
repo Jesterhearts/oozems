@@ -10,6 +10,7 @@ use oozems_proto::v1::LearnedSkill;
 use oozems_proto::v1::MobDefinition;
 use oozems_proto::v1::PlayerQuest;
 use oozems_proto::v1::PlayerState;
+use oozems_proto::v1::QuestJournal;
 use oozems_proto::v1::QuestMobProgress;
 use oozems_proto::v1::QuestStatus;
 use oozems_proto::v1::QuestTrackerEntry;

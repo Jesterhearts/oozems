@@ -636,13 +636,13 @@ fn template<'a>(
         .find(|template| template.name == name)
 }
 
-fn clean_wz_text(source: &str) -> String {
+pub(super) fn clean_wz_text(source: &str) -> String {
     ["#b", "#r", "#k", "#n"]
         .into_iter()
         .fold(source.to_owned(), |text, marker| text.replace(marker, ""))
 }
 
-fn wrap_text(
+pub(super) fn wrap_text(
     game: &Game,
     source: &str,
     maximum_width: f64,

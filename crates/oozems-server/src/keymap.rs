@@ -86,6 +86,12 @@ pub const ACTIONS: &[KeyActionSpec] = &[
         icon_id: "52",
         palette_index: 7,
     },
+    KeyActionSpec {
+        action: KeyAction::OpenQuestJournal,
+        label: "Quest journal",
+        icon_id: "4",
+        palette_index: 8,
+    },
 ];
 
 pub const SLOTS: &[KeySlotSpec] = &[
@@ -198,6 +204,7 @@ pub fn default_bindings() -> Vec<KeyBinding> {
         ("KeyI", KeyAction::OpenInventory),
         ("KeyK", KeyAction::OpenKeyConfig),
         ("KeyS", KeyAction::OpenSkills),
+        ("KeyQ", KeyAction::OpenQuestJournal),
         ("ControlLeft", KeyAction::BasicAttack),
     ]
     .into_iter()

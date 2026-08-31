@@ -21,6 +21,7 @@ pub fn builtin_definition<E>(
         "skills" => skills(&mut dimensions)?,
         "key-config" => key_config(&mut dimensions)?,
         "npc-dialog" => npc_dialog(&mut dimensions)?,
+        "quest-journal" => quest_journal(&mut dimensions)?,
         "shop" => shop(&mut dimensions)?,
         "cash-shop" => cash_shop(&mut dimensions)?,
         "death-notice" => death_notice(&mut dimensions)?,
@@ -390,7 +391,7 @@ fn key_config<E>(
         6.0,
         false,
     ));
-    for (index, icon_id) in ["53", "50", "2", "0", "1", "9", "3", "52"]
+    for (index, icon_id) in ["53", "50", "2", "0", "1", "9", "3", "52", "4"]
         .into_iter()
         .enumerate()
     {
@@ -468,6 +469,90 @@ fn npc_dialog<E>(
         region("npc-close", 420.0, footer_y, 85.0, 20.0),
         region("npc-accept", 383.0, footer_y, 60.0, 20.0),
         region("npc-decline", 448.0, footer_y, 60.0, 20.0),
+    ]);
+    Ok(definition)
+}
+
+fn quest_journal<E>(
+    dimensions: &mut impl FnMut(&str) -> Result<SpriteDimensions, E>
+) -> Result<GuiWindowDefinition, E> {
+    let list_path = "UIWindow.img/Quest/backgrnd";
+    let detail_path = "UIWindow.img/Quest/backgrnd2";
+    let list = dimensions(list_path)?;
+    let detail = dimensions(detail_path)?;
+    let width = list.width + detail.width;
+    let height = list.height.max(detail.height);
+    let mut definition = window(
+        "quest-journal",
+        125.0,
+        80.0,
+        width,
+        height,
+        source("quest-journal-list-background", list_path, 0.0, 0.0),
+    );
+    definition.sprites.extend([
+        source(
+            "quest-journal-detail-background",
+            detail_path,
+            list.width,
+            0.0,
+        ),
+        pinned_right(
+            "quest-journal-close",
+            "UIWindow.img/BtUIClose/normal/0",
+            5.0,
+            5.0,
+            false,
+        ),
+    ]);
+    for (index, name) in ["available", "in-progress", "completed"]
+        .into_iter()
+        .enumerate()
+    {
+        definition.sprite_templates.extend([
+            template(
+                &format!("quest-journal-tab-{name}-active"),
+                &format!("UIWindow.img/Quest/Tab/enabled/{index}"),
+            ),
+            template(
+                &format!("quest-journal-tab-{name}-inactive"),
+                &format!("UIWindow.img/Quest/Tab/disabled/{index}"),
+            ),
+        ]);
+    }
+    definition.sprite_templates.extend([
+        template("quest-journal-entry", "UIWindow.img/Quest/icon0"),
+        template("quest-journal-entry-selected", "UIWindow.img/Quest/icon1"),
+    ]);
+    definition.regions.extend([
+        region("quest-journal-tab-available", 12.0, 30.0, 66.0, 22.0),
+        region("quest-journal-tab-in-progress", 82.0, 30.0, 72.0, 22.0),
+        region("quest-journal-tab-completed", 158.0, 30.0, 66.0, 22.0),
+        region("quest-journal-list", 13.0, 59.0, 219.0, 286.0),
+        region("quest-journal-page-previous", 62.0, 353.0, 28.0, 24.0),
+        region("quest-journal-page-label", 94.0, 353.0, 55.0, 24.0),
+        region("quest-journal-page-next", 153.0, 353.0, 28.0, 24.0),
+        region(
+            "quest-journal-detail-title",
+            list.width + 20.0,
+            35.0,
+            detail.width - 39.0,
+            22.0,
+        ),
+        region(
+            "quest-journal-detail-summary",
+            list.width + 20.0,
+            68.0,
+            detail.width - 39.0,
+            105.0,
+        ),
+        region(
+            "quest-journal-detail-objectives",
+            list.width + 20.0,
+            188.0,
+            detail.width - 39.0,
+            166.0,
+        ),
     ]);
     Ok(definition)
 }
@@ -835,6 +920,8 @@ mod tests {
             "UIWindow.img/UtilDlgEx/t" => (529.0, 46.0),
             "UIWindow.img/UtilDlgEx/c" => (529.0, 18.0),
             "UIWindow.img/UtilDlgEx/s" => (529.0, 60.0),
+            "UIWindow.img/Quest/backgrnd" => (245.0, 396.0),
+            "UIWindow.img/Quest/backgrnd2" => (305.0, 396.0),
             "UIWindow.img/Shop/backgrnd" => (445.0, 333.0),
             "CashShop.img/Base/backgrnd" => (800.0, 600.0),
             "CashShop.img/CSStatus/BtExit/normal/0" => (168.0, 49.0),

@@ -170,6 +170,7 @@ async fn request_item_action(
         | GuiAction::ToggleInventory
         | GuiAction::ToggleKeyConfig
         | GuiAction::ToggleSkills
+        | GuiAction::ToggleQuestJournal
         | GuiAction::PreviousSkillPage
         | GuiAction::NextSkillPage
         | GuiAction::CloseStats
@@ -178,6 +179,11 @@ async fn request_item_action(
         | GuiAction::SelectInventoryTab { .. }
         | GuiAction::CloseKeyConfig
         | GuiAction::CloseSkills
+        | GuiAction::CloseQuestJournal
+        | GuiAction::SelectQuestJournalTab { .. }
+        | GuiAction::PreviousQuestJournalPage
+        | GuiAction::NextQuestJournalPage
+        | GuiAction::SelectQuestJournalEntry { .. }
         | GuiAction::AllocateAbility { .. }
         | GuiAction::AllocateSkill { .. }
         | GuiAction::UseSkill { .. } => unreachable!("non-item GUI action reached the item server"),
@@ -275,6 +281,7 @@ fn item_action_message(action: GuiAction) -> &'static str {
         | GuiAction::ToggleInventory
         | GuiAction::ToggleKeyConfig
         | GuiAction::ToggleSkills
+        | GuiAction::ToggleQuestJournal
         | GuiAction::PreviousSkillPage
         | GuiAction::NextSkillPage
         | GuiAction::CloseStats
@@ -283,6 +290,11 @@ fn item_action_message(action: GuiAction) -> &'static str {
         | GuiAction::SelectInventoryTab { .. }
         | GuiAction::CloseKeyConfig
         | GuiAction::CloseSkills
+        | GuiAction::CloseQuestJournal
+        | GuiAction::SelectQuestJournalTab { .. }
+        | GuiAction::PreviousQuestJournalPage
+        | GuiAction::NextQuestJournalPage
+        | GuiAction::SelectQuestJournalEntry { .. }
         | GuiAction::AllocateAbility { .. }
         | GuiAction::AllocateSkill { .. }
         | GuiAction::UseSkill { .. } => "GUI updated.",

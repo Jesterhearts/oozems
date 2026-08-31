@@ -91,6 +91,7 @@ enum KeyAction {
   KEY_ACTION_OPEN_KEY_CONFIG = 6;
   KEY_ACTION_OPEN_SKILLS = 7;
   KEY_ACTION_BASIC_ATTACK = 8;
+  KEY_ACTION_OPEN_QUEST_JOURNAL = 9;
 }
 
 message InventoryState {
@@ -531,6 +532,13 @@ message GameGui {
   repeated QuestTrackerEntry quest_tracker = 19;
   MouseCursor normal_cursor = 20;
   MouseCursor interactive_cursor = 21;
+  GuiWindow quest_journal_window = 22;
+  QuestJournal quest_journal = 23;
+}
+
+message QuestJournal {
+  repeated QuestTrackerEntry available_quests = 1;
+  repeated QuestTrackerEntry completed_quests = 2;
 }
 
 message MouseCursor {

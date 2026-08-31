@@ -384,6 +384,7 @@ pub(super) fn collect_refresh_requests(
         .collect::<Vec<_>>();
     if crate::quest_tracker::needs_refresh(&game.ui.gui, &game.player.state) {
         game.requests.gui.cached.remove(&());
+        crate::quest_tracker::retain_active_entries(&mut game.ui.gui, &game.player.state);
     }
     if let Some(request) = take_gui_refresh_request(
         &mut game.requests.gui,

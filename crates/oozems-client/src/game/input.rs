@@ -452,6 +452,7 @@ fn interactable_npc_at_point(
         || gui.inventory_open
         || gui.key_config_open
         || gui.skills_open
+        || gui.quest_journal_open
     {
         return false;
     }
@@ -638,6 +639,7 @@ fn queue_npc_interaction(
         || gui.inventory_open
         || gui.key_config_open
         || gui.skills_open
+        || gui.quest_journal_open
     {
         return;
     }

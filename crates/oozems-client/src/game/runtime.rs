@@ -133,6 +133,7 @@ pub(super) fn update(
         gui.inventory_open = false;
         gui.key_config_open = false;
         gui.skills_open = false;
+        gui.quest_journal_open = false;
         drop(gui);
         game.ui.cash_shop.close();
         game.ui.interaction.close();
@@ -193,11 +194,15 @@ pub(super) fn update(
         input.skills.clear();
         input.actions.clear();
     }
+    let quest_journal_was_open = game.ui.gui_state.borrow().quest_journal_open;
     let pick_up = apply_key_actions(
         &mut game.ui.gui_state.borrow_mut(),
         &game.ui.gui,
         &input.actions,
     );
+    if !quest_journal_was_open && game.ui.gui_state.borrow().quest_journal_open {
+        game.requests.gui.cached.remove(&());
+    }
     buffs::apply(
         &mut game.player.active_buffs,
         &mut input.player,
@@ -488,6 +493,10 @@ fn apply_key_actions(
             KeyAction::OpenInventory => GuiAction::ToggleInventory,
             KeyAction::OpenSkills if gui.skill_window.is_some() => GuiAction::ToggleSkills,
             KeyAction::OpenSkills => continue,
+            KeyAction::OpenQuestJournal if gui.quest_journal_window.is_some() => {
+                GuiAction::ToggleQuestJournal
+            }
+            KeyAction::OpenQuestJournal => continue,
             KeyAction::OpenKeyConfig if gui.key_config_window.is_some() => {
                 GuiAction::ToggleKeyConfig
             }
@@ -976,6 +985,26 @@ mod tests {
         let input = keymap::drain_frame_input(&mut keyboard, &bindings);
         assert!(!apply_key_actions(&mut state, &gui, &input.actions));
         assert!(!state.key_config_open);
+    }
+
+    #[test]
+    fn configured_quest_hotkey_opens_the_native_journal() {
+        let bindings = vec![KeyBinding {
+            code: "KeyQ".to_owned(),
+            action: KeyAction::OpenQuestJournal as i32,
+            skill_id: 0,
+        }];
+        let gui = GameGui {
+            quest_journal_window: Some(GuiWindow::default()),
+            ..GameGui::default()
+        };
+        let mut keyboard = keymap::KeyboardState::default();
+        let mut state = GuiState::default();
+
+        assert!(keymap::set_key(&mut keyboard, &bindings, "KeyQ", true));
+        let input = keymap::drain_frame_input(&mut keyboard, &bindings);
+        assert!(!apply_key_actions(&mut state, &gui, &input.actions));
+        assert!(state.quest_journal_open);
     }
 
     #[test]

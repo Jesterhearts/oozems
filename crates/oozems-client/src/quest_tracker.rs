@@ -16,10 +16,7 @@ pub(crate) fn active_entries(
     gui.quest_tracker
         .iter()
         .filter_map(|source| {
-            let player_quest = player.quests.iter().find(|quest| {
-                quest.quest_id == source.quest_id
-                    && QuestStatus::try_from(quest.status) == Ok(QuestStatus::Started)
-            })?;
+            let player_quest = started_quest(player, source.quest_id)?;
             let mut entry = source.clone();
             for objective in &mut entry.objectives {
                 update_objective(objective, player_quest, player, active_buffs);
@@ -30,6 +27,24 @@ pub(crate) fn active_entries(
             Some(entry)
         })
         .collect()
+}
+
+pub(crate) fn retain_active_entries(
+    gui: &mut GameGui,
+    player: &PlayerState,
+) {
+    gui.quest_tracker
+        .retain(|entry| started_quest(player, entry.quest_id).is_some());
+}
+
+fn started_quest(
+    player: &PlayerState,
+    quest_id: u32,
+) -> Option<&oozems_proto::v1::PlayerQuest> {
+    player.quests.iter().find(|quest| {
+        quest.quest_id == quest_id
+            && QuestStatus::try_from(quest.status) == Ok(QuestStatus::Started)
+    })
 }
 
 fn update_objective(
@@ -208,6 +223,7 @@ mod tests {
 
     use super::active_entries;
     use super::needs_refresh;
+    use super::retain_active_entries;
     use crate::game::buffs::TrackedBuffs;
 
     #[test]
@@ -372,5 +388,47 @@ mod tests {
                 ..PlayerState::default()
             }
         ));
+    }
+
+    #[test]
+    fn stale_projection_entries_are_removed_before_refresh() {
+        let mut gui = GameGui {
+            quest_tracker: vec![
+                QuestTrackerEntry {
+                    quest_id: 10,
+                    ..QuestTrackerEntry::default()
+                },
+                QuestTrackerEntry {
+                    quest_id: 20,
+                    ..QuestTrackerEntry::default()
+                },
+            ],
+            ..GameGui::default()
+        };
+        let player = PlayerState {
+            quests: vec![
+                PlayerQuest {
+                    quest_id: 10,
+                    status: QuestStatus::Started as i32,
+                    ..PlayerQuest::default()
+                },
+                PlayerQuest {
+                    quest_id: 20,
+                    status: QuestStatus::Completed as i32,
+                    ..PlayerQuest::default()
+                },
+            ],
+            ..PlayerState::default()
+        };
+
+        retain_active_entries(&mut gui, &player);
+
+        assert_eq!(
+            gui.quest_tracker
+                .iter()
+                .map(|entry| entry.quest_id)
+                .collect::<Vec<_>>(),
+            [10]
+        );
     }
 }

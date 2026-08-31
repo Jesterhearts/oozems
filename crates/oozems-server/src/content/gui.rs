@@ -14,6 +14,7 @@ use oozems_proto::v1::GuiWindowDefinition;
 use oozems_proto::v1::KeySlot;
 use oozems_proto::v1::MouseCursor;
 use oozems_proto::v1::NpcFrame;
+use oozems_ui_layout::SpriteDimensions;
 use sha2::Digest;
 use sha2::Sha256;
 use thiserror::Error;
@@ -344,6 +345,16 @@ fn build_game_gui(
     let mut npc_dialog_window = compose_npc_dialog_window(&npc_dialog_sources)?;
     add_window_runtime_regions("npc-dialog", &mut npc_dialog_window);
     assets.extend(npc_dialog_assets);
+    let quest_journal_definition = oozems_ui_layout::builtin_definition("quest-journal", |path| {
+        ui_window_sprite_dimensions(ui_window, path)
+    })?
+    .ok_or_else(|| GuiContentError::Invalid {
+        message: "the built-in quest journal layout is unavailable".to_owned(),
+    })?;
+    let (mut quest_journal_window, quest_journal_assets) =
+        compose_window_definition(content, root, &quest_journal_definition)?;
+    add_window_runtime_regions("quest-journal", &mut quest_journal_window);
+    assets.extend(quest_journal_assets);
     let (shop_sources, shop_assets) = load_shop_window_sources(content, ui_window)?;
     let mut shop_window = compose_shop_window(&shop_sources)?;
     add_window_runtime_regions("shop", &mut shop_window);
@@ -393,6 +404,8 @@ fn build_game_gui(
         quest_tracker: Vec::new(),
         normal_cursor,
         interactive_cursor,
+        quest_journal_window: Some(quest_journal_window),
+        quest_journal: None,
     };
     for definition in definitions {
         let (window, definition_assets) = compose_window_definition(content, root, definition)?;
@@ -579,11 +592,30 @@ fn install_window_definition(
             gui.key_config_window = Some(window);
         }
         "npc-dialog" => gui.npc_dialog_window = Some(window),
+        "quest-journal" => gui.quest_journal_window = Some(window),
         "shop" => gui.shop_window = Some(window),
         "cash-shop" => gui.cash_shop_window = Some(window),
         "death-notice" => gui.death_notice_window = Some(window),
         _ => unreachable!("validated GUI window name"),
     }
+}
+
+fn ui_window_sprite_dimensions(
+    ui_window: &WzNodeArc,
+    path: &str,
+) -> Result<SpriteDimensions, GuiContentError> {
+    let relative = path
+        .strip_prefix("UIWindow.img/")
+        .ok_or_else(|| GuiContentError::Invalid {
+            message: format!("quest journal source path {path:?} is outside UIWindow.img"),
+        })?;
+    let components = relative.split('/').collect::<Vec<_>>();
+    let node = required_path(ui_window, &components)?;
+    let geometry = png_geometry(&node, &components)?;
+    Ok(SpriteDimensions {
+        width: geometry.width as f32,
+        height: geometry.height as f32,
+    })
 }
 
 fn load_quest_icon_frames(
@@ -1757,6 +1789,7 @@ mod tests {
                 "skills" => assert_eq!(gui.skill_window, Some(expected)),
                 "key-config" => assert_eq!(gui.key_config_window, Some(expected)),
                 "npc-dialog" => assert_eq!(gui.npc_dialog_window, Some(expected)),
+                "quest-journal" => assert_eq!(gui.quest_journal_window, Some(expected)),
                 "shop" => assert_eq!(gui.shop_window, Some(expected)),
                 "cash-shop" => assert_eq!(gui.cash_shop_window, Some(expected)),
                 "death-notice" => assert_eq!(gui.death_notice_window, Some(expected)),

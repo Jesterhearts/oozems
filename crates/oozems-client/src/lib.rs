@@ -19,6 +19,7 @@ mod level_up_effect;
 mod mob_render;
 mod morph_render;
 mod movement;
+mod quest_journal;
 mod quest_tracker;
 mod reactor_render;
 mod render;

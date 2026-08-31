@@ -360,6 +360,11 @@ pub async fn get_gui(
             crate::items::ItemDefinitionLookup::effective_stack_max(&definitions, item.item_id)
                 .map_err(item_rule_error)?;
     }
+    let quest_environment = crate::quests::QuestEnvironment {
+        now_unix_ms,
+        world_id: state.gameplay.world_id,
+        learned_skill_modifiers: learned,
+    };
     gui.quest_tracker = crate::quests::quest_tracker(
         &player,
         &effects,
@@ -367,12 +372,16 @@ pub async fn get_gui(
         state.catalog.item_definition_slice(),
         &mob_definitions,
         &state.quest_scripts,
-        crate::quests::QuestEnvironment {
-            now_unix_ms,
-            world_id: state.gameplay.world_id,
-            learned_skill_modifiers: learned,
-        },
+        quest_environment,
     );
+    gui.quest_journal = Some(crate::quests::quest_journal(
+        &player,
+        &effects,
+        &quest_definitions,
+        state.catalog.item_definition_slice(),
+        &state.quest_scripts,
+        quest_environment,
+    ));
     Ok(Protobuf(GetGuiResponse { gui: Some(gui) }))
 }
 

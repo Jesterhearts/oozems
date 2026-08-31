@@ -34,6 +34,7 @@ pub(crate) fn defaults(
         "skills" => skills(width, regions),
         "key-config" => key_config(width),
         "npc-dialog" => npc_dialog(regions),
+        "quest-journal" => vec![drag_region(width, 550.0)],
         "shop" => shop(regions),
         "cash-shop" => cash_shop(),
         "death-notice" => death_notice(),

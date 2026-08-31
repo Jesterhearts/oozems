@@ -42,6 +42,9 @@ pub(super) fn draw(game: &Game) {
     if game.ui.gui_state.borrow().skills_open {
         super::skillbook::draw(game);
     }
+    if game.ui.gui_state.borrow().quest_journal_open {
+        super::quest_journal::draw(game);
+    }
     if game.ui.gui_state.borrow().key_config_open {
         draw_key_config_window(game);
     }

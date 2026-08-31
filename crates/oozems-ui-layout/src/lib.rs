@@ -21,7 +21,7 @@ use prost_reflect::text_format::FormatOptions;
 use thiserror::Error;
 
 const DEFINITION_MESSAGE: &str = "oozems.v1.GuiWindowDefinition";
-pub const SUPPORTED_WINDOWS: [&str; 10] = [
+pub const SUPPORTED_WINDOWS: [&str; 11] = [
     "status-bar",
     "stats",
     "equipment",
@@ -29,6 +29,7 @@ pub const SUPPORTED_WINDOWS: [&str; 10] = [
     "skills",
     "key-config",
     "npc-dialog",
+    "quest-journal",
     "shop",
     "cash-shop",
     "death-notice",
@@ -624,6 +625,7 @@ const LAYOUT_CONTRACTS: &[LayoutContract] = &[
             "key-action-9",
             "key-action-3",
             "key-action-52",
+            "key-action-4",
         ],
         templates: EMPTY_NAMES,
         regions: EMPTY_NAMES,
@@ -652,6 +654,32 @@ const LAYOUT_CONTRACTS: &[LayoutContract] = &[
             "npc-close",
             "npc-accept",
             "npc-decline",
+        ],
+    },
+    LayoutContract {
+        name: "quest-journal",
+        sprites: &["quest-journal-detail-background", "quest-journal-close"],
+        templates: &[
+            "quest-journal-tab-available-active",
+            "quest-journal-tab-available-inactive",
+            "quest-journal-tab-in-progress-active",
+            "quest-journal-tab-in-progress-inactive",
+            "quest-journal-tab-completed-active",
+            "quest-journal-tab-completed-inactive",
+            "quest-journal-entry",
+            "quest-journal-entry-selected",
+        ],
+        regions: &[
+            "quest-journal-tab-available",
+            "quest-journal-tab-in-progress",
+            "quest-journal-tab-completed",
+            "quest-journal-list",
+            "quest-journal-page-previous",
+            "quest-journal-page-label",
+            "quest-journal-page-next",
+            "quest-journal-detail-title",
+            "quest-journal-detail-summary",
+            "quest-journal-detail-objectives",
         ],
     },
     LayoutContract {
