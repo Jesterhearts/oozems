@@ -625,18 +625,6 @@ fn draw_canvas(
     }
     paint_static_sprites(&painter, canvas_rect.min, scale, document);
     preview::paint(&painter, canvas_rect.min, scale, document);
-    if show_regions {
-        interact_regions(
-            ui,
-            &painter,
-            canvas_rect.min,
-            layout_size,
-            scale,
-            &mut selection,
-            pixel_snap,
-            document,
-        );
-    }
     interact_sprites(
         ui,
         canvas_rect.min,
@@ -655,6 +643,18 @@ fn draw_canvas(
         pixel_snap,
         document,
     );
+    if show_regions {
+        interact_regions(
+            ui,
+            &painter,
+            canvas_rect.min,
+            layout_size,
+            scale,
+            &mut selection,
+            pixel_snap,
+            document,
+        );
+    }
     app.selection = selection;
 }
 
@@ -729,7 +729,8 @@ fn interact_regions(
     pixel_snap: bool,
     document: &mut LayoutDocument,
 ) {
-    for index in 0..document.definition.regions.len() {
+    let region_count = document.definition.regions.len();
+    for index in region_interaction_order(region_count, *selection) {
         let selected = *selection == Some(Selection::Region(index));
         let region = &document.definition.regions[index];
         let rect = scaled_rect(
@@ -804,6 +805,19 @@ fn interact_regions(
             painter.rect_filled(handle, 1.0, SELECTED_COLOR);
         }
     }
+}
+
+fn region_interaction_order(
+    region_count: usize,
+    selection: Option<Selection>,
+) -> impl Iterator<Item = usize> {
+    let selected = match selection {
+        Some(Selection::Region(index)) if index < region_count => Some(index),
+        _ => None,
+    };
+    (0..region_count)
+        .filter(move |index| Some(*index) != selected)
+        .chain(selected)
 }
 
 fn interact_sprites(
@@ -1325,6 +1339,7 @@ mod tests {
     use super::constrained_repeated_template_offset;
     use super::consume_nudge_delta;
     use super::nudge_selected_element;
+    use super::region_interaction_order;
     use super::set_template_offset;
     use super::snap_region;
 
@@ -1352,6 +1367,13 @@ mod tests {
     #[test]
     fn region_outside_container_resizes_to_minimum_extent() {
         assert_eq!(constrained_extent(20.0, 120.0, 100.0), 1.0);
+    }
+
+    #[test]
+    fn selected_region_is_last_in_interaction_order() {
+        let order = region_interaction_order(4, Some(Selection::Region(1))).collect::<Vec<_>>();
+
+        assert_eq!(order, [0, 2, 3, 1]);
     }
 
     #[test]
