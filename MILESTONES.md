@@ -4,9 +4,7 @@
 
 This roadmap targets the player-visible behavior and content of GMS v83, before
 Big Bang, implemented through Oozems's own client and server. GMS v83 is the
-working baseline from the initial parity assessment. M0 fixes the exact archive
-set, content scope, and reference behavior before implementation is judged
-against it.
+working baseline from the initial parity assessment.
 
 Parity includes character progression, combat, items, world interactions,
 multiplayer, and the client behavior needed to use those systems. Loading an
@@ -49,9 +47,7 @@ The main boundaries to remove are:
 - The [browser entry point](crates/oozems-client/src/lib.rs) uses a fixed player
   identity. The assessed map protocol does not replicate remote characters.
 
-These are starting observations, not permanent status reports. M0 replaces them
-with a maintained inventory. Do not use README totals or script-name counts as a
-measure of functional completion.
+These are starting observations, not permanent status reports.
 
 ## Milestone sequence
 
@@ -62,9 +58,8 @@ start before the supporting runtime is complete.
 
 | ID  | Outcome                                         | Depends on | Status |
 | --- | ----------------------------------------------- | ---------- | ------ |
-| M0  | Fixed baseline and measurable coverage          | None       | Open   |
-| M1  | Complete durable item and equipment model       | M0         | Open   |
-| M2  | World-event and job-advancement primitives      | M0         | Open   |
+| M1  | Complete durable item and equipment model       | None       | Open   |
+| M2  | World-event and job-advancement primitives      | None       | Open   |
 | M3  | One Explorer branch playable through second job | M1, M2     | Open   |
 | M4  | Complete class and combat rules                 | M3         | Open   |
 | M5  | Distinct players sharing a visible world        | M1, M3     | Open   |
@@ -78,39 +73,6 @@ start before the supporting runtime is complete.
 M3 is the first useful solo progression release. M6 is the first complete
 small-group gameplay loop. M11 is the parity release. An earlier project
 version, including version 0.1, may ship before parity is complete.
-
-## M0: Fix the baseline and measure coverage
-
-**Outcome:** Every required system and content entry has a defined target,
-status, and verification method.
-
-### Deliverables
-
-- Record the region, version, archive hashes, reference configuration, and dated
-  or revision-pinned behavior sources.
-- Enumerate the playable classes and their advancement paths, level limits,
-  regions, quests, skills, items, NPC interactions, travel routes, reactors,
-  bosses, party quests, and seasonal content in the target.
-- Record whether each entry is required, outside the selected baseline, or an
-  intentional deviation. Include a reason and supporting evidence.
-- Create a coverage inventory with these separate states: unsupported, partial,
-  implemented, and behavior-verified. Record evidence and unresolved questions
-  per entry. Report import coverage separately.
-- Select one Explorer branch for M3 and concrete content IDs for its route.
-  Select the party quest and boss for M7; Kerning Party Quest and Zakum are
-  initial candidates to validate against the baseline.
-- Establish reproducible fixtures for formulas, action sequences, and client
-  observations. Record expected outputs or tolerances and their sources.
-
-### Exit criteria
-
-- [ ] A clean content scan produces the same inventory for the same archives.
-- [ ] Unsupported and skipped definitions are reported with reasons.
-- [ ] Name-only script replacements remain partial unless evidence establishes
-      that no additional behavior is required.
-- [ ] Every required entry has a milestone assignment and verification method.
-- [ ] Unknown behavior is visible as unresolved work, rather than an assumed
-      success or a silently excluded feature.
 
 ## M1: Complete the durable item and equipment model
 
@@ -180,7 +142,7 @@ without database edits or developer commands.
 ### Deliverables
 
 - Complete Maple Island, travel to Victoria Island, first advancement, and
-  second advancement for the branch selected in M0.
+  second advancement.
 - Implement every skill available through that branch's second job. Extend
   combat for the target counts, hit counts, ranges, resource costs, movement,
   and effects required by those skills.
@@ -305,7 +267,7 @@ encounters, including their failure paths.
 
 ### Deliverables
 
-- Implement the party quest and boss selected in M0 with their admission rules,
+- Implement the party quest and boss selected with their admission rules,
   prerequisites, stages, objectives, portals, reactors, and rewards.
 - Add encounter timers, checkpoints, completion, failure, reset, and cleanup.
 - Implement the selected boss's attack patterns, skills, phases, body parts,
@@ -340,7 +302,7 @@ combat.
 - Complete required Cash Shop catalog behavior, previews, storage, packages,
   gifting, expiration, and item effects using locally provisioned currency.
 - Implement required marriage, minigames, seasonal activities, and remaining
-  special items identified in M0.
+  special items identified.
 - Assign any newly discovered baseline behavior to this milestone or its owning
   earlier milestone; keep it visible in the coverage inventory.
 
@@ -375,7 +337,7 @@ gameplay.
 
 ### Exit criteria
 
-- [ ] Every required world-content entry in the M0 inventory is
+- [ ] Every required world-content entry in the inventory is
       behavior-verified.
 - [ ] Each region has a recorded gameplay route through its entry, progression,
       travel, and encounter boundaries.
@@ -441,7 +403,7 @@ updated, backed up, and restored without manual data repair.
 
 ### Exit criteria
 
-- [ ] Every required M0 entry is behavior-verified, with no unresolved required
+- [ ] Every required entry is behavior-verified, with no unresolved required
       behavior or progression blockers.
 - [ ] Every intentional difference is listed with its effect on the parity
       claim.
@@ -493,5 +455,5 @@ provides a checklist of established server capabilities, including party quests,
 social systems, travel, item behavior, and encounter handling. It also contains
 custom behavior, so presence on that list does not establish a GMS requirement.
 
-Pin exact reference revisions in M0. Resolve disagreements through documented
-baseline evidence and keep uncertain behavior visible until it is settled.
+Resolve disagreements through documented baseline evidence and keep uncertain
+behavior visible until it is settled.
